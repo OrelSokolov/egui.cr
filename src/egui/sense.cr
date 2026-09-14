@@ -10,6 +10,9 @@ module Egui
   enum Sense
     Click
     Drag
+    # egui `Sense::focusable`: the widget can take keyboard focus and
+    # participates in Tab/arrow navigation.
+    Focusable
 
     def self.none : Sense
       Sense::None

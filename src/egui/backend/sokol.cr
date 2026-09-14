@@ -71,6 +71,9 @@ module Egui
       @@start = Time.instant
 
       # sapp_event_type values (sokol_app.h)
+      KEY_DOWN    = 1
+      KEY_UP      = 2
+      CHAR        = 3
       MOUSE_DOWN  =  4
       MOUSE_UP    =  5
       MOUSE_SCROLL = 6
@@ -92,7 +95,7 @@ module Egui
         frame = ->{ on_frame }
         event = ->(t : Int32, mx : Float32, my : Float32, sx : Float32, sy : Float32,
                     mods : UInt32, btn : UInt32, key : UInt32, chr : UInt32) {
-          on_event(t, mx, my, sx, sy)
+          on_event(t, mx, my, sx, sy, mods, btn, key, chr)
         }
         cleanup = ->{ }
 
@@ -110,7 +113,9 @@ module Egui
       end
 
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,
-                                  sx : Float32, sy : Float32) : Nil
+                                  sx : Float32, sy : Float32, mods : UInt32,
+                                  btn : UInt32, key : UInt32,
+                                  chr : UInt32) : Nil
         case type
         when MOUSE_MOVE
           @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
@@ -120,6 +125,24 @@ module Egui
           @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my))
         when MOUSE_SCROLL
           @@events << Egui::Event.scroll(Egui::Vec2.new(sx, sy))
+        when KEY_DOWN, KEY_UP
+          # sapp fires KEY_* plus a separate CHAR event for text; we
+          # only forward non-modifier keys here (modifier state rides
+          # along in Modifiers).
+          return if key >= 340 # SAPP_KEYCODE_LEFT_SHIFT .. RIGHT_SUPER
+          code = Egui::KeyCode.from_value?(key)
+          return unless code
+          modifiers = Egui::Modifiers.from_mask(mods)
+          if type == KEY_DOWN
+            @@events << Egui::Event.key_pressed(code, modifiers)
+          else
+            @@events << Egui::Event.key_released(code, modifiers)
+          end
+        when CHAR
+          # sapp char_code is a Unicode codepoint; skip surrogates.
+          if (chr > 0 && chr < 0xD800) || (chr >= 0xE000 && chr < 0x110000)
+            @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
+          end
         end
       end
 

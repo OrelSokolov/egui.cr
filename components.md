@@ -142,25 +142,25 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 3 — keyboard input & focus navigation
 
-- [ ] `src/egui/input.cr`: extend `Event` union with
+- [x] `src/egui/input.cr`: extend `Event` union with
       `Key(key : KeyCode, pressed : Bool, ctrl : Bool, shift : Bool, alt : Bool)`
       and `Text(text : String)`; `KeyCode` enum mirroring the `sapp_keycode`
       subset we care about (letters, digits, arrows, Tab, Enter, Backspace,
       Delete, Escape, Home/End, PgUp/PgDn, modifiers).
-- [ ] `backend/sokol_shim.c` + `src/egui/backend/sokol.cr`: forward
+- [x] `backend/sokol_shim.c` + `src/egui/backend/sokol.cr`: forward
       `SAPP_EVENTTYPE_KEY_DOWN/KEY_UP/CHAR` (+ modifier flags) into the raw
       event queue.
-- [ ] `InputState`: `key_pressed?/key_down?/key_released?`, `modifiers`,
+- [x] `InputState`: `key_pressed?/key_down?/key_released?`, `modifiers`,
       `consume_key` (ownership so TextEdit eats keys first), keep `events`.
-- [ ] `src/egui/sense.cr`: add `Focusable` flag; opt in: button, checkbox,
+- [x] `src/egui/sense.cr`: add `Focusable` flag; opt in: button, checkbox,
       radio, slider, drag_value, hyperlink, (text_edit later).
-- [ ] Focus navigation ← `crates/egui/src/memory/mod.rs:502` (`Focus`):
+- [x] Focus navigation ← `crates/egui/src/memory/mod.rs:502` (`Focus`):
       Tab / Shift+Tab cycles focusables in the top layer, arrows navigate
       geometrically using stored interaction rects (already in Memory);
       focus ring painted as rect outline on the focused widget.
-- [ ] Full `DragValue`: type-to-edit buffer, Up/Down arrows, Ctrl+click
+- [x] Full `DragValue`: type-to-edit buffer, Up/Down arrows, Ctrl+click
       reset-to-range-start.
-- [ ] Specs: synthetic key RawInput — Tab moves focus between two buttons;
+- [x] Specs: synthetic key RawInput — Tab moves focus between two buttons;
       typed digits update drag_value; `consume_key` hides the event from a
       second widget.
 

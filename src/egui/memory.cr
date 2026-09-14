@@ -206,6 +206,8 @@ module Egui
       @pointer_pos = input.pointer_pos
       @pointer_down = input.pointer_down?
       @pointer_delta = input.pointer_delta
+
+      navigate_focus(input)
     end
 
     def end_frame : Nil
@@ -244,6 +246,11 @@ module Egui
         return InteractionVerdict.new(false, false, 0, false, false,
           false, false, Vec2.zero, false)
       end
+
+      # Focus keep-alive (upstream: focusables register interest every
+      # frame): the focused focusable re-requests focus so the
+      # dead-man's switch only fires when the widget disappears.
+      @focus.keep_alive(id) if sense.focusable? && @focus.id == id
 
       pos = @pointer_pos
       hovered = !sense.none? && pos ? rect.contains?(pos) : false
@@ -291,6 +298,70 @@ module Egui
     end
 
     # --- internals ------------------------------------------------------
+
+    # Keyboard focus navigation (upstream `Focus` + memory/mod.rs):
+    # Tab / Shift+Tab cycles focusables in creation order; arrows move
+    # geometrically to the nearest focusable in that direction, unless
+    # the focused widget locked them (slider/drag value). Runs against
+    # the previous frame's geometry, before any widget renders.
+    private def navigate_focus(input : InputState) : Nil
+      focusables = [] of Id
+      @prev_widget_senses.each do |id, sense|
+        focusables << id if sense.focusable? && @prev_widget_rects[id]?
+      end
+      return if focusables.empty?
+
+      if input.key_pressed?(KeyCode::Tab) && !input.modifiers.alt &&
+         !input.modifiers.ctrl
+        input.consume_key(KeyCode::Tab)
+        index = focusables.index(@focus.id) || -1
+        step = input.modifiers.shift ? -1 : 1
+        @focus.request(focusables[(index + step) % focusables.size])
+        return
+      end
+
+      focused = @focus.id
+      return unless focused && (from_rect = @prev_widget_rects[focused]?)
+
+      key : KeyCode? = nil
+      dir = Vec2.zero
+      if !@focus.lock_h? && input.key_pressed?(KeyCode::Left)
+        key, dir = KeyCode::Left, Vec2.new(-1.0, 0.0)
+      elsif !@focus.lock_h? && input.key_pressed?(KeyCode::Right)
+        key, dir = KeyCode::Right, Vec2.new(1.0, 0.0)
+      elsif !@focus.lock_v? && input.key_pressed?(KeyCode::Up)
+        key, dir = KeyCode::Up, Vec2.new(0.0, -1.0)
+      elsif !@focus.lock_v? && input.key_pressed?(KeyCode::Down)
+        key, dir = KeyCode::Down, Vec2.new(0.0, 1.0)
+      end
+      return unless key
+
+      from = from_rect.center
+      horizontal = dir.x != 0.0
+      best : Id? = nil
+      best_distance = Float64::INFINITY
+      focusables.each do |id|
+        next if id == focused
+        delta = @prev_widget_rects[id].not_nil!.center - from
+        in_dir = delta.x * dir.x + delta.y * dir.y
+        next unless in_dir > 0.0
+        if horizontal
+          next unless delta.x.abs >= delta.y.abs
+        else
+          next unless delta.y.abs >= delta.x.abs
+        end
+        if in_dir < best_distance
+          best_distance = in_dir
+          best = id
+        end
+      end
+
+      if best_id = best
+        input.consume_key(key.not_nil!)
+        @focus.request(best_id)
+      end
+    end
+
 
     # Topmost widget containing `pos` whose sense satisfies the filter.
     # Registration order == paint order; the last match is on top.

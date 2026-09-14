@@ -36,7 +36,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      sense = Sense.click
+      sense = Sense.click | Sense::Focusable
       pad = ui.style.spacing.button_padding
 
       text_size = ui.ctx.fonts.measure(@text, ui.style.font_size)
@@ -75,6 +75,7 @@ module Egui
       ui.painter.text(pos, @text, ui.style.font_size,
         ui.style.visuals.text_color)
 
+      response.paint_focus_ring
       response
     end
   end

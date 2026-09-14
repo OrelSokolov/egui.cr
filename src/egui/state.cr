@@ -119,25 +119,48 @@ module Egui
   # `begin_frame` lags one frame (`id_previous_frame`) — that is the
   # dead-man's switch: if the focused widget stops being created, focus
   # drops instead of pointing at a stale id.
+  #
+  # Arrow locks (upstream `FocusLockFilter`): a focused slider/drag
+  # value claims the arrows in its own direction so navigation skips
+  # them; latched one frame like the focus id itself.
   class Focus
     @id : Id?
     @id_previous_frame : Id?
     @id_next_frame : Id?
 
+    @lock_h : Bool
+    @lock_v : Bool
+    @lock_h_next : Bool
+    @lock_v_next : Bool
+
     def initialize
       @id = nil
       @id_previous_frame = nil
       @id_next_frame = nil
+      @lock_h = false
+      @lock_v = false
+      @lock_h_next = false
+      @lock_v_next = false
     end
 
     def begin_frame : Nil
       @id_previous_frame = @id
       @id = @id_next_frame
       @id_next_frame = nil
+      @lock_h = @lock_h_next
+      @lock_v = @lock_v_next
+      @lock_h_next = false
+      @lock_v_next = false
     end
 
     def request(id : Id) : Nil
       @id_next_frame = id
+    end
+
+    # Keep-alive (called by interact for the currently focused focusable):
+    # never overrides a pending navigation request made this frame.
+    def keep_alive(id : Id) : Nil
+      @id_next_frame = id if @id_next_frame.nil?
     end
 
     def clear : Nil
@@ -146,6 +169,19 @@ module Egui
 
     def id : Id?
       @id
+    end
+
+    def lock_arrows(horizontal : Bool = false, vertical : Bool = false) : Nil
+      @lock_h_next = true if horizontal
+      @lock_v_next = true if vertical
+    end
+
+    def lock_h? : Bool
+      @lock_h
+    end
+
+    def lock_v? : Bool
+      @lock_v
     end
 
     def has_focus?(id : Id) : Bool

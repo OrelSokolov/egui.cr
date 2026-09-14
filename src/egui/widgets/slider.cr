@@ -22,7 +22,7 @@ module Egui
                ui.available_width - label_width(ui)}.max
       rect = ui.allocate_at_least(Vec2.new(width, thickness))
       id = ui.next_widget_id
-      response = ui.interact(rect, id, Sense.drag)
+      response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
 
       new_value = @value
       if response.dragged? && (pos = ui.ctx.input.pointer_pos)
@@ -44,6 +44,8 @@ module Egui
       handle_color = handle_color.mul_color(0.85) if response.hovered?
       ui.painter.circle_filled(Pos2.new(handle_x, rail_y), handle_r,
         handle_color)
+
+      response.paint_focus_ring(9.0)
 
       if text = @text
         label = "#{text}: #{format_value(new_value)}"

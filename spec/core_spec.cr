@@ -867,3 +867,117 @@ describe "phase 2 widgets" do
     texts.should contain("tip")
   end
 end
+
+describe "keyboard input (phase 3)" do
+  it "Tab cycles focus between widgets, Shift+Tab goes back" do
+    ctx = Egui::Context.new
+    ids = [] of Egui::Id
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ids = [ui.button("one").id, ui.button("two").id, ui.button("three").id]
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # frame 2: Tab focuses the first (none focused before → index -1 +1 = 0).
+    # Focus lags one frame (dead-man's switch): request in frame 2,
+    # has_focus? true from frame 3 on — kept alive by interact.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.focus.has_focus?(ids[0]).should be_true
+
+    # Tab again → second
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.064)
+    draw.call([] of Egui::Event, 0.080)
+    ctx.memory.focus.has_focus?(ids[1]).should be_true
+
+    # Shift+Tab → back to first
+    mods = Egui::Modifiers.new(shift: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab, mods)], 0.096)
+    draw.call([] of Egui::Event, 0.112)
+    ctx.memory.focus.has_focus?(ids[0]).should be_true
+  end
+
+  it "arrows move focus geometrically" do
+    ctx = Egui::Context.new
+    first_id = second_id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).horizontal do |row|
+        first_id = row.button("left").id
+        second_id = row.button("right").id
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # focus "left" by Tab (lands one frame later)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    # ArrowRight → focus moves to "right" (same row, to the right)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Right)], 0.064)
+    draw.call([] of Egui::Event, 0.080)
+    ctx.memory.focus.has_focus?(second_id).should be_true
+  end
+
+  it "typed digits edit a focused drag_value, Enter commits" do
+    ctx = Egui::Context.new
+    value = 10.0
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.drag_value(value) { |v| value = v }
+      id = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # focus it via Tab (it is the only focusable widget); lands next frame
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.focus.has_focus?(id).should be_true
+
+    # type "42": buffer only — the value commits on Enter
+    draw.call([Egui::Event.text_input("4")], 0.064)
+    draw.call([Egui::Event.text_input("2")], 0.080)
+    value.should eq(10.0)
+
+    # Enter commits and ends editing
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Enter)], 0.096)
+    value.should eq(42.0)
+
+    # cancel: type "99", Escape → value unchanged
+    draw.call([Egui::Event.text_input("9")], 0.112)
+    draw.call([Egui::Event.text_input("9")], 0.128)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Escape)], 0.144)
+    value.should eq(42.0)
+  end
+
+  it "consume_key hides a pressed key from later readers" do
+    ctx = Egui::Context.new
+    raw_frame(ctx, [Egui::Event.key_pressed(Egui::KeyCode::Up)], 0.016)
+    ctx.input.key_pressed?(Egui::KeyCode::Up).should be_true
+    ctx.input.consume_key(Egui::KeyCode::Up).should be_true
+    ctx.input.key_pressed?(Egui::KeyCode::Up).should be_false
+    ctx.input.consume_key(Egui::KeyCode::Up).should be_false
+    ctx.end_frame
+  end
+
+  it "key state persists across frames while held" do
+    ctx = Egui::Context.new
+    raw_frame(ctx, [Egui::Event.key_pressed(Egui::KeyCode::Left)], 0.016)
+    raw_frame(ctx, [] of Egui::Event, 0.032)
+    ctx.input.key_down?(Egui::KeyCode::Left).should be_true
+    ctx.input.key_pressed?(Egui::KeyCode::Left).should be_false
+    raw_frame(ctx, [Egui::Event.key_released(Egui::KeyCode::Left)], 0.048)
+    ctx.input.key_down?(Egui::KeyCode::Left).should be_false
+    ctx.input.key_released?(Egui::KeyCode::Left).should be_true
+    ctx.end_frame
+  end
+end

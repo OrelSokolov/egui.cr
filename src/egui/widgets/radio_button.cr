@@ -22,7 +22,7 @@ module Egui
       total_width = icon + sp.icon_spacing + text_size.x
       rect = ui.allocate_at_least(Vec2.new(total_width, height))
       id = ui.next_widget_id
-      response = ui.interact(rect, id, Sense.click)
+      response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       visuals = style.visuals
       center = Pos2.new(rect.left + icon / 2.0, rect.center.y)
@@ -37,6 +37,7 @@ module Egui
       text_pos = Pos2.new(rect.left + icon + sp.icon_spacing, rect.center.y)
       ui.painter.text(text_pos, @text, font_size, visuals.text_color)
 
+      response.paint_focus_ring(9.0)
       response.mark_changed if response.clicked? && !@selected
       response
     end

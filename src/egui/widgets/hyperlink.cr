@@ -18,7 +18,7 @@ module Egui
 
       rect = ui.allocate_at_least(text_size)
       id = ui.next_widget_id
-      response = ui.interact(rect, id, Sense.click)
+      response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       color = style.visuals.hyperlink_color
       color = color.mul_color(0.8) if response.active?
@@ -31,6 +31,7 @@ module Egui
         Pos2.new(rect.left + text_size.x, underline_y),
         1.0, color)
 
+      response.paint_focus_ring(2.0)
       Hyperlink.open_url(@url) if response.clicked?
       response
     end

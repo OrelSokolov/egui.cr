@@ -83,6 +83,15 @@ module Egui
       @ctx.memory.focus.request(@id)
     end
 
+    # egui focus highlight: a ring around the focused widget (upstream
+    # draws it in the widget's own stroke; a dedicated ring is simpler
+    # here). Widgets call this right after painting themselves.
+    def paint_focus_ring(rounding : Float64 = 4.0) : Nil
+      return unless has_focus?
+      @ctx.painter.rect(@rect.expand(2.0), rounding, nil,
+        @ctx.style.visuals.selection_fill, 2.0)
+    end
+
     def on_hover_text(text : String) : self
       show_tooltip(text) if hovered?
       self
