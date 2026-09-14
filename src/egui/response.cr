@@ -20,6 +20,10 @@ module Egui
     # egui `Response::changed` (response.rs): set by stateful widgets
     # (checkbox, slider, …) when the underlying data changed this frame.
     @changed : Bool
+    # Value widgets (Slider, DragValue) publish their freshly computed
+    # value here so the Ui block-form helpers can hand it back to the
+    # app (`ui.slider(v, range) { |new_v| … }`).
+    property widget_value : Float64?
 
     def initialize(@ctx : Context, @id : Id, @rect : Rect, @sense : Sense,
                    @hovered : Bool, @clicked : Bool, @click_count : Int32,
@@ -80,9 +84,41 @@ module Egui
     end
 
     def on_hover_text(text : String) : self
-      # Tooltips come with the tooltip layer (slice 2+); no-op for now,
-      # kept so app code can be written egui-1:1 already.
+      show_tooltip(text) if hovered?
       self
+    end
+
+    # egui tooltip (containers/tooltip.rs): appears in the Tooltip
+    # layer at the pointer + offset, after the widget has been hovered
+    # for a short delay (hover-start time is per-widget system state).
+    TOOLTIP_DELAY = 0.5
+
+    private def show_tooltip(text : String) : Nil
+      painter = @ctx.painter
+      memory = @ctx.memory
+      now = @ctx.input.time
+
+      start_key = @id
+      unless (start = memory.tooltip_starts[start_key]?) && start > 0.0
+        memory.tooltip_starts[start_key] = now
+        @ctx.request_repaint
+        return
+      end
+      return if now - start < TOOLTIP_DELAY
+
+      style = @ctx.style
+      font_size = style.font_size * 0.9
+      text_size = @ctx.fonts.measure(text, font_size)
+      margin = Vec2.new(6.0, 4.0)
+      pos = @ctx.input.pointer_pos.not_nil! + Vec2.new(16.0, 16.0)
+
+      painter.layer = Order::Tooltip
+      painter.clip = Rect.from_min_size(pos, text_size + margin * 2.0)
+      painter.rect(Rect.from_min_size(pos, text_size + margin * 2.0), 4.0,
+        style.visuals.window_fill, style.visuals.window_stroke, 1.0)
+      painter.text(pos + margin, text, font_size, style.visuals.text_color)
+      painter.layer = Order::Background
+      painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
   end
 end

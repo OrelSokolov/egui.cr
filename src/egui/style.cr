@@ -13,6 +13,9 @@ module Egui
     property icon_spacing : Float64
     # Minimum interactable widget size (upstream `Spacing::interact_size`).
     property interact_size : Vec2
+    # Default slider track length (upstream `Spacing::slider_width`).
+    property slider_width : Float64
+    property slider_rail_width : Float64
 
     def initialize
       @item_spacing = Vec2.new(8.0, 6.0)
@@ -23,6 +26,8 @@ module Egui
       @icon_width_inner = 8.0
       @icon_spacing = 6.0
       @interact_size = Vec2.new(40.0, 18.0)
+      @slider_width = 100.0
+      @slider_rail_width = 3.0
     end
   end
 

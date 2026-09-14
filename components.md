@@ -93,31 +93,50 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 2 — slider, drag_value (drag), combo box, menus, tooltips, modal, frame
 
-- [ ] `src/egui/smart_aim.cr` ← `crates/emath/src/smart_aim.rs`
+- [x] `src/egui/smart_aim.cr` ← `crates/emath/src/smart_aim.rs`
       (`best_bounds_distance`) — verbatim port, one pure function + spec.
-- [ ] `src/egui/widgets/slider.cr` ← `widgets/slider.rs`: rail + handle
+- [x] `src/egui/widgets/slider.cr` ← `widgets/slider.rs`: rail + handle
       (P0 cmds), drag → value mapped through smart_aim, optional text label,
       `SliderState` in IdTypeMap. API:
       `ui.slider(value, range : Range(Float64, Float64), text : String) { |v| }`.
-- [ ] `src/egui/widgets/drag_value.cr` (drag part) ← `widgets/drag_value.rs`:
+- [x] `src/egui/widgets/drag_value.cr` (drag part) ← `widgets/drag_value.rs`:
       `drag_delta * speed` while dragging, display value as label,
       `Sense::click_and_drag`. Keyboard typing lands in P3.
-- [ ] `src/egui/containers/combo_box.cr` ← `containers/combo_box.rs`:
+- [x] `src/egui/containers/combo_box.cr` ← `containers/combo_box.rs`:
       button + reuse `Context#popup`; `ui.combo_box(id, text) { |ui| }`.
-- [ ] `src/egui/containers/frame.cr` ← `containers/frame.rs`: struct
+- [x] `src/egui/containers/frame.cr` ← `containers/frame.rs`: struct
       `Frame {margin, fill, stroke, rounding}`; `ui.frame(&)`; refactor
       `Context#window`/`#popup` background painting onto it.
-- [ ] `src/egui/containers/menu.cr` ← `containers/menu.rs`: `MenuBar`,
+- [x] `src/egui/containers/menu.cr` ← `containers/menu.rs`: `MenuBar`,
       `ui.menu_button(text) { }`, submenus; `MenuState` in Memory
       (open menus, hover-to-switch, click-item-closes).
-- [ ] `src/egui/containers/tooltip.cr` ← `containers/tooltip.rs`:
+- [x] `src/egui/containers/tooltip.cr` ← `containers/tooltip.rs`:
       `Order::Tooltip` layer already exists in `layer.cr`; implement the
       currently-noop `Response#on_hover_text` (+ `#on_hover_ui`), short hover
       delay via IdTypeMap timestamp.
-- [ ] `src/egui/containers/modal.cr` ← `containers/modal.rs`: dim rect on
+- [x] `src/egui/containers/modal.cr` ← `containers/modal.rs`: dim rect on
       top of Middle, `Context#modal { }`, blocks input to lower layers,
       does *not* close on outside click.
-- [ ] Specs: slider drag raises value monotonically, smart_aim bounds,
+- [x] Rounded-corner strokes (user request): render `RectCmd` strokes
+      with rounded corners in the backend — each corner becomes arc
+      segments (the `rounding` field already exists in the cmd, today it
+      only affects nothing). Buttons, frames and menus get real soft
+      corners.
+- [x] Gradient fills (user request): `RectCmd` gains optional
+      `fill2 : Color32?` + gradient direction (vertical by default);
+      the backend interpolates per-vertex (Gouraud — sgl quads already
+      carry per-vertex colors). `Button#gradient(c1, c2)`, gradient
+      preset in Visuals for button fills.
+- [x] Desktop top menu bar (user request): `ctx.menu_bar { |bar| … }` —
+      a native-looking bar pinned to the top of the window,
+      `bar.menu_button("File") { |ui| … }` dropdowns with shortcut
+      hints, open-on-hover-when-another-menu-is-open (upstream
+      `MenuBar::ui` semantics).
+- [x] Button icons (user request): `Button#icon(name : Symbol)` — a
+      small built-in vector icon set (check, close, left/right/up/down
+      arrows, plus, minus) drawn with phase-0 painter primitives;
+      raster-image icons land with textures (P6).
+- [x] Specs: slider drag raises value monotonically, smart_aim bounds,
       combo open→select→close, menu open→click item, tooltip appears after
       hover delay, modal blocks clicks beneath.
 

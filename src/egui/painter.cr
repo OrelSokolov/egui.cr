@@ -13,12 +13,16 @@ module Egui
     getter rect : Rect
     getter rounding : Float64
     getter fill : Color32?
+    # Optional second fill color: when set, the fill becomes a vertical
+    # gradient from `fill` (top) to `fill2` (bottom) — the backend
+    # interpolates per-vertex (Gouraud).
+    getter fill2 : Color32?
     getter stroke_color : Color32?
     getter stroke_width : Float64
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @fill : Color32?, @stroke_color : Color32?,
-                   @stroke_width : Float64)
+                   @stroke_width : Float64, @fill2 : Color32? = nil)
     end
   end
 
@@ -134,8 +138,16 @@ module Egui
 
     def rect(rect : Rect, rounding : Float64 = 0.0,
              fill : Color32? = nil, stroke_color : Color32? = nil,
-             stroke_width : Float64 = 1.0) : Nil
-      add(RectCmd.new(@clip, rect, rounding, fill, stroke_color, stroke_width))
+             stroke_width : Float64 = 1.0,
+             fill2 : Color32? = nil) : Nil
+      add(RectCmd.new(@clip, rect, rounding, fill, stroke_color,
+        stroke_width, fill2))
+    end
+
+    # Vertical gradient fill (top `c1` → bottom `c2`).
+    def rect_gradient(rect : Rect, rounding : Float64, c1 : Color32,
+                      c2 : Color32) : Nil
+      rect(rect, rounding, fill: c1, fill2: c2)
     end
 
     # Draw text with `pos` as the LEFT-CENTER of the text bounding box

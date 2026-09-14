@@ -640,3 +640,230 @@ def widget_ui(ctx : Egui::Context) : Egui::Ui
   Egui::Ui.new(ctx, Egui::Id.from("spec"),
     Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(300.0, 300.0)))
 end
+
+describe "smart_aim (phase 2)" do
+  it "picks the roundest number in the range" do
+    a = Egui::SmartAim
+    a.best_in_range_f64(0.0799999999999996, 0.09999999999999995).should eq(0.08)
+    a.best_in_range_f64(-0.2, 0.0).should eq(0.0) # prefer zero
+    a.best_in_range_f64(-10_004.23, 3.14).should eq(0.0)
+    a.best_in_range_f64(7.8, 17.8).should eq(10.0)
+    a.best_in_range_f64(99.0, 300.0).should eq(100.0)
+    a.best_in_range_f64(-99.0, -300.0).should eq(-100.0)
+    a.best_in_range_f64(0.4, 0.9).should eq(0.5) # prefer ending on 5
+    a.best_in_range_f64(14.1, 19.99).should eq(15.0)
+    a.best_in_range_f64(12.3, 65.9).should eq(50.0) # prefer leading 5
+    a.best_in_range_f64(493.0, 879.0).should eq(500.0)
+    a.best_in_range_f64(0.37, 0.48).should eq(0.40)
+    a.best_in_range_f64(7.5, 123_456.0).should eq(1000.0) # geometric mean
+    a.best_in_range_f64(12345, 12780).should eq(12500)
+    a.best_in_range_f64(12371, 12376).should eq(12375)
+    a.best_in_range_f64(300, 99).should eq(100.0) # order-insensitive
+  end
+end
+
+describe "phase 2 widgets" do
+  it "slider maps a pointer drag to the value range" do
+    ctx = Egui::Context.new
+    value = 0.0
+    rect = nil
+
+    # frame 1: layout only
+    raw_frame(ctx, time: 0.016)
+    rect = widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }.rect
+    ctx.end_frame
+
+    # frame 2: press near the left end of the rail
+    cy = rect.not_nil!.center.y
+    press = Egui::Pos2.new(rect.not_nil!.min.x + 15.0, cy)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(press),
+      Egui::Event.pointer_pressed(press)], time: 0.032)
+    widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }
+    ctx.end_frame
+    value.should eq(0.0) # no value change before the pointer moves
+
+    # frame 3: drag past the click threshold; the slider fills the
+    # available width (≈270pt here), so 60px in ≈ 20% of the range
+    mid = Egui::Pos2.new(rect.not_nil!.min.x + 60.0, cy)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(mid)], time: 0.048)
+    widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }
+    ctx.end_frame
+    value.should be > 10.0
+    value.should be < 35.0 # smart_aim keeps it round
+
+    # frame 4: drag to the far right → near max
+    right = Egui::Pos2.new(rect.not_nil!.max.x, cy)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(right)], time: 0.064)
+    widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }
+    ctx.end_frame
+    value.should be > 95.0
+  end
+
+  it "drag_value changes by drag_delta * speed" do
+    ctx = Egui::Context.new
+    value = 10.0
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    center = widget_ui(ctx).drag_value(value) { |v| value = v }.rect.center
+    ctx.end_frame
+
+    # press, then drag right by 20 px at speed 0.5 → +10
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    widget_ui(ctx).drag_value(value) { |v| value = v }
+    ctx.end_frame
+    moved = center.not_nil! + Egui::Vec2.new(20.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(moved)], time: 0.048)
+    widget_ui(ctx).drag_value(value, speed: 0.5) { |v| value = v }
+    ctx.end_frame
+
+    value.should eq(20.0)
+  end
+
+  it "combo box opens, selects and closes" do
+    ctx = Egui::Context.new
+    selected = "First"
+
+    raw_frame(ctx, time: 0.016)
+    widget_ui(ctx).combo_box("spec_combo", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+
+    # open it: find the button rect via the frame's geometry
+    btn_center = ctx.memory.widget_rects.values.first.center
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(btn_center),
+      Egui::Event.pointer_pressed(btn_center),
+      Egui::Event.pointer_released(btn_center)], time: 0.032)
+    widget_ui(ctx).combo_box("spec_combo", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+
+    # popup is open: click the second item (registered in the frame
+    # above — read widget_rects, which still holds that frame's rects)
+    item_center = ctx.memory.widget_rects.values.last.center
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(item_center),
+      Egui::Event.pointer_pressed(item_center),
+      Egui::Event.pointer_released(item_center)], time: 0.048)
+    picked = false
+    ui = widget_ui(ctx)
+    picked = ui.combo_box("spec_combo", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+
+    picked.should be_true
+    selected.should eq("Second")
+    ctx.memory.open_popups.should be_empty
+  end
+
+  it "menu bar opens a dropdown and menu_item closes it" do
+    ctx = Egui::Context.new
+    clicked_item = false
+
+    run_frame = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.menu_bar do |bar|
+        bar.menu_button("File") do |menu|
+          menu.menu_item("Open") { clicked_item = true }
+        end
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout; frame 2: click File
+    run_frame.call([] of Egui::Event, 0.016)
+    file_center = ctx.memory.widget_rects.values.first.center
+    run_frame.call([Egui::Event.pointer_moved(file_center),
+      Egui::Event.pointer_pressed(file_center),
+      Egui::Event.pointer_released(file_center)], 0.032)
+
+    ctx.memory.open_popups.should_not be_empty
+
+    # frame 3: click the menu item (rect from the frame that rendered it)
+    item_center = ctx.memory.widget_rects.values.last.center
+    run_frame.call([Egui::Event.pointer_moved(item_center),
+      Egui::Event.pointer_pressed(item_center),
+      Egui::Event.pointer_released(item_center)], 0.048)
+
+    clicked_item.should be_true
+    ctx.memory.open_popups.should be_empty
+  end
+
+  it "modal blocks interaction with lower layers" do
+    ctx = Egui::Context.new
+    btn_center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      hovered = false
+      ctx.window("demo") do |ui|
+        r = ui.button("below modal")
+        btn_center = r.rect.center
+        hovered = r.hovered?
+      end
+      ctx.modal { |ui| ui.button("close") }
+      ctx.end_frame
+      hovered
+    end
+
+    # frames 1-2 without pointer: modal latches blocking
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+
+    # frame 3: hover the covered button — must be blocked
+    blocked_hover = draw.call(
+      [Egui::Event.pointer_moved(btn_center.not_nil!)], 0.048)
+    blocked_hover.should be_false
+
+    # the modal's own button still works
+    modal_btn = ctx.memory.widget_rects.values.last.center
+    hovered_modal = draw.call(
+      [Egui::Event.pointer_moved(modal_btn)], 0.064)
+    hovered_modal.should be_false # window button, not modal
+    modal_hover = false
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(modal_btn)], time: 0.080)
+    ctx.window("demo") { |ui| ui.button("below modal") }
+    ctx.modal { |ui| modal_hover = ui.button("close").hovered? }
+    ctx.end_frame
+    modal_hover.should be_true
+  end
+
+  it "gradient rect carries fill2 and button icon emits line commands" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    ui.add(Egui::Button.new("OK").icon(:check)
+      .gradient(Egui::Color32.rgb(60, 150, 90), Egui::Color32.rgb(24, 80, 48)))
+    ctx.end_frame
+
+    grad = ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill2.not_nil!).not_nil!
+    grad.fill2.not_nil!.should eq(Egui::Color32.rgb(24, 80, 48))
+    # icon checkmark = 2 line segments
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(2)
+  end
+
+  it "tooltip appears after the hover delay" do
+    ctx = Egui::Context.new
+    center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).button("hover me").on_hover_text("tip")
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    center = ctx.memory.widget_rects.values.first.center
+
+    # first hovered frame at t=0.232 starts the delay clock
+    texts = draw.call([Egui::Event.pointer_moved(center.not_nil!)], 0.232)
+    texts.should_not contain("tip")
+
+    # 0.368s of hover: still hidden
+    texts = draw.call([] of Egui::Event, 0.600)
+    texts.should_not contain("tip")
+
+    # past the 0.5s delay: tooltip appears
+    texts = draw.call([] of Egui::Event, 0.800)
+    texts.should contain("tip")
+  end
+end

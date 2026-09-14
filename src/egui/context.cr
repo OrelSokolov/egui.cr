@@ -195,6 +195,50 @@ module Egui
       request_repaint
     end
 
+    # egui modal (containers/modal.rs): dims the screen and blocks all
+    # interaction below the Foreground layer (Memory#mark_modal). The
+    # dialog is centered using its last-frame size (stored per id) —
+    # the first frame it appears at an approximate position, then
+    # snaps. Closing is the caller's business (a Close button calling
+    # nothing — just stop calling #modal).
+    def modal(id : String = "modal", width : Float64 = 340.0,
+              &block : Ui ->) : Nil
+      @memory.mark_modal
+      modal_id = Id.from("modal/#{id}")
+      layer = LayerId.new(Order::Foreground, modal_id)
+      screen = @input.screen_rect
+      pad = style.spacing.window_padding
+
+      # Dim everything below.
+      @painter.layer = Order::Foreground
+      @painter.clip = screen
+      @painter.rect(screen, 0.0, Color32.rgba(0, 0, 0, 140))
+
+      # Center using last frame's size.
+      prev_size = @memory.layer_sizes[modal_id]? || Vec2.new(width, 120.0)
+      pos = Pos2.new(screen.center.x - prev_size.x / 2.0,
+        screen.center.y - prev_size.y / 2.0)
+
+      bg_index = @painter.add_noop
+      @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
+      content_min = pos + Vec2.new(pad.x, pad.y)
+      ui = Ui.new(self, modal_id,
+        Rect.from_min_size(content_min, Vec2.new(width - 2 * pad.x, 1e6)))
+      ui.layer = layer
+      yield ui
+
+      outer = Rect.new(pos,
+        Pos2.new({ui.min_rect.right + pad.x, pos.x + width}.max,
+          ui.min_rect.bottom + pad.y))
+      @memory.layer_sizes[modal_id] = outer.size
+      @painter.clip = outer
+      @painter.set(bg_index,
+        RectCmd.new(outer, outer, 8.0, style.visuals.window_fill,
+          style.visuals.window_stroke, 1.0))
+      @painter.layer = Order::Background
+      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
     # egui `TopBottomPanel::bottom(id).show(ctx, …)` — a strip pinned to
     # the bottom of the screen. Same reserve/back-fill trick as #window.
     # NOTE: unlike upstream, contents laid out *before* the panel do not

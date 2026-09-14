@@ -70,6 +70,13 @@ module Egui
     getter time : Float64
     getter dt : Float64
 
+    # egui `InputState::aim_radius` — how coarse the pointer aims (in
+    # points); sliders pass ± this around the pointer position to
+    # smart_aim. Upstream uses the physical pixel size; we use 2 points.
+    def aim_radius : Float64
+      2.0
+    end
+
     def initialize(@screen_rect : Rect, @pointer_pos : Pos2?, @pointer_down : Bool,
                    @pointer_pressed : Bool, @pointer_released : Bool, @scroll : Vec2,
                    @time : Float64, @dt : Float64,

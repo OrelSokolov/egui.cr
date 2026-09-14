@@ -176,26 +176,110 @@ module Egui
           clip.min.x.to_f32, clip.min.y.to_f32,
           {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
 
-        if fill = cmd.fill
+        r = cmd.rect
+        round = cmd.rounding
+
+        if (fill = cmd.fill) && (fill2 = cmd.fill2)
+          # Vertical gradient: per-vertex colors, interpolated by the
+          # rasterizer (Gouraud) — top verts c1, bottom verts c2.
           LibEguiCr.sgl_begin_quads
-          quad(cmd.rect, fill)
+          LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
+          LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
+          LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
+          LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
           LibEguiCr.sgl_end
+        elsif fill
+          if round > 0.5
+            rounded_rect_fill(r, round, fill)
+          else
+            LibEguiCr.sgl_begin_quads
+            quad(r, fill)
+            LibEguiCr.sgl_end
+          end
         end
 
         if (stroke = cmd.stroke_color) && cmd.stroke_width > 0
           w = cmd.stroke_width
-          r = cmd.rect
-          LibEguiCr.sgl_begin_quads
-          # top / bottom / left / right bars (corner rounding: slice 2+)
-          bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(r.width, w)), stroke)
-          bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.max.y - w),
-            Egui::Vec2.new(r.width, w)), stroke)
-          bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(w, r.height)), stroke)
-          bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y),
-            Egui::Vec2.new(w, r.height)), stroke)
-          LibEguiCr.sgl_end
+          if round > 0.5
+            paint_rect_stroke_rounded(r, round, w, stroke, clip)
+          else
+            LibEguiCr.sgl_begin_quads
+            # top / bottom / left / right bars
+            bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(r.width, w)), stroke)
+            bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.max.y - w),
+              Egui::Vec2.new(r.width, w)), stroke)
+            bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(w, r.height)), stroke)
+            bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y),
+              Egui::Vec2.new(w, r.height)), stroke)
+            LibEguiCr.sgl_end
+          end
         end
       end
+
+      # Rounded-corner stroke: four shortened bars + four quarter-arc
+      # rings (the epaint tessellator produces the same shape as a
+      # stroked rounded path).
+      def self.paint_rect_stroke_rounded(r : Egui::Rect, round : Float64,
+                                         w : Float64, stroke : Egui::Color32,
+                                         clip : Egui::Rect) : Nil
+        half = Math.sqrt(2.0) / 2.0 * round
+        LibEguiCr.sgl_begin_quads
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + round, r.min.y),
+          Egui::Vec2.new(r.width - 2 * round, w)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + round, r.max.y - w),
+          Egui::Vec2.new(r.width - 2 * round, w)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.min.y + round),
+          Egui::Vec2.new(w, r.height - 2 * round)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y + round),
+          Egui::Vec2.new(w, r.height - 2 * round)), stroke)
+        LibEguiCr.sgl_end
+
+        # Quarter rings per corner. Angles are clockwise-from-+x in
+        # y-down screen space: 180..270 = top-left, 270..360 = top-right,
+        # 0..90 = bottom-right, 90..180 = bottom-left.
+        # Quarter rings per corner. Angles are clockwise-from-+x in
+        # y-down screen space: π..1.5π = top-left, 1.5π..2π = top-right,
+        # 0..0.5π = bottom-right, 0.5π..π = bottom-left.
+        rad = Math::PI
+        radius = {round - w / 2.0, 0.0}.max
+        paint_ring(Egui::Pos2.new(r.min.x + round, r.min.y + round), radius,
+          rad, rad * 1.5, w, stroke, clip)
+        paint_ring(Egui::Pos2.new(r.max.x - round, r.min.y + round), radius,
+          rad * 1.5, rad * 2.0, w, stroke, clip)
+        paint_ring(Egui::Pos2.new(r.max.x - round, r.max.y - round), radius,
+          0.0, rad * 0.5, w, stroke, clip)
+        paint_ring(Egui::Pos2.new(r.min.x + round, r.max.y - round), radius,
+          rad * 0.5, rad, w, stroke, clip)
+      end
+
+      # Filled rounded rect: perimeter fan (degenerate quads from the
+      # center), like a disc but with a rounded-rect rim.
+      def self.rounded_rect_fill(r : Egui::Rect, round : Float64,
+                                 fill : Egui::Color32) : Nil
+        round = {round, r.width / 2.0, r.height / 2.0}.min
+        pts = [] of Egui::Pos2
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64) do
+          6.times do |i|
+            a = a0 + (Math::PI / 2.0) * i / 5.0
+            pts << Egui::Pos2.new(cx + round * Math.cos(a),
+              cy + round * Math.sin(a))
+          end
+        end
+        rad = Math::PI
+        corner.call(r.min.x + round, r.min.y + round, Math::PI)              # top-left
+        corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5)        # top-right
+        corner.call(r.max.x - round, r.max.y - round, 0.0)                   # bottom-right
+        corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0)        # bottom-left
+
+        center = r.center
+        LibEguiCr.sgl_begin_quads
+        pts.each_with_index do |p, i|
+          q = pts[(i + 1) % pts.size]
+          quad_pts(center, center, p, q, fill)
+        end
+        LibEguiCr.sgl_end
+      end
+
 
       def self.paint_text(cmd : Egui::TextCmd) : Nil
         fons = @@fons

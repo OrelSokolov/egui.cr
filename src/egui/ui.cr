@@ -128,6 +128,32 @@ module Egui
     end
 
     # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
+    # egui `ui.add_enabled`-style block helpers for value widgets:
+    # the block fires with the new value when it changed this frame.
+    def slider(value : Float64, range : Range(Float64, Float64),
+               text : String? = nil, &on_change : Float64 ->) : Response
+      response = add(Slider.new(value, range, text))
+      if response.changed? && (v = response.widget_value)
+        on_change.call(v)
+      end
+      response
+    end
+
+    def drag_value(value : Float64, speed : Float64 = 1.0,
+                   prefix : String = "", suffix : String = "",
+                   &on_change : Float64 ->) : Response
+      response = add(DragValue.new(value, speed, prefix, suffix))
+      if response.changed? && (v = response.widget_value)
+        on_change.call(v)
+      end
+      response
+    end
+
+    def combo_box(id : String, selected : String, options : Array(String),
+                  width : Float64 = 160.0, &on_select : String ->) : Bool
+      ComboBox.new(id, selected, options, width).show(self) { |opt| on_select.call(opt) }
+    end
+
     def hyperlink(url : String) : Response
       add(Hyperlink.new(url, url))
     end
@@ -152,6 +178,37 @@ module Egui
 
     def available_height : Float64
       {@max_rect.bottom - @cursor.y, 0.0}.max
+    end
+
+    # egui `Frame::show` — a padded, painted panel around a block of
+    # contents. Reserve a paint slot, lay the children out inside the
+    # margin, then back-paint the frame under them (the #window trick).
+    def frame(fill : Color32? = nil, stroke : Color32? = nil,
+              rounding : Float64 = 6.0, margin : Vec2? = nil,
+              stroke_width : Float64 = 1.0, &block : Ui ->) : Rect
+      m = margin || style.spacing.window_padding
+      bg_index = painter.add_noop
+
+      inner = Rect.from_min_size(
+        @cursor + m,
+        Vec2.new({@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max, 1e6))
+      child = child_ui(inner)
+      yield child
+
+      outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
+      outer = Rect.new(
+        Pos2.new({outer.min.x, @cursor.x}.min, {outer.min.y, @cursor.y}.min),
+        Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
+      min_rect = @min_rect.union(outer)
+      @cursor = @layout.advance(@cursor, outer.size,
+        style.spacing.item_spacing)
+      @min_rect = min_rect
+
+      if fill || stroke
+        painter.set(bg_index,
+          RectCmd.new(painter.clip, outer, rounding, fill, stroke, stroke_width))
+      end
+      outer
     end
 
     # egui `ui.horizontal(|ui| …)`: a child Ui laying out left→right on

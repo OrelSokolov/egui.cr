@@ -44,6 +44,16 @@ module Egui
     getter animations : AnimationManager
     getter open_popups : Set(Id)
     getter duplicate_ids : Array(Id)
+    # Tooltip hover-start times, kept outside IdTypeMap on purpose: the
+    # map is pruned against widget ids, and a widget that stops being
+    # hovered shouldn't forget when it started (egui tooltip delay).
+    getter tooltip_starts : Hash(Id, Float64)
+    # Which root menu is open (""/nil = none) — outside IdTypeMap for
+    # the same pruning reason (MenuState in upstream Memory).
+    property menu_open : String?
+    # Container content sizes (modal dialog size for centering) — same
+    # pruning exemption.
+    getter layer_sizes : Hash(Id, Vec2)
 
     # Geometry/sense/layer of the previous frame (hit-test input)…
     getter prev_widget_rects : Hash(Id, Rect)
@@ -76,12 +86,24 @@ module Egui
     @pointer_down : Bool
     @pointer_delta : Vec2
 
+    # Modal state (egui `InteractionSnapshot` blocking): while a modal
+    # is open, widgets on layers below Foreground get no interaction.
+    # The flag is latched one frame (set during rendering, effective
+    # from the next begin_frame) so ordering within a frame doesn't
+    # matter — same trick as Focus.
+    @modal_open : Bool
+    @modal_next : Bool
+
     def initialize
       @data = IdTypeMap.new
       @areas = Areas.new
       @focus = Focus.new
       @animations = AnimationManager.new
       @open_popups = Set(Id).new
+    @popups_opened_this_frame = Set(Id).new
+    @tooltip_starts = {} of Id => Float64
+    @menu_open = nil
+    @layer_sizes = {} of Id => Vec2
       @duplicate_ids = [] of Id
 
       @prev_widget_rects = {} of Id => Rect
@@ -110,9 +132,14 @@ module Egui
       @pointer_pos = nil
       @pointer_down = false
       @pointer_delta = Vec2.zero
+      @modal_open = false
+      @modal_next = false
     end
 
     def begin_frame(input : InputState) : Nil
+      @modal_open = @modal_next
+      @modal_next = false
+      @popups_opened_this_frame.clear
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
       # pointer events hit-test against stable, complete information.
       @prev_widget_rects = @widget_rects
@@ -188,6 +215,16 @@ module Egui
       close_popups_if_clicked_elsewhere
     end
 
+    def modal_open? : Bool
+      @modal_open
+    end
+
+    # Called by Context#modal while rendering the modal this frame;
+    # blocking takes effect from the next begin_frame.
+    def mark_modal : Nil
+      @modal_next = true
+    end
+
     # The interaction query every widget makes (egui `Context::interact`).
     def interact(id : Id, rect : Rect, sense : Sense,
                  layer : LayerId = LayerId.background) : InteractionVerdict
@@ -201,6 +238,12 @@ module Egui
       @widget_rects[id] = rect
       @widget_senses[id] = sense
       @widget_layers[id] = layer
+
+      # A modal blocks interaction with everything below its layer.
+      if @modal_open && !layer.order.foreground?
+        return InteractionVerdict.new(false, false, 0, false, false,
+          false, false, Vec2.zero, false)
+      end
 
       pos = @pointer_pos
       hovered = !sense.none? && pos ? rect.contains?(pos) : false
@@ -223,10 +266,12 @@ module Egui
 
     def open_popup(id : Id) : Nil
       @open_popups.add(id)
+      @popups_opened_this_frame.add(id)
     end
 
     def close_popup(id : Id) : Nil
       @open_popups.delete(id)
+      @popups_opened_this_frame.delete(id)
     end
 
     def close_all_popups : Nil
@@ -238,6 +283,10 @@ module Egui
       clicked = @clicked_id
       return unless clicked
       layer = @widget_layers[clicked]? || @prev_widget_layers[clicked]?
+      # A popup opened by this very click survives it (the open happens
+      # during rendering, after the click was classified).
+      candidates = @open_popups - @popups_opened_this_frame
+      return if candidates.empty?
       close_all_popups unless layer && layer.order.foreground?
     end
 
@@ -252,7 +301,12 @@ module Egui
       @prev_widget_rects.each do |id, rect|
         if rect.contains?(pos)
           sense = @prev_widget_senses[id]?
-          hit = id if sense && sense_filter.call(sense)
+          next if sense.nil? || !sense_filter.call(sense)
+          if @modal_open
+            layer = @prev_widget_layers[id]?
+            next unless layer && layer.order.foreground?
+          end
+          hit = id
         end
       end
       hit
