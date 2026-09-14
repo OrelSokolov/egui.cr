@@ -23,6 +23,12 @@ module Egui
 
     getter fps : Float64
 
+    # egui `Context::available_rect`: screen area not yet claimed by
+    # panels. Reset each begin_frame; every panel takes a bite; the
+    # central panel takes what's left (panels must be added first —
+    # the upstream ordering rule).
+    getter available_rect : Rect
+
     @prev_time : Float64?
     @repaint_outstanding : Int32
     @frame_cache : Hash(String, IdTypeMap::Cell)
@@ -38,11 +44,13 @@ module Egui
       @fps = 0.0
       @repaint_outstanding = 0
       @frame_cache = {} of String => IdTypeMap::Cell
+      @available_rect = Rect.zero
     end
 
     def begin_frame(raw : RawInput) : Nil
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
+      @available_rect = raw.screen_rect
 
       # Smoothed FPS (EMA) — read by apps to show in a bottom panel.
       if @input.dt > 0.0
@@ -104,10 +112,11 @@ module Egui
 
     # --- containers --------------------------------------------------------
 
-    # A titled, movable window. egui order preserved: reserve the
-    # background slot, interact with the title bar (drag → Areas state
-    # moves the window; click/hover → bring to top), build contents,
-    # back-fill the frame, title.
+    # A titled, movable, resizable window. egui order preserved:
+    # reserve the background slot, interact with the title bar (drag →
+    # Areas state moves the window; click/hover → bring to top), build
+    # contents, back-fill the frame, title.
+    WINDOW_MIN_SIZE = Vec2.new(120.0, 80.0)
     def window(title : String, default_pos : Pos2 = Pos2.new(24.0, 24.0),
                width : Float64 = 380.0, &block : Ui ->) : Nil
       win_id = Id.from("window/#{title}")
@@ -117,12 +126,13 @@ module Egui
       title_h = title_size + pad.y
 
       pos = @memory.areas.pos_for(win_id, default_pos)
+      size = @memory.layer_sizes[win_id]? || Vec2.new(width, 160.0)
 
       @painter.layer = Order::Middle
       bg_index = @painter.add_noop
 
       # Title bar: drag moves the window, interaction brings it to top.
-      title_rect = Rect.from_min_size(pos, Vec2.new(width, title_h))
+      title_rect = Rect.from_min_size(pos, Vec2.new(size.x, title_h))
       title_id = win_id.child(0_u64)
       title_resp = interact(title_id, title_rect, Sense.click_and_drag, layer)
       if title_resp.dragged?
@@ -133,23 +143,73 @@ module Egui
         @memory.areas.bring_to_top(layer)
       end
 
-      @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
+      @painter.clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
       content_min = pos + Vec2.new(pad.x, title_h + pad.y)
       ui = Ui.new(self, win_id,
-        Rect.from_min_size(content_min, Vec2.new(width - 2 * pad.x, 1e6)))
+        Rect.from_min_size(content_min, Vec2.new(size.x - 2 * pad.x, 1e6)))
       ui.layer = layer
       yield ui
 
       outer = Rect.new(
         pos,
-        Pos2.new({ui.min_rect.right + pad.x, pos.x + width}.max,
+        Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
           ui.min_rect.bottom + pad.y))
+
+      # Resize grip: drag the bottom-right corner (upstream `Resize`
+      # wired into `Window`); size persists in Memory#layer_sizes.
+      grip_size = 12.0
+      grip = Rect.from_min_size(
+        Pos2.new(outer.max.x - grip_size, outer.max.y - grip_size),
+        Vec2.new(grip_size, grip_size))
+      grip_id = Id.from("window/#{title}/resize_grip")
+      grip_resp = interact(grip_id, grip, Sense.drag, layer)
+      if grip_resp.dragged?
+        size = size + grip_resp.drag_delta
+        size = Vec2.new({size.x, WINDOW_MIN_SIZE.x}.max,
+          {size.y, WINDOW_MIN_SIZE.y}.max)
+        outer = Rect.new(outer.min, outer.min + size)
+      end
+      @memory.layer_sizes[win_id] = outer.size
+
       @painter.clip = outer
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 6.0, style.visuals.window_fill,
           style.visuals.window_stroke, 1.0))
       @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
         title, title_size, style.visuals.title_color)
+      # Grip: two small diagonal marks.
+      (1..2).each do |i|
+        o = grip_size - 4.0 * i
+        @painter.line(
+          Pos2.new(grip.max.x - o, grip.max.y - 4.0),
+          Pos2.new(grip.max.x - 4.0, grip.max.y - o),
+          2.0, style.visuals.separator_color)
+      end
+      @painter.layer = Order::Background
+      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
+    # egui `Area` (containers/area.rs) — an explicit positioned region
+    # in its own Middle layer: the building block window/popup are made
+    # of, exposed for custom floating content. Position persists in
+    # Areas (bring-to-top on interaction, like a window without chrome).
+    def area(id : String, default_pos : Pos2 = Pos2.zero,
+             width : Float64 = 300.0, &block : Ui ->) : Nil
+      area_id = Id.from("area/#{id}")
+      layer = LayerId.new(Order::Middle, area_id)
+      pos = @memory.areas.pos_for(area_id, default_pos)
+
+      probe = Rect.from_min_size(pos, Vec2.new(width, 1.0))
+      probe_resp = interact(area_id.child(0_u64), probe, Sense.click, layer)
+      @memory.areas.bring_to_top(layer) if probe_resp.hovered? || probe_resp.pressed?
+
+      @painter.layer = Order::Middle
+      @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
+      ui = Ui.new(self, area_id,
+        Rect.from_min_size(pos, Vec2.new(width, 1e6)))
+      ui.layer = layer
+      yield ui
+
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
@@ -239,33 +299,84 @@ module Egui
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
 
-    # egui `TopBottomPanel::bottom(id).show(ctx, …)` — a strip pinned to
-    # the bottom of the screen. Same reserve/back-fill trick as #window.
-    # NOTE: unlike upstream, contents laid out *before* the panel do not
-    # get pushed up (no retained layout yet) — don't overlap it.
-    def bottom_panel(id : String = "bottom_panel", &block : Ui ->) : Nil
-      screen = @input.screen_rect
-      pad = style.spacing.window_padding
+    # --- panels (egui containers/panel.rs) --------------------------------
+    #
+    # egui `TopBottomPanel`/`SidePanel`/`CentralPanel`: each panel takes
+    # a bite out of #available_rect in the order it is added; the
+    # central panel takes what's left. Panels MUST be added before
+    # #central_panel (upstream ordering rule) — this replaces the old
+    # "contents drawn before bottom_panel don't shift" simplification.
+
+    def top_panel(id : String = "top_panel", &block : Ui ->) : Rect
       line_h = style.font_size * Fonts::LINE_H_FACTOR
+      pad = style.spacing.window_padding
+      height = line_h + 2 * pad.y
+      rect = Rect.from_min_size(@available_rect.min,
+        Vec2.new(@available_rect.width, height))
+      @available_rect = Rect.new(
+        Pos2.new(rect.left, rect.bottom),
+        @available_rect.max)
+      panel_ui(id, rect, Layout.left_to_right) { |ui| yield ui }
+      rect
+    end
+
+    def bottom_panel(id : String = "bottom_panel", &block : Ui ->) : Rect
+      line_h = style.font_size * Fonts::LINE_H_FACTOR
+      pad = style.spacing.window_padding
+      height = line_h + 2 * pad.y
+      rect = Rect.from_min_size(
+        Pos2.new(@available_rect.min.x, @available_rect.max.y - height),
+        Vec2.new(@available_rect.width, height))
+      @available_rect = Rect.new(@available_rect.min,
+        Pos2.new(rect.right, rect.top))
+      panel_ui(id, rect, Layout.left_to_right) { |ui| yield ui }
+      rect
+    end
+
+    def side_panel(side : Symbol, id : String = "side_panel",
+                   width : Float64 = 200.0, &block : Ui ->) : Rect
+      w = {width, @available_rect.width}.min
+      rect = if side == :right
+        Rect.from_min_size(
+          Pos2.new(@available_rect.max.x - w, @available_rect.min.y),
+          Vec2.new(w, @available_rect.height))
+      else
+        Rect.from_min_size(@available_rect.min,
+          Vec2.new(w, @available_rect.height))
+      end
+      @available_rect = if side == :right
+        Rect.new(@available_rect.min,
+          Pos2.new(rect.left, @available_rect.max.y))
+      else
+        Rect.new(Pos2.new(rect.right, @available_rect.min.y),
+          @available_rect.max)
+      end
+      panel_ui(id, rect, Layout.top_down) { |ui| yield ui }
+      rect
+    end
+
+    # egui `CentralPanel::show` — the remainder. Returns its rect.
+    def central_panel(id : String = "central_panel", &block : Ui ->) : Rect
+      rect = @available_rect
+      panel_ui(id, rect, Layout.top_down) { |ui| yield ui }
+      rect
+    end
+
+    private def panel_ui(id : String, rect : Rect, layout : Layout,
+                         &block : Ui ->) : Nil
+      pad = style.spacing.window_padding
 
       @painter.layer = Order::Background
       bg_index = @painter.add_noop
+      @painter.clip = rect
+      @painter.set(bg_index,
+        RectCmd.new(rect, rect, 0.0, style.visuals.panel_fill,
+          style.visuals.window_stroke, 1.0))
 
-      content_min = Pos2.new(screen.min.x + pad.x,
-        screen.max.y - pad.y - line_h)
-      @painter.clip = screen
       ui = Ui.new(self, Id.from("panel/#{id}"),
-        Rect.new(content_min, Pos2.new(screen.max.x - pad.x, screen.max.y - pad.y)),
-        Layout.left_to_right)
+        rect.shrink(pad.x), layout)
       yield ui
 
-      outer = Rect.new(
-        Pos2.new(screen.min.x, ui.min_rect.min.y - pad.y),
-        Pos2.new(screen.max.x, ui.min_rect.max.y + pad.y))
-      @painter.clip = outer
-      @painter.set(bg_index,
-        RectCmd.new(outer, outer, 0.0, style.visuals.panel_fill,
-          style.visuals.window_stroke, 1.0))
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
   end

@@ -124,7 +124,9 @@ module Egui
         when MOUSE_UP
           @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my))
         when MOUSE_SCROLL
-          @@events << Egui::Event.scroll(Egui::Vec2.new(sx, sy))
+          # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
+          # is positive = content scrolls down → negate.
+          @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
         when KEY_DOWN, KEY_UP
           # sapp fires KEY_* plus a separate CHAR event for text; we
           # only forward non-modifier keys here (modifier state rides

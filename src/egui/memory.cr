@@ -55,6 +55,13 @@ module Egui
     # pruning exemption.
     getter layer_sizes : Hash(Id, Vec2)
 
+    # Scroll-area viewports (id → rect + layer) for scroll arbitration:
+    # the top-most viewport containing the pointer (previous frame's
+    # geometry, like widget hit-testing) owns this frame's scroll delta.
+    getter scroll_rects : Hash(Id, Tuple(Rect, LayerId))
+    @prev_scroll_rects : Hash(Id, Tuple(Rect, LayerId))
+    @active_scroll : Id?
+
     # Geometry/sense/layer of the previous frame (hit-test input)…
     getter prev_widget_rects : Hash(Id, Rect)
     getter prev_widget_senses : Hash(Id, Sense)
@@ -104,6 +111,9 @@ module Egui
     @tooltip_starts = {} of Id => Float64
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
+    @scroll_rects = {} of Id => Tuple(Rect, LayerId)
+    @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
+    @active_scroll = nil
       @duplicate_ids = [] of Id
 
       @prev_widget_rects = {} of Id => Rect
@@ -140,6 +150,20 @@ module Egui
       @modal_open = @modal_next
       @modal_next = false
       @popups_opened_this_frame.clear
+
+      # Rotate scroll viewports and decide who owns this frame's scroll
+      # delta: top-most (last registered) viewport containing the pointer.
+      @prev_scroll_rects = @scroll_rects
+      @scroll_rects = {} of Id => Tuple(Rect, LayerId)
+      @active_scroll = nil
+      if pos = input.pointer_pos
+        @prev_scroll_rects.each do |id, (rect, layer)|
+          if @modal_open && !layer.order.foreground?
+            next
+          end
+          @active_scroll = id if rect.contains?(pos)
+        end
+      end
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
       # pointer events hit-test against stable, complete information.
       @prev_widget_rects = @widget_rects
@@ -219,6 +243,21 @@ module Egui
 
     def modal_open? : Bool
       @modal_open
+    end
+
+    # Called by ScrollArea while rendering: registers this frame's
+    # viewport for next frame's arbitration. The scroll ids also count
+    # as "used" so their IdTypeMap cells (offset, content size) survive
+    # end-frame pruning — scroll areas don't call #interact themselves.
+    def register_scroll_area(id : Id, rect : Rect, layer : LayerId) : Nil
+      @scroll_rects[id] = {rect, layer}
+      @used_ids.add(id)
+      @used_ids.add(id.child(0))
+    end
+
+    # The scroll area that owns this frame's scroll delta (nil = none).
+    def active_scroll_area? : Id?
+      @active_scroll
     end
 
     # Called by Context#modal while rendering the modal this frame;

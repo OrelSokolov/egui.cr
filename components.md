@@ -194,26 +194,28 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 5 — scroll area, panels, resize
 
-- [ ] `src/egui/containers/scroll_area.cr` ← `containers/scroll_area.rs`:
+- [x] `src/egui/containers/scroll_area.cr` ← `containers/scroll_area.rs`:
       `ScrollState {offset, content_size}` in IdTypeMap; outer Ui sizes the
       viewport, inner child Ui is offset; clipping via existing
       `painter.clip=`; scrollbars painted as rects when content overflows.
-- [ ] Scroll arbitration: top-most scrollable containing the pointer
+- [x] Scroll arbitration: top-most scrollable containing the pointer
       consumes `input.scroll` (port of upstream scroll-target logic,
       simplified into Memory).
 - [ ] Kinetic scrolling: port `crates/emath/src/history.rs` →
       `src/egui/history.cr` (pointer velocity EMA) — nice-to-have.
-- [ ] `src/egui/panel.cr`: generalize `bottom_panel`; `Context#available_rect`
+- [x] `src/egui/panel.cr`: generalize `bottom_panel`; `Context#available_rect`
       reset each `begin_frame`, each panel takes a bite;
       `#top_panel`, `#side_panel(side)`, `#central_panel`; panels must be
       added before `central_panel` (upstream rule) — this removes the
       documented "contents drawn before bottom_panel don't shift"
       simplification in ANALYSIS.md.
-- [ ] `src/egui/containers/resize.cr` ← `containers/resize.rs`: corner grip
+- [x] `src/egui/containers/resize.cr` ← `containers/resize.rs`: corner grip
+      → implemented as the corner grip wired directly into `Context#window`
+      (size persists in Memory#layer_sizes); standalone Resize later if needed.
       drag, min/max size, size in IdTypeMap; wire into `Context#window`.
-- [ ] `src/egui/containers/area.cr`: explicit positioned layer region
+- [x] `src/egui/containers/area.cr`: explicit positioned layer region
       (already implicit in window/popup — expose as public helper).
-- [ ] Specs: scroll Event moves offset and clips content; panel rects shrink
+- [x] Specs: scroll Event moves offset and clips content; panel rects shrink
       in add-order; window resize drag changes its stored size.
 
 ## Phase 6 — textures, image, color picker

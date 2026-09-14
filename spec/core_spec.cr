@@ -1132,3 +1132,127 @@ describe "text edit (phase 4.5)" do
     ctx.memory.focus.has_focus?(id).should be_true
   end
 end
+
+describe "panels (phase 5)" do
+  it "panels take bites out of available_rect in order; central gets the rest" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    top = ctx.top_panel { |ui| ui.label("TOP") }
+    side = ctx.side_panel(:left, "side", width: 100.0) { |ui| ui.label("SIDE") }
+    bottom = ctx.bottom_panel { |ui| ui.label("FPS") }
+    central = ctx.central_panel { |ui| ui.label("CENTER") }
+    ctx.end_frame
+
+    screen = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(800.0, 600.0))
+    top.top.should eq(screen.top)
+    side.top.should eq(top.bottom)
+    side.left.should eq(screen.left)
+    central.left.should eq(side.right)
+    central.top.should eq(top.bottom)
+    central.bottom.should eq(bottom.top)
+    central.right.should eq(screen.right)
+  end
+end
+
+describe "scroll area (phase 5)" do
+  it "wheel scroll moves the offset, clamps it and clips content" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout — content ≫ viewport, scrollbar painted
+    draw.call([] of Egui::Event, 0.016)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    offset.y.should eq(0.0)
+    ctx.painter.commands.select(Egui::TextCmd)
+      .all? { |c| c.clip.height <= 100.0 }.should be_true
+
+    # frame 2: pointer inside the viewport + wheel down → offset grows
+    inside = Egui::Pos2.new(50.0, 50.0)
+    draw.call([Egui::Event.pointer_moved(inside),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 20.0))], 0.032)
+    # arbitration resolved against frame 1's viewport only from frame 3
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 20.0))], 0.048)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    offset.y.should be > 0.0
+
+    # frame 4: massive scroll clamps to content - viewport
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 100_000.0))], 0.064)
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    offset.y.should be < content.y # clamped, not past the end
+    (offset.y - (content.y - 100.0)).abs.should be < 1.0
+  end
+
+  it "nested scroll areas: the inner one owns the scroll delta" do
+    ctx = Egui::Context.new
+    root = Egui::Id.from("spec")
+    outer_id = root.child(1)                          # outer scroll area
+    inner_id = outer_id.child(1).child(1)             # inner scroll area
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 300.0) do |outer|
+        outer.scroll_area(max_height: 100.0) do |inner|
+          40.times { |i| inner.label("inner row #{i}") }
+        end
+        5.times { |i| outer.label("outer row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # pointer over the inner viewport (first thing in the outer content,
+    # at the very top of the outer viewport)
+    inner_center = ctx.memory.scroll_rects[inner_id]?.try &.[0].center
+    inner_center.should_not be_nil
+    draw.call([Egui::Event.pointer_moved(inner_center.not_nil!),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 30.0))], 0.032)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 30.0))], 0.048)
+
+    inner_offset = ctx.memory.data.get_vec2(inner_id, Egui::Vec2.zero).y
+    outer_offset = ctx.memory.data.get_vec2(outer_id, Egui::Vec2.zero).y
+    inner_offset.should be > 0.0
+    outer_offset.should eq(0.0)
+  end
+end
+
+describe "window resize (phase 5)" do
+  it "dragging the corner grip grows the stored window size" do
+    ctx = Egui::Context.new
+    win_id = Egui::Id.from("window/demo")
+    grip_center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ctx.window("demo") { |ui| ui.label("content") }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    initial = ctx.memory.layer_sizes[win_id].not_nil!
+    # grip = bottom-right 12x12 of the window
+    grip_center = Egui::Pos2.new(initial.x - 6.0, 0.0)
+    # find the window rect: pos (24,24), height from layer_sizes
+    grip_center = Egui::Pos2.new(24.0 + initial.x - 6.0, 24.0 + initial.y - 6.0)
+
+    # press on the grip, drag down-right
+    draw.call([Egui::Event.pointer_moved(grip_center),
+      Egui::Event.pointer_pressed(grip_center)], 0.032)
+    moved = grip_center + Egui::Vec2.new(30.0, 20.0)
+    draw.call([Egui::Event.pointer_moved(moved)], 0.048)
+    draw.call([] of Egui::Event, 0.064)
+
+    grown = ctx.memory.layer_sizes[win_id].not_nil!
+    grown.x.should be > initial.x + 10.0
+    grown.y.should be > initial.y + 5.0
+  end
+end

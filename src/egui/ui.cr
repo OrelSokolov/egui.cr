@@ -154,6 +154,11 @@ module Egui
       response
     end
 
+    # egui `ScrollArea::vertical().show(ui, …)`.
+    def scroll_area(max_height : Float64? = nil, &block : Ui ->) : Rect
+      ScrollArea.new(max_height).show(self) { |ui| yield ui }
+    end
+
     def combo_box(id : String, selected : String, options : Array(String),
                   width : Float64 = 160.0, &on_select : String ->) : Bool
       ComboBox.new(id, selected, options, width).show(self) { |opt| on_select.call(opt) }
