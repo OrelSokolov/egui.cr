@@ -76,12 +76,17 @@ module Egui
       widget.ui(self)
     end
 
-    def label(text : String) : Response
-      add(Label.new(text))
+    def label(text : String, wrap : Bool = false) : Response
+      add(Label.new(text, wrap: wrap))
+    end
+
+    # egui `ui.label(RichText)`.
+    def rich(text : RichText, wrap : Bool = false) : Response
+      add(Label.new(text, wrap: wrap))
     end
 
     def heading(text : String) : Response
-      add(Label.new(text, size: style.font_size * 1.25))
+      rich(RichText.new(text).heading(style.font_size))
     end
 
     def button(text : String) : Response

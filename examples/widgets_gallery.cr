@@ -83,6 +83,13 @@ class GalleryApp < Egui::App
       end
 
       ui.label("Hover me for a tooltip").on_hover_text("Tooltips work! (0.5s delay)")
+
+      ui.separator
+      ui.heading("Rich text & wrapping")
+      ui.rich(Egui::RichText.new("red underlined").color(Egui::Color32.rgb(255, 96, 96)).underline)
+      ui.rich(Egui::RichText.new("small weak text").small(ui.style.font_size)
+        .weak(ui.style.visuals.text_color))
+      ui.label("This long paragraph demonstrates greedy word-wrapping against the available window width — resize nothing, it just wraps.", wrap: true)
     end
 
     if @modal_open

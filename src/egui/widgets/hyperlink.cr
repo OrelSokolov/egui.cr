@@ -22,14 +22,12 @@ module Egui
 
       color = style.visuals.hyperlink_color
       color = color.mul_color(0.8) if response.active?
-      ui.painter.text(rect.left_center, @label, font_size, color)
 
-      # Underline a hairline below the text.
-      underline_y = rect.bottom - 1.0
-      ui.painter.line(
-        Pos2.new(rect.left, underline_y),
-        Pos2.new(rect.left + text_size.x, underline_y),
-        1.0, color)
+      # Full rich-text treatment (phase 4): colored, underlined run.
+      rich = RichText.new(@label).color(color).underline
+      runs = rich.runs(font_size, color)
+      galley = ui.ctx.fonts.layout(runs)
+      ui.painter.paint_galley(rect.min, galley, ui.ctx.fonts, color)
 
       response.paint_focus_ring(2.0)
       Hyperlink.open_url(@url) if response.clicked?

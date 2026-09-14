@@ -166,18 +166,18 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 4 — rich text, LayoutJob, wrapping
 
-- [ ] `src/egui/galley.cr`: simplified Galley — rows of positioned run
+- [x] `src/egui/galley.cr`: simplified Galley — rows of positioned run
       slices + per-row width + caret x-positions (built for P4.5 TextEdit).
-- [ ] `src/egui/fonts.cr`: abstract `Fonts#layout(runs) : Galley` with
+- [x] `src/egui/fonts.cr`: abstract `Fonts#layout(runs) : Galley` with
       greedy word-wrap via the existing `measure`.
-- [ ] `src/egui/rich_text.cr` ← `crates/egui/src/widget_text.rs` (subset):
+- [x] `src/egui/rich_text.cr` ← `crates/egui/src/widget_text.rs` (subset):
       `RichText {text, size, color?, underline?, background?}` with chainable
       builders; `ui.rich(...)`; `heading`/weak colors moved onto it.
-- [ ] Painter: extend `TextCmd` to carry per-run color; underline drawn as a
+- [x] Painter: extend `TextCmd` to carry per-run color; underline drawn as a
       `line` cmd at ascent height.
-- [ ] `ui.label(text, wrap : Bool)` — multi-line wrapping label.
-- [ ] Hyperlink full: underline + hover color via RichText.
-- [ ] Specs: long text wraps into N rows within max_rect width; colored run
+- [x] `ui.label(text, wrap : Bool)` — multi-line wrapping label.
+- [x] Hyperlink full: underline + hover color via RichText.
+- [x] Specs: long text wraps into N rows within max_rect width; colored run
       produces matching TextCmd + underline LineCmd.
 
 ## Phase 4.5 — TextEdit (needs P3 keyboard + P4 galley)

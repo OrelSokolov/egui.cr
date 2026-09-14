@@ -981,3 +981,62 @@ describe "keyboard input (phase 3)" do
     ctx.end_frame
   end
 end
+
+describe "rich text & wrapping (phase 4)" do
+  it "wraps a long label into several rows within the available width" do
+    ctx = Egui::Context.new
+    text = "The quick brown fox jumps over the lazy dog again and again"
+
+    raw_frame(ctx)
+    rect = widget_ui(ctx).label(text, wrap: true).rect
+    ctx.end_frame
+
+    # monospace estimate: char_w = 0.6 * 16 = 9.6pt; the 300pt-wide ui
+    # fits ~31 chars per row, so the 61-char text must wrap to 2+ rows
+    line_h = ctx.fonts.measure("x", ctx.style.font_size).y
+    rect.height.should be > line_h          # more than a single line
+    rows = (rect.height / line_h).round.to_i
+    rows.should be >= 2
+    rect.width.should be <= 300.0
+
+    # the fragments reassemble into the original words
+    cmds = ctx.painter.commands.select(Egui::TextCmd).map(&.text).join
+    cmds.gsub(" ", "").should eq(text.gsub(" ", ""))
+  end
+
+  it "respects explicit newlines" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    widget_ui(ctx).label("one\ntwo")
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("one")
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("two")
+  end
+
+  it "rich text carries color and underline into paint commands" do
+    ctx = Egui::Context.new
+    red = Egui::Color32.rgb(255, 0, 0)
+
+    raw_frame(ctx)
+    widget_ui(ctx).rich(
+      Egui::RichText.new("warn").color(red).underline)
+    ctx.end_frame
+
+    text_cmd = ctx.painter.commands.select(Egui::TextCmd).first
+    text_cmd.text.should eq("warn")
+    text_cmd.color.should eq(red)
+    # underline emitted as a LineCmd
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(1)
+  end
+
+  it "heading sizes the text up via RichText" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    heading_rect = widget_ui(ctx).heading("Title").rect
+    label_rect = widget_ui(ctx).label("Title").rect
+    ctx.end_frame
+    heading_rect.height.should be > label_rect.height
+  end
+end

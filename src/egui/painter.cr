@@ -157,6 +157,27 @@ module Egui
       add(TextCmd.new(@clip, pos, text, size, color))
     end
 
+    # Paint a laid-out Galley with `pos` as its top-left corner
+    # (upstream `Painter::galley`). Emits one TextCmd per row run —
+    # that's where per-run colors come from — plus underline lines.
+    def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
+                     default_color : Color32) : Nil
+      galley.rows.each do |row|
+        row_center_y = pos.y + row.y + row.height / 2.0
+        row.runs.each do |run|
+          run_pos = Pos2.new(pos.x + run.x, row_center_y)
+          color = run.color || default_color
+          text(run_pos, run.text, run.size, color)
+          if run.underline?
+            w = fonts.measure(run.text, run.size).x
+            underline_y = pos.y + row.y + row.height - 2.0
+            line(Pos2.new(run_pos.x, underline_y),
+              Pos2.new(run_pos.x + w, underline_y), 1.0, color)
+          end
+        end
+      end
+    end
+
     def circle(center : Pos2, radius : Float64, fill : Color32? = nil,
                stroke : Color32? = nil, stroke_width : Float64 = 1.0) : Nil
       add(CircleCmd.new(@clip, center, radius, fill, stroke, stroke_width))
