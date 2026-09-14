@@ -182,13 +182,15 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 4.5 — TextEdit (needs P3 keyboard + P4 galley)
 
-- [ ] `src/egui/widgets/text_edit.cr` ← `widgets/text_edit/` (staged):
+- [x] `src/egui/widgets/text_edit.cr` ← `widgets/text_edit/` (staged):
       1) single-line: cursor, click-to-place, backspace/char insert,
          `consume_key` priority; 2) selection + copy/cut/paste via shell-out
          to `xclip`/`wl-copy` (optional, rescue-noop); 3) multiline once
          ScrollArea (P5) exists; 4) IME — deferred to P7.
-- [ ] `ui.text_edit_singleline(buffer : String, &on_change : String ->)`.
-- [ ] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click.
+      → stage 1 done (single-line, caret, click-to-place, arrows/Home/End,
+      blinking caret); stages 2–4 remain.
+- [x] `ui.text_edit_singleline(buffer : String, &on_change : String ->)`.
+- [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click.
 
 ## Phase 5 — scroll area, panels, resize
 
