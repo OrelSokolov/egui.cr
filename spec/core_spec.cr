@@ -1040,3 +1040,95 @@ describe "rich text & wrapping (phase 4)" do
     heading_rect.height.should be > label_rect.height
   end
 end
+
+describe "text edit (phase 4.5)" do
+  it "types characters into a focused text edit" do
+    ctx = Egui::Context.new
+    buffer = "hello"
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.text_edit_singleline(buffer) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # click the right edge to focus (cursor lands at the end)
+    rect = ctx.memory.widget_rects.values.first
+    right_edge = Egui::Pos2.new(rect.right - 1.0, rect.center.y)
+    draw.call([Egui::Event.pointer_moved(right_edge),
+      Egui::Event.pointer_pressed(right_edge),
+      Egui::Event.pointer_released(right_edge)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focus lands this frame
+    ctx.memory.focus.has_focus?(id).should be_true
+
+    # type "!" at the end
+    draw.call([Egui::Event.text_input("!")], 0.064)
+    buffer.should eq("hello!")
+
+    # Backspace removes the last char
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Backspace)], 0.080)
+    buffer.should eq("hello")
+  end
+
+  it "click places the cursor and typing inserts there" do
+    ctx = Egui::Context.new
+    buffer = "abcd"
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.text_edit_singleline(buffer) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+
+    # click between the 2nd and 3rd char: "ab|cd"
+    # monospace: char_w = 9.6, pad = 6 → char 2 boundary at 6 + 19.2
+    click_x = rect.left + 6.0 + 2 * 9.6
+    click = Egui::Pos2.new(click_x, rect.center.y)
+    draw.call([Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click),
+      Egui::Event.pointer_released(click)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focus active
+
+    # type "X" → inserted at cursor 2
+    draw.call([Egui::Event.text_input("X")], 0.064)
+    buffer.should eq("abXcd")
+  end
+
+  it "arrows move the caret within the field, not focus" do
+    ctx = Egui::Context.new
+    buffer = "ab"
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.text_edit_singleline(buffer) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.focus.has_focus?(id).should be_true
+
+    # Left moves caret to 1; typing inserts mid-string
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Left)], 0.064)
+    draw.call([Egui::Event.text_input("-")], 0.080)
+    buffer.should eq("a-b")
+
+    # focus did not leave the field
+    ctx.memory.focus.has_focus?(id).should be_true
+  end
+end

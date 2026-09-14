@@ -10,6 +10,7 @@ class GalleryApp < Egui::App
   @drag = 10.0_f64
   @combo = "Second"
   @modal_open = false
+  @buffer = "edit me"
 
   COMBO_OPTIONS = ["First", "Second", "Third"]
 
@@ -57,6 +58,10 @@ class GalleryApp < Egui::App
 
       ui.label("Combo box:")
       ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
+      ui.separator
+
+      ui.label("Text edit (click, type, arrows):")
+      ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
       ui.separator
 
       ui.label("Progress (animated):")

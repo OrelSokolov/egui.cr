@@ -159,6 +159,17 @@ module Egui
       ComboBox.new(id, selected, options, width).show(self) { |opt| on_select.call(opt) }
     end
 
+    # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
+    # with the new buffer whenever it changed this frame.
+    def text_edit_singleline(buffer : String, hint : String? = nil,
+                             &on_change : String ->) : Response
+      response = add(TextEdit.new(buffer, hint))
+      if response.changed? && (text = response.widget_text)
+        on_change.call(text)
+      end
+      response
+    end
+
     def hyperlink(url : String) : Response
       add(Hyperlink.new(url, url))
     end

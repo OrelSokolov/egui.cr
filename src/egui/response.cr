@@ -24,6 +24,9 @@ module Egui
     # value here so the Ui block-form helpers can hand it back to the
     # app (`ui.slider(v, range) { |new_v| … }`).
     property widget_value : Float64?
+    # Text widgets (TextEdit) publish the edited buffer the same way
+    # (`ui.text_edit_singleline(buf) { |new| … }`).
+    property widget_text : String?
 
     def initialize(@ctx : Context, @id : Id, @rect : Rect, @sense : Sense,
                    @hovered : Bool, @clicked : Bool, @click_count : Int32,

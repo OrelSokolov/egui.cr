@@ -42,6 +42,18 @@ module Egui
       @cells[id] = value
     end
 
+    def get_int(id : Id, default : Int32 = 0) : Int32
+      v = @cells[id]?
+      case v
+      when Int32 then v
+      else default
+      end
+    end
+
+    def set_int(id : Id, value : Int32) : Nil
+      @cells[id] = value
+    end
+
     def get_f64(id : Id, default : Float64 = 0.0) : Float64
       v = @cells[id]?
       case v
