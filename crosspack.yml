@@ -1,0 +1,162 @@
+# crosspack — build orchestration for egui-cr.
+#
+#   crosspack deps              # verify/install this host's build deps
+#   crosspack build             # specs + all examples -> builds/
+#   crosspack resolve <target>  # runtime Depends line for a target
+#
+# The version follows shard.yml — bump both together.
+
+name: egui-cr
+version: 0.1.0
+
+build:
+  output: builds
+
+  # Host-axis build dependencies: what the build machine needs.
+  # Host selectors: distro id from /etc/os-release, then ID_LIKE tokens
+  # (ubuntu hits the debian rule), then os, then "*".
+  deps:
+    crystal:
+      hosts:
+        debian:
+          verify: crystal --version
+          install: curl -fsSL https://crystal-lang.org/install.sh | sudo bash
+        fedora:
+          verify: crystal --version
+          install: sudo dnf install -y crystal
+        arch:
+          verify: crystal --version
+          install: sudo pacman -S --needed crystal
+        "*":
+          verify: crystal --version
+
+    c-toolchain:
+      hosts:
+        debian:
+          verify: cc --version
+          install: sudo apt-get install -y build-essential
+        fedora:
+          verify: cc --version
+          install: sudo dnf groupinstall -y "Development Tools"
+        arch:
+          verify: cc --version
+          install: sudo pacman -S --needed base-devel
+        "*":
+          verify: cc --version
+
+    gl-dev:
+      hosts:
+        debian:
+          verify: pkg-config --exists gl
+          install: sudo apt-get install -y libgl1-mesa-dev
+        fedora:
+          verify: pkg-config --exists gl
+          install: sudo dnf install -y mesa-libGL-devel
+        arch:
+          verify: pkg-config --exists gl
+          install: sudo pacman -S --needed mesa
+        "*":
+          verify: pkg-config --exists gl
+
+    x11-dev:
+      hosts:
+        debian:
+          verify: pkg-config --exists x11
+          install: sudo apt-get install -y libx11-dev
+        fedora:
+          verify: pkg-config --exists x11
+          install: sudo dnf install -y libX11-devel
+        arch:
+          verify: pkg-config --exists x11
+          install: sudo pacman -S --needed libx11
+        "*":
+          verify: pkg-config --exists x11
+
+    xcursor-dev:
+      hosts:
+        debian:
+          verify: pkg-config --exists xcursor
+          install: sudo apt-get install -y libxcursor-dev
+        fedora:
+          verify: pkg-config --exists xcursor
+          install: sudo dnf install -y libXcursor-devel
+        arch:
+          verify: pkg-config --exists xcursor
+          install: sudo pacman -S --needed libxcursor
+        "*":
+          verify: pkg-config --exists xcursor
+
+    xi-dev:
+      hosts:
+        debian:
+          verify: pkg-config --exists xi
+          install: sudo apt-get install -y libxi-dev
+        fedora:
+          verify: pkg-config --exists xi
+          install: sudo dnf install -y libXi-devel
+        arch:
+          verify: pkg-config --exists xi
+          install: sudo pacman -S --needed libxi
+        "*":
+          verify: pkg-config --exists xi
+
+  matrix:
+    - id: linux
+      build: linux/amd64
+      steps:
+        - crystal spec          # specs must pass — same gate as CI
+        - rake build:native     # vendor C -> lib/libegui_cr_sokol.a
+        - rake build:examples   # bin/hello
+      artifacts:
+        from: bin
+        include: ["*"]
+        to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
+
+# Packing: egui-cr ships a demo application (hello), so unlike a pure
+# library shard it does carry a package: section. `crosspack run`
+# builds for this host and launches the first executable from builds/.
+package:
+  maintainer: egui-cr developers
+  summary: egui-cr demo — immediate-mode GUI for Crystal over sokol_gfx
+  description: |-
+    egui-cr demo application: a 1:1 Crystal port of the egui (Rust)
+    immediate-mode GUI architecture, rendered through sokol_gfx with
+    fontstash text. The hello example shows a window with a button,
+    labels, and an FPS bottom panel.
+  sources: builds
+  prefix: usr/local
+  payload:
+    - hello
+  executables:
+    - hello
+  links:
+    bin/hello: ../lib/egui-cr/hello
+
+# Runtime-axis dependencies: native libraries an egui-cr application
+# links at run time, per distro family. Linux only for now.
+deps:
+  version: 1
+  libgl:
+    targets:
+      debian: { "*": [libgl1] }
+      ubuntu: { "*": [libgl1] }
+      fedora: { "*": [libgl] }
+      arch: { "*": [libglvnd] }
+  libx11:
+    targets:
+      debian: { "*": [libx11-6] }
+      ubuntu: { "*": [libx11-6] }
+      fedora: { "*": [libX11] }
+      arch: { "*": [libx11] }
+  libxcursor:              # not in crosspack's canonical list — resolves fine
+    targets:
+      debian: { "*": [libxcursor1] }
+      ubuntu: { "*": [libxcursor1] }
+      fedora: { "*": [libXcursor] }
+      arch: { "*": [libxcursor] }
+  libxi:                   # not in crosspack's canonical list — resolves fine
+    targets:
+      debian: { "*": [libxi6] }
+      ubuntu: { "*": [libxi6] }
+      fedora: { "*": [libXi] }
+      arch: { "*": [libxi] }

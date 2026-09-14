@@ -1,0 +1,13 @@
+# Build outputs
+/lib/
+/bin/
+/builds/
+/logs/
+*.o
+*.a
+shard.lock
+
+# Full upstream clones kept on disk for reference only:
+# egui (architecture reference — docs/ANALYSIS.md), sokol, fontstash.
+# The headers the build actually needs are vendored in vendor/.
+.ref/

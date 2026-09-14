@@ -1,0 +1,9 @@
+name: egui-cr
+version: 0.1.0
+description: |
+  Immediate-mode GUI for Crystal — a 1:1 port of the egui (Rust)
+  architecture: Context / Ui / Memory / Response / widgets, rendered
+  through sokol_gfx (sokol_app + sokol_gl + fontstash).
+
+  Reference clone: egui-upstream/ (read-only). Native vendor code:
+  vendor/sokol, vendor/fontstash.
