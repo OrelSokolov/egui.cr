@@ -11,3 +11,5 @@ shard.lock
 # egui (architecture reference — docs/ANALYSIS.md), sokol, fontstash.
 # The headers the build actually needs are vendored in vendor/.
 .ref/
+
+egui-upstream/
