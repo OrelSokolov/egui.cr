@@ -484,3 +484,159 @@ describe "system state" do
     ctx.end_frame
   end
 end
+
+describe "painter primitives (phase 0)" do
+  it "emits line/circle/arc commands carrying the current clip" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    clip = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(10.0, 10.0))
+    ctx.painter.clip = clip
+    ctx.painter.line(Egui::Pos2.zero, Egui::Pos2.new(5.0, 5.0), 2.0,
+      Egui::Color32.rgb(1, 2, 3))
+    ctx.painter.circle_stroke(Egui::Pos2.new(5.0, 5.0), 3.0,
+      Egui::Color32.rgb(4, 5, 6))
+    ctx.painter.arc(Egui::Pos2.new(5.0, 5.0), 3.0, 0.0, 1.0, 2.0,
+      Egui::Color32.rgb(7, 8, 9))
+    ctx.end_frame
+
+    cmds = ctx.painter.commands
+    cmds.select(Egui::LineCmd).size.should eq(1)
+    cmds.select(Egui::CircleCmd).size.should eq(1)
+    cmds.select(Egui::ArcCmd).size.should eq(1)
+    cmds.each do |cmd|
+      case cmd
+      when Egui::LineCmd, Egui::CircleCmd, Egui::ArcCmd
+        cmd.clip.should eq(clip)
+      end
+    end
+  end
+end
+
+describe "phase 1 widgets" do
+  it "checkbox toggles the value through the block on click" do
+    ctx = Egui::Context.new
+    value = false
+    center = nil
+
+    # frame 1: learn the rect
+    raw_frame(ctx, time: 0.016)
+    widget_ui(ctx).checkbox(value, "check") { |v| value = v }
+    ctx.end_frame
+    raw_frame(ctx, time: 0.016)
+    ui = widget_ui(ctx)
+    resp = ui.checkbox(value, "check") { |v| value = v }
+    center = resp.rect.center
+    ctx.end_frame
+
+    # frame 3: press
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    widget_ui(ctx).checkbox(value, "check") { |v| value = v }
+    ctx.end_frame
+    value.should be_false
+
+    # frame 4: release — the click lands and the block fires
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    resp = widget_ui(ctx).checkbox(value, "check") { |v| value = v }
+    ctx.end_frame
+    resp.changed?.should be_true
+    value.should be_true
+  end
+
+  it "radio reports changed only when a new option is selected" do
+    ctx = Egui::Context.new
+    first_center = nil
+    second_center = nil
+
+    raw_frame(ctx, time: 0.016)
+    ui = widget_ui(ctx)
+    first_center = ui.radio(true, "first").rect.center
+    second_center = ui.radio(false, "second").rect.center
+    ctx.end_frame
+
+    # click the unselected one → changed
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(second_center.not_nil!),
+      Egui::Event.pointer_pressed(second_center.not_nil!)], time: 0.032)
+    ui = widget_ui(ctx)
+    ui.radio(true, "first")
+    ui.radio(false, "second")
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(second_center.not_nil!)], time: 0.048)
+    ui = widget_ui(ctx)
+    ui.radio(true, "first")
+    changed = ui.radio(false, "second").changed?
+    ctx.end_frame
+    changed.should be_true
+
+    # the app now renders second as selected; clicking it again → no change
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(second_center.not_nil!),
+      Egui::Event.pointer_pressed(second_center.not_nil!)], time: 0.064)
+    ui = widget_ui(ctx)
+    ui.radio(false, "first")
+    ui.radio(true, "second")
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(second_center.not_nil!)], time: 0.080)
+    ui = widget_ui(ctx)
+    ui.radio(false, "first")
+    changed = ui.radio(true, "second").changed?
+    ctx.end_frame
+    changed.should be_false
+  end
+
+  it "separator draws a line spanning the available width" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    widget_ui(ctx).separator
+    ctx.end_frame
+
+    line = ctx.painter.commands.select(Egui::LineCmd).first
+    line.p1.x.should eq(0.0)
+    line.p2.x.should eq(300.0)
+    (line.p1.y - line.p2.y).abs.should be < 0.01
+  end
+
+  it "progress bar paints a track and a fraction-sized fill" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    widget_ui(ctx).progress_bar(0.5)
+    ctx.end_frame
+
+    fill = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.selection_fill }.not_nil!
+    (fill.rect.width - 150.0).abs.should be < 0.01
+    fill.rect.height.should be > 0
+  end
+
+  it "spinner emits an arc and requests a repaint" do
+    ctx = Egui::Context.new
+    raw_frame(ctx, time: 0.016)
+    widget_ui(ctx).spinner
+    ctx.end_frame
+
+    ctx.painter.commands.select(Egui::ArcCmd).size.should eq(1)
+    ctx.needs_repaint?.should be_true
+  end
+
+  it "hyperlink paints colored underlined text and is clickable" do
+    ctx = Egui::Context.new
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    center = widget_ui(ctx).hyperlink_to("egui", "https://egui.rs").rect.center
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!)], time: 0.032)
+    hovered = widget_ui(ctx).hyperlink_to("egui", "https://egui.rs").hovered?
+    ctx.end_frame
+    hovered.should be_true
+
+    text = ctx.painter.commands.select(Egui::TextCmd).first
+    text.color.should eq(ctx.style.visuals.hyperlink_color)
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(1)
+  end
+end
+
+def widget_ui(ctx : Egui::Context) : Egui::Ui
+  Egui::Ui.new(ctx, Egui::Id.from("spec"),
+    Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(300.0, 300.0)))
+end

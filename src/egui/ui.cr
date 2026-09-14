@@ -88,6 +88,72 @@ module Egui
       add(Button.new(text))
     end
 
+    # egui `ui.checkbox(&mut bool, text)` — Crystal keeps the value in
+    # app state; the block fires with the new value on toggle, and
+    # `Response#changed?` reports the same on the returned Response.
+    def checkbox(checked : Bool, text : String, &on_change : Bool ->) : Response
+      response = add(Checkbox.new(checked, text))
+      on_change.call(!checked) if response.changed?
+      response
+    end
+
+    def checkbox(checked : Bool, text : String) : Response
+      add(Checkbox.new(checked, text))
+    end
+
+    # egui `ui.radio(selected, text)`.
+    def radio(selected : Bool, text : String) : Response
+      add(RadioButton.new(selected, text))
+    end
+
+    # egui `ui.radio_value(&mut value, new_value, text)`.
+    def radio_value(selected : Bool, value : Bool, text : String,
+                    &on_select : Bool ->) : Response
+      response = add(RadioButton.new(selected, text))
+      on_select.call(value) if response.changed?
+      response
+    end
+
+    def separator : Response
+      add(Separator.new)
+    end
+
+    def progress_bar(fraction : Float64, text : String? = nil,
+                     animate : Bool = false) : Response
+      add(ProgressBar.new(fraction, text: text, animate: animate))
+    end
+
+    def spinner(size : Float64? = nil) : Response
+      add(Spinner.new(size))
+    end
+
+    # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
+    def hyperlink(url : String) : Response
+      add(Hyperlink.new(url, url))
+    end
+
+    def hyperlink_to(label : String, url : String) : Response
+      add(Hyperlink.new(label, url))
+    end
+
+    # egui `Ui::available_size` — how much room is left in this region
+    # (from the cursor to max_rect's far corner in layout direction).
+    def available_size : Vec2
+      if @layout.horizontal?
+        Vec2.new({@max_rect.right - @cursor.x, 0.0}.max, @max_rect.bottom - @cursor.y)
+      else
+        Vec2.new(@max_rect.right - @cursor.x, @max_rect.bottom - @cursor.y)
+      end
+    end
+
+    def available_width : Float64
+      {@max_rect.right - @cursor.x, 0.0}.max
+    end
+
+    def available_height : Float64
+      {@max_rect.bottom - @cursor.y, 0.0}.max
+    end
+
     # egui `ui.horizontal(|ui| …)`: a child Ui laying out left→right on
     # the rest of the current line; afterwards the parent cursor jumps
     # below the row's bounding box (like upstream's single-row shortcut).

@@ -34,10 +34,57 @@ module Egui
     end
   end
 
+  # egui `epaint::CircleShape` — filled disc and/or stroked ring.
+  struct CircleCmd
+    getter clip : Rect
+    getter center : Pos2
+    getter radius : Float64
+    getter fill : Color32?
+    getter stroke : Color32?
+    getter stroke_width : Float64
+
+    def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
+                   @fill : Color32?, @stroke : Color32?,
+                   @stroke_width : Float64)
+    end
+  end
+
+  # egui `epaint::PathShape` reduced to a straight segment with a stroke
+  # width (the tessellator turns strokes into quads; we do the same in
+  # the backend).
+  struct LineCmd
+    getter clip : Rect
+    getter p1 : Pos2
+    getter p2 : Pos2
+    getter width : Float64
+    getter color : Color32
+
+    def initialize(@clip : Rect, @p1 : Pos2, @p2 : Pos2,
+                   @width : Float64, @color : Color32)
+    end
+  end
+
+  # Circular arc (egui `epaint` arc paths; used by Spinner and later the
+  # color wheel). Angles in radians, clockwise from the +x axis.
+  struct ArcCmd
+    getter clip : Rect
+    getter center : Pos2
+    getter radius : Float64
+    getter start_angle : Float64
+    getter end_angle : Float64
+    getter width : Float64
+    getter color : Color32
+
+    def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
+                   @start_angle : Float64, @end_angle : Float64,
+                   @width : Float64, @color : Color32)
+    end
+  end
+
   struct NoopCmd
   end
 
-  alias PaintCmd = RectCmd | TextCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | NoopCmd
 
   class Painter
     getter commands : Array(PaintCmd)
@@ -96,6 +143,30 @@ module Egui
     # convert using their font metrics — see backend/sokol/fontstash).
     def text(pos : Pos2, text : String, size : Float64, color : Color32) : Nil
       add(TextCmd.new(@clip, pos, text, size, color))
+    end
+
+    def circle(center : Pos2, radius : Float64, fill : Color32? = nil,
+               stroke : Color32? = nil, stroke_width : Float64 = 1.0) : Nil
+      add(CircleCmd.new(@clip, center, radius, fill, stroke, stroke_width))
+    end
+
+    def circle_filled(center : Pos2, radius : Float64, fill : Color32) : Nil
+      circle(center, radius, fill: fill)
+    end
+
+    def circle_stroke(center : Pos2, radius : Float64, stroke : Color32,
+                      stroke_width : Float64 = 1.0) : Nil
+      circle(center, radius, stroke: stroke, stroke_width: stroke_width)
+    end
+
+    def line(p1 : Pos2, p2 : Pos2, width : Float64, color : Color32) : Nil
+      add(LineCmd.new(@clip, p1, p2, width, color))
+    end
+
+    def arc(center : Pos2, radius : Float64, start_angle : Float64,
+            end_angle : Float64, width : Float64, color : Color32) : Nil
+      add(ArcCmd.new(@clip, center, radius, start_angle, end_angle,
+        width, color))
     end
 
     # egui `GraphicLayers::drain(order)`: flatten per layer, back to

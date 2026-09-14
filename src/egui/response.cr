@@ -17,12 +17,25 @@ module Egui
     getter? drag_started : Bool
     getter? drag_stopped : Bool
     getter drag_delta : Vec2
+    # egui `Response::changed` (response.rs): set by stateful widgets
+    # (checkbox, slider, …) when the underlying data changed this frame.
+    @changed : Bool
 
     def initialize(@ctx : Context, @id : Id, @rect : Rect, @sense : Sense,
                    @hovered : Bool, @clicked : Bool, @click_count : Int32,
                    @pressed : Bool, @active : Bool, @dragged : Bool,
                    @drag_started : Bool, @drag_stopped : Bool,
-                   @drag_delta : Vec2)
+                   @drag_delta : Vec2, @changed : Bool = false)
+    end
+
+    def changed? : Bool
+      @changed
+    end
+
+    # egui `Response::mark_changed` — widgets call this after mutating
+    # the value they view.
+    def mark_changed : Nil
+      @changed = true
     end
 
     def clicked(&block : self ->) : self

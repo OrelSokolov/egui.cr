@@ -7,12 +7,22 @@ module Egui
     property button_padding : Vec2
     property window_padding : Vec2
     property indent : Float64
+    # Icon column width for checkbox/radio (upstream `Spacing`).
+    property icon_width : Float64
+    property icon_width_inner : Float64
+    property icon_spacing : Float64
+    # Minimum interactable widget size (upstream `Spacing::interact_size`).
+    property interact_size : Vec2
 
     def initialize
       @item_spacing = Vec2.new(8.0, 6.0)
       @button_padding = Vec2.new(8.0, 4.0)
       @window_padding = Vec2.new(10.0, 8.0)
       @indent = 16.0
+      @icon_width = 14.0
+      @icon_width_inner = 8.0
+      @icon_spacing = 6.0
+      @interact_size = Vec2.new(40.0, 18.0)
     end
   end
 
@@ -28,6 +38,11 @@ module Egui
     property button_hovered : Color32
     property button_active : Color32
     property button_stroke : Color32
+    # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
+    # progress bar fill, slider handle, hyperlinks.
+    property selection_fill : Color32
+    property hyperlink_color : Color32
+    property separator_color : Color32
 
     def initialize
       @window_fill = Color32.rgba(27, 27, 30, 235)
@@ -40,6 +55,9 @@ module Egui
       @button_hovered = Color32.rgba(85, 85, 85, 200)
       @button_active = Color32.rgba(110, 110, 110, 220)
       @button_stroke = Color32.rgba(96, 96, 96, 255)
+      @selection_fill = Color32.rgba(0, 122, 204, 255)
+      @hyperlink_color = Color32.rgba(102, 170, 255, 255)
+      @separator_color = Color32.rgba(90, 90, 90, 255)
     end
 
     # egui `Visuals::widget_visuals(interaction)` — pick by state.

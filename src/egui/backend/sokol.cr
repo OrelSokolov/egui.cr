@@ -161,6 +161,12 @@ module Egui
           paint_rect(cmd)
         when Egui::TextCmd
           paint_text(cmd)
+        when Egui::CircleCmd
+          paint_circle(cmd)
+        when Egui::LineCmd
+          paint_line(cmd)
+        when Egui::ArcCmd
+          paint_arc(cmd)
         end
       end
 
@@ -226,6 +232,103 @@ module Egui
         LibEguiCr.sgl_v2f_c4b(x1, y0, c.r, c.g, c.b, c.a)
         LibEguiCr.sgl_v2f_c4b(x1, y1, c.r, c.g, c.b, c.a)
         LibEguiCr.sgl_v2f_c4b(x0, y1, c.r, c.g, c.b, c.a)
+      end
+
+      # A quad from four arbitrary points (what the egui tessellator
+      # produces for thick lines, rings and arcs — stroke geometry is
+      # just quads in epaint too).
+      def self.quad_pts(p1 : Egui::Pos2, p2 : Egui::Pos2, p3 : Egui::Pos2,
+                        p4 : Egui::Pos2, c : Egui::Color32) : Nil
+        LibEguiCr.sgl_v2f_c4b(p1.x.to_f32, p1.y.to_f32, c.r, c.g, c.b, c.a)
+        LibEguiCr.sgl_v2f_c4b(p2.x.to_f32, p2.y.to_f32, c.r, c.g, c.b, c.a)
+        LibEguiCr.sgl_v2f_c4b(p3.x.to_f32, p3.y.to_f32, c.r, c.g, c.b, c.a)
+        LibEguiCr.sgl_v2f_c4b(p4.x.to_f32, p4.y.to_f32, c.r, c.g, c.b, c.a)
+      end
+
+      # Tessellation segments for circles/arcs (epaint uses a chord
+      # tolerance; a fixed 32 is visually equivalent at UI sizes).
+      CIRCLE_SEGMENTS = 32
+      TAU = (2.0 * Math::PI)
+
+      def self.paint_circle(cmd : Egui::CircleCmd) : Nil
+        clip = cmd.clip
+        LibEguiCr.sgl_scissor_rectf(
+          clip.min.x.to_f32, clip.min.y.to_f32,
+          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+
+        if fill = cmd.fill
+          LibEguiCr.sgl_begin_quads
+          CIRCLE_SEGMENTS.times do |i|
+            a0 = TAU * i / CIRCLE_SEGMENTS
+            a1 = TAU * (i + 1) / CIRCLE_SEGMENTS
+            v0 = Egui::Pos2.new(cmd.center.x + cmd.radius * Math.cos(a0),
+              cmd.center.y + cmd.radius * Math.sin(a0))
+            v1 = Egui::Pos2.new(cmd.center.x + cmd.radius * Math.cos(a1),
+              cmd.center.y + cmd.radius * Math.sin(a1))
+            # degenerate quad == triangle (c, c, v0, v1)
+            quad_pts(cmd.center, cmd.center, v0, v1, fill)
+          end
+          LibEguiCr.sgl_end
+        end
+
+        if (stroke = cmd.stroke) && cmd.stroke_width > 0
+          paint_ring(cmd.center, cmd.radius, 0.0, TAU, cmd.stroke_width, stroke, clip)
+        end
+      end
+
+      def self.paint_line(cmd : Egui::LineCmd) : Nil
+        clip = cmd.clip
+        LibEguiCr.sgl_scissor_rectf(
+          clip.min.x.to_f32, clip.min.y.to_f32,
+          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+
+        d = cmd.p2 - cmd.p1
+        len = d.length
+        return if len < 1e-9
+        # perpendicular unit vector scaled to half the stroke width
+        n = Egui::Vec2.new(-d.y / len, d.x / len) * (cmd.width / 2.0)
+        LibEguiCr.sgl_begin_quads
+        quad_pts(cmd.p1 - n, cmd.p2 - n, cmd.p2 + n, cmd.p1 + n, cmd.color)
+        LibEguiCr.sgl_end
+      end
+
+      def self.paint_arc(cmd : Egui::ArcCmd) : Nil
+        clip = cmd.clip
+        paint_ring(cmd.center, cmd.radius, cmd.start_angle, cmd.end_angle,
+          cmd.width, cmd.color, clip)
+      end
+
+      # The shared geometry of stroked circles and arcs: a strip of quads
+      # between radius - width/2 and radius + width/2.
+      def self.paint_ring(center : Egui::Pos2, radius : Float64,
+                          start_angle : Float64, end_angle : Float64,
+                          width : Float64, color : Egui::Color32,
+                          clip : Egui::Rect) : Nil
+        LibEguiCr.sgl_scissor_rectf(
+          clip.min.x.to_f32, clip.min.y.to_f32,
+          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+
+        r0 = {radius - width / 2.0, 0.0}.max
+        r1 = radius + width / 2.0
+        span = end_angle - start_angle
+        segments = Math.max(8, (CIRCLE_SEGMENTS * span.abs / TAU).ceil.to_i)
+
+        LibEguiCr.sgl_begin_quads
+        segments.times do |i|
+          a0 = start_angle + span * i / segments
+          a1 = start_angle + span * (i + 1) / segments
+          c0 = Math.cos(a0)
+          s0 = Math.sin(a0)
+          c1 = Math.cos(a1)
+          s1 = Math.sin(a1)
+          quad_pts(
+            Egui::Pos2.new(center.x + r0 * c0, center.y + r0 * s0),
+            Egui::Pos2.new(center.x + r1 * c0, center.y + r1 * s0),
+            Egui::Pos2.new(center.x + r1 * c1, center.y + r1 * s1),
+            Egui::Pos2.new(center.x + r0 * c1, center.y + r0 * s1),
+            color)
+        end
+        LibEguiCr.sgl_end
       end
 
       def self.bar(r : Egui::Rect, c : Egui::Color32) : Nil

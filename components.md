@@ -51,44 +51,44 @@ Conventions for every phase:
 Goal: unblock the visuals of ~8 later widgets (checkmark, radio dot, slider
 handle+rail, spinner arc, hyperlink underline, color wheel).
 
-- [ ] `src/egui/painter.cr`: new `PaintCmd` variants
+- [x] `src/egui/painter.cr`: new `PaintCmd` variants
       `LineCmd {clip, p1, p2, width, color}` and
       `CircleCmd {clip, center, radius, fill : Color32?, stroke : Color32?, stroke_width}`;
       plus an `ArcCmd {clip, center, radius, start_angle, end_angle, width, color}`
       (used by spinner/color wheel).
-- [ ] Painter methods: `line(p1, p2, width, color)`, `circle_filled`,
+- [x] Painter methods: `line(p1, p2, width, color)`, `circle_filled`,
       `circle_stroke`, `arc`.
-- [ ] `src/egui/backend/sokol.cr`: render the new cmds — thick line as a
+- [x] `src/egui/backend/sokol.cr`: render the new cmds — thick line as a
       rotated quad computed in Crystal (vertices via existing quad path);
       circle as a 32-segment triangle fan; arc as a strip of quads. No new
       sokol features needed (`sgl_begin_lines` exists but has no line width;
       quads give width support).
-- [ ] Spec: new cmds appear in `end_frame` output with correct clip.
+- [x] Spec: new cmds appear in `end_frame` output with correct clip.
 
 ## Phase 1 — simple widgets
 
-- [ ] `Response`: add `changed?`/`mark_changed` (upstream `response.rs`).
-- [ ] `src/egui/widgets/checkbox.cr` ← `widgets/checkbox.rs`:
+- [x] `Response`: add `changed?`/`mark_changed` (upstream `response.rs`).
+- [x] `src/egui/widgets/checkbox.cr` ← `widgets/checkbox.rs`:
       rounded box + checkmark (two `line` cmds), hover/active colors from
       `Visuals#button_fill`. API: `ui.checkbox(checked : Bool, text : String,
       &on_change : Bool ->)` plus `Checkbox` widget class returning
       `Response#changed?`.
-- [ ] `src/egui/widgets/radio_button.cr` ← `widgets/radio_button.rs`:
+- [x] `src/egui/widgets/radio_button.cr` ← `widgets/radio_button.rs`:
       outer ring + inner dot (`circle_stroke`/`circle_filled`).
       `ui.radio(selected : Bool, text : String, &on_click)`.
-- [ ] `src/egui/widgets/separator.cr` ← `widgets/separator.rs`:
+- [x] `src/egui/widgets/separator.cr` ← `widgets/separator.rs`:
       layout-aware (horizontal line in vertical layout, vertical in
       `horizontal`).
-- [ ] `src/egui/widgets/progress_bar.cr` ← `widgets/progress_bar.rs`:
+- [x] `src/egui/widgets/progress_bar.cr` ← `widgets/progress_bar.rs`:
       fill fraction animated via `ctx.animate_value_with_time` when the
       value decreases.
-- [ ] `src/egui/widgets/spinner.cr` ← `widgets/spinner.rs`: rotating `arc`,
+- [x] `src/egui/widgets/spinner.cr` ← `widgets/spinner.rs`: rotating `arc`,
       angle from `animate_value_with_time`, `request_repaint` while shown.
-- [ ] `src/egui/widgets/hyperlink.cr` (lite) ← `widgets/hyperlink.rs`:
+- [x] `src/egui/widgets/hyperlink.cr` (lite) ← `widgets/hyperlink.rs`:
       colored + underlined label, `Sense::click`; on click spawn
       `xdg-open <url>` (Linux; rescue-noop). Full rich-text version in P4.
-- [ ] `examples/widgets_gallery.cr`: demo page listing all phase-1 widgets.
-- [ ] Specs: toggle-on-click, radio select, separator rect/size, progress
+- [x] `examples/widgets_gallery.cr`: demo page listing all phase-1 widgets.
+- [x] Specs: toggle-on-click, radio select, separator rect/size, progress
       paint cmds, spinner requests repaint.
 
 ## Phase 2 — slider, drag_value (drag), combo box, menus, tooltips, modal, frame
