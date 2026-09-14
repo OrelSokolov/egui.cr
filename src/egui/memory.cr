@@ -54,6 +54,9 @@ module Egui
     # Container content sizes (modal dialog size for centering) — same
     # pruning exemption.
     getter layer_sizes : Hash(Id, Vec2)
+    # Widget-generated texture cache (color picker gradients): named
+    # ids so regenerated-once textures aren't re-uploaded every frame.
+    getter texture_cache : Hash(String, UInt64)
 
     # Scroll-area viewports (id → rect + layer) for scroll arbitration:
     # the top-most viewport containing the pointer (previous frame's
@@ -111,6 +114,7 @@ module Egui
     @tooltip_starts = {} of Id => Float64
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
+    @texture_cache = {} of String => UInt64
     @scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @active_scroll = nil

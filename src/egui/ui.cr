@@ -175,6 +175,22 @@ module Egui
       response
     end
 
+    # egui `ui.image(texture, size)`.
+    def image(texture_id : UInt64, size : Vec2,
+              tint : Color32 = Color32.new(255, 255, 255, 255)) : Response
+      add(Image.new(texture_id, size, tint))
+    end
+
+    # egui `ui.color_edit32(&mut color)`: the block fires with the new
+    # color when the picker changed it this frame.
+    def color_edit32(color : Color32, &on_change : Color32 ->) : Response
+      response = add(ColorPicker.new(color))
+      if response.changed? && (picked = response.widget_color)
+        on_change.call(picked)
+      end
+      response
+    end
+
     def hyperlink(url : String) : Response
       add(Hyperlink.new(url, url))
     end

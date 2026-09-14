@@ -18,6 +18,8 @@
 #include "util/sokol_gl.h"
 #define FONTSTASH_IMPLEMENTATION
 #include "fontstash.h"
+#define STB_IMAGE_IMPLEMENTATION
+#include "stb_image.h"
 #define SOKOL_FONTSTASH_IMPL
 #include "util/sokol_fontstash.h"
 
@@ -93,4 +95,48 @@ void egui_cr_end_pass(void) {
     sgl_draw();
     sg_end_pass();
     sg_commit();
+}
+
+// --- textures -------------------------------------------------------------
+
+static sg_sampler g_linear_sampler;
+
+// Upload immutable RGBA8 data as a 2D texture; returns the sg_view id
+// (0 on failure). The sampler is created once and shared.
+uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
+    if (!g_linear_sampler.id) {
+        g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
+            .min_filter = SG_FILTER_LINEAR,
+            .mag_filter = SG_FILTER_LINEAR,
+        });
+    }
+    sg_image img = sg_make_image(&(sg_image_desc){
+        .type = SG_IMAGETYPE_2D,
+        .width = w,
+        .height = h,
+        .usage = {.immutable = true},
+        .data = {.mip_levels[0] = {.ptr = rgba8, .size = (size_t)w * h * 4}},
+    });
+    if (img.id == 0) return 0;
+    sg_view view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = img},
+    });
+    return view.id;
+}
+
+// Bind a texture for the following sgl vertices (inside begin/end).
+void egui_cr_sgl_texture(uint32_t view_id) {
+    sg_view view = {.id = view_id};
+    sgl_texture(view, g_linear_sampler);
+}
+
+// Decode an image file (PNG/JPEG/...) via stb_image and upload it as
+// RGBA8; returns the sg_view id (0 on failure).
+uint32_t egui_cr_load_image(const char* path) {
+    int w, h, n;
+    unsigned char* data = stbi_load(path, &w, &h, &n, 4);
+    if (!data) return 0;
+    uint32_t view_id = egui_cr_make_texture(w, h, data);
+    stbi_image_free(data);
+    return view_id;
 }

@@ -13,6 +13,7 @@ class GalleryApp < Egui::App
   @combo = "Second"
   @modal_open = false
   @buffer = "edit me"
+  @color = Egui::Color32.rgb(0, 122, 204)
 
   COMBO_OPTIONS = ["First", "Second", "Third"]
 
@@ -88,6 +89,10 @@ class GalleryApp < Egui::App
       ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui")
       ui.label("Hover me").on_hover_text("Tooltips work!")
       ui.label("This long paragraph wraps because the label asked for it — resize the window and watch it reflow.", wrap: true)
+
+      ui.separator
+      ui.label("Color picker:")
+      ui.color_edit32(@color) { |c| @color = c }
     end
 
     if @modal_open

@@ -45,6 +45,13 @@ lib LibEguiCr
   fun sgl_begin_quads
   fun sgl_end
   fun sgl_v2f_c4b(x : Float32, y : Float32, r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+  fun sgl_v2f_t2f_c4b(x : Float32, y : Float32, u : Float32, v : Float32,
+                      r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+
+  # textures (shim)
+  fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
+  fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
+  fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
 
   # fontstash / sokol_fontstash (fontstash exports camelCase names)
   fun sfons_flush(ctx : Void*)
@@ -110,6 +117,7 @@ module Egui
         load_font
         app = @@app.not_nil!
         app.ctx.fonts = FontstashFonts.new(@@fons.not_nil!)
+        app.ctx.textures = SokolTextureRegistry.new
       end
 
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,
@@ -192,7 +200,32 @@ module Egui
           paint_line(cmd)
         when Egui::ArcCmd
           paint_arc(cmd)
+        when Egui::ImageCmd
+          paint_image(cmd)
         end
+      end
+
+      def self.paint_image(cmd : Egui::ImageCmd) : Nil
+        return if cmd.texture_id.zero? # failed loads paint nothing
+        clip = cmd.clip
+        LibEguiCr.sgl_scissor_rectf(
+          clip.min.x.to_f32, clip.min.y.to_f32,
+          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+
+        r = cmd.rect
+        uv = cmd.uv
+        t = cmd.tint
+        LibEguiCr.sgl_begin_quads
+        LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!)
+        LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.min.y.to_f32,
+          uv.min.x.to_f32, uv.min.y.to_f32, t.r, t.g, t.b, t.a)
+        LibEguiCr.sgl_v2f_t2f_c4b(r.max.x.to_f32, r.min.y.to_f32,
+          uv.max.x.to_f32, uv.min.y.to_f32, t.r, t.g, t.b, t.a)
+        LibEguiCr.sgl_v2f_t2f_c4b(r.max.x.to_f32, r.max.y.to_f32,
+          uv.max.x.to_f32, uv.max.y.to_f32, t.r, t.g, t.b, t.a)
+        LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.max.y.to_f32,
+          uv.min.x.to_f32, uv.max.y.to_f32, t.r, t.g, t.b, t.a)
+        LibEguiCr.sgl_end
       end
 
       def self.paint_rect(cmd : Egui::RectCmd) : Nil
@@ -207,12 +240,16 @@ module Egui
         if (fill = cmd.fill) && (fill2 = cmd.fill2)
           # Vertical gradient: per-vertex colors, interpolated by the
           # rasterizer (Gouraud) — top verts c1, bottom verts c2.
-          LibEguiCr.sgl_begin_quads
-          LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
-          LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
-          LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
-          LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
-          LibEguiCr.sgl_end
+          if round > 0.5
+            rounded_rect_fill(r, round, fill, fill2)
+          else
+            LibEguiCr.sgl_begin_quads
+            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
+            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
+            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
+            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
+            LibEguiCr.sgl_end
+          end
         elsif fill
           if round > 0.5
             rounded_rect_fill(r, round, fill)
@@ -278,9 +315,12 @@ module Egui
       end
 
       # Filled rounded rect: perimeter fan (degenerate quads from the
-      # center), like a disc but with a rounded-rect rim.
+      # center), like a disc but with a rounded-rect rim. When `fill2`
+      # is set the fill is a vertical gradient: each vertex color is
+      # lerp(fill, fill2, y / height), interpolated across triangles.
       def self.rounded_rect_fill(r : Egui::Rect, round : Float64,
-                                 fill : Egui::Color32) : Nil
+                                 fill : Egui::Color32,
+                                 fill2 : Egui::Color32? = nil) : Nil
         round = {round, r.width / 2.0, r.height / 2.0}.min
         pts = [] of Egui::Pos2
         corner = ->(cx : Float64, cy : Float64, a0 : Float64) do
@@ -300,9 +340,37 @@ module Egui
         LibEguiCr.sgl_begin_quads
         pts.each_with_index do |p, i|
           q = pts[(i + 1) % pts.size]
-          quad_pts(center, center, p, q, fill)
+          if fill2
+            quad_pts_grad(center, p, q, fill, fill2, r)
+          else
+            quad_pts(center, center, p, q, fill)
+          end
         end
         LibEguiCr.sgl_end
+      end
+
+      # Vertical-gradient color at `y` within `r` (Gouraud per-vertex).
+      def self.grad_color(c1 : Egui::Color32, c2 : Egui::Color32,
+                          y : Float64, r : Egui::Rect) : Egui::Color32
+        t = ((y - r.min.y) / {r.height, 1e-9}.max).clamp(0.0, 1.0)
+        Egui::Color32.new(
+          (c1.r.to_f + (c2.r.to_f - c1.r.to_f) * t).round.to_u8,
+          (c1.g.to_f + (c2.g.to_f - c1.g.to_f) * t).round.to_u8,
+          (c1.b.to_f + (c2.b.to_f - c1.b.to_f) * t).round.to_u8,
+          (c1.a.to_f + (c2.a.to_f - c1.a.to_f) * t).round.to_u8)
+      end
+
+      # Triangle fan slice (center, p, q) with per-vertex gradient colors.
+      def self.quad_pts_grad(center : Egui::Pos2, p : Egui::Pos2, q : Egui::Pos2,
+                             c1 : Egui::Color32, c2 : Egui::Color32,
+                             r : Egui::Rect) : Nil
+        cc = grad_color(c1, c2, center.y, r)
+        pc = grad_color(c1, c2, p.y, r)
+        qc = grad_color(c1, c2, q.y, r)
+        LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
+        LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
+        LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, pc.r, pc.g, pc.b, pc.a)
+        LibEguiCr.sgl_v2f_c4b(q.x.to_f32, q.y.to_f32, qc.r, qc.g, qc.b, qc.a)
       end
 
 
@@ -464,6 +532,21 @@ module Egui
       end
 
       class_property font_data : String?
+
+      # GPU textures via the shim (sg_make_image/sampler/view); the
+      # core sees opaque UInt64 handles only.
+      class SokolTextureRegistry < Egui::TextureRegistry
+        def register_rgba(width : Int32, height : Int32,
+                          data : Bytes) : UInt64
+          return 0_u64 if width <= 0 || height <= 0
+          LibEguiCr.make_texture(width, height,
+            data.to_unsafe).to_u64
+        end
+
+        def load(path : String) : UInt64
+          LibEguiCr.load_image(path.to_unsafe).to_u64
+        end
+      end
 
       # Real font metrics for the core's text measurement seam
       # (egui `Fonts`/`Galley` equivalent).

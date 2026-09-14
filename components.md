@@ -220,20 +220,22 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 6 — textures, image, color picker
 
-- [ ] `src/egui/painter.cr`: `ImageCmd {clip, rect, uv : Rect,
+- [x] `src/egui/painter.cr`: `ImageCmd {clip, rect, uv : Rect,
       texture_id : UInt64}`; `painter.image(...)`.
-- [ ] Backend: `TextureRegistry` — `register_rgba(w, h, bytes) : TextureId`
+- [x] Backend: `TextureRegistry` — `register_rgba(w, h, bytes) : TextureId`
       via `sg_make_view` + sampler, bound with `sgl_texture` before quads
       (vendored `sokol_gl.h` supports it — verified). `Context#textures`.
-- [ ] Vendor `stb_image.h` for PNG/JPEG decode (update `vendor/VENDORED.md`
+- [x] Vendor `stb_image.h` for PNG/JPEG decode (update `vendor/VENDORED.md`
       + `Rakefile`); `ctx.load_image(path) : TextureId` with cache.
-- [ ] `src/egui/widgets/image.cr` ← `widgets/image.rs`; `Button#image(texture)`
+- [x] `src/egui/widgets/image.cr` ← `widgets/image.rs`; `Button#image(texture)`
       icon support.
-- [ ] `src/egui/color.cr`: HSV↔sRGB (port from `crates/ecolor/src/color.rs`).
-- [ ] `src/egui/widgets/color_picker.cr` ← `widgets/color_picker.rs`: hue
+- [x] `src/egui/color.cr`: HSV↔sRGB (port from `crates/ecolor/src/color.rs`).
+- [x] `src/egui/widgets/color_picker.cr` ← `widgets/color_picker.rs`: hue
+      → lite version: SV square + hue bar + swatch (gradient textures cached in
+      Memory#texture_cache); alpha editing and the hue wheel come later if needed.
       wheel (arc cmds), SV square, alpha slider, current/new swatches;
       `ui.color_edit32(rgba) { |c| }`.
-- [ ] Specs: registered texture id flows into ImageCmd; HSV roundtrip within
+- [x] Specs: registered texture id flows into ImageCmd; HSV roundtrip within
       epsilon; manual visual check of the wheel in the gallery example.
 
 ## Phase 7 — remaining parity & polish (pick on demand)

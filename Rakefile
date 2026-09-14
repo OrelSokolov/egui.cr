@@ -10,6 +10,7 @@ task "build:native" do
     cc -O2 -c backend/sokol_shim.c \
       -Ivendor/sokol \
       -Ivendor/fontstash \
+      -Ivendor \
       -o lib/sokol_shim.o
   SH
   sh "ar rcs #{NATIVE_LIB} lib/sokol_shim.o"

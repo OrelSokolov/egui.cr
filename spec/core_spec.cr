@@ -1256,3 +1256,89 @@ describe "window resize (phase 5)" do
     grown.y.should be > initial.y + 5.0
   end
 end
+
+describe "textures & images (phase 6)" do
+  it "register_rgba produces ImageCmd with the texture id" do
+    ctx = Egui::Context.new
+    tex = ctx.textures.register_rgba(2, 2, Bytes.new(16, 255_u8))
+    tex.should be > 0
+
+    raw_frame(ctx)
+    widget_ui(ctx).image(tex, Egui::Vec2.new(50.0, 40.0))
+    ctx.end_frame
+
+    cmd = ctx.painter.commands.select(Egui::ImageCmd).first
+    cmd.texture_id.should eq(tex)
+    cmd.rect.width.should eq(50.0)
+    cmd.rect.height.should eq(40.0)
+  end
+
+  it "texture cache is bounded per hue step" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgb(255, 0, 0)
+    raw_frame(ctx)
+    widget_ui(ctx).color_edit32(color) { |c| color = c }
+    ctx.end_frame
+    before = ctx.memory.texture_cache.size
+
+    # same hue again → no new textures
+    raw_frame(ctx)
+    widget_ui(ctx).color_edit32(color) { |c| color = c }
+    ctx.end_frame
+    ctx.memory.texture_cache.size.should eq(before)
+  end
+end
+
+describe "hsv conversions (phase 6)" do
+  it "roundtrips through hsv within one quantization step" do
+    samples = [
+      Egui::Color32.rgb(255, 0, 0), Egui::Color32.rgb(0, 255, 0),
+      Egui::Color32.rgb(0, 0, 255), Egui::Color32.rgb(128, 64, 200),
+      Egui::Color32.rgb(255, 255, 255), Egui::Color32.rgb(10, 10, 10),
+      Egui::Color32.rgb(0, 200, 200), Egui::Color32.rgb(255, 128, 0),
+    ]
+    samples.each do |c|
+      hsv = Egui::Hsva.from_color(c)
+      hsv.v.should be >= 0.0
+      hsv.v.should be <= 1.0
+      back = hsv.to_color
+      (back.r.to_i - c.r.to_i).abs.should be <= 2
+      (back.g.to_i - c.g.to_i).abs.should be <= 2
+      (back.b.to_i - c.b.to_i).abs.should be <= 2
+    end
+  end
+
+  it "picks pure hues on the wheel edges" do
+    Egui::Hsva.new(0.0, 1.0, 1.0, 1.0).to_color.should eq(Egui::Color32.rgb(255, 0, 0))
+    Egui::Hsva.new(1.0 / 3.0, 1.0, 1.0, 1.0).to_color.should eq(Egui::Color32.rgb(0, 255, 0))
+    Egui::Hsva.new(2.0 / 3.0, 1.0, 1.0, 1.0).to_color.should eq(Egui::Color32.rgb(0, 0, 255))
+  end
+
+  it "dragging the SV square changes the color" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgb(255, 0, 0) # pure red: s=1, v=1
+    square_center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      # square = first widget of the picker: id spec.child(1)
+      r = ui.color_edit32(color) { |c| color = c }
+      ctx.end_frame
+      r.rect
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    # click near the left edge of the square: saturation → ~0
+    left = Egui::Pos2.new(rect.left + 2.0, rect.top + 2.0)
+    draw.call([Egui::Event.pointer_moved(left),
+      Egui::Event.pointer_pressed(left),
+      Egui::Event.pointer_released(left)], 0.032)
+
+    color.should_not eq(Egui::Color32.rgb(255, 0, 0))
+    # low saturation + high value at hue 0 ≈ near-white
+    color.r.should be > 200
+    color.g.should be > 180
+    color.b.should be > 180
+  end
+end

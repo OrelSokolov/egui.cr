@@ -27,6 +27,9 @@ module Egui
     # Text widgets (TextEdit) publish the edited buffer the same way
     # (`ui.text_edit_singleline(buf) { |new| … }`).
     property widget_text : String?
+    # Color widgets (ColorPicker) publish the picked color
+    # (`ui.color_edit32(color) { |c| … }`).
+    property widget_color : Color32?
 
     def initialize(@ctx : Context, @id : Id, @rect : Rect, @sense : Sense,
                    @hovered : Bool, @clicked : Bool, @click_count : Int32,

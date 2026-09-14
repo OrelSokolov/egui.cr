@@ -18,6 +18,7 @@ module Egui
 
     @gradient : Tuple(Color32, Color32)?
     @icon : Symbol?
+    @image_texture : UInt64?
 
     def initialize(@text : String)
     end
@@ -35,6 +36,13 @@ module Egui
       self
     end
 
+    # A raster icon: texture drawn left of the text (phase 6; takes
+    # precedence over the vector icon).
+    def image_texture(texture_id : UInt64) : self
+      @image_texture = texture_id
+      self
+    end
+
     def ui(ui : Ui) : Response
       sense = Sense.click | Sense::Focusable
       pad = ui.style.spacing.button_padding
@@ -42,6 +50,9 @@ module Egui
       text_size = ui.ctx.fonts.measure(@text, ui.style.font_size)
       size = text_size + pad * 2.0
       if (name = @icon) && Icons::NAMES.includes?(name)
+        size += Vec2.new(text_size.y + ui.style.spacing.icon_spacing, 0.0)
+      end
+      if (tex = @image_texture) && !tex.zero?
         size += Vec2.new(text_size.y + ui.style.spacing.icon_spacing, 0.0)
       end
 
@@ -61,6 +72,14 @@ module Egui
       # Content: optional icon + centered text.
       content_left = rect.left + pad.x
       content_w = rect.width - 2 * pad.x
+      if (tex = @image_texture) && !tex.zero?
+        icon_box = Rect.from_min_size(
+          Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
+          Vec2.new(text_size.y, text_size.y))
+        ui.painter.image(icon_box, tex)
+        content_left += text_size.y + ui.style.spacing.icon_spacing
+        content_w -= text_size.y + ui.style.spacing.icon_spacing
+      end
       if (name = @icon) && Icons::NAMES.includes?(name)
         icon_box = Rect.from_min_size(
           Pos2.new(content_left, rect.center.y - text_size.y / 2.0),

@@ -20,6 +20,7 @@ module Egui
     getter painter : Painter
     getter style : Style
     property fonts : Fonts
+    property textures : TextureRegistry
 
     getter fps : Float64
 
@@ -40,11 +41,13 @@ module Egui
       @painter = Painter.new
       @style = Style.new
       @fonts = MonospaceFonts.new
+      @textures = DummyTextureRegistry.new
       @prev_time = nil
       @fps = 0.0
       @repaint_outstanding = 0
       @frame_cache = {} of String => IdTypeMap::Cell
       @available_rect = Rect.zero
+      @texture_cache = {} of String => UInt64
     end
 
     def begin_frame(raw : RawInput) : Nil
@@ -97,6 +100,12 @@ module Egui
         @frame_cache[key] = value
         value
       end
+    end
+
+    # egui `Context::load_texture`: decode an image file and cache it
+    # per path; 0 means "couldn't load".
+    def load_image(path : String) : UInt64
+      @texture_cache[path] ||= @textures.load(path)
     end
 
     # egui repaint scheduling: an immediate request buys two repaints so

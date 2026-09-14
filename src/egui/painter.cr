@@ -85,10 +85,25 @@ module Egui
     end
   end
 
+  # Textured quad (egui `epaint::ImageShape`): `rect` on screen, `uv`
+  # maps into the texture (0..1, origin top-left), `tint` multiplies.
+  # Texture handles come from a TextureRegistry (backend-owned).
+  struct ImageCmd
+    getter clip : Rect
+    getter rect : Rect
+    getter uv : Rect
+    getter texture_id : UInt64
+    getter tint : Color32
+
+    def initialize(@clip : Rect, @rect : Rect, @uv : Rect,
+                   @texture_id : UInt64, @tint : Color32)
+    end
+  end
+
   struct NoopCmd
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | ImageCmd | NoopCmd
 
   class Painter
     getter commands : Array(PaintCmd)
@@ -200,6 +215,13 @@ module Egui
             end_angle : Float64, width : Float64, color : Color32) : Nil
       add(ArcCmd.new(@clip, center, radius, start_angle, end_angle,
         width, color))
+    end
+
+    # Full quad of the texture by default.
+    def image(rect : Rect, texture_id : UInt64,
+              uv : Rect? = nil, tint : Color32 = Color32.new(255, 255, 255, 255)) : Nil
+      uv ||= Rect.from_min_size(Pos2.new(0.0, 0.0), Vec2.new(1.0, 1.0))
+      add(ImageCmd.new(@clip, rect, uv, texture_id, tint))
     end
 
     # egui `GraphicLayers::drain(order)`: flatten per layer, back to
