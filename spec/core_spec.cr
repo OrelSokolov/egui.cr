@@ -2946,3 +2946,142 @@ describe "DragValue format" do
       .map(&.text).should contain("3.142 rad")
   end
 end
+
+describe "floating containers are constrained to the screen" do
+  it "a window wider than the screen shifts to fit inside it" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx, time: 0.016)
+    ctx.window("wide", width: 5000.0) { |ui| ui.label("content") }
+    ctx.end_frame
+
+    bg = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
+    bg.rect.left.should be >= SCREEN.left
+    bg.rect.right.should be <= SCREEN.right
+  end
+
+  it "grip resize cannot grow the window past the screen edge" do
+    ctx = Egui::Context.new
+    win_id = Egui::Id.from("window/demo")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.window("demo") { |ui| ui.label("content") }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    initial = ctx.memory.layer_sizes[win_id].not_nil!
+    grip_center = Egui::Pos2.new(24.0 + initial.x - 6.0, 24.0 + initial.y - 6.0)
+
+    # press on the grip, drag far past the right/bottom screen edge
+    draw.call([Egui::Event.pointer_moved(grip_center),
+      Egui::Event.pointer_pressed(grip_center)], 0.032)
+    moved = grip_center + Egui::Vec2.new(5000.0, 5000.0)
+    draw.call([Egui::Event.pointer_moved(moved)], 0.048)
+    draw.call([] of Egui::Event, 0.064)
+
+    grown = ctx.memory.layer_sizes[win_id].not_nil!
+    grown.x.should be <= SCREEN.right - 24.0
+    grown.y.should be <= SCREEN.bottom - 24.0
+  end
+
+  it "a popup anchored at the right edge shifts left instead of shrinking" do
+    ctx = Egui::Context.new
+    pop_id = Egui::Id.from("popup/edge")
+    avail = nil
+
+    ctx.open_popup("edge")
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("edge", Egui::Pos2.new(790.0, 100.0)) { |ui|
+      avail = ui.max_rect.width }
+    ctx.end_frame
+
+    rect = ctx.memory.popup_rects[pop_id].not_nil!
+    rect.right.should be <= SCREEN.right
+    # the anchor shifted left so the requested width fits — the popup
+    # did not get squeezed against the edge
+    rect.left.should be_close(SCREEN.right - 220.0, 0.01)
+    avail.not_nil!.should be >= 220.0 - 2 * ctx.style.spacing.window_padding.x
+  end
+
+  it "popup min_width floors the width below the requested default" do
+    ctx = Egui::Context.new
+    avail = nil
+
+    ctx.open_popup("narrow")
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("narrow", Egui::Pos2.new(50.0, 50.0),
+      width: 50.0, min_width: 180.0) { |ui| avail = ui.max_rect.width }
+    ctx.end_frame
+
+    avail.not_nil!.should be >= 180.0 - 2 * ctx.style.spacing.window_padding.x
+  end
+
+  it "the combo popup is never narrower than its button" do
+    ctx = Egui::Context.new
+    center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ui = widget_ui(ctx)
+      Egui::ComboBox.new("cb", "sel", ["a", "b"], 240.0).show(ui) { |_| }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    center = ctx.memory.widget_rects.values.first.center
+
+    # click the combo button to open its popup
+    draw.call([Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], 0.032)
+    draw.call([Egui::Event.pointer_released(center.not_nil!)], 0.048)
+    draw.call([] of Egui::Event, 0.064)
+
+    rect = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
+    rect.width.should be >= 240.0
+  end
+
+  it "a modal on a narrow screen is never wider than the screen" do
+    ctx = Egui::Context.new
+    narrow = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(200.0, 200.0))
+
+    ctx.begin_frame(Egui::RawInput.new(narrow, [] of Egui::Event, 0.016))
+    ctx.modal("m") { |ui| ui.label("hi") }
+    ctx.end_frame
+
+    bg = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
+    bg.rect.right.should be <= 200.0
+  end
+
+  it "a tooltip at the bottom-right corner flips back on screen" do
+    ctx = Egui::Context.new
+
+    # a button in the bottom-right corner of the screen
+    corner_ui = ->(ctx : Egui::Context) : Egui::Ui do
+      Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.new(750.0, 550.0),
+          Egui::Vec2.new(50.0, 50.0)))
+    end
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      corner_ui.call(ctx).button("hover me").on_hover_text("tip text")
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    center = Egui::Pos2.new(775.0, 575.0)
+
+    # hover past the 0.5s delay with the pointer near the screen corner
+    draw.call([Egui::Event.pointer_moved(center)], 0.232)
+    draw.call([] of Egui::Event, 0.800)
+
+    tip = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
+    tip.rect.right.should be <= SCREEN.right
+    tip.rect.bottom.should be <= SCREEN.bottom
+  end
+end

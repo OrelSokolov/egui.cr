@@ -45,7 +45,7 @@ module Egui
 
       picked = false
       ui.ctx.popup(@id, Pos2.new(rect.left, rect.bottom),
-        width: rect.width) do |pop|
+        width: rect.width, min_width: rect.width) do |pop|
         @options.each do |option|
           item_size = ui.ctx.fonts.measure(option, font_size) +
             style.spacing.button_padding * 2.0

@@ -410,3 +410,26 @@ the runtime path. Two backends share it:
   the FreeType backend: crossbars of e/A/Е/Б render full-row at even
   weight with 1px stems, baselines stay uniform, Cyrillic descenders
   (д ц щ у) intact.
+
+## 11. Delta: floating containers constrained to the screen
+
+Port of upstream `Area`'s default `constrain: true` (area.rs:
+`size.at_most(constrain_rect.size())` +
+`Context::constrain_window_rect_to_area`), which the old port skipped
+entirely — initial widths were used raw everywhere.
+
+- `Context#constrain_floating(pos, size, min_width, constrain_y)`
+  (context.cr): cap the width at the screen width, floor it at
+  `min_width` (the parent widget for anchored popups — the floor wins,
+  so the popup shifts instead of shrinking below its parent), then
+  clamp the position so the rect stays inside. Frames without a screen
+  (headless specs, zero `screen_rect`) skip the constraint.
+- Applied in `#window` (initial/stored size + position while dragging;
+  the resize grip is additionally capped at the screen edges —
+  upstream `Resize` max_size), `#area`, `#popup` (new `min_width:`
+  param; the anchor shifts left at the right screen edge), and
+  `#modal` (width capped at the screen). `ComboBox` passes
+  `min_width: rect.width` so its popup is never narrower than the
+  button (previously only true on the opening frame).
+- Tooltips (`Response#show_tooltip`) flip back left/up at the
+  right/bottom screen edge instead of overflowing.
