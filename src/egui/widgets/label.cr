@@ -23,7 +23,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       runs = @rich.runs(style.font_size, style.visuals.text_color)
       max_width = @wrap ? ui.available_width : nil
       galley = ui.ctx.fonts.layout(runs, max_width)

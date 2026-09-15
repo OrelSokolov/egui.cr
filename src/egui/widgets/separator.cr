@@ -9,7 +9,7 @@ module Egui
     include Widget
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       width = 1.0
       size = if ui.layout.horizontal?
                Vec2.new(width, ui.available_height)

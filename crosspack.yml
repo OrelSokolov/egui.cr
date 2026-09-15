@@ -106,14 +106,14 @@ build:
       steps:
         - crystal spec          # specs must pass — same gate as CI
         - rake build:native     # vendor C -> lib/libegui_cr_sokol.a
-        - rake build:examples   # bin/hello
+        - rake build:examples   # bin/hello, bin/widgets_gallery
       artifacts:
         from: bin
         include: ["*"]
         to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
 
-# Packing: egui-cr ships a demo application (hello), so unlike a pure
-# library shard it does carry a package: section. `crosspack run`
+# Packing: egui-cr ships a demo application (widgets_gallery), so unlike
+# a pure library shard it does carry a package: section. `crosspack run`
 # builds for this host and launches the first executable from builds/.
 package:
   maintainer: egui-cr developers
@@ -121,16 +121,17 @@ package:
   description: |-
     egui-cr demo application: a 1:1 Crystal port of the egui (Rust)
     immediate-mode GUI architecture, rendered through sokol_gfx with
-    fontstash text. The hello example shows a window with a button,
-    labels, and an FPS bottom panel.
+    fontstash text. The widgets_gallery example shows every widget
+    (buttons, checkboxes, sliders, combos, text edits, menus, modals)
+    laid out on the panel system with a scrollable widget list.
   sources: builds
   prefix: usr/local
   payload:
-    - hello
+    - widgets_gallery
   executables:
-    - hello
+    - widgets_gallery
   links:
-    bin/hello: ../lib/egui-cr/hello
+    bin/widgets_gallery: ../lib/egui-cr/widgets_gallery
 
 # Runtime-axis dependencies: native libraries an egui-cr application
 # links at run time, per distro family. Linux only for now.

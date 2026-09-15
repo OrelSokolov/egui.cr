@@ -12,7 +12,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       font_size = style.font_size
       text_size = ui.ctx.fonts.measure(@label, font_size)
 
@@ -23,8 +23,9 @@ module Egui
       # interact_cursor style.
       ui.ctx.set_cursor_icon(CursorIcon::Pointer) if response.hovered?
 
-      color = style.visuals.hyperlink_color
-      color = color.mul_color(0.8) if response.active?
+      visuals = style.visuals
+      color = visuals.hyperlink_color
+      color = visuals.fade_color(color, 0.8) if response.active?
 
       # Full rich-text treatment (phase 4): colored, underlined run.
       rich = RichText.new(@label).color(color).underline

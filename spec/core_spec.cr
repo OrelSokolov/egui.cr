@@ -1712,3 +1712,135 @@ describe "cursor icons (CSS cursor)" do
     ctx.end_frame
   end
 end
+
+describe "theme (global style + per-widget overrides)" do
+  it "defaults to the dark theme" do
+    ctx = Egui::Context.new
+    ctx.theme.name.should eq("dark")
+    ctx.theme.dark?.should be_true
+    ctx.style.should be(ctx.theme.style)
+  end
+
+  it "swaps the theme instantly — the next frame paints the new palette" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ctx.central_panel { |ui| ui.label("hello") }
+    ctx.end_frame
+    dark_fill = ctx.theme.style.visuals.panel_fill
+
+    ctx.theme = Egui::Theme.light
+    ctx.theme.dark?.should be_false
+    ctx.style.visuals.panel_fill.should_not eq(dark_fill)
+
+    raw_frame(ctx, time: 0.032)
+    ctx.central_panel { |ui| ui.label("hello") }
+    cmds = ctx.end_frame
+    panel = cmds.select(Egui::RectCmd).find do |c|
+      c.fill && c.fill != Egui::Color32.rgba(0, 0, 0, 0)
+    end
+    panel.not_nil!.fill.should eq(ctx.theme.style.visuals.panel_fill)
+  end
+
+  it "merges widget style overrides over the theme (nil = inherit)" do
+    ctx = Egui::Context.new
+    red = Egui::Color32.rgb(170, 40, 40)
+
+    raw_frame(ctx)
+    widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.fill = red })
+    rects = ctx.end_frame.select(Egui::RectCmd)
+    rects.any?(&.fill.==(red)).should be_true
+  end
+
+  it "overridden fields survive a theme swap; inherited fields follow it" do
+    ctx = Egui::Context.new
+    red = Egui::Color32.rgb(170, 40, 40)
+    button = ->(ui : Egui::Ui) do
+      ui.add(Egui::Button.new("OK").style { |s| s.fill = red })
+      ui.add(Egui::Button.new("plain"))
+    end
+
+    raw_frame(ctx)
+    button.call(widget_ui(ctx))
+    ctx.end_frame
+
+    ctx.theme = Egui::Theme.light
+    light_text = ctx.theme.style.visuals.text_color
+    light_fill = ctx.theme.style.visuals.button_weak
+
+    raw_frame(ctx, time: 0.032)
+    ui = widget_ui(ctx)
+    ui.add(Egui::Button.new("OK").style { |s| s.fill = red })
+    ui.add(Egui::Button.new("plain"))
+    ctx.end_frame
+
+    # The overridden button keeps its custom fill; the plain button took
+    # the light theme's fill; both labels use the light theme's text
+    # color (nobody overrode it).
+    rects = ctx.painter.commands.select(Egui::RectCmd)
+    rects.any? { |c| c.fill == red }.should be_true
+    rects.any? { |c| c.fill == light_fill }.should be_true
+    text_cmds = ctx.painter.commands.select(Egui::TextCmd)
+    text_cmds.select(&.text.==("OK")).all?(&.color.==(light_text)).should be_true
+    text_cmds.select(&.text.==("plain")).all?(&.color.==(light_text)).should be_true
+  end
+
+  it "WidgetStyle#merge_over copies the theme and applies only set fields" do
+    base = Egui::Theme.dark.style
+    ws = Egui::WidgetStyle.new
+    ws.text_color = Egui::Color32.rgb(1, 2, 3)
+    merged = ws.merge_over(base)
+
+    merged.should_not be(base)
+    merged.visuals.text_color.should eq(Egui::Color32.rgb(1, 2, 3))
+    merged.visuals.button_weak.should eq(base.visuals.button_weak)
+    # mutating the merged copy must not leak into the theme
+    merged.visuals.button_weak = Egui::Color32.rgb(9, 9, 9)
+    base.visuals.button_weak.should_not eq(Egui::Color32.rgb(9, 9, 9))
+  end
+end
+
+describe "modal scrim follows the theme" do
+  it "paints visuals.modal_dim; light theme lightens it" do
+    ctx = Egui::Context.new
+    dim = nil
+
+    raw_frame(ctx)
+    ctx.modal("m") { |ui| ui.label("blocked") }
+    ctx.end_frame
+    dim = ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill.==(ctx.theme.style.visuals.modal_dim))
+    dim.should_not be_nil
+
+    ctx.theme = Egui::Theme.light
+    raw_frame(ctx, time: 0.032)
+    ctx.modal("m") { |ui| ui.label("blocked") }
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any?(&.fill.==(Egui::Color32.rgba(0, 0, 0, 70))).should be_true
+  end
+end
+
+describe "Visuals#fade_color (theme-aware weak variants)" do
+  it "darkens on dark themes, lightens on light ones" do
+    dark = Egui::Theme.dark.style.visuals
+    light = Egui::Theme.light.style.visuals
+    base = Egui::Color32.rgb(100, 100, 100)
+
+    faded = dark.fade_color(base, 0.5)
+    faded.r.should eq(50)
+    faded.g.should eq(50)
+    faded.b.should eq(50)
+
+    lightened = light.fade_color(base, 0.5)
+    lightened.r.should eq(178)
+    lightened.g.should eq(178)
+    lightened.b.should eq(178)
+  end
+
+  it "hint text fades the right way in both themes" do
+    dark = Egui::Theme.dark.style.visuals
+    light = Egui::Theme.light.style.visuals
+    dark.fade_color(dark.text_color, 0.55).r.should be < dark.text_color.r
+    light.fade_color(light.text_color, 0.55).r.should be > light.text_color.r
+  end
+end

@@ -31,6 +31,11 @@ class GalleryApp < Egui::App
       end
       bar.menu_button("View") do |menu|
         menu.menu_item("Toggle modal") { @modal_open = true }
+        # Instant global theme swap: assigning ctx.theme restyles the
+        # whole UI on the next frame.
+        menu.menu_item(ctx.theme.dark? ? "Light theme" : "Dark theme") do
+          ctx.theme = ctx.theme.dark? ? Egui::Theme.light : Egui::Theme.dark
+        end
       end
     end
 
@@ -82,7 +87,48 @@ class GalleryApp < Egui::App
             .gradient(Egui::Color32.rgb(40, 100, 200), Egui::Color32.rgb(16, 42, 92))).clicked?.tap do |c|
             @modal_open = true if c
           end
+          # Per-widget style: merged over the app theme (nil fields keep
+          # the theme value), so the fill stays custom across theme
+          # swaps while the stroke/text follow the theme.
+          row.add(Egui::Button.new("Themed red").style do |s|
+            s.fill = Egui::Color32.rgb(170, 40, 40)
+            s.fill_hovered = Egui::Color32.rgb(200, 55, 55)
+            s.fill_active = Egui::Color32.rgb(140, 25, 25)
+          end)
         end
+        scroll.separator
+
+        # Global theme + per-widget override merge. Toggle the theme and
+        # watch: everything un-overridden flips palette; the styled
+        # widgets keep their custom fields (nil fields follow the theme).
+        scroll.label("Theme (global + per-widget overrides):")
+        scroll.horizontal do |row|
+          if row.button("Dark theme").clicked?
+            ctx.theme = Egui::Theme.dark
+          end
+          if row.button("Light theme").clicked?
+            ctx.theme = Egui::Theme.light
+          end
+          row.label("active: #{ctx.theme}")
+        end
+        # Override demos — one styled field each, everything else
+        # inherited from the active theme.
+        scroll.add(Egui::Label.new("big red label (font_size + text_color override)")
+          .style { |s| s.font_size = 24.0; s.text_color = Egui::Color32.rgb(200, 60, 60) })
+        scroll.horizontal do |row|
+          cb = row.add(Egui::Checkbox.new(@checked, "green text (text_color override)")
+            .style { |s| s.text_color = Egui::Color32.rgb(70, 170, 70) })
+          @checked = !@checked if cb.changed?
+          row.add(Egui::RadioButton.new(@radio == 0, "accent text")
+            .style { |s| s.text_color = Egui::Color32.rgb(0, 122, 204) })
+        end
+        scroll.add(Egui::ProgressBar.new(@slider.clamp(0.0, 1.0))
+          .style { |s| s.selection_fill = Egui::Color32.rgb(200, 140, 20) })
+        scroll.add(Egui::Separator.new
+          .style { |s| s.separator_color = Egui::Color32.rgb(200, 60, 60) })
+        scroll.add(Egui::Hyperlink.new("orange link (hyperlink_color override)",
+            "https://github.com/emilk/egui")
+          .style { |s| s.hyperlink_color = Egui::Color32.rgb(230, 140, 30) })
         scroll.separator
 
         # CSS cursor styles: one button per CursorIcon value — hover a

@@ -87,6 +87,18 @@ FONScontext* egui_cr_sfons_create(int width, int height) {
     return sfons_create(&(sfons_desc_t){ .width = width, .height = height });
 }
 
+// Window clear color — defaults to the dark theme's base surface; the
+// Crystal side pushes the active theme's panel fill each frame
+// (egui_cr_set_clear_color), so a theme swap also swaps the backdrop.
+static float g_clear[4] = { 0.075f, 0.075f, 0.08f, 1.0f };
+
+void egui_cr_set_clear_color(float r, float g, float b, float a) {
+    g_clear[0] = r;
+    g_clear[1] = g;
+    g_clear[2] = b;
+    g_clear[3] = a;
+}
+
 void egui_cr_begin_pass(int w, int h) {
     (void)w; (void)h;
     sg_begin_pass(&(sg_pass){
@@ -94,7 +106,7 @@ void egui_cr_begin_pass(int w, int h) {
         .action = {
             .colors[0] = {
                 .load_action = SG_LOADACTION_CLEAR,
-                .clear_value = { 0.075f, 0.075f, 0.08f, 1.0f },
+                .clear_value = { g_clear[0], g_clear[1], g_clear[2], g_clear[3] },
             },
         },
     });

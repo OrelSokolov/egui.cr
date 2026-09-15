@@ -53,15 +53,16 @@ module Egui
 
     def ui(ui : Ui) : Response
       sense = Sense.click | Sense::Focusable
-      pad = ui.style.spacing.button_padding
+      style = effective_style(ui)
+      pad = style.spacing.button_padding
 
-      text_size = ui.ctx.fonts.measure(@text, ui.style.font_size)
+      text_size = ui.ctx.fonts.measure(@text, style.font_size)
       size = text_size + pad * 2.0
       if (name = @icon) && Icons::NAMES.includes?(name)
-        size += Vec2.new(text_size.y + ui.style.spacing.icon_spacing, 0.0)
+        size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
       end
       if (tex = @image_texture) && !tex.zero?
-        size += Vec2.new(text_size.y + ui.style.spacing.icon_spacing, 0.0)
+        size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
       end
 
       rect = ui.allocate_at_least(size)
@@ -73,11 +74,11 @@ module Egui
 
       if (grad = @gradient) && !response.active?
         ui.painter.rect(rect, rounding: 4.0, fill: grad[0], fill2: grad[1],
-          stroke_color: ui.style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: style.visuals.button_stroke, stroke_width: 1.0)
       else
-        fill = ui.style.visuals.button_fill(response.hovered?, response.active?)
+        fill = style.visuals.button_fill(response.hovered?, response.active?)
         ui.painter.rect(rect, rounding: 4.0, fill: fill,
-          stroke_color: ui.style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: style.visuals.button_stroke, stroke_width: 1.0)
       end
 
       # Content: optional icon + centered text.
@@ -88,22 +89,22 @@ module Egui
           Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
           Vec2.new(text_size.y, text_size.y))
         ui.painter.image(icon_box, tex)
-        content_left += text_size.y + ui.style.spacing.icon_spacing
-        content_w -= text_size.y + ui.style.spacing.icon_spacing
+        content_left += text_size.y + style.spacing.icon_spacing
+        content_w -= text_size.y + style.spacing.icon_spacing
       end
       if (name = @icon) && Icons::NAMES.includes?(name)
         icon_box = Rect.from_min_size(
           Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
           Vec2.new(text_size.y, text_size.y))
         Icons.draw(ui.painter, name, icon_box,
-          ui.style.visuals.text_color)
-        content_left += text_size.y + ui.style.spacing.icon_spacing
-        content_w -= text_size.y + ui.style.spacing.icon_spacing
+          style.visuals.text_color)
+        content_left += text_size.y + style.spacing.icon_spacing
+        content_w -= text_size.y + style.spacing.icon_spacing
       end
       pos = Pos2.new(content_left + (content_w - text_size.x).clamp(0.0, Float64::MAX) / 2.0,
         rect.center.y)
-      ui.painter.text(pos, @text, ui.style.font_size,
-        ui.style.visuals.text_color)
+      ui.painter.text(pos, @text, style.font_size,
+        style.visuals.text_color)
 
       response.paint_focus_ring
       response

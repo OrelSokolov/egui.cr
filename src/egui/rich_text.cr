@@ -37,8 +37,8 @@ module Egui
       size(default_size * 0.8)
     end
 
-    def weak(default_color : Color32) : RichText
-      color(default_color.mul_color(0.6))
+    def weak(visuals : Visuals) : RichText
+      color(visuals.fade_color(visuals.text_color, 0.6))
     end
 
     def runs(default_size : Float64, default_color : Color32) : Array(TextRun)

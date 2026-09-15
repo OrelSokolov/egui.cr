@@ -209,3 +209,45 @@ eframe/winit integration, adapted to sokol:
 - Verified live on X11 (Yaru): hand over buttons, I-beam over
   TextEdit, ew-resize over DragValue, animated watch/zoom cursors
   from the gallery demo buttons (XFixes cursor-image probes).
+
+## 8. Delta: theming (`Theme`, `WidgetStyle`)
+
+Upstream keeps `Style` on the Context (`Context::style`) with
+`Visuals::dark()`/`light()` presets; egui.cr wraps that in a named
+`Theme` and adds a merge-based per-widget override layer:
+
+- `src/egui/theme.cr`: `Theme {name, dark?, style}` with `Theme.dark` /
+  `Theme.light` presets (the light palette is new; the dark one is the
+  old `Style` defaults). `Context#theme` / `#theme=` — assignment swaps
+  the global style instantly (immediate mode re-reads the theme every
+  frame, so the next frame repaints with the new palette);
+  `Context#style` now delegates to `theme.style` (existing widget code
+  unchanged). `App#theme`/`#theme=` delegate to the Context.
+- `WidgetStyle`: per-widget overrides where every field is nilable,
+  nil = inherit from the theme (`text_color`, `fill`/`fill_hovered`/
+  `fill_active`, `stroke`, `selection_fill`, `separator_color`,
+  `hyperlink_color`, `font_size`, `button_padding`).
+  `#merge_over(base : Style)` clones the theme's Style and copies the
+  non-nil fields in — the theme is never mutated.
+- `Widget#style { |s| … }` collects overrides on any widget;
+  `Widget#effective_style(ui)` is the merge point. Widgets resolve
+  their style through it at the top of `#ui` (Button, Label, Checkbox,
+  RadioButton, Separator, ProgressBar, Slider, Hyperlink wired).
+  Overrides survive theme swaps; nil fields follow the new theme.
+- Gallery demo: View menu → light/dark toggle, plus a custom-filled
+  "Themed red" button that keeps its fill across swaps. Specs: default
+  theme, instant swap repaint, merge semantics, no-aliasing of merged
+  styles.
+- `Visuals#modal_dim`: the `Context#modal` scrim was hardcoded black;
+  it now follows the theme (dark: rgba(0,0,0,140), light:
+  rgba(0,0,0,70) — lighter themes dim less).
+- `Visuals#dark` + `Visuals#fade_color` (port of upstream
+  `fade_out_color`): the "weaker variant" multipliers
+  (`mul_color(0.5/0.6/0.8/0.85)` in TextEdit hint, RichText#weak,
+  Hyperlink active, Slider handle hover) darkened on both themes —
+  inverted on light. fade_color darkens on dark themes and lightens
+  (blends to white) on light ones. Also: the sokol shim's hardcoded
+  window clear color is now pushed from the theme's `panel_fill` each
+  frame (`egui_cr_set_clear_color`), and TextEdit uses
+  `spacing.button_padding` + `effective_style` instead of a private
+  pad literal.

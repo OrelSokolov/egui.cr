@@ -14,12 +14,12 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       sp = style.spacing
       thickness = sp.interact_size.y
 
       width = {sp.slider_width,
-               ui.available_width - label_width(ui)}.max
+               ui.available_width - label_width(ui, style)}.max
       rect = ui.allocate_at_least(Vec2.new(width, thickness))
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
@@ -41,7 +41,7 @@ module Egui
       t = normalized(new_value)
       handle_x = rect.left + handle_r + t * (rect.width - 2 * handle_r)
       handle_color = visuals.selection_fill
-      handle_color = handle_color.mul_color(0.85) if response.hovered?
+      handle_color = visuals.fade_color(handle_color, 0.85) if response.hovered?
       ui.painter.circle_filled(Pos2.new(handle_x, rail_y), handle_r,
         handle_color)
 
@@ -62,10 +62,10 @@ module Egui
       response
     end
 
-    private def label_width(ui : Ui) : Float64
+    private def label_width(ui : Ui, style : Style) : Float64
       return 0.0 unless text = @text
       ui.ctx.fonts.measure("#{text}: #{format_value(@value)}",
-        ui.style.font_size).x + ui.style.spacing.icon_spacing
+        style.font_size).x + style.spacing.icon_spacing
     end
 
     private def normalized(value : Float64) : Float64

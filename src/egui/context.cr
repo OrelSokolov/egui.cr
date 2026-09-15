@@ -18,7 +18,10 @@ module Egui
     getter memory : Memory
     getter input : InputState
     getter painter : Painter
-    getter style : Style
+    # The active global theme. Widgets read its #style every frame, so
+    # assigning a new theme (`ctx.theme = Theme.light`) restyles the
+    # entire UI on the very next frame — an instant swap.
+    getter theme : Theme
     property fonts : Fonts
     property textures : TextureRegistry
 
@@ -44,7 +47,7 @@ module Egui
       @input = InputState.new(Rect.zero, nil, false, false, false,
         Vec2.zero, 0.0, 0.016)
       @painter = Painter.new
-      @style = Style.new
+      @theme = Theme.dark
       @cursor_icon = CursorIcon::Default
       @fonts = MonospaceFonts.new
       @textures = DummyTextureRegistry.new
@@ -75,6 +78,18 @@ module Egui
       @painter.clear
     end
 
+    # Instant theme swap (see #theme) — takes effect next frame.
+    def theme=(theme : Theme) : Theme
+      @theme = theme
+      request_repaint
+      theme
+    end
+
+    # The active theme's style — what every un-overridden widget reads.
+    def style : Style
+      @theme.style
+    end
+
     def end_frame : Array(PaintCmd)
       @memory.end_frame
       @painter.commands_in_layer_order
@@ -97,7 +112,7 @@ module Egui
       # CSS `cursor: pointer` style (upstream `Visuals::interact_cursor`,
       # applied per-widget there — one hook here covers every clickable).
       if response.hovered? && sense.click? &&
-         (icon = @style.visuals.interact_cursor)
+         (icon = @theme.style.visuals.interact_cursor)
         @cursor_icon = icon
       end
       response
@@ -313,10 +328,10 @@ module Egui
       screen = @input.screen_rect
       pad = style.spacing.window_padding
 
-      # Dim everything below.
+      # Dim everything below (theme-driven scrim — `Visuals#modal_dim`).
       @painter.layer = Order::Foreground
       @painter.clip = screen
-      @painter.rect(screen, 0.0, Color32.rgba(0, 0, 0, 140))
+      @painter.rect(screen, 0.0, style.visuals.modal_dim)
 
       # Center using last frame's size.
       prev_size = @memory.layer_sizes[modal_id]? || Vec2.new(width, 120.0)

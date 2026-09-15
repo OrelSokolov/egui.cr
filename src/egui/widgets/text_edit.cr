@@ -16,7 +16,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       font_size = style.font_size
       fonts = ui.ctx.fonts
       id = ui.next_widget_id
@@ -25,7 +25,7 @@ module Egui
       runs = [TextRun.new(shown, font_size)]
       galley = fonts.layout(runs)
 
-      pad = Vec2.new(6.0, 4.0)
+      pad = style.spacing.button_padding
       size = Vec2.new(
         {galley.size.x, style.spacing.interact_size.x}.max + pad.x * 2.0,
         {galley.size.y, style.spacing.interact_size.y}.max + pad.y * 2.0)
@@ -58,7 +58,11 @@ module Egui
       ui.painter.rect(rect, 4.0, bg, visuals.button_stroke, 1.0)
 
       inner = rect.min + pad
-      color = @text.empty? && @hint ? visuals.text_color.mul_color(0.5) : visuals.text_color
+      color = if @text.empty? && @hint
+                visuals.fade_color(visuals.text_color, 0.55)
+              else
+                visuals.text_color
+              end
       ui.painter.paint_galley(inner, galley, fonts, color)
 
       # Blinking caret (1s period) while focused.

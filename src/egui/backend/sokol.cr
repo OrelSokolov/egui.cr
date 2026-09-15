@@ -28,6 +28,8 @@ lib LibEguiCr
   fun sfons_create = egui_cr_sfons_create(width : Int32, height : Int32) : Void*
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
+  fun set_clear_color = egui_cr_set_clear_color(r : Float32, g : Float32,
+                                                b : Float32, a : Float32)
 
   # sokol_app
   fun sapp_width : Int32
@@ -275,6 +277,12 @@ module Egui
 
         w = LibEguiCr.sapp_width
         h = LibEguiCr.sapp_height
+        # Backdrop follows the theme (its base surface color) so edges
+        # never flash the stale palette after a theme swap.
+        bg = app.ctx.style.visuals.panel_fill
+        LibEguiCr.set_clear_color(
+          bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
+          bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
         LibEguiCr.begin_pass(w, h)
 
         LibEguiCr.sgl_viewport(0, 0, w, h, true)

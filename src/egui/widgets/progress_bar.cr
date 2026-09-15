@@ -13,7 +13,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       height = {style.spacing.interact_size.y * 1.25,
                 style.font_size * 1.5}.max
       size = Vec2.new(ui.available_width, height)

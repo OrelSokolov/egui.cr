@@ -12,7 +12,7 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = ui.style
+      style = effective_style(ui)
       sp = style.spacing
       font_size = style.font_size
       text_size = ui.ctx.fonts.measure(@text, font_size)

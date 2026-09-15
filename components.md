@@ -15,7 +15,10 @@ Conventions for every phase:
 - Widget state is stored per-`Id` in the existing `Memory` IdTypeMap
   (`ctx.memory` / `frame_cache`), never in widget instances.
 - Style additions go into `src/egui/style.cr` as plain properties
-  (the current `Spacing`/`Visuals` classes grow in place).
+  (the current `Spacing`/`Visuals` classes grow in place). Global
+  theming lives in `src/egui/theme.cr`: the active `Theme` preset sits
+  on `Context#theme` (instantly swappable), and per-widget overrides
+  merge over it via `Widget#style { |s| … }` / `WidgetStyle#merge_over`.
 - System/OS ports (quit, native dialogs, clipboard, …) live in
   `src/egui/system_ports/`, one file per port under `Egui::SystemPorts`;
   platform-heavy calls stay behind an installable implementation the
