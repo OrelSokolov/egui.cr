@@ -61,6 +61,11 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .width = width,
         .height = height,
         .window_title = title,
+        // Full-resolution framebuffer on HighDPI/retina displays: without
+        // this the compositor upscales a 1x framebuffer (~2x on retina) and
+        // every rasterized glyph edge goes soft — text quality is dominated
+        // by this, not by the rasterizer.
+        .high_dpi = true,
         .sample_count = 4, // MSAA: smooth circle/arc/line edges
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .logger.func = slog_func,
