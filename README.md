@@ -77,8 +77,9 @@ Differences from the Linux build:
   linked against the Cocoa/OpenGL/QuartzCore frameworks
 - system ports that shell out to `zenity`/`xdg-open` (dialogs, URL
   opening) return nil/false on macOS — not wired yet
-- cursor switching and window management calls are no-ops (they need
-  NSCursor/AppKit through the ObjC runtime)
+- window management calls (resize/move/minimize/screen size) are no-ops
+  (they need AppKit through the ObjC runtime); cursor switching IS wired
+  (CSS keywords → NSCursor)
 
 ## Status
 

@@ -266,7 +266,9 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
 //     themes use the CSS keywords — with a core cursor-font fallback
 //     table for names the theme is missing.
 //   Win32: IDC_* stock cursors (LoadCursor/SetCursor).
-//   macOS: not wired yet (needs NSCursor through the ObjC runtime).
+//   macOS: NSCursor class methods (the shim is compiled as ObjC there);
+//     diagonal resize cursors exist only as private NSCursor methods,
+//     resolved at runtime with a public fallback.
 
 #if defined(_SAPP_LINUX) // X11 backend (this sokol version gates it with _SAPP_LINUX, not _SAPP_X11)
 
@@ -375,10 +377,95 @@ void egui_cr_set_cursor(const char* css_name) {
     }
 }
 
+#elif defined(__APPLE__)
+
+// macOS: NSCursor mapping. The frame callback runs on the main thread (as
+// NSCursor requires). CSS `none` hides the cursor until the mouse moves,
+// matching how egui hides it during drags.
+
+static char g_mac_cursor[32];
+
+// Diagonal resize cursors are private NSCursor class methods (winit uses
+// them too) — look them up at runtime, fall back when absent.
+static NSCursor* sh_mac_private_cursor(const char* sel_name) {
+    SEL sel = sel_getUid(sel_name);
+    if ([NSCursor respondsToSelector:sel])
+        return [NSCursor performSelector:sel];
+    return nil;
+}
+
+static NSCursor* sh_mac_private_or(const char* sel_name, NSCursor* fallback) {
+    NSCursor* c = sh_mac_private_cursor(sel_name);
+    return c ? c : fallback;
+}
+
+static NSCursor* sh_mac_cursor(const char* css) {
+    if (strcmp(css, "pointer") == 0)       return [NSCursor pointingHandCursor];
+    if (strcmp(css, "grab") == 0)          return [NSCursor openHandCursor];
+    if (strcmp(css, "grabbing") == 0 ||    // closed hand doubles as move/
+        strcmp(css, "move") == 0 ||        // all-scroll: macOS has no
+        strcmp(css, "all-scroll") == 0)    // dedicated four-way cursor
+        return [NSCursor closedHandCursor];
+    if (strcmp(css, "text") == 0)          return [NSCursor IBeamCursor];
+    if (strcmp(css, "vertical-text") == 0) { // not in the public headers
+        NSCursor* c = sh_mac_private_cursor("IBeamCursorForVerticalLayoutCursor");
+        return c ? c : [NSCursor IBeamCursor];
+    }
+    if (strcmp(css, "crosshair") == 0 ||
+        strcmp(css, "cell") == 0 ||
+        strcmp(css, "zoom-in") == 0 ||     // macOS has no zoom cursors
+        strcmp(css, "zoom-out") == 0)
+        return [NSCursor crosshairCursor];
+    if (strcmp(css, "not-allowed") == 0 ||
+        strcmp(css, "no-drop") == 0)       return [NSCursor operationNotAllowedCursor];
+    if (strcmp(css, "progress") == 0 ||    // macOS has no watch cursor —
+        strcmp(css, "wait") == 0) {        // busy spinner (private header),
+        NSCursor* c = sh_mac_private_cursor("busyButClickableCursor"); // closest
+        return c ? c : [NSCursor arrowCursor];
+    }
+    if (strcmp(css, "alias") == 0)         return [NSCursor dragLinkCursor];
+    if (strcmp(css, "copy") == 0)          return [NSCursor dragCopyCursor];
+    if (strcmp(css, "ew-resize") == 0 ||
+        strcmp(css, "col-resize") == 0)    return [NSCursor resizeLeftRightCursor];
+    if (strcmp(css, "ns-resize") == 0 ||
+        strcmp(css, "row-resize") == 0)    return [NSCursor resizeUpDownCursor];
+    if (strcmp(css, "e-resize") == 0)      return [NSCursor resizeRightCursor];
+    if (strcmp(css, "w-resize") == 0)      return [NSCursor resizeLeftCursor];
+    if (strcmp(css, "n-resize") == 0)      return [NSCursor resizeUpCursor];
+    if (strcmp(css, "s-resize") == 0)      return [NSCursor resizeDownCursor];
+    if (strcmp(css, "nesw-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthEastSouthWestCursor",
+                                 [NSCursor resizeUpDownCursor]);
+    if (strcmp(css, "nwse-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthWestSouthEastCursor",
+                                 [NSCursor resizeUpDownCursor]);
+    if (strcmp(css, "ne-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthEastCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "sw-resize") == 0)
+        return sh_mac_private_or("_windowResizeSouthWestCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "nw-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthWestCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "se-resize") == 0)
+        return sh_mac_private_or("_windowResizeSouthEastCursor", [NSCursor arrowCursor]);
+    // default / context-menu / help and unknown names: arrow (macOS has
+    // no help or context-menu cursor)
+    return [NSCursor arrowCursor];
+}
+
+void egui_cr_set_cursor(const char* css_name) {
+    if (strlen(css_name) >= sizeof(g_mac_cursor)) return;
+    if (strcmp(g_mac_cursor, css_name) == 0) return; // dedupe per-frame calls
+    strcpy(g_mac_cursor, css_name);
+    if (strcmp(css_name, "none") == 0) {
+        [NSCursor setHiddenUntilMouseMoves:YES];
+        return;
+    }
+    [sh_mac_cursor(css_name) set];
+}
+
 #else
 
-// macOS / other backends: cursor switching not wired (macOS needs
-// NSCursor via the ObjC runtime). The call is a no-op.
+// Other backends: cursor switching not wired. The call is a no-op.
 void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
 
 #endif
