@@ -32,8 +32,15 @@ module Egui
       ui.painter.text(Pos2.new(rect.left + pad_x, rect.center.y), label,
         font_size, visuals.text_color)
 
+      # Toggle: a click while open closes (like MenuButton); without
+      # this the re-open would also shield the popup from the
+      # click-elsewhere close in Memory#end_frame.
       if response.clicked?
-        ui.ctx.open_popup(@id)
+        if ui.ctx.popup_open?(@id)
+          ui.ctx.close_popup(@id)
+        else
+          ui.ctx.open_popup(@id)
+        end
       end
 
       picked = false

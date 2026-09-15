@@ -24,6 +24,11 @@ module Egui
 
     getter fps : Float64
 
+    # The cursor the frame asked the integration to show (upstream
+    # `PlatformOutput::cursor_icon`): reset to Default each
+    # begin_frame, set by widgets via #set_cursor_icon / hover.
+    getter cursor_icon : CursorIcon
+
     # egui `Context::available_rect`: screen area not yet claimed by
     # panels. Reset each begin_frame; every panel takes a bite; the
     # central panel takes what's left (panels must be added first —
@@ -40,6 +45,7 @@ module Egui
         Vec2.zero, 0.0, 0.016)
       @painter = Painter.new
       @style = Style.new
+      @cursor_icon = CursorIcon::Default
       @fonts = MonospaceFonts.new
       @textures = DummyTextureRegistry.new
       @prev_time = nil
@@ -54,6 +60,7 @@ module Egui
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
       @available_rect = raw.screen_rect
+      @cursor_icon = CursorIcon::Default
 
       # Smoothed FPS (EMA) — read by apps to show in a bottom panel.
       if @input.dt > 0.0
@@ -73,12 +80,27 @@ module Egui
       @painter.commands_in_layer_order
     end
 
+    # egui `Context::set_cursor_icon`: a widget requests the cursor
+    # while hovered/dragged; the backend reads #cursor_icon after
+    # end_frame.
+    def set_cursor_icon(icon : CursorIcon) : Nil
+      @cursor_icon = icon
+    end
+
     def interact(id : Id, rect : Rect, sense : Sense,
-                 layer : LayerId = LayerId.background) : Response
-      v = @memory.interact(id, rect, sense, layer)
-      Response.new(self, id, rect, sense, v.hovered?, v.clicked?,
+                 layer : LayerId = LayerId.background,
+                 clip : Rect = Rect.infinite) : Response
+      v = @memory.interact(id, rect, sense, layer, clip)
+      response = Response.new(self, id, rect, sense, v.hovered?, v.clicked?,
         v.click_count, v.pressed?, v.active?, v.dragged?, v.drag_started?,
         v.drag_stopped?, v.drag_delta)
+      # CSS `cursor: pointer` style (upstream `Visuals::interact_cursor`,
+      # applied per-widget there — one hook here covers every clickable).
+      if response.hovered? && sense.click? &&
+         (icon = @style.visuals.interact_cursor)
+        @cursor_icon = icon
+      end
+      response
     end
 
     # --- animation / cache / repaint seams --------------------------------
@@ -157,6 +179,9 @@ module Egui
       ui = Ui.new(self, win_id,
         Rect.from_min_size(content_min, Vec2.new(size.x - 2 * pad.x, 1e6)))
       ui.layer = layer
+      # Interaction stays inside the window's horizontal extent; the
+      # height grows with the content, hence the 1e6 tall strip.
+      ui.clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
       yield ui
 
       outer = Rect.new(
@@ -172,6 +197,7 @@ module Egui
         Vec2.new(grip_size, grip_size))
       grip_id = Id.from("window/#{title}/resize_grip")
       grip_resp = interact(grip_id, grip, Sense.drag, layer)
+      grip_resp.on_hover_and_drag_cursor(CursorIcon::NwseResize)
       if grip_resp.dragged?
         size = size + grip_resp.drag_delta
         size = Vec2.new({size.x, WINDOW_MIN_SIZE.x}.max,
@@ -230,6 +256,11 @@ module Egui
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
 
+      # Snap to last frame's measured size (like #modal): menus size
+      # themselves from their items' natural widths (via Ui#min_rect),
+      # so frame one opens at `width`, later frames hug the content.
+      width = @memory.layer_sizes[pop_id]?.try(&.x) || width
+
       layer = LayerId.new(Order::Foreground, pop_id)
       pad = style.spacing.window_padding
 
@@ -244,14 +275,18 @@ module Egui
 
       outer = Rect.new(
         anchor,
-        Pos2.new({ui.min_rect.right + pad.x, anchor.x + width}.max,
-          ui.min_rect.bottom + pad.y))
+        Pos2.new(ui.min_rect.right + pad.x, ui.min_rect.bottom + pad.y))
+      @memory.layer_sizes[pop_id] = outer.size
       @painter.clip = outer
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 4.0, style.visuals.window_fill,
           style.visuals.window_stroke, 1.0))
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
+    def popup_open?(id : String) : Bool
+      @memory.open_popups.includes?(Id.from("popup/#{id}"))
     end
 
     def open_popup(id : String) : Nil
@@ -384,6 +419,7 @@ module Egui
 
       ui = Ui.new(self, Id.from("panel/#{id}"),
         rect.shrink(pad.x), layout)
+      ui.clip = rect
       yield ui
 
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))

@@ -8,6 +8,10 @@
 #define SOKOL_GLCORE
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
 #define SOKOL_IMPL
+#if !defined(__APPLE__) && !defined(_WIN32)
+#include <X11/Xlib.h>
+#include <X11/Xcursor/Xcursor.h>
+#endif
 #include "sokol_app.h"
 #include "sokol_gfx.h"
 #define SOKOL_GLCUE_IMPL
@@ -57,6 +61,7 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .width = width,
         .height = height,
         .window_title = title,
+        .sample_count = 4, // MSAA: smooth circle/arc/line edges
         .logger.func = slog_func,
     };
     sapp_run(&desc);
@@ -70,6 +75,9 @@ void egui_cr_gfx_init(void) {
     sgl_setup(&(sgl_desc_t){
         .max_vertices = 1 << 16,
         .max_commands = 1 << 14,
+        // Must match the swapchain sample count requested in
+        // egui_cr_sapp_run, or sokol_gfx validation fails.
+        .sample_count = sapp_sample_count(),
         .logger.func = slog_func,
     });
 }
@@ -124,11 +132,17 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
     return view.id;
 }
 
-// Bind a texture for the following sgl vertices (inside begin/end).
+// Bind a texture for the following begin/end block (must be called
+// OUTSIDE begin/end — sokol_gl asserts !ctx->in_begin). Texturing must
+// then be enabled separately; disable it afterwards so later untextured
+// geometry falls back to the internal white texture.
 void egui_cr_sgl_texture(uint32_t view_id) {
     sg_view view = {.id = view_id};
     sgl_texture(view, g_linear_sampler);
 }
+
+void egui_cr_sgl_enable_texture(void) { sgl_enable_texture(); }
+void egui_cr_sgl_disable_texture(void) { sgl_disable_texture(); }
 
 // Decode an image file (PNG/JPEG/...) via stb_image and upload it as
 // RGBA8; returns the sg_view id (0 on failure).
@@ -140,3 +154,127 @@ uint32_t egui_cr_load_image(const char* path) {
     stbi_image_free(data);
     return view_id;
 }
+
+// --- cursor -----------------------------------------------------------------
+//
+// Port of eframe/winit cursor handling: egui hands the integration a
+// CSS `cursor` keyword ("pointer", "ew-resize", …) each frame; the
+// integration maps it to the platform cursor.
+//
+//   X11/Xlib+Xcursor (Linux): theme cursor by CSS name — XDG cursor
+//     themes use the CSS keywords — with a core cursor-font fallback
+//     table for names the theme is missing.
+//   Win32: IDC_* stock cursors (LoadCursor/SetCursor).
+//   macOS: not wired yet (needs NSCursor through the ObjC runtime).
+
+#if defined(_SAPP_LINUX) // X11 backend (this sokol version gates it with _SAPP_LINUX, not _SAPP_X11)
+
+static Cursor g_none_cursor; // 1x1 transparent cursor for CSS `none`
+static Cursor g_current_cursor;
+
+// Fallback shapes from the core X cursor font (cursorfont.h) for CSS
+// names the theme doesn't ship — approximations, used only when
+// XcursorLibraryLoadCursor fails.
+typedef struct { const char* css; unsigned int shape; } cursor_fallback_t;
+static const cursor_fallback_t g_cursor_fallbacks[] = {
+    {"default", XC_left_ptr},      {"context-menu", XC_left_ptr},
+    {"help", XC_question_arrow},   {"pointer", XC_hand2},
+    {"progress", XC_watch},        {"wait", XC_watch},
+    {"cell", XC_plus},             {"crosshair", XC_cross},
+    {"text", XC_xterm},            {"vertical-text", XC_xterm},
+    {"alias", XC_exchange},        {"copy", XC_exchange},
+    {"move", XC_fleur},            {"no-drop", XC_pirate},
+    {"not-allowed", XC_X_cursor},  {"grab", XC_hand1},
+    {"grabbing", XC_hand2},        {"all-scroll", XC_fleur},
+    {"ew-resize", XC_sb_h_double_arrow}, {"col-resize", XC_sb_h_double_arrow},
+    {"ns-resize", XC_sb_v_double_arrow}, {"row-resize", XC_sb_v_double_arrow},
+    {"nesw-resize", XC_top_right_corner}, {"nwse-resize", XC_bottom_right_corner},
+    {"e-resize", XC_right_side},   {"w-resize", XC_left_side},
+    {"n-resize", XC_top_side},     {"s-resize", XC_bottom_side},
+    {"ne-resize", XC_top_right_corner},  {"sw-resize", XC_bottom_left_corner},
+    {"nw-resize", XC_top_left_corner},   {"se-resize", XC_bottom_right_corner},
+    {"zoom-in", XC_plus},          {"zoom-out", XC_plus},
+};
+
+void egui_cr_set_cursor(const char* css_name) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    Cursor cursor;
+    if (strcmp(css_name, "none") == 0) {
+        if (!g_none_cursor) {
+            Pixmap pm = XCreateBitmapFromData(dpy, win, "\0", 1, 1);
+            XColor black = {0};
+            g_none_cursor = XCreatePixmapCursor(dpy, pm, pm, &black, &black, 0, 0);
+            XFreePixmap(dpy, pm);
+        }
+        cursor = g_none_cursor;
+    } else {
+        cursor = XcursorLibraryLoadCursor(dpy, css_name);
+        if (!cursor) {
+            for (size_t i = 0; i < sizeof(g_cursor_fallbacks)/sizeof(g_cursor_fallbacks[0]); i++) {
+                if (strcmp(css_name, g_cursor_fallbacks[i].css) == 0) {
+                    cursor = XCreateFontCursor(dpy, g_cursor_fallbacks[i].shape);
+                    break;
+                }
+            }
+        }
+        if (!cursor) return; // unknown name — keep the current cursor
+    }
+    if (cursor != g_current_cursor) {
+        XDefineCursor(dpy, win, cursor);
+        XFlush(dpy);
+        g_current_cursor = cursor;
+    }
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+static HCURSOR g_win_current;
+
+typedef struct { const char* css; LPCWSTR idc; } win_cursor_t;
+static const win_cursor_t g_win_cursors[] = {
+    {"default", IDC_ARROW},        {"context-menu", IDC_ARROW},
+    {"help", IDC_HELP},            {"pointer", IDC_HAND},
+    {"progress", IDC_APPSTARTING}, {"wait", IDC_WAIT},
+    {"cell", IDC_CROSS},           {"crosshair", IDC_CROSS},
+    {"text", IDC_IBEAM},           {"vertical-text", IDC_IBEAM},
+    {"alias", IDC_ARROW},          {"copy", IDC_ARROW},
+    {"move", IDC_SIZEALL},         {"no-drop", IDC_NO},
+    {"not-allowed", IDC_NO},       {"grab", IDC_SIZEALL},
+    {"grabbing", IDC_SIZEALL},     {"all-scroll", IDC_SIZEALL},
+    {"ew-resize", IDC_SIZEWE},     {"col-resize", IDC_SIZEWE},
+    {"ns-resize", IDC_SIZENS},     {"row-resize", IDC_SIZENS},
+    {"nesw-resize", IDC_SIZENESW}, {"nwse-resize", IDC_SIZENWSE},
+    {"e-resize", IDC_SIZEWE},      {"w-resize", IDC_SIZEWE},
+    {"n-resize", IDC_SIZENS},      {"s-resize", IDC_SIZENS},
+    {"ne-resize", IDC_SIZENESW},   {"sw-resize", IDC_SIZENESW},
+    {"nw-resize", IDC_SIZENWSE},   {"se-resize", IDC_SIZENWSE},
+    {"zoom-in", IDC_CROSS},        {"zoom-out", IDC_CROSS},
+};
+
+void egui_cr_set_cursor(const char* css_name) {
+    for (size_t i = 0; i < sizeof(g_win_cursors)/sizeof(g_win_cursors[0]); i++) {
+        if (strcmp(css_name, g_win_cursors[i].css) == 0) {
+            HCURSOR c = LoadCursorW(NULL, g_win_cursors[i].idc);
+            if (c && c != g_win_current) {
+                SetCursor(c);
+                g_win_current = c;
+            }
+            return;
+        }
+    }
+}
+
+#else
+
+// macOS / other backends: cursor switching not wired (macOS needs
+// NSCursor via the ObjC runtime). The call is a no-op.
+void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
+
+#endif

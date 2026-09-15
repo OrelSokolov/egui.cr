@@ -103,6 +103,20 @@ module Egui
       self
     end
 
+    # egui `Response::on_hover_cursor` — when hovered, use this icon
+    # for the mouse cursor.
+    def on_hover_cursor(cursor : CursorIcon) : self
+      @ctx.set_cursor_icon(cursor) if hovered?
+      self
+    end
+
+    # egui `Response::on_hover_and_drag_cursor` — same, but also while
+    # dragging (sliders, resize grips).
+    def on_hover_and_drag_cursor(cursor : CursorIcon) : self
+      @ctx.set_cursor_icon(cursor) if hovered? || dragged?
+      self
+    end
+
     # egui tooltip (containers/tooltip.rs): appears in the Tooltip
     # layer at the pointer + offset, after the widget has been hovered
     # for a short delay (hover-start time is per-widget system state).

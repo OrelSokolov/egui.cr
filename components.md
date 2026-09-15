@@ -240,6 +240,17 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 
 ## Phase 7 — remaining parity & polish (pick on demand)
 
+- [x] Cursor icons (user request): CSS `cursor` support —
+      `src/egui/cursor_icon.cr` (all 35 keywords, `#to_css`/`.parse?`),
+      `Context#cursor_icon`/`#set_cursor_icon` (upstream
+      `PlatformOutput::cursor_icon`), `Response#on_hover_cursor`,
+      style `Visuals#interact_cursor` (pointer by default over
+      clickables — `cursor: pointer`), `Button#cursor(icon)` override;
+      backend adapter `egui_cr_set_cursor` in the shim (X11+Xcursor
+      with cursor-font fallback, Win32 IDC map, macOS stub);
+      gallery demo: a button per cursor in the "Cursors" section.
+      Specs: exact CSS strings, round-trip, hover→pointer + reset,
+      per-widget override, drag_value ew-resize.
 - [ ] Ui helpers: `add_sized`, `scope`, `enabled(flag)`, `columns`.
 - [ ] `src/egui/grid.cr` ← `crates/egui/src/grid.rs`.
 - [ ] `Response#context_menu` (right-click menus, needs P2 menu).

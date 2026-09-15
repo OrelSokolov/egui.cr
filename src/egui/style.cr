@@ -48,8 +48,14 @@ module Egui
     property selection_fill : Color32
     property hyperlink_color : Color32
     property separator_color : Color32
+    # Cursor shown over hovered clickable widgets — the CSS
+    # `cursor: pointer` style (upstream `Visuals::interact_cursor`,
+    # which defaults to None there). Set to nil for the platform
+    # default cursor.
+    property interact_cursor : CursorIcon?
 
     def initialize
+      @interact_cursor = CursorIcon::Pointer
       @window_fill = Color32.rgba(27, 27, 30, 235)
       @window_stroke = Color32.rgba(80, 80, 80, 255)
       @panel_fill = Color32.rgba(22, 22, 24, 255)

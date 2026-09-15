@@ -19,7 +19,11 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = ui.next_widget_id
-      hsv = Hsva.from_color(@color)
+      # Upstream `color_cache_get`: prefer the Hsva this exact color was
+      # produced from — from_color of a near-white color yields hue 0
+      # (red), which would flip the square and the hue cursor to red as
+      # soon as a drag crosses into the white corner.
+      hsv = ui.ctx.memory.color_cache[@color]? || Hsva.from_color(@color)
       size = 180.0
 
       # --- SV square -----------------------------------------------------
@@ -43,8 +47,9 @@ module Egui
         Pos2.new(square.left, square.bottom + 6.0),
         Vec2.new(size, bar_h))
       hue_tex = hue_texture(ui.ctx)
-      ui.painter.image(bar, hue_tex,
-        uv: Rect.from_min_size(Pos2.new(hsv.h, 0.0), Vec2.new(1.0 / 60.0, 1.0)))
+      # The full rainbow across the bar; the cursor marks the current
+      # hue (upstream `color_slider_1d` paints the whole gradient too).
+      ui.painter.image(bar, hue_tex)
 
       hue_id = id.child(2)
       hue_resp = ui.interact(bar, hue_id, Sense.click_and_drag | Sense::Focusable)
@@ -73,6 +78,12 @@ module Egui
         response.widget_color = new_color
         response.mark_changed
       end
+      # Upstream `color_cache_set`: remember which Hsva this color came
+      # from so the hue survives the next frame's from_color roundtrip.
+      # Bounded like upstream's FixedCache (dropped wholesale at 1024).
+      cache = ui.ctx.memory.color_cache
+      cache.clear if cache.size >= 1024
+      cache[new_color] = hsv
       response
     end
 

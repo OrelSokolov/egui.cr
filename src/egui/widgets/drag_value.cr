@@ -30,6 +30,9 @@ module Egui
         {text_size.y, style.spacing.interact_size.y}.max)
       rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click_and_drag | Sense::Focusable)
+      # Upstream: horizontal resize arrows — the value is dragged
+      # sideways (overrides the interact_cursor pointer).
+      response.on_hover_and_drag_cursor(CursorIcon::EwResize)
 
       new_value = @value
       changed = false

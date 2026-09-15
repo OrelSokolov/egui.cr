@@ -673,16 +673,19 @@ describe "phase 2 widgets" do
     rect = widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }.rect
     ctx.end_frame
 
-    # frame 2: press near the left end of the rail
+    # frame 2: click near the left end of the rail — the value jumps
+    # there right away (drag-only widgets drag from the press, like
+    # upstream egui; no movement threshold)
     cy = rect.not_nil!.center.y
     press = Egui::Pos2.new(rect.not_nil!.min.x + 15.0, cy)
     raw_frame(ctx, events: [Egui::Event.pointer_moved(press),
       Egui::Event.pointer_pressed(press)], time: 0.032)
     widget_ui(ctx).slider(value, 0.0..100.0, "v") { |v| value = v }
     ctx.end_frame
-    value.should eq(0.0) # no value change before the pointer moves
+    value.should be > 0.0 # the click itself sets the value
+    value.should be < 10.0
 
-    # frame 3: drag past the click threshold; the slider fills the
+    # frame 3: drag further right; the slider fills the
     # available width (≈270pt here), so 60px in ≈ 20% of the range
     mid = Egui::Pos2.new(rect.not_nil!.min.x + 60.0, cy)
     raw_frame(ctx, events: [Egui::Event.pointer_moved(mid)], time: 0.048)
@@ -753,6 +756,32 @@ describe "phase 2 widgets" do
     ctx.memory.open_popups.should be_empty
   end
 
+  it "combo box button click toggles the popup closed" do
+    ctx = Egui::Context.new
+    selected = "First"
+
+    raw_frame(ctx, time: 0.016)
+    widget_ui(ctx).combo_box("spec_toggle", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+
+    # open it
+    btn_center = ctx.memory.widget_rects.values.first.center
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(btn_center),
+      Egui::Event.pointer_pressed(btn_center),
+      Egui::Event.pointer_released(btn_center)], time: 0.032)
+    widget_ui(ctx).combo_box("spec_toggle", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+    ctx.memory.open_popups.should_not be_empty
+
+    # click the same button again — the popup must close, not re-open
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(btn_center),
+      Egui::Event.pointer_pressed(btn_center),
+      Egui::Event.pointer_released(btn_center)], time: 0.048)
+    widget_ui(ctx).combo_box("spec_toggle", selected, ["First", "Second"]) { |s| selected = s }
+    ctx.end_frame
+    ctx.memory.open_popups.should be_empty
+  end
+
   it "menu bar opens a dropdown and menu_item closes it" do
     ctx = Egui::Context.new
     clicked_item = false
@@ -784,6 +813,72 @@ describe "phase 2 widgets" do
 
     clicked_item.should be_true
     ctx.memory.open_popups.should be_empty
+  end
+
+  it "menu_bar reserves the top strip so panels don't paint over it" do
+    ctx = Egui::Context.new
+    raw_frame(ctx, time: 0.016)
+    ctx.menu_bar { |bar| bar.menu_button("File") { |menu| menu.menu_item("New") { } } }
+    bar_bottom = ctx.available_rect.min.y
+    bar_bottom.should be > 0
+
+    side = ctx.side_panel(:left, "side", width: 100.0) { |ui| ui.label("side") }
+    side.min.y.should be_close(bar_bottom, 0.01)
+
+    central = ctx.central_panel { |ui| ui.label("center") }
+    central.min.y.should be_close(bar_bottom, 0.01)
+
+    # no panel background covers the menu bar strip anymore
+    panel_fill = ctx.style.visuals.panel_fill
+    ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == panel_fill && c.rect.height != bar_bottom }
+      .each { |c| c.rect.min.y.should be >= bar_bottom }
+    ctx.end_frame
+  end
+
+  it "menu item rows span the popup and the popup hugs its content" do
+    ctx = Egui::Context.new
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.menu_bar do |bar|
+        bar.menu_button("File") do |menu|
+          menu.menu_item("New", "Ctrl+N") { }
+        end
+      end
+      ctx.end_frame
+    end
+
+    # open the menu (click "File")
+    draw.call([] of Egui::Event, 0.016)
+    file_center = ctx.memory.widget_rects.values.first.center
+    draw.call([Egui::Event.pointer_moved(file_center),
+      Egui::Event.pointer_pressed(file_center),
+      Egui::Event.pointer_released(file_center)], 0.032)
+
+    # let the measured popup size snap, then inspect one stable frame
+    draw.call([] of Egui::Event, 0.048)
+
+    item_rect = ctx.memory.widget_rects.values.last
+
+    # full-bleed: the item row (highlight + click area) spans the
+    # popup frame edge-to-edge, frame hugs the widest item
+    frame = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
+    frame.rect.width.should be_close(item_rect.width, 0.5)
+    frame.rect.width.should be < 180.0 # no more fixed-width right gap
+
+    # shortcut is right-aligned inside the row: label left of shortcut
+    pad_x = ctx.style.spacing.button_padding.x
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+      .select { |t| t.text == "New" || t.text == "Ctrl+N" }
+    label = texts.find(&.text.==("New")).not_nil!
+    shortcut = texts.find(&.text.==("Ctrl+N")).not_nil!
+    label.pos.x.should be_close(item_rect.left + pad_x, 0.5)
+    shortcut.pos.x.should be > label.pos.x
+    shortcut.pos.x.should be_close(
+      item_rect.right - pad_x -
+        ctx.fonts.measure("Ctrl+N", ctx.style.font_size).x, 0.5)
   end
 
   it "modal blocks interaction with lower layers" do
@@ -1192,6 +1287,45 @@ describe "scroll area (phase 5)" do
     (offset.y - (content.y - 100.0)).abs.should be < 1.0
   end
 
+  it "dragging the scrollbar thumb scrolls the content" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout — content overflows, scrollbar exists
+    draw.call([] of Egui::Event, 0.016)
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    content.y.should be > viewport.height
+    max_offset = content.y - viewport.height
+
+    # frame 2: press the track near the bottom (below the thumb) — the
+    # thumb centers on the pointer, jumping the offset near the end
+    press = Egui::Pos2.new(viewport.right - 4.0, viewport.bottom - 10.0)
+    draw.call([Egui::Event.pointer_moved(press),
+      Egui::Event.pointer_pressed(press)], 0.032)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    offset.should be > 0.8 * max_offset
+
+    # frame 3: drag up along the bar — the offset follows proportionally
+    up = Egui::Pos2.new(press.x, viewport.top + 10.0)
+    draw.call([Egui::Event.pointer_moved(up)], 0.048)
+    dragged = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    dragged.should be < offset / 2.0
+
+    # frame 4: release — offset stays where it was dragged to
+    draw.call([Egui::Event.pointer_released(up)], 0.064)
+    after = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    after.should be_close(dragged, 0.01)
+  end
+
   it "nested scroll areas: the inner one owns the scroll delta" do
     ctx = Egui::Context.new
     root = Egui::Id.from("spec")
@@ -1273,6 +1407,21 @@ describe "textures & images (phase 6)" do
     cmd.rect.height.should eq(40.0)
   end
 
+  it "hue bar paints the full rainbow gradient (uv 0..1)" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgb(255, 0, 0)
+
+    raw_frame(ctx)
+    widget_ui(ctx).color_edit32(color) { |c| color = c }
+    ctx.end_frame
+
+    images = ctx.painter.commands.select(Egui::ImageCmd)
+    images.size.should eq(2) # SV square + hue bar
+    bar = images[1]
+    bar.uv.min.x.should be < 0.01
+    bar.uv.width.should be > 0.99
+  end
+
   it "texture cache is bounded per hue step" do
     ctx = Egui::Context.new
     color = Egui::Color32.rgb(255, 0, 0)
@@ -1340,5 +1489,226 @@ describe "hsv conversions (phase 6)" do
     color.r.should be > 200
     color.g.should be > 180
     color.b.should be > 180
+  end
+
+  it "keeps the hue when dragging the SV square into the white corner" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgb(0, 0, 255) # pure blue: h = 2/3
+    square = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      r = widget_ui(ctx).color_edit32(color) { |c| color = c }
+      ctx.end_frame
+      # the SV square is the top 180x180 of the picker rect
+      Egui::Rect.from_min_size(r.rect.min, Egui::Vec2.new(180.0, 180.0))
+    end
+
+    square = draw.call([] of Egui::Event, 0.016)
+    # click the white corner: s = 0, v = 1 → the color becomes pure
+    # white, whose hue is undefined (from_color would say 0 = red)
+    corner = Egui::Pos2.new(square.not_nil!.left, square.not_nil!.top)
+    draw.call([Egui::Event.pointer_moved(corner),
+      Egui::Event.pointer_pressed(corner),
+      Egui::Event.pointer_released(corner)], 0.032)
+
+    color.should eq(Egui::Color32.rgb(255, 255, 255))
+    Egui::Hsva.from_color(color).h.should eq(0.0) # the naive roundtrip loses the hue
+
+    # next frame the picker must still remember the blue hue (upstream
+    # color_cache: white → the Hsva it was produced from)
+    draw.call([] of Egui::Event, 0.048)
+    cached = ctx.memory.color_cache[color].not_nil!
+    cached.h.should be_close(2.0 / 3.0, 0.01)
+  end
+end
+
+describe "interaction clipping (overflowing widgets)" do
+  it "does not click or hover widgets outside their panel's clip rect" do
+    screen = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 200.0))
+    ctx = Egui::Context.new
+    button_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw = Egui::RawInput.new(screen, events, time)
+      ctx.begin_frame(raw)
+      ctx.central_panel do |ui|
+        30.times { |i| ui.label("row #{i}") } # push content past the panel bottom
+        r = ui.button("Overflow")
+        button_rect = r.rect
+      end
+      ctx.bottom_panel { |ui| ui.label("fps") }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+    rect = button_rect.not_nil!
+    rect.bottom.should be > 200.0 # the button overflows the 200px screen
+
+    # click right on the overflowing button — it must not react
+    center = Egui::Pos2.new(rect.center.x, rect.center.y)
+    resp = nil
+    draw.call([Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)], 0.048)
+    raw = Egui::RawInput.new(screen, [Egui::Event.pointer_released(center)], 0.064)
+    ctx.begin_frame(raw)
+    ctx.central_panel do |ui|
+      30.times { |i| ui.label("row #{i}") }
+      resp = ui.button("Overflow")
+    end
+    ctx.bottom_panel { |ui| ui.label("fps") }
+    ctx.end_frame
+
+    resp.not_nil!.clicked?.should be_false
+    resp.not_nil!.hovered?.should be_false
+  end
+
+  it "clips interaction of widgets inside a horizontal row to their panel" do
+    screen = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 200.0))
+    ctx = Egui::Context.new
+    button_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw = Egui::RawInput.new(screen, events, time)
+      ctx.begin_frame(raw)
+      ctx.central_panel do |ui|
+        30.times { |i| ui.label("row #{i}") } # push content past the panel bottom
+        ui.horizontal do |row|
+          r = row.button("Overflow")
+          button_rect = r.rect
+        end
+      end
+      ctx.bottom_panel { |ui| ui.label("fps") }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+    rect = button_rect.not_nil!
+    rect.bottom.should be > 200.0 # the row's button overflows the 200px screen
+
+    # click right on the overflowing button — it must not react (the
+    # horizontal row inherits the panel's clip rect)
+    center = Egui::Pos2.new(rect.center.x, rect.center.y)
+    resp = nil
+    draw.call([Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)], 0.048)
+    raw = Egui::RawInput.new(screen, [Egui::Event.pointer_released(center)], 0.064)
+    ctx.begin_frame(raw)
+    ctx.central_panel do |ui|
+      30.times { |i| ui.label("row #{i}") }
+      ui.horizontal { |row| resp = row.button("Overflow") }
+    end
+    ctx.bottom_panel { |ui| ui.label("fps") }
+    ctx.end_frame
+
+    resp.not_nil!.clicked?.should be_false
+    resp.not_nil!.hovered?.should be_false
+  end
+end
+
+describe "cursor icons (CSS cursor)" do
+  it "maps every CursorIcon to its exact CSS keyword" do
+    Egui::CursorIcon.values.size.should eq(35)
+    Egui::CursorIcon::Default.to_css.should eq("default")
+    Egui::CursorIcon::None.to_css.should eq("none")
+    Egui::CursorIcon::Pointer.to_css.should eq("pointer")
+    Egui::CursorIcon::ContextMenu.to_css.should eq("context-menu")
+    Egui::CursorIcon::VerticalText.to_css.should eq("vertical-text")
+    Egui::CursorIcon::NotAllowed.to_css.should eq("not-allowed")
+    Egui::CursorIcon::EwResize.to_css.should eq("ew-resize")
+    Egui::CursorIcon::NeswResize.to_css.should eq("nesw-resize")
+    Egui::CursorIcon::NwseResize.to_css.should eq("nwse-resize")
+    Egui::CursorIcon::ColResize.to_css.should eq("col-resize")
+    Egui::CursorIcon::SeResize.to_css.should eq("se-resize")
+    Egui::CursorIcon::ZoomIn.to_css.should eq("zoom-in")
+  end
+
+  it "round-trips every CSS cursor keyword" do
+    Egui::CursorIcon.values.each do |icon|
+      Egui::CursorIcon.parse?(icon.to_css).should eq(icon)
+    end
+    Egui::CursorIcon.parse?("pointer").should eq(Egui::CursorIcon::Pointer)
+    Egui::CursorIcon.parse?("ew-resize").should eq(Egui::CursorIcon::EwResize)
+    Egui::CursorIcon.parse?("auto").should eq(Egui::CursorIcon::Default)
+    Egui::CursorIcon.parse?("not-a-cursor").should be_nil
+  end
+
+  it "shows the style interact_cursor over a hovered button and resets next frame" do
+    ctx = Egui::Context.new
+    ctx.style.visuals.interact_cursor.should eq(Egui::CursorIcon::Pointer)
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    ctx.window("demo") { |ui| center = ui.button("Click me").rect.center }
+    ctx.end_frame
+
+    # hover frame → the style's pointer
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.button("Click me") }
+    ctx.cursor_icon.should eq(Egui::CursorIcon::Pointer)
+    ctx.end_frame
+
+    # pointer moved away → back to default
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(Egui::Pos2.new(500.0, 500.0))], time: 0.048)
+    ctx.window("demo") { |ui| ui.button("Click me") }
+    ctx.cursor_icon.should eq(Egui::CursorIcon::Default)
+    ctx.end_frame
+  end
+
+  it "Button#cursor overrides the style cursor" do
+    ctx = Egui::Context.new
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    center = widget_ui(ctx).add(Egui::Button.new("zoom").cursor(:zoom_in)).rect.center
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center)], time: 0.032)
+    widget_ui(ctx).add(Egui::Button.new("zoom").cursor(:zoom_in))
+    ctx.cursor_icon.should eq(Egui::CursorIcon::ZoomIn)
+    ctx.end_frame
+  end
+
+  it "hyperlink hover shows the pointer; on_hover_cursor sets any icon" do
+    ctx = Egui::Context.new
+    ctx.style.visuals.interact_cursor = nil # hyperlink is explicit
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    center = widget_ui(ctx).hyperlink_to("egui", "https://egui.rs").rect.center
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center)], time: 0.032)
+    widget_ui(ctx).hyperlink_to("egui", "https://egui.rs")
+    ctx.cursor_icon.should eq(Egui::CursorIcon::Pointer)
+    ctx.end_frame
+
+    # on_hover_cursor on an arbitrary interact rect
+    rect = Egui::Rect.from_min_size(Egui::Pos2.new(50.0, 50.0), Egui::Vec2.new(80.0, 20.0))
+    raw_frame(ctx, time: 0.048)
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(rect.center)], time: 0.064)
+    ui = widget_ui(ctx)
+    resp = ui.interact(rect, ui.next_widget_id, Egui::Sense.click)
+    resp.on_hover_cursor(Egui::CursorIcon::Help)
+    resp.hovered?.should be_true
+    ctx.cursor_icon.should eq(Egui::CursorIcon::Help)
+    ctx.end_frame
+  end
+
+  it "drag_value hover shows ew-resize" do
+    ctx = Egui::Context.new
+    center = nil
+
+    raw_frame(ctx, time: 0.016)
+    center = widget_ui(ctx).drag_value(1.5) { |v| }.rect.center
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center)], time: 0.032)
+    widget_ui(ctx).drag_value(1.5) { |v| }
+    ctx.cursor_icon.should eq(Egui::CursorIcon::EwResize)
+    ctx.end_frame
   end
 end

@@ -19,8 +19,16 @@ module Egui
     @gradient : Tuple(Color32, Color32)?
     @icon : Symbol?
     @image_texture : UInt64?
+    @cursor : CursorIcon?
 
     def initialize(@text : String)
+    end
+
+    # CSS `cursor` style for this button — the icon the mouse shows
+    # while hovering it (default: `style.visuals.interact_cursor`).
+    def cursor(icon : CursorIcon) : self
+      @cursor = icon
+      self
     end
 
     # Vertical gradient fill (top c1 → bottom c2); overrides the plain
@@ -59,6 +67,9 @@ module Egui
       rect = ui.allocate_at_least(size)
       id = ui.next_widget_id
       response = ui.interact(rect, id, sense)
+      if response.hovered? && (cursor = @cursor)
+        ui.ctx.set_cursor_icon(cursor)
+      end
 
       if (grad = @gradient) && !response.active?
         ui.painter.rect(rect, rounding: 4.0, fill: grad[0], fill2: grad[1],

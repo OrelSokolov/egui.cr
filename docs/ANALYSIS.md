@@ -178,3 +178,34 @@ step.
   label that changes on click. Verified by running on a live display
   and pixel-analyzing a screenshot (clear color, window fill, button
   fill/stroke, and anti-aliased text pixels all present).
+
+## 7. Delta: cursor icons (CSS `cursor`)
+
+Port of upstream `CursorIcon` (`crates/egui/src/data/output.rs`) +
+eframe/winit integration, adapted to sokol:
+
+- Core (`src/egui/cursor_icon.cr`): `CursorIcon` enum with all 35 CSS
+  `cursor` keywords (`#to_css` emits the kebab-case keyword,
+  `.parse?` reads them back). Pure/headless — specs cover exact
+  strings and round-trips.
+- Core wiring: `Context#cursor_icon` (upstream
+  `PlatformOutput::cursor_icon`) reset each `begin_frame`;
+  `Context#set_cursor_icon`; `Response#on_hover_cursor` /
+  `#on_hover_and_drag_cursor` (response.rs). `Context#interact`
+  applies `style.visuals.interact_cursor` to hovered clickables —
+  the CSS `cursor: pointer` style (upstream default is none; here it
+  defaults to Pointer so buttons/links show the hand out of the box).
+  `Button#cursor(icon)` overrides per widget. Hyperlink → pointer,
+  TextEdit → text, DragValue → ew-resize, window resize grip →
+  nwse-resize.
+- Backend (`backend/sokol_shim.c`, `src/egui/backend/sokol.cr`): the
+  eframe→winit role. Crystal applies `ctx.cursor_icon` when it
+  changes; the shim's `egui_cr_set_cursor(css_name)` is the
+  cross-platform adapter — X11: `XcursorLibraryLoadCursor` by CSS
+  name (XDG themes use the CSS keywords) with a core cursor-font
+  fallback table; Win32: `IDC_*` stock cursors; macOS: no-op stub
+  (needs NSCursor/ObjC — unwired). Note: this sokol version gates
+  the X11 backend with `_SAPP_LINUX` (not `_SAPP_X11`).
+- Verified live on X11 (Yaru): hand over buttons, I-beam over
+  TextEdit, ew-resize over DragValue, animated watch/zoom cursors
+  from the gallery demo buttons (XFixes cursor-image probes).

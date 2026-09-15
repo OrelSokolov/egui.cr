@@ -60,39 +60,59 @@ class GalleryApp < Egui::App
     end
 
     # Central panel: scrollable content + the rest of the widgets.
+    # The whole content scrolls — the list is taller than the panel,
+    # so the color picker at the end is reached by wheel. Everything
+    # inside the block goes on the scroll area's inner Ui (putting
+    # widgets on the outer one would overlap: its cursor only moves
+    # past the scroll area after the block returns).
     ctx.central_panel do |ui|
-      ui.horizontal do |row|
-        row.label("Progress:")
-        row.progress_bar(@slider.clamp(0.0, 1.0), animate: true)
-      end
-
-      ui.separator
-      ui.label("Fancy buttons:")
-      ui.horizontal do |row|
-        row.add(Egui::Button.new("OK").icon(:check)
-          .gradient(Egui::Color32.rgb(60, 150, 90), Egui::Color32.rgb(24, 80, 48)))
-        row.add(Egui::Button.new("Cancel").icon(:close))
-        row.add(Egui::Button.new("Open modal")
-          .gradient(Egui::Color32.rgb(40, 100, 200), Egui::Color32.rgb(16, 42, 92))).clicked?.tap do |c|
-          @modal_open = true if c
+      ui.scroll_area do |scroll|
+        scroll.horizontal do |row|
+          row.label("Progress:")
+          row.progress_bar(@slider.clamp(0.0, 1.0), animate: true)
         end
+
+        scroll.separator
+        scroll.label("Fancy buttons:")
+        scroll.horizontal do |row|
+          row.add(Egui::Button.new("OK").icon(:check)
+            .gradient(Egui::Color32.rgb(60, 150, 90), Egui::Color32.rgb(24, 80, 48)))
+          row.add(Egui::Button.new("Cancel").icon(:close))
+          row.add(Egui::Button.new("Open modal")
+            .gradient(Egui::Color32.rgb(40, 100, 200), Egui::Color32.rgb(16, 42, 92))).clicked?.tap do |c|
+            @modal_open = true if c
+          end
+        end
+        scroll.separator
+
+        # CSS cursor styles: one button per CursorIcon value — hover a
+        # button and the mouse takes its cursor (set via the widget
+        # style `Button#cursor`).
+        scroll.label("Cursors (CSS cursor styles):")
+        Egui::CursorIcon.values.each_slice(6) do |chunk|
+          scroll.horizontal do |row|
+            chunk.each do |icon|
+              row.add(Egui::Button.new(icon.to_css).cursor(icon))
+            end
+          end
+        end
+        scroll.separator
+
+        scroll.label("Scroll area (wheel me):")
+        scroll.scroll_area(max_height: 160.0) do |inner|
+          25.times { |i| inner.label("scroll row #{i}") }
+        end
+        scroll.separator
+
+        scroll.rich(Egui::RichText.new("rich underlined").color(Egui::Color32.rgb(255, 96, 96)).underline)
+        scroll.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui")
+        scroll.label("Hover me").on_hover_text("Tooltips work!")
+        scroll.label("This long paragraph wraps because the label asked for it — resize the window and watch it reflow.", wrap: true)
+
+        scroll.separator
+        scroll.label("Color picker:")
+        scroll.color_edit32(@color) { |c| @color = c }
       end
-      ui.separator
-
-      ui.label("Scroll area (wheel me):")
-      ui.scroll_area(max_height: 160.0) do |scroll|
-        25.times { |i| scroll.label("scroll row #{i}") }
-      end
-      ui.separator
-
-      ui.rich(Egui::RichText.new("rich underlined").color(Egui::Color32.rgb(255, 96, 96)).underline)
-      ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui")
-      ui.label("Hover me").on_hover_text("Tooltips work!")
-      ui.label("This long paragraph wraps because the label asked for it — resize the window and watch it reflow.", wrap: true)
-
-      ui.separator
-      ui.label("Color picker:")
-      ui.color_edit32(@color) { |c| @color = c }
     end
 
     if @modal_open

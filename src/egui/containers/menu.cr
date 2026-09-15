@@ -9,26 +9,33 @@
 module Egui
   class Context
     # egui `MenuBar::ui` — a native-looking strip pinned to the top of
-    # the screen. `bar.menu_button("File") { |ui| … }` fills it.
+    # the screen. Like `#top_panel`, it claims its strip out of
+    # #available_rect so later panels start below the bar instead of
+    # painting over it. `bar.menu_button("File") { |ui| … }` fills it.
     def menu_bar(&block : Ui ->) : Nil
-      screen = @input.screen_rect
+      avail = @available_rect
       pad = style.spacing.window_padding
       line_h = style.font_size * Fonts::LINE_H_FACTOR
       height = line_h + 2 * pad.y
 
+      outer = Rect.from_min_size(avail.min, Vec2.new(avail.width, height))
+      @available_rect = Rect.new(Pos2.new(outer.left, outer.bottom),
+        @available_rect.max)
+
       @painter.layer = Order::Background
       bg_index = @painter.add_noop
-      outer = Rect.from_min_size(screen.min, Vec2.new(screen.width, height))
       @painter.clip = outer
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 0.0, style.visuals.panel_fill,
           style.visuals.window_stroke, 1.0))
 
       ui = Ui.new(self, Id.from("menu_bar"),
-        Rect.from_min_size(screen.min + Vec2.new(pad.x, pad.y),
-          Vec2.new(screen.width - 2 * pad.x, line_h)),
+        Rect.from_min_size(outer.min + Vec2.new(pad.x, pad.y),
+          Vec2.new(outer.width - 2 * pad.x, line_h)),
         Layout.left_to_right)
       yield ui
+
+      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
 
       # Keep the hover-switch machinery ticking while a menu is open.
       request_repaint unless @memory.menu_open.nil?
@@ -76,7 +83,8 @@ module Egui
       elsif response.hovered?
         painter.rect(rect, 3.0, visuals.button_hovered)
       end
-      painter.text(rect.left_center, label, font_size, visuals.text_color)
+      painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
+        label, font_size, visuals.text_color)
 
       if mine_open
         ctx.popup(popup_key, Pos2.new(rect.left, rect.bottom),
@@ -91,23 +99,47 @@ module Egui
     # #menu_item can close it).
     property menu_popup_key : String?
 
-    # egui menu item — a row that closes its menu on click.
+    # egui menu item — a row that closes its menu on click. The row
+    # spans the popup frame edge-to-edge so the hover highlight covers
+    # the whole menu width like a native one; the label sits left with
+    # button padding, the shortcut hint is right-aligned. Only the
+    # natural width (label + gap + shortcut + padding) is reported to
+    # the popup's min_rect, so the frame hugs the widest item.
     def menu_item(label : String, shortcut : String? = nil,
                   &on_click : ->) : Nil
       font_size = style.font_size
-      text = shortcut ? "#{label}    #{shortcut}" : label
-      text_size = ctx.fonts.measure(text, font_size)
+      pad = style.spacing.button_padding
+      label_size = ctx.fonts.measure(label, font_size)
+      height = {label_size.y, style.spacing.interact_size.y}.max
 
-      rect = allocate_at_least(Vec2.new(text_size.x + 2 * style.spacing.button_padding.x,
-        {text_size.y, style.spacing.interact_size.y}.max))
+      shortcut_size = shortcut ? ctx.fonts.measure(shortcut, font_size) : Vec2.zero
+      shortcut_gap = shortcut ? 24.0 : 0.0
+      natural_w = 2 * pad.x + label_size.x + shortcut_gap + shortcut_size.x
+      row_w = {available_width, natural_w}.max
+
+      # Full-bleed row: the popup Ui is inset by window_padding, so the
+      # row pokes back out on both sides — the hover highlight and the
+      # click area cover the menu frame edge-to-edge, like a native menu.
+      wpad = style.spacing.window_padding.x
       id = next_widget_id
+      rect = Rect.from_min_size(Pos2.new(@cursor.x - wpad, @cursor.y),
+        Vec2.new(row_w + 2 * wpad, height))
+      @min_rect = @min_rect.union(
+        Rect.from_min_size(@cursor, Vec2.new(natural_w, height)))
+      @cursor = @layout.advance(@cursor, Vec2.new(row_w, height),
+        style.spacing.item_spacing)
       response = interact(rect, id, Sense.click)
 
       visuals = style.visuals
       if response.hovered?
         painter.rect(rect, 3.0, visuals.button_hovered)
       end
-      painter.text(rect.left_center, text, font_size, visuals.text_color)
+      painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
+        label, font_size, visuals.text_color)
+      if shortcut
+        painter.text(Pos2.new(rect.right - pad.x - shortcut_size.x,
+          rect.left_center.y), shortcut, font_size, visuals.text_color)
+      end
 
       if response.clicked?
         if key = @menu_popup_key

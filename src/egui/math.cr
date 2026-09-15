@@ -101,6 +101,12 @@ module Egui
       Rect.new(Pos2.zero, Pos2.zero)
     end
 
+    # A rect containing every practical point — the default interaction
+    # clip for Uis that are not inside a clipping container.
+    def self.infinite : Rect
+      Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
     def left : Float64
       min.x
     end

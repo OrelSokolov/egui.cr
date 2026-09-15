@@ -19,6 +19,9 @@ module Egui
       rect = ui.allocate_at_least(text_size)
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+      # Upstream: a pointing hand over links, independent of the
+      # interact_cursor style.
+      ui.ctx.set_cursor_icon(CursorIcon::Pointer) if response.hovered?
 
       color = style.visuals.hyperlink_color
       color = color.mul_color(0.8) if response.active?

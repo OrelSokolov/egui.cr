@@ -57,6 +57,14 @@ module Egui
     # Widget-generated texture cache (color picker gradients): named
     # ids so regenerated-once textures aren't re-uploaded every frame.
     getter texture_cache : Hash(String, UInt64)
+    # Color picker hue cache (upstream `FixedCache<Rgba, Hsva>` keyed by
+    # Id::NULL): maps an emitted color back to the Hsva it was produced
+    # from. Hsva.from_color of a gray/white color loses the hue (chroma
+    # 0 → hue 0 = red), so the picker consults this cache first to keep
+    # the hue slider stable while dragging into the white corner.
+    # Outside IdTypeMap on purpose: keyed by color, not by widget id,
+    # so end-frame pruning must not touch it.
+    getter color_cache : Hash(Color32, Hsva)
 
     # Scroll-area viewports (id → rect + layer) for scroll arbitration:
     # the top-most viewport containing the pointer (previous frame's
@@ -74,6 +82,7 @@ module Egui
 
     @widget_senses : Hash(Id, Sense)
     @widget_layers : Hash(Id, LayerId)
+    @widget_clips : Hash(Id, Rect)
     @used_ids : Set(Id)
     @seen_ids : Set(Id)
 
@@ -115,6 +124,7 @@ module Egui
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
     @texture_cache = {} of String => UInt64
+    @color_cache = {} of Color32 => Hsva
     @scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @active_scroll = nil
@@ -123,9 +133,11 @@ module Egui
       @prev_widget_rects = {} of Id => Rect
       @prev_widget_senses = {} of Id => Sense
       @prev_widget_layers = {} of Id => LayerId
+      @prev_widget_clips = {} of Id => Rect
       @widget_rects = {} of Id => Rect
       @widget_senses = {} of Id => Sense
       @widget_layers = {} of Id => LayerId
+      @widget_clips = {} of Id => Rect
       @used_ids = Set(Id).new
       @seen_ids = Set(Id).new
 
@@ -173,9 +185,11 @@ module Egui
       @prev_widget_rects = @widget_rects
       @prev_widget_senses = @widget_senses
       @prev_widget_layers = @widget_layers
+      @prev_widget_clips = @widget_clips
       @widget_rects = {} of Id => Rect
       @widget_senses = {} of Id => Sense
       @widget_layers = {} of Id => LayerId
+      @widget_clips = {} of Id => Rect
       @used_ids.clear
       @seen_ids.clear
       @duplicate_ids.clear
@@ -194,6 +208,16 @@ module Egui
         @potential_click_id = topmost_at(input.pointer_pos) { |s| s.click? }
         @potential_drag_id = topmost_at(input.pointer_pos) { |s| s.drag? }
         @dragging_id = nil
+        # A widget that senses drag but not click has nothing to
+        # disambiguate, so the drag starts on press — no movement
+        # threshold (upstream interaction.rs: "just sensitive to drags,
+        # so we can mark it as dragged right away"). This is what makes
+        # clicking anywhere on a slider rail set the value immediately.
+        if (candidate = @potential_drag_id) &&
+           !@prev_widget_senses[candidate]?.try(&.click?)
+          @dragging_id = candidate
+          @drag_started_id = candidate
+        end
       end
 
       # --- motion while pressed: decide click vs drag ---
@@ -250,9 +274,10 @@ module Egui
     end
 
     # Called by ScrollArea while rendering: registers this frame's
-    # viewport for next frame's arbitration. The scroll ids also count
-    # as "used" so their IdTypeMap cells (offset, content size) survive
-    # end-frame pruning — scroll areas don't call #interact themselves.
+    # viewport for next frame's arbitration. The viewport/content ids
+    # also count as "used" so their IdTypeMap cells (offset, content
+    # size) survive end-frame pruning — they have no #interact call of
+    # their own (the scrollbar's id does, via ui.interact).
     def register_scroll_area(id : Id, rect : Rect, layer : LayerId) : Nil
       @scroll_rects[id] = {rect, layer}
       @used_ids.add(id)
@@ -271,8 +296,13 @@ module Egui
     end
 
     # The interaction query every widget makes (egui `Context::interact`).
+    # `clip` is the owning container's clip rect (panel/window/scroll
+    # viewport): parts of a widget outside it are painted over by the
+    # container below, so they must not be hit-tested either (upstream
+    # `Context::interact` intersects with the layer's clip rect).
     def interact(id : Id, rect : Rect, sense : Sense,
-                 layer : LayerId = LayerId.background) : InteractionVerdict
+                 layer : LayerId = LayerId.background,
+                 clip : Rect = Rect.infinite) : InteractionVerdict
       # Duplicate ids are the classic immediate-mode bug: two widgets
       # minted the same id and fight over state. Record, don't crash.
       if @seen_ids.includes?(id)
@@ -283,6 +313,7 @@ module Egui
       @widget_rects[id] = rect
       @widget_senses[id] = sense
       @widget_layers[id] = layer
+      @widget_clips[id] = clip
 
       # A modal blocks interaction with everything below its layer.
       if @modal_open && !layer.order.foreground?
@@ -296,7 +327,8 @@ module Egui
       @focus.keep_alive(id) if sense.focusable? && @focus.id == id
 
       pos = @pointer_pos
-      hovered = !sense.none? && pos ? rect.contains?(pos) : false
+      hovered = !sense.none? && pos ? rect.contains?(pos.not_nil!) &&
+                                     clip.contains?(pos.not_nil!) : false
 
       clicked = sense.click? && @clicked_id == id
       click_count = clicked ? @clicked_count : 0
@@ -416,6 +448,8 @@ module Egui
         if rect.contains?(pos)
           sense = @prev_widget_senses[id]?
           next if sense.nil? || !sense_filter.call(sense)
+          clip = @prev_widget_clips[id]?
+          next if clip && !clip.contains?(pos)
           if @modal_open
             layer = @prev_widget_layers[id]?
             next unless layer && layer.order.foreground?
@@ -429,7 +463,9 @@ module Egui
     private def rect_contains?(id : Id, pos : Pos2?) : Bool
       return false unless pos
       rect = @prev_widget_rects[id]? || @widget_rects[id]?
-      rect ? rect.contains?(pos) : false
+      return false unless rect && rect.contains?(pos)
+      clip = @prev_widget_clips[id]? || @widget_clips[id]?
+      !clip || clip.contains?(pos)
     end
   end
 end

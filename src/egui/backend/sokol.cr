@@ -51,7 +51,12 @@ lib LibEguiCr
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
+  fun sgl_enable_texture = egui_cr_sgl_enable_texture
+  fun sgl_disable_texture = egui_cr_sgl_disable_texture
   fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
+
+  # cursor (shim): `name` is a CSS cursor keyword
+  fun set_cursor = egui_cr_set_cursor(name : UInt8*)
 
   # fontstash / sokol_fontstash (fontstash exports camelCase names)
   fun sfons_flush(ctx : Void*)
@@ -76,6 +81,7 @@ module Egui
       @@fons : Void*?
       @@font_id = -1
       @@start = Time.instant
+      @@cursor = Egui::CursorIcon::Default
 
       # sapp_event_type values (sokol_app.h)
       KEY_DOWN    = 1
@@ -169,6 +175,14 @@ module Egui
         app.update(app.ctx)
         commands = app.ctx.end_frame
 
+        # egui `PlatformOutput::cursor_icon`: apply when it changed —
+        # the shim maps the CSS keyword onto the Xcursor theme.
+        icon = app.ctx.cursor_icon
+        if icon != @@cursor
+          @@cursor = icon
+          LibEguiCr.set_cursor(icon.to_css.to_unsafe)
+        end
+
         w = LibEguiCr.sapp_width
         h = LibEguiCr.sapp_height
         LibEguiCr.begin_pass(w, h)
@@ -205,18 +219,40 @@ module Egui
         end
       end
 
+      # sg_apply_scissor_rectf truncates x/y/w/h to ints independently
+      # (sokol_gfx.h), so trunc(y) + trunc(h) can land a full pixel above
+      # trunc(y + h) for a fractional clip — e.g. a modal centered at
+      # screen.center - size/2 — clipping away a stroke sitting on the
+      # rect edge (the invisible bottom border). Round outward instead:
+      # floor the min corner, ceil the size, so every partially-covered
+      # pixel row/column stays inside the scissor.
+      def self.apply_scissor(clip : Egui::Rect) : Nil
+        x = clip.min.x.floor
+        y = clip.min.y.floor
+        w = {clip.max.x.ceil - x, 1.0}.max
+        h = {clip.max.y.ceil - y, 1.0}.max
+        LibEguiCr.sgl_scissor_rectf(
+          x.to_f32, y.to_f32, w.to_f32, h.to_f32, true)
+      end
+
       def self.paint_image(cmd : Egui::ImageCmd) : Nil
         return if cmd.texture_id.zero? # failed loads paint nothing
-        clip = cmd.clip
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(cmd.clip)
 
         r = cmd.rect
         uv = cmd.uv
         t = cmd.tint
-        LibEguiCr.sgl_begin_quads
+        # sgl_texture binds the texture for the following begin/end
+        # block — it must be called OUTSIDE begin/end (the sokol_gl
+        # assertion `!ctx->in_begin` enforces exactly that). sgl_texture
+        # alone does not enable texturing: at draw time sokol_gl uses
+        # cur_view/cur_smp only while texturing_enabled is set, so we
+        # enable it here and disable after sgl_end — otherwise later
+        # untextored geometry would sample this texture instead of the
+        # internal white fallback.
         LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!)
+        LibEguiCr.sgl_enable_texture
+        LibEguiCr.sgl_begin_quads
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.min.y.to_f32,
           uv.min.x.to_f32, uv.min.y.to_f32, t.r, t.g, t.b, t.a)
         LibEguiCr.sgl_v2f_t2f_c4b(r.max.x.to_f32, r.min.y.to_f32,
@@ -226,13 +262,11 @@ module Egui
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.max.y.to_f32,
           uv.min.x.to_f32, uv.max.y.to_f32, t.r, t.g, t.b, t.a)
         LibEguiCr.sgl_end
+        LibEguiCr.sgl_disable_texture
       end
 
       def self.paint_rect(cmd : Egui::RectCmd) : Nil
-        clip = cmd.clip
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(cmd.clip)
 
         r = cmd.rect
         round = cmd.rounding
@@ -263,7 +297,7 @@ module Egui
         if (stroke = cmd.stroke_color) && cmd.stroke_width > 0
           w = cmd.stroke_width
           if round > 0.5
-            paint_rect_stroke_rounded(r, round, w, stroke, clip)
+            paint_rect_stroke_rounded(r, round, w, stroke, cmd.clip)
           else
             LibEguiCr.sgl_begin_quads
             # top / bottom / left / right bars
@@ -378,10 +412,7 @@ module Egui
         fons = @@fons
         return unless fons
 
-        clip = cmd.clip
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(cmd.clip)
 
         LibEguiCr.fons_clear_state(fons)
         LibEguiCr.fons_set_size(fons, cmd.size.to_f32)
@@ -422,22 +453,35 @@ module Egui
         LibEguiCr.sgl_v2f_c4b(p4.x.to_f32, p4.y.to_f32, c.r, c.g, c.b, c.a)
       end
 
-      # Tessellation segments for circles/arcs (epaint uses a chord
-      # tolerance; a fixed 32 is visually equivalent at UI sizes).
-      CIRCLE_SEGMENTS = 32
       TAU = (2.0 * Math::PI)
 
+      # Full-circle tessellation segment count, using the same radius
+      # cutoffs as upstream epaint (`Tessellator::add_circle`: 8/16/
+      # 32/64/128). Small circles stay cheap, big ones stay round; the
+      # 4x MSAA framebuffer (backend/sokol_shim.c) smooths the edges.
+      def self.circle_segments(radius : Float64) : Int32
+        if radius <= 2.0
+          8
+        elsif radius <= 5.0
+          16
+        elsif radius < 18.0
+          32
+        elsif radius < 50.0
+          64
+        else
+          128
+        end
+      end
+
       def self.paint_circle(cmd : Egui::CircleCmd) : Nil
-        clip = cmd.clip
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(cmd.clip)
 
         if fill = cmd.fill
           LibEguiCr.sgl_begin_quads
-          CIRCLE_SEGMENTS.times do |i|
-            a0 = TAU * i / CIRCLE_SEGMENTS
-            a1 = TAU * (i + 1) / CIRCLE_SEGMENTS
+          segments = circle_segments(cmd.radius)
+          segments.times do |i|
+            a0 = TAU * i / segments
+            a1 = TAU * (i + 1) / segments
             v0 = Egui::Pos2.new(cmd.center.x + cmd.radius * Math.cos(a0),
               cmd.center.y + cmd.radius * Math.sin(a0))
             v1 = Egui::Pos2.new(cmd.center.x + cmd.radius * Math.cos(a1),
@@ -449,15 +493,12 @@ module Egui
         end
 
         if (stroke = cmd.stroke) && cmd.stroke_width > 0
-          paint_ring(cmd.center, cmd.radius, 0.0, TAU, cmd.stroke_width, stroke, clip)
+          paint_ring(cmd.center, cmd.radius, 0.0, TAU, cmd.stroke_width, stroke, cmd.clip)
         end
       end
 
       def self.paint_line(cmd : Egui::LineCmd) : Nil
-        clip = cmd.clip
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(cmd.clip)
 
         d = cmd.p2 - cmd.p1
         len = d.length
@@ -481,14 +522,13 @@ module Egui
                           start_angle : Float64, end_angle : Float64,
                           width : Float64, color : Egui::Color32,
                           clip : Egui::Rect) : Nil
-        LibEguiCr.sgl_scissor_rectf(
-          clip.min.x.to_f32, clip.min.y.to_f32,
-          {clip.width, 1.0}.max.to_f32, {clip.height, 1.0}.max.to_f32, true)
+        apply_scissor(clip)
 
         r0 = {radius - width / 2.0, 0.0}.max
         r1 = radius + width / 2.0
         span = end_angle - start_angle
-        segments = Math.max(8, (CIRCLE_SEGMENTS * span.abs / TAU).ceil.to_i)
+        segments = Math.max(8,
+          (circle_segments(r1) * span.abs / TAU).ceil.to_i)
 
         LibEguiCr.sgl_begin_quads
         segments.times do |i|

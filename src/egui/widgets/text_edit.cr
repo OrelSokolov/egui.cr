@@ -31,6 +31,8 @@ module Egui
         {galley.size.y, style.spacing.interact_size.y}.max + pad.y * 2.0)
       rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+      # Upstream: text caret cursor over the edit field.
+      ui.ctx.set_cursor_icon(CursorIcon::Text) if response.hovered?
 
       cursor = ui.ctx.memory.data.get_int(id, @text.size).clamp(0, @text.size)
       new_text = @text

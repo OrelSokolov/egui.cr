@@ -19,6 +19,10 @@ module Egui
     # Layer widgets created through this Ui belong to (egui WidgetRect's
     # layer_id) — hit-testing and paint order both read it.
     property layer : LayerId
+    # egui `Ui::clip_rect`: widgets laid out through this Ui are only
+    # interactable inside this rect (panels/windows/scroll viewports
+    # clip their contents; overflowing parts are painted over).
+    property clip : Rect
 
     @child_counter : UInt64 = 0
 
@@ -27,6 +31,7 @@ module Egui
       @cursor = @max_rect.min
       @min_rect = Rect.new(@max_rect.min, @max_rect.min)
       @layer = LayerId.background
+      @clip = Rect.infinite
     end
 
     def style : Style
@@ -58,16 +63,17 @@ module Egui
 
     # egui `Ui::interact` — delegates to Context/Memory.
     def interact(rect : Rect, id : Id, sense : Sense) : Response
-      @ctx.interact(id, rect, sense, @layer)
+      @ctx.interact(id, rect, sense, @layer, @clip)
     end
 
     # egui `Ui::new_child`: a child region with its own cursor/layout.
-    # Inherits the parent's layer; `id` may be given (stateful widgets
-    # derive a stable body id from their own id).
+    # Inherits the parent's layer and clip rect; `id` may be given
+    # (stateful widgets derive a stable body id from their own id).
     def child_ui(max_rect : Rect, id : Id? = nil,
                  layout : Layout = Layout.top_down) : Ui
       child = Ui.new(@ctx, id || next_widget_id, max_rect, layout)
       child.layer = @layer
+      child.clip = @clip
       child
     end
 
@@ -251,10 +257,13 @@ module Egui
     # egui `ui.horizontal(|ui| …)`: a child Ui laying out left→right on
     # the rest of the current line; afterwards the parent cursor jumps
     # below the row's bounding box (like upstream's single-row shortcut).
+    # Built through #child_ui so the row inherits the parent's layer and
+    # clip rect — a horizontal row inside a window/scroll area must stay
+    # in that layer's z-order and viewport clip.
     def horizontal(&block : Ui ->) : self
-      row = Ui.new(@ctx, next_widget_id,
+      row = child_ui(
         Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)),
-        Layout.left_to_right)
+        layout: Layout.left_to_right)
       yield row
       @min_rect = @min_rect.union(row.min_rect)
       @cursor = Pos2.new(@max_rect.min.x,
