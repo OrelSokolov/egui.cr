@@ -94,13 +94,15 @@ lib LibEguiCr
                                         count : Int32*) : StbVertex*
   fun glyph_shape_free = egui_cr_glyph_shape_free(info : Void*, vertices : StbVertex*)
 
-  # text pipeline + glyph atlas (Crystal text stack)
+  # text pipeline + glyph atlas (Crystal text stack). Atlases are
+  # per-instance: atlas_create returns its own view, atlas_update
+  # addresses it by view id — multiple font backends can coexist.
   fun text_pipeline_init = egui_cr_text_pipeline_init
   fun text_pipeline_push = egui_cr_text_pipeline_push
   fun text_pipeline_pop = egui_cr_text_pipeline_pop
   fun atlas_create = egui_cr_atlas_create(w : Int32, h : Int32, data : UInt8*) : UInt32
-  fun atlas_view_id = egui_cr_atlas_view_id : UInt32
-  fun atlas_update = egui_cr_atlas_update(w : Int32, h : Int32, data : UInt8*)
+  fun atlas_update = egui_cr_atlas_update(view_id : UInt32, w : Int32, h : Int32,
+                                          data : UInt8*)
 
   # cursor (shim): `name` is a CSS cursor keyword
   fun set_cursor = egui_cr_set_cursor(name : UInt8*)
@@ -238,6 +240,14 @@ module Egui
           app.ctx.fonts = Egui::MonospaceFonts.new
         end
         app.ctx.textures = SokolTextureRegistry.new
+      end
+
+      # Swap the active font backend at runtime (e.g. a preview app
+      # toggling between FreeType and the light-hint fallback). The new
+      # backend's atlas is uploaded and bound on the next frame.
+      def self.select_fonts(font : AtlasFonts) : Nil
+        @@fonts = font
+        @@app.try &.ctx.fonts = font
       end
 
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,

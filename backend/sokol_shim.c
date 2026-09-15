@@ -175,7 +175,7 @@ uint32_t egui_cr_load_image(const char* path) {
 // used (sfons): straight alpha blend, swapchain sample count.
 
 static sgl_pipeline g_text_pip;
-void egui_cr_atlas_update(int w, int h, const void* rgba8);
+void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8);
 
 void egui_cr_text_pipeline_init(void) {
     if (g_text_pip.id) return;
@@ -202,40 +202,58 @@ void egui_cr_text_pipeline_pop(void) {
     sgl_pop_pipeline();
 }
 
-// Glyph atlas texture: RGBA8, stream-updated whenever Crystal rasterizes new
-// glyphs into it. One atlas per process (like sfons).
-static sg_image g_atlas_img;
-static sg_view g_atlas_view;
+// Glyph atlas textures: RGBA8, stream-updated whenever Crystal rasterizes
+// new glyphs. Per-instance (see below) — one per font backend.
+
+// --- glyph atlases: per-instance --------------------------------------------
+//
+// Multiple font backends coexist (fontpreview switches FreeType /
+// light-hint live): each atlas_create returns its OWN image+view pair,
+// and atlas_update addresses them by view id through a small registry.
+// Atlases live for the process lifetime (a handful at most), so no
+// destroy path is needed.
+
+#define EGUI_CR_MAX_ATLASES 16
+static struct {
+    uint32_t view_id;
+    sg_image img;
+} g_atlases[EGUI_CR_MAX_ATLASES];
+static int g_atlas_count = 0;
 
 uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
-    if (g_atlas_img.id) { sg_destroy_image(g_atlas_img); g_atlas_img.id = 0; }
-    if (g_atlas_view.id) { sg_destroy_view(g_atlas_view); g_atlas_view.id = 0; }
+    if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
     // stream images cannot be created with initial data (sokol validation:
     // WRITABLE_NO_DATA) — create empty, then upload via sg_update_image.
-    g_atlas_img = sg_make_image(&(sg_image_desc){
+    sg_image img = sg_make_image(&(sg_image_desc){
         .width = w,
         .height = h,
         .usage = {.dynamic_update = true},
         .label = "egui-cr-glyph-atlas",
     });
-    if (g_atlas_img.id == 0) return 0;
-    g_atlas_view = sg_make_view(&(sg_view_desc){
-        .texture = {.image = g_atlas_img},
+    if (img.id == 0) return 0;
+    sg_view view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = img},
         .label = "egui-cr-glyph-atlas-view",
     });
-    egui_cr_atlas_update(w, h, rgba8);
-    return g_atlas_view.id;
+    if (view.id == 0) return 0;
+    g_atlases[g_atlas_count].view_id = (uint32_t)view.id;
+    g_atlases[g_atlas_count].img = img;
+    g_atlas_count++;
+    egui_cr_atlas_update((uint32_t)view.id, w, h, rgba8);
+    return (uint32_t)view.id;
 }
 
-uint32_t egui_cr_atlas_view_id(void) { return (uint32_t)g_atlas_view.id; }
-
-void egui_cr_atlas_update(int w, int h, const void* rgba8) {
-    if (!g_atlas_img.id) return;
-    sg_image_data data;
-    memset(&data, 0, sizeof(data));
-    data.mip_levels[0].ptr = rgba8;
-    data.mip_levels[0].size = (size_t)w * h * 4;
-    sg_update_image(g_atlas_img, &data);
+void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
+    for (int i = 0; i < g_atlas_count; i++) {
+        if (g_atlases[i].view_id == view_id) {
+            sg_image_data data;
+            memset(&data, 0, sizeof(data));
+            data.mip_levels[0].ptr = rgba8;
+            data.mip_levels[0].size = (size_t)w * h * 4;
+            sg_update_image(g_atlases[i].img, &data);
+            return;
+        }
+    }
 }
 
 // --- cursor -----------------------------------------------------------------
