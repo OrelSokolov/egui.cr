@@ -320,31 +320,34 @@ void egui_cr_set_cursor(const char* css_name) {
 
 static HCURSOR g_win_current;
 
-typedef struct { const char* css; LPCWSTR idc; } win_cursor_t;
+// winuser.h cursor resource ids (IDC_* are MAKEINTRESOURCE macros — plain
+// pointers, not compile-time integers — so the numbers are spelled out,
+// exactly like sokol_app's own LoadCursorW(MAKEINTRESOURCEW(32512)) table).
+typedef struct { const char* css; WORD idc; } win_cursor_t;
 static const win_cursor_t g_win_cursors[] = {
-    {"default", IDC_ARROW},        {"context-menu", IDC_ARROW},
-    {"help", IDC_HELP},            {"pointer", IDC_HAND},
-    {"progress", IDC_APPSTARTING}, {"wait", IDC_WAIT},
-    {"cell", IDC_CROSS},           {"crosshair", IDC_CROSS},
-    {"text", IDC_IBEAM},           {"vertical-text", IDC_IBEAM},
-    {"alias", IDC_ARROW},          {"copy", IDC_ARROW},
-    {"move", IDC_SIZEALL},         {"no-drop", IDC_NO},
-    {"not-allowed", IDC_NO},       {"grab", IDC_SIZEALL},
-    {"grabbing", IDC_SIZEALL},     {"all-scroll", IDC_SIZEALL},
-    {"ew-resize", IDC_SIZEWE},     {"col-resize", IDC_SIZEWE},
-    {"ns-resize", IDC_SIZENS},     {"row-resize", IDC_SIZENS},
-    {"nesw-resize", IDC_SIZENESW}, {"nwse-resize", IDC_SIZENWSE},
-    {"e-resize", IDC_SIZEWE},      {"w-resize", IDC_SIZEWE},
-    {"n-resize", IDC_SIZENS},      {"s-resize", IDC_SIZENS},
-    {"ne-resize", IDC_SIZENESW},   {"sw-resize", IDC_SIZENESW},
-    {"nw-resize", IDC_SIZENWSE},   {"se-resize", IDC_SIZENWSE},
-    {"zoom-in", IDC_CROSS},        {"zoom-out", IDC_CROSS},
+    {"default", 32512},        {"context-menu", 32512},   // IDC_ARROW
+    {"help", 32651},           {"pointer", 32649},        // IDC_HELP / IDC_HAND
+    {"progress", 32650},       {"wait", 32514},           // IDC_APPSTARTING / IDC_WAIT
+    {"cell", 32515},           {"crosshair", 32515},      // IDC_CROSS
+    {"text", 32513},           {"vertical-text", 32513},  // IDC_IBEAM
+    {"alias", 32512},          {"copy", 32512},           // IDC_ARROW
+    {"move", 32646},           {"no-drop", 32648},        // IDC_SIZEALL / IDC_NO
+    {"not-allowed", 32648},    {"grab", 32646},           // IDC_NO / IDC_SIZEALL
+    {"grabbing", 32646},       {"all-scroll", 32646},     // IDC_SIZEALL
+    {"ew-resize", 32644},      {"col-resize", 32644},     // IDC_SIZEWE
+    {"ns-resize", 32645},      {"row-resize", 32645},     // IDC_SIZENS
+    {"nesw-resize", 32643},    {"nwse-resize", 32642},    // IDC_SIZENESW / IDC_SIZENWSE
+    {"e-resize", 32644},       {"w-resize", 32644},       // IDC_SIZEWE
+    {"n-resize", 32645},       {"s-resize", 32645},       // IDC_SIZENS
+    {"ne-resize", 32643},      {"sw-resize", 32643},      // IDC_SIZENESW
+    {"nw-resize", 32642},      {"se-resize", 32642},      // IDC_SIZENWSE
+    {"zoom-in", 32515},        {"zoom-out", 32515},       // IDC_CROSS
 };
 
 void egui_cr_set_cursor(const char* css_name) {
     for (size_t i = 0; i < sizeof(g_win_cursors)/sizeof(g_win_cursors[0]); i++) {
         if (strcmp(css_name, g_win_cursors[i].css) == 0) {
-            HCURSOR c = LoadCursorW(NULL, g_win_cursors[i].idc);
+            HCURSOR c = LoadCursorW(NULL, MAKEINTRESOURCEW(g_win_cursors[i].idc));
             if (c && c != g_win_current) {
                 SetCursor(c);
                 g_win_current = c;
