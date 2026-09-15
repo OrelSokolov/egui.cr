@@ -178,6 +178,15 @@ module Egui
 
       pos = @memory.areas.pos_for(win_id, default_pos)
       size = @memory.layer_sizes[win_id]? || Vec2.new(width, 160.0)
+      # Upstream `Window` + `Resize`: while never resized the window
+      # auto-fits its contents (unbounded height); once the user drags
+      # the grip the size is fixed and overflowing content is clipped
+      # to the window rect.
+      fixed = @memory.fixed_size_layers.includes?(win_id)
+      clip = fixed ? Rect.from_min_size(pos, size) :
+                     Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      content_size = Vec2.new(size.x - 2 * pad.x,
+        fixed ? {size.y - title_h - 2 * pad.y, 1.0}.max : 1e6)
 
       @painter.layer = Order::Middle
       bg_index = @painter.add_noop
@@ -189,28 +198,31 @@ module Egui
       if title_resp.dragged?
         @memory.areas.move_by(win_id, title_resp.drag_delta)
         pos = @memory.areas.pos_for(win_id, default_pos)
+        clip = clip.translate(title_resp.drag_delta) if fixed
       end
       if title_resp.hovered? || title_resp.pressed? || title_resp.dragged?
         @memory.areas.bring_to_top(layer)
       end
 
-      @painter.clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      @painter.clip = clip
       content_min = pos + Vec2.new(pad.x, title_h + pad.y)
       ui = Ui.new(self, win_id,
-        Rect.from_min_size(content_min, Vec2.new(size.x - 2 * pad.x, 1e6)))
+        Rect.from_min_size(content_min, content_size))
       ui.layer = layer
-      # Interaction stays inside the window's horizontal extent; the
-      # height grows with the content, hence the 1e6 tall strip.
-      ui.clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      # Interaction stays inside the window's horizontal extent while
+      # auto-fitting (the height grows with the content, hence the 1e6
+      # tall strip); a fixed-size window clips to its rect on both axes.
+      ui.clip = clip
       yield ui
 
-      outer = Rect.new(
+      outer = fixed ? Rect.from_min_size(pos, size) : Rect.new(
         pos,
         Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
           ui.min_rect.bottom + pad.y))
 
       # Resize grip: drag the bottom-right corner (upstream `Resize`
-      # wired into `Window`); size persists in Memory#layer_sizes.
+      # wired into `Window`); size persists in Memory#layer_sizes, and
+      # from the first drag on the window keeps a fixed, clipped size.
       grip_size = 12.0
       grip = Rect.from_min_size(
         Pos2.new(outer.max.x - grip_size, outer.max.y - grip_size),
@@ -219,6 +231,7 @@ module Egui
       grip_resp = interact(grip_id, grip, Sense.drag, layer)
       grip_resp.on_hover_and_drag_cursor(CursorIcon::NwseResize)
       if grip_resp.dragged?
+        @memory.fixed_size_layers.add(win_id)
         size = size + grip_resp.drag_delta
         size = Vec2.new({size.x, WINDOW_MIN_SIZE.x}.max,
           {size.y, WINDOW_MIN_SIZE.y}.max)

@@ -1651,6 +1651,44 @@ describe "window resize (phase 5)" do
     grown.x.should be > initial.x + 10.0
     grown.y.should be > initial.y + 5.0
   end
+
+  it "shrinking the window fixes its size and clips content on both axes" do
+    ctx = Egui::Context.new
+    win_id = Egui::Id.from("window/demo")
+    grip_center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ctx.window("demo") do |ui|
+        20.times { |i| ui.label("line #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    initial = ctx.memory.layer_sizes[win_id].not_nil!
+    grip_center = Egui::Pos2.new(24.0 + initial.x - 6.0, 24.0 + initial.y - 6.0)
+
+    # press on the grip, drag up-left to shrink below the content height
+    draw.call([Egui::Event.pointer_moved(grip_center),
+      Egui::Event.pointer_pressed(grip_center)], 0.032)
+    moved = grip_center + Egui::Vec2.new(-150.0, -20.0)
+    draw.call([Egui::Event.pointer_moved(moved)], 0.048)
+    draw.call([Egui::Event.pointer_released(moved)], 0.064)
+
+    # the window keeps the user-set size instead of re-fitting the content
+    shrunk = ctx.memory.layer_sizes[win_id].not_nil!
+    ctx.memory.fixed_size_layers.includes?(win_id).should be_true
+    shrunk.y.should be < initial.y - 10.0
+
+    # content is clipped to the window rect — vertically too, not just
+    # the old 1e6-tall horizontal strip
+    draw.call([] of Egui::Event, 0.080)
+    text = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text.starts_with?("line ") }.not_nil!
+    text.clip.max.y.should be_close(24.0 + shrunk.y, 0.01)
+    text.clip.max.x.should be_close(24.0 + shrunk.x, 0.01)
+  end
 end
 
 describe "textures & images (phase 6)" do

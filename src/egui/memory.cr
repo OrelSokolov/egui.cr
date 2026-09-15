@@ -54,6 +54,11 @@ module Egui
     # Container content sizes (modal dialog size for centering) — same
     # pruning exemption.
     getter layer_sizes : Hash(Id, Vec2)
+    # Windows the user has grip-resized at least once: from then on the
+    # size is fixed and content is clipped to the window rect (upstream
+    # `Resize` inside `Window`) instead of auto-fitting the contents.
+    # Same pruning exemption as layer_sizes.
+    getter fixed_size_layers : Set(Id)
     # Screen rects of open popups, refreshed by Context#popup every frame
     # they render — the containment test of close-on-outside-click.
     getter popup_rects : Hash(Id, Rect)
@@ -137,6 +142,7 @@ module Egui
     @tooltip_starts = {} of Id => Float64
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
+    @fixed_size_layers = Set(Id).new
     @popup_rects = {} of Id => Rect
     @texture_cache = {} of String => UInt64
     @color_cache = {} of Color32 => Hsva
