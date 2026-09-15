@@ -1,5 +1,7 @@
-# Headless FreeType smoke test: load the macOS system font through
-# FreetypeFonts, rasterize glyphs in both hinting modes, print metrics.
+# Headless FreeType smoke test: load a system font through
+# FreetypeFonts, print metrics, rasterize sample glyphs. (FreetypeFonts
+# always renders hinted 8-bit coverage bitmaps — there is no smooth
+# mode toggle.)
 require "../src/egui/backend/sokol"
 
 paths = Egui::SystemPorts::Fonts.search_paths
@@ -8,7 +10,7 @@ unless font
   puts "FAIL: FreetypeFonts did not load any of #{paths}"
   exit 1
 end
-puts "loaded=#{font.loaded?} hinted=#{font.hinted?}"
+puts "loaded=#{font.loaded?}"
 
 {12.0, 16.0, 24.0}.each do |size|
   asc, desc = font.metrics_at(size)
@@ -17,13 +19,7 @@ puts "loaded=#{font.loaded?} hinted=#{font.hinted?}"
        "line=#{(asc - desc).round(2)} width=#{w.x.round(2)}"
 end
 
-puts "\n-- smooth (default on darwin) --"
-font.debug_bitmap('A', 16)
-puts
-font.debug_bitmap('e', 16)
-
-puts "\n-- hinted --"
-font.hinted = true
+puts "\n-- hinted coverage bitmaps --"
 font.debug_bitmap('A', 16)
 puts
 font.debug_bitmap('e', 16)

@@ -55,11 +55,18 @@ Differences from the Linux build:
 - the native library is `lib\egui_cr_sokol.lib` (MSVC resolves
   `@[Link("egui_cr_sokol")]` to exactly that name; no `lib` prefix),
   and the examples pass the lib dir via `/LIBPATH:`, not `-L`
-- the FreeType font backend is compile-time disabled on win32 (no
-  FreeType import library is assumed); text rasterization falls back
-  to the vendored stb_truetype light-hint path
-- system ports that shell out to `zenity`/`xdg-open` (dialogs, URL
-  opening, user dirs) return nil/false on Windows — not wired yet
+- FreeType binaries (x64 import lib + DLL, pinned by SHA256) are
+  fetched by `scripts\fetch_freetype.bat` — wired into `crosspack deps`
+  (`freetype-dev`) and `rake build:native`. `bin\freetype.dll` must ship
+  next to the exes; its VC++ v14 runtime requirement is declared in the
+  runtime `deps:` section (`vc-redist` → winget
+  `Microsoft.VCRedist.2015+.x64`)
+- the Windows system ports are native: file dialogs run the WinForms
+  picker through PowerShell (`-EncodedCommand`), MessageBox calls
+  `MessageBoxW` (user32), OpenUrl/reveal use `ShellExecuteW` (shell32),
+  notifications are NotifyIcon balloons, and user dirs come from
+  `%APPDATA%`/`%LOCALAPPDATA%` + `SHGetKnownFolderPath`; Linux keeps the
+  `zenity`/`kdialog`/`xdg-open` subprocess ports
 
 ### macOS
 

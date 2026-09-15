@@ -270,7 +270,11 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
 //   X11/Xlib+Xcursor (Linux): theme cursor by CSS name — XDG cursor
 //     themes use the CSS keywords — with a core cursor-font fallback
 //     table for names the theme is missing.
-//   Win32: IDC_* stock cursors (LoadCursor/SetCursor).
+//   Win32: IDC_* stock cursors (LoadCursor/SetCursor). WM_SETCURSOR is
+//     answered by a subclassed WndProc — a plain SetCursor from the
+//     frame callback is reverted by sokol's own WM_SETCURSOR handler
+//     (it re-applies sapp_set_mouse_cursor's cursor, which knows
+//     nothing about our IDC_* table) on every mouse move.
 //   macOS: NSCursor class methods (the shim is compiled as ObjC there);
 //     diagonal resize cursors exist only as private NSCursor methods,
 //     resolved at runtime with a public fallback.
@@ -345,6 +349,47 @@ void egui_cr_set_cursor(const char* css_name) {
 
 static HCURSOR g_win_current;
 
+// Win32 resets the cursor on every WM_SETCURSOR (i.e. every mouse move),
+// and sokol's WndProc answers that message with the cursor from
+// sapp_set_mouse_cursor — which knows nothing about our IDC_* table —
+// instantly reverting a plain SetCursor to the class arrow. Subclass
+// the window proc and answer WM_SETCURSOR ourselves with the current
+// handle (the eframe/winit approach: winit owns WM_SETCURSOR too).
+static WNDPROC g_win_prev_proc;
+static LRESULT CALLBACK sh_wndproc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+    if (msg == WM_SETCURSOR && LOWORD(lp) == HTCLIENT && g_win_current) {
+        SetCursor(g_win_current);
+        return TRUE;
+    }
+    return CallWindowProc(g_win_prev_proc, hwnd, msg, wp, lp);
+}
+
+// Called from egui_cr_set_cursor (inside the frame callback), so the
+// window exists and we are on its own thread — the only safe place to
+// swap the WndProc.
+static void sh_win_install_cursor_proc(void) {
+    if (g_win_prev_proc) return;
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (hwnd) {
+        g_win_prev_proc = (WNDPROC)SetWindowLongPtrW(hwnd, GWLP_WNDPROC,
+                                                    (LONG_PTR)sh_wndproc);
+    }
+}
+
+// 1x1 fully transparent cursor for CSS `none` (AND mask all ones = every
+// pixel transparent). Mask scan lines are DWORD-aligned, so 1 px still
+// takes 4 bytes per plane. Created once, lives for the process.
+static HCURSOR sh_win_none_cursor(void) {
+    static HCURSOR none;
+    if (!none) {
+        static const BYTE and_mask[4] = {0xFF, 0xFF, 0xFF, 0xFF};
+        static const BYTE xor_mask[4] = {0x00, 0x00, 0x00, 0x00};
+        none = CreateCursor(NULL, 0, 0, 1, 1, and_mask, xor_mask);
+    }
+    return none;
+}
+
+
 // winuser.h cursor resource ids (IDC_* are MAKEINTRESOURCE macros — plain
 // pointers, not compile-time integers — so the numbers are spelled out,
 // exactly like sokol_app's own LoadCursorW(MAKEINTRESOURCEW(32512)) table).
@@ -370,15 +415,23 @@ static const win_cursor_t g_win_cursors[] = {
 };
 
 void egui_cr_set_cursor(const char* css_name) {
-    for (size_t i = 0; i < sizeof(g_win_cursors)/sizeof(g_win_cursors[0]); i++) {
-        if (strcmp(css_name, g_win_cursors[i].css) == 0) {
-            HCURSOR c = LoadCursorW(NULL, MAKEINTRESOURCEW(g_win_cursors[i].idc));
-            if (c && c != g_win_current) {
-                SetCursor(c);
-                g_win_current = c;
+    // The subclass must be in place BEFORE the first SetCursor, or the
+    // first mouse move resets it to the class arrow.
+    sh_win_install_cursor_proc();
+    HCURSOR c = NULL;
+    if (strcmp(css_name, "none") == 0) {
+        c = sh_win_none_cursor();
+    } else {
+        for (size_t i = 0; i < sizeof(g_win_cursors)/sizeof(g_win_cursors[0]); i++) {
+            if (strcmp(css_name, g_win_cursors[i].css) == 0) {
+                c = LoadCursorW(NULL, MAKEINTRESOURCEW(g_win_cursors[i].idc));
+                break;
             }
-            return;
         }
+    }
+    if (c && c != g_win_current) {
+        SetCursor(c);
+        g_win_current = c;
     }
 }
 
