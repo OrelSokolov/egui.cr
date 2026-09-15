@@ -168,6 +168,76 @@ uint32_t egui_cr_load_image(const char* path) {
     return view_id;
 }
 
+// --- Crystal text stack GPU bits ---------------------------------------------
+//
+// The sokol_gl default pipeline has NO blending (write mask RGB only), so
+// the text quads need their own pipeline — same setup the fontstash backend
+// used (sfons): straight alpha blend, swapchain sample count.
+
+static sgl_pipeline g_text_pip;
+void egui_cr_atlas_update(int w, int h, const void* rgba8);
+
+void egui_cr_text_pipeline_init(void) {
+    if (g_text_pip.id) return;
+    g_text_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+        .colors[0] = {
+            .blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            },
+        },
+        .label = "egui-cr-text-pipeline",
+    });
+}
+
+// sokol_gl pipeline stack wrappers: sgl_pipeline is a struct, easier to
+// keep the struct marshalling here than bind it in Crystal.
+void egui_cr_text_pipeline_push(void) {
+    sgl_push_pipeline();
+    sgl_load_pipeline(g_text_pip);
+}
+
+void egui_cr_text_pipeline_pop(void) {
+    sgl_pop_pipeline();
+}
+
+// Glyph atlas texture: RGBA8, stream-updated whenever Crystal rasterizes new
+// glyphs into it. One atlas per process (like sfons).
+static sg_image g_atlas_img;
+static sg_view g_atlas_view;
+
+uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
+    if (g_atlas_img.id) { sg_destroy_image(g_atlas_img); g_atlas_img.id = 0; }
+    if (g_atlas_view.id) { sg_destroy_view(g_atlas_view); g_atlas_view.id = 0; }
+    // stream images cannot be created with initial data (sokol validation:
+    // WRITABLE_NO_DATA) — create empty, then upload via sg_update_image.
+    g_atlas_img = sg_make_image(&(sg_image_desc){
+        .width = w,
+        .height = h,
+        .usage = {.dynamic_update = true},
+        .label = "egui-cr-glyph-atlas",
+    });
+    if (g_atlas_img.id == 0) return 0;
+    g_atlas_view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = g_atlas_img},
+        .label = "egui-cr-glyph-atlas-view",
+    });
+    egui_cr_atlas_update(w, h, rgba8);
+    return g_atlas_view.id;
+}
+
+uint32_t egui_cr_atlas_view_id(void) { return (uint32_t)g_atlas_view.id; }
+
+void egui_cr_atlas_update(int w, int h, const void* rgba8) {
+    if (!g_atlas_img.id) return;
+    sg_image_data data;
+    memset(&data, 0, sizeof(data));
+    data.mip_levels[0].ptr = rgba8;
+    data.mip_levels[0].size = (size_t)w * h * 4;
+    sg_update_image(g_atlas_img, &data);
+}
+
 // --- cursor -----------------------------------------------------------------
 //
 // Port of eframe/winit cursor handling: egui hands the integration a

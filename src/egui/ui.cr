@@ -152,8 +152,9 @@ module Egui
 
     def drag_value(value : Float64, speed : Float64 = 1.0,
                    prefix : String = "", suffix : String = "",
+                   format : (Float64 -> String)? = nil,
                    &on_change : Float64 ->) : Response
-      response = add(DragValue.new(value, speed, prefix, suffix))
+      response = add(DragValue.new(value, speed, prefix, suffix, format))
       if response.changed? && (v = response.widget_value)
         on_change.call(v)
       end
@@ -203,6 +204,136 @@ module Egui
 
     def hyperlink_to(label : String, url : String) : Response
       add(Hyperlink.new(label, url))
+    end
+
+    # egui `ui.selectable_label(selected, text)` (upstream 0.36:
+    # `Button::selectable`). The block form hands the new state back
+    # when the row is clicked, like `#checkbox`.
+    def selectable_label(selected : Bool, text : String) : Response
+      add(SelectableLabel.new(selected, text))
+    end
+
+    def selectable(selected : Bool, text : String, &on_change : Bool ->) : Response
+      response = add(SelectableLabel.new(selected, text))
+      on_change.call(!selected) if response.changed?
+      response
+    end
+
+    # Switch-style toggle; block form like `#checkbox`.
+    def toggle_button(checked : Bool, text : String? = nil,
+                      &on_change : Bool ->) : Response
+      response = add(ToggleButton.new(checked, text))
+      on_change.call(!checked) if response.changed?
+      response
+    end
+
+    # One-of-many segmented selector; the block fires with the newly
+    # selected index.
+    def segmented(selected : Int32, labels : Array(String),
+                  &on_select : Int32 ->) : Response
+      response = add(SegmentedControl.new(selected, labels))
+      if response.changed? && (v = response.widget_value)
+        on_select.call(v.to_i)
+      end
+      response
+    end
+
+    # egui_extras `DatePickerButton` — see `DatePicker`. The block
+    # fires from inside #show on the day click (and Today).
+    def date_picker(id : String, value : Time,
+                    format : String = "%Y-%m-%d",
+                    &on_change : Time ->) : Response
+      add(DatePicker.new(id, value, format, &on_change))
+    end
+
+    # egui_plot-style line/scatter plot; see `Plot`.
+    def plot(id : String, height : Float64 = 200.0, &block : Plot ->) : Response
+      p = Plot.new(id, height)
+      block.call(p)
+      add(p)
+    end
+
+    # egui `ui.grid(id) { |grid| … }` — aligned columns; see `Grid`.
+    def grid(id : String, striped : Bool = false, &block : Grid ->) : Rect
+      Grid.new(id, striped: striped).show(self) { |g| yield g }
+    end
+
+    # Hierarchical list; see `TreeView`.
+    def tree_view(id : String, &block : TreeView ->) : Nil
+      TreeView.new(id).show(self) { |tree| yield tree }
+    end
+
+    # Header + striped body table; see `Table`.
+    def table(id : String, headers : Array(String),
+              fractions : Array(Float64)? = nil, &block : Grid ->) : Nil
+      Table.new(id, headers, fractions).show(self) { |rows| yield rows }
+    end
+
+    # egui `ui.add_sized(size, widget)` — lay the widget out in an
+    # exact-size cell instead of its natural size.
+    def add_sized(size : Vec2, widget : Widget) : Response
+      rect = Rect.from_min_size(@cursor, size)
+      @min_rect = @min_rect.union(rect)
+      @cursor = @layout.advance(@cursor, size, style.spacing.item_spacing)
+      cell = child_ui(rect)
+      widget.ui(cell)
+    end
+
+    # egui `ui.scope` — a nested region with its own id space (children
+    # mint ids under the scope's id, not the parent's counter).
+    def scope(&block : Ui ->) : self
+      child = child_ui(
+        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)))
+      yield child
+      @min_rect = @min_rect.union(child.min_rect)
+      @cursor = Pos2.new(@max_rect.min.x,
+        child.min_rect.bottom + style.spacing.item_spacing.y)
+      self
+    end
+
+    # egui `ui.columns(n)` — split the remaining width into `n` equal
+    # columns; the block receives one Ui per column.
+    def columns(n : Int32, &block : Array(Ui) ->) : Nil
+      spacing = style.spacing.item_spacing.x
+      gap_total = spacing * (n - 1)
+      col_w = {(available_width - gap_total) / {n, 1}.max, 1.0}.max
+      cols = (0...n).map do |i|
+        x = @cursor.x + i * (col_w + spacing)
+        child_ui(Rect.from_min_size(Pos2.new(x, @cursor.y),
+          Vec2.new(col_w, available_height)))
+      end
+      yield cols
+      cols.each { |c| @min_rect = @min_rect.union(c.min_rect) }
+      bottom = cols.map(&.min_rect.bottom).max
+      @cursor = Pos2.new(@max_rect.min.x, bottom + style.spacing.item_spacing.y)
+    end
+
+    # egui `ui.enabled(flag, |ui| …)` — gray-out + interaction-block a
+    # region. Contents ALWAYS render through a child Ui so widget ids
+    # stay stable when the flag flips (interaction state must survive
+    # disable/enable cycles). While disabled every Response comes back
+    # dead and a translucent scrim is back-painted over the region.
+    def enabled(flag : Bool, &block : Ui ->) : Nil
+      scrim_index = painter.add_noop
+      child = child_ui(
+        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)))
+
+      if flag
+        yield child
+      else
+        @ctx.memory.push_disabled
+        yield child
+        @ctx.memory.pop_disabled
+      end
+
+      @min_rect = @min_rect.union(child.min_rect)
+      @cursor = Pos2.new(@max_rect.min.x,
+        child.min_rect.bottom + style.spacing.item_spacing.y)
+      return if flag
+      v = style.visuals
+      painter.set(scrim_index,
+        RectCmd.new(painter.clip, child.min_rect, 0.0,
+          v.fade_color(v.panel_fill, 0.5), nil, 0.0))
     end
 
     # egui `Ui::available_size` — how much room is left in this region

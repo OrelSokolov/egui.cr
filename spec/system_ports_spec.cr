@@ -82,6 +82,20 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
     Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
   end
+
+  it "Fonts lists per-platform candidates, best-first" do
+    paths = Egui::SystemPorts::Fonts.search_paths
+    paths.should_not be_empty
+    paths.all? { |p| p.ends_with?(".ttf") }.should be_true
+    # The platform list must be one coherent set, not a mix.
+    {% if flag?(:win32) %}
+      paths.first.should eq("C:\\Windows\\Fonts\\segoeui.ttf")
+    {% elsif flag?(:darwin) %}
+      paths.first.should eq("/System/Library/Fonts/SFNS.ttf")
+    {% else %}
+      paths.first.should eq("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+    {% end %}
+  end
 end
 
 # Drain any leftover async-dialog requests so worker fibers can't

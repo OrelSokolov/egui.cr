@@ -50,8 +50,8 @@ Conventions for every phase:
 | Panels (top/side/central), Resize, Area | `containers/{panel,resize,area}.rs` | missing | **P5** |
 | Textures, Image, button icons | `load/`, `widgets/image.rs` | missing | **P6** |
 | ColorPicker | `widgets/color_picker.rs` | missing | **P6** |
-| Grid, columns, add_sized, scope, enabled | `grid.rs`, `ui.rs` | missing | P7 |
-| Context menu, drag&drop payload, on-demand repaint, IME, clipboard | various | missing | P7 (optional) |
+| Grid, columns, add_sized, scope, enabled | `grid.rs`, `ui.rs` | Grid done; ui.rs helpers missing | P7 |
+| Context menu, drag&drop payload, on-demand repaint, IME, clipboard | various | context menu done | P7 (optional) |
 | `scene` container (new in 0.36) | `containers/scene.rs` | missing | deferred |
 
 ## Phase 0 — painter primitives (line, circle, arc)
@@ -314,9 +314,62 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       (≈ three text lines), theme-tunable at runtime. Spec: one notch
       moves exactly `scroll_speed` px after ownership settles, and a
       live `scroll_speed` change takes effect next frame.
-- [ ] Ui helpers: `add_sized`, `scope`, `enabled(flag)`, `columns`.
-- [ ] `src/egui/grid.cr` ← `crates/egui/src/grid.rs`.
-- [ ] `Response#context_menu` (right-click menus, needs P2 menu).
+- [x] Ui helpers: `add_sized`, `scope`, `columns`, `enabled(flag)`
+      (widgets render through a stable child Ui in both states so ids
+      — and thus interaction state — survive disable/enable cycles;
+      disabled regions get dead verdicts via `Memory
+      push/pop_disabled` + a back-painted scrim).
+- [x] `src/egui/containers/grid.cr` ← `grid.rs` (classic API; dropped
+      from the vendored 0.36 tree): aligned columns via one-frame width
+      convergence — widths measured frame N are persisted per-grid in
+      IdTypeMap (cells kept alive through pruning via `Memory#use_id`)
+      and applied frame N+1; explicit `widths:` pin the columns (what
+      Table builds on), `striped:` back-paints alternate rows.
+      `ui.grid(id) { |g| g.label …; g.end_row }`.
+- [x] `Response#context_menu` (right-click menus on the P2 popup/menu
+      system): `InputState` gains secondary-press tracking
+      (`secondary_pressed?` + `secondary_pos`); opens on secondary press
+      over the widget's rect (works on labels too — no hover sense
+      needed), anchor persisted in `Memory#areas`; `menu_item` rows
+      close it, a click elsewhere dismisses it (popup close-on-outside).
+- [x] egui.cr-native extras (no upstream counterpart, user request):
+      `SelectableLabel` (`widgets/selectable_label.cr`; upstream 0.36
+      folds it into `Button::selectable`) + `ui.selectable(selected,
+      text) { |v| }`; `ToggleButton` (`widgets/toggle_button.cr`) —
+      switch-style checkbox (track + knob); `SegmentedControl`
+      (`widgets/segmented.cr`) — joined one-of-many row, chosen index
+      via `Response#widget_value`, `ui.segmented(sel, labels) { |i| }`;
+      `TreeView` (`containers/tree_view.cr`) — `node`/`leaf` rows,
+      open/close persisted in IdTypeMap keyed by node path (app holds
+      only the selection), `ui.tree_view(id) { |t| … }`; `Table`
+      (`containers/table.cr`) — header + striped body over pinned-width
+      Grid (slim cousin of egui_extras' virtualized Table), fractions
+      of available width, `ui.table(id, headers, fractions) { |rows| … }`.
+      Gallery: "Layout" section (Grid/Table/Tree/Plot/Enabled tabs),
+      toggle/segmented/selectable/date-picker in Inputs, context-menu
+      demo in Buttons. Specs: selection paint + block helpers,
+      segmented index click, grid column alignment from frame 2, tree
+      default-open + toggle, table headers/stripes, context-menu open +
+      click-elsewhere close, enabled blocking + id stability,
+      add_sized cell, columns gaps, date-picker day click, plot
+      auto-fit + drag-locks-bounds, drag_value custom format.
+- [x] `src/egui/widgets/date_picker.cr` ← `egui_extras/src/datepicker/`
+      (slim): `ui.date_picker(id, time) { |t| … }` — button with the
+      formatted date (custom strftime), popup calendar (‹ month year ›
+      header, weekday row, day grid, Today); shown month persists in
+      IdTypeMap; "today" cells tinted with the hyperlink color. Note:
+      this Crystal build has no `Time.now` — use `Time.local`.
+- [x] `src/egui/containers/plot.cr` ← egui_plot (deliberately slim):
+      `ui.plot(id, height) { |p| p.line(name, pts); p.points(name,
+      pts) }` — shared data coords, auto-fit bounds (5% padding, flat
+      series get a fixed span), drag-to-pan, wheel zoom anchored at
+      the pointer, grid + corner axis labels, legend; bounds persist
+      in IdTypeMap and leave auto mode on first interaction.
+- [x] `DragValue` custom formatter (`ui.drag_value(format: ->(v) { … })`)
+      on top of prefix/suffix.
+- [x] `examples/openfiledialog.cr` — native zenity/kdialog pickers via
+      the existing fiber-backed `SystemPorts::OpenFileDialog` /
+      `SaveFileDialog` (the Rakefile example list already expected it).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
 - [ ] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync (optional perf).

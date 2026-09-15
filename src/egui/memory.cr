@@ -105,6 +105,14 @@ module Egui
     @pointer_down : Bool
     @pointer_delta : Vec2
 
+    # Hover occlusion (upstream `Context::interact`'s
+    # `is_covered_by_another_layer`): the z of the topmost interactive
+    # layer under the pointer, resolved against the previous frame's
+    # geometry in #begin_frame. A widget is hovered only when its own
+    # layer's z equals it — the button a dropdown menu covers must not
+    # highlight through the menu.
+    @hover_top_z : Int32?
+
     # Modal state (egui `InteractionSnapshot` blocking): while a modal
     # is open, widgets on layers below Foreground get no interaction.
     # The flag is latched one frame (set during rendering, effective
@@ -158,6 +166,7 @@ module Egui
       @pointer_pos = nil
       @pointer_down = false
       @pointer_delta = Vec2.zero
+      @hover_top_z = nil
       @modal_open = false
       @modal_next = false
     end
@@ -168,16 +177,19 @@ module Egui
       @popups_opened_this_frame.clear
 
       # Rotate scroll viewports and decide who owns this frame's scroll
-      # delta: top-most (last registered) viewport containing the pointer.
+      # delta: the top-most viewport containing the pointer (highest
+      # layer z; on a tie the last registered wins, like paint order).
       @prev_scroll_rects = @scroll_rects
       @scroll_rects = {} of Id => Tuple(Rect, LayerId)
       @active_scroll = nil
       if pos = input.pointer_pos
+        best_z = nil
         @prev_scroll_rects.each do |id, (rect, layer)|
-          if @modal_open && !layer.order.foreground?
-            next
+          next if @modal_open && !layer.order.foreground?
+          if rect.contains?(pos) && (best_z.nil? || layer.z >= best_z)
+            @active_scroll = id
+            best_z = layer.z
           end
-          @active_scroll = id if rect.contains?(pos)
         end
       end
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
@@ -193,6 +205,31 @@ module Egui
       @used_ids.clear
       @seen_ids.clear
       @duplicate_ids.clear
+
+      # Resolve this frame's hover occlusion: union the previous
+      # frame's interactive widgets per layer, then take the highest-z
+      # layer whose union covers the pointer. Layers with only
+      # non-interactive widgets (labels, tooltips are paint-only) never
+      # block what's under them.
+      @hover_top_z = nil
+      if pos = input.pointer_pos
+        layer_rects = {} of LayerId => Rect
+        @prev_widget_rects.each do |id, rect|
+          sense = @prev_widget_senses[id]?
+          next if sense.nil? || sense.none?
+          layer = @prev_widget_layers[id]? || LayerId.background
+          next if @modal_open && !layer.order.foreground?
+          if (hit = layer_rects[layer]?)
+            layer_rects[layer] = hit.union(rect)
+          else
+            layer_rects[layer] = rect
+          end
+        end
+        layer_rects.each do |layer, rect|
+          next unless rect.contains?(pos)
+          @hover_top_z = layer.z if @hover_top_z.nil? || layer.z > @hover_top_z.not_nil!
+        end
+      end
 
       @focus.begin_frame
       @clicked_id = nil
@@ -255,8 +292,8 @@ module Egui
         @potential_drag_id = nil
       end
 
-      @pointer_pos = input.pointer_pos
       @pointer_down = input.pointer_down?
+      @pointer_pos = input.pointer_pos
       @pointer_delta = input.pointer_delta
 
       navigate_focus(input)
@@ -278,6 +315,13 @@ module Egui
     # also count as "used" so their IdTypeMap cells (offset, content
     # size) survive end-frame pruning — they have no #interact call of
     # their own (the scrollbar's id does, via ui.interact).
+    # Mark an id as used this frame so its IdTypeMap cell survives
+    # end-frame pruning (for state keys that have no #interact call of
+    # their own — e.g. Grid's persisted column widths).
+    def use_id(id : Id) : Nil
+      @used_ids.add(id)
+    end
+
     def register_scroll_area(id : Id, rect : Rect, layer : LayerId) : Nil
       @scroll_rects[id] = {rect, layer}
       @used_ids.add(id)
@@ -293,6 +337,23 @@ module Egui
     # blocking takes effect from the next begin_frame.
     def mark_modal : Nil
       @modal_next = true
+    end
+
+    # --- ui.enabled(false) regions ---------------------------------------
+    # Depth counter: while > 0 every #interact verdict is dead (widgets
+    # still register, so their persistent state survives the gray-out).
+    @disabled_depth = 0
+
+    def push_disabled : Nil
+      @disabled_depth += 1
+    end
+
+    def pop_disabled : Nil
+      @disabled_depth = {0, @disabled_depth - 1}.max
+    end
+
+    def disabled? : Bool
+      @disabled_depth > 0
     end
 
     # The interaction query every widget makes (egui `Context::interact`).
@@ -321,14 +382,27 @@ module Egui
           false, false, Vec2.zero, false)
       end
 
+      # `ui.enabled(false)`: dead verdicts, but the widget's state (and
+      # registration above) survives the gray-out.
+      return InteractionVerdict.new(false, false, 0, false, false,
+        false, false, Vec2.zero, false) if @disabled_depth > 0
+
       # Focus keep-alive (upstream: focusables register interest every
       # frame): the focused focusable re-requests focus so the
       # dead-man's switch only fires when the widget disappears.
       @focus.keep_alive(id) if sense.focusable? && @focus.id == id
 
       pos = @pointer_pos
-      hovered = !sense.none? && pos ? rect.contains?(pos.not_nil!) &&
-                                     clip.contains?(pos.not_nil!) : false
+      # Hover needs no strictly-higher layer under the pointer
+      # (@hover_top_z): rect containment alone would mark the button
+      # under a popup as hovered too. When nothing interactive was under
+      # the pointer last frame (fresh widget, empty frame), keep the
+      # plain containment behavior (see #begin_frame).
+      hovered = false
+      if (p = pos) && (@hover_top_z.nil? || layer.z >= @hover_top_z.not_nil!) &&
+         !sense.none?
+        hovered = rect.contains?(p) && clip.contains?(p)
+      end
 
       clicked = sense.click? && @clicked_id == id
       click_count = clicked ? @clicked_count : 0
@@ -439,28 +513,28 @@ module Egui
 
 
     # Topmost widget containing `pos` whose sense satisfies the filter.
-    # Layer Order wins first (see `layer.cr`: paint order and hit-test
-    # priority follow Order — a Foreground popup always beats the panel
+    # Layer z wins first (see `layer.cr`: paint order and hit-test
+    # priority follow z — a popup on layer 99 always beats the panel
     # under it, even though the popup registers earlier in the frame);
-    # within the same Order the last registration (paint order) is on
-    # top. Hit-tests resolve against the previous frame's geometry.
+    # within the same z the last registration (paint order) is on top.
+    # Hit-tests resolve against the previous frame's geometry.
     private def topmost_at(pos : Pos2?, &sense_filter : Sense -> Bool) : Id?
       return nil unless pos
       hit = nil
-      hit_order = Order::Background.value
+      hit_z = 0
       @prev_widget_rects.each do |id, rect|
         if rect.contains?(pos)
           sense = @prev_widget_senses[id]?
           next if sense.nil? || !sense_filter.call(sense)
           clip = @prev_widget_clips[id]?
           next if clip && !clip.contains?(pos)
-          order = (@prev_widget_layers[id]? || LayerId.background).order
+          layer = @prev_widget_layers[id]? || LayerId.background
           if @modal_open
-            next unless order.foreground?
+            next unless layer.order.foreground?
           end
-          if hit.nil? || order.value >= hit_order
+          if hit.nil? || layer.z >= hit_z
             hit = id
-            hit_order = order.value
+            hit_z = layer.z
           end
         end
       end

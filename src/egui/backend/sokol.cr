@@ -1,10 +1,15 @@
-# Sokol backend: sokol_app window + sokol_gfx (via sokol_gl) rendering
-# + fontstash text. The eframe-equivalent run loop:
+# Sokol backend: sokol_app window + sokol_gfx (via sokol_gl) rendering + a
+# Crystal text stack (backend/text.cr + backend/freetype.cr: FreeType with
+# real hinting, stb light-hint fallback, shared glyph atlas). The
+# eframe-equivalent run loop:
 #
 #   sapp events → RawInput → begin_frame → app.update → end_frame →
-#   paint list → sgl quads + fonsDrawText → sgl_draw → sg_commit
+#   rasterize glyphs + upload atlas → paint list → sgl quads + text quads
+#   → sgl_draw → sg_commit
 
 require "../../egui"
+require "./text"
+require "./freetype"
 
 @[Link("egui_cr_sokol")]
 @[Link("GL")]
@@ -25,7 +30,6 @@ lib LibEguiCr
                                   cleanup : CleanupCb, title : UInt8*,
                                   width : Int32, height : Int32)
   fun gfx_init = egui_cr_gfx_init
-  fun sfons_create = egui_cr_sfons_create(width : Int32, height : Int32) : Void*
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
   fun set_clear_color = egui_cr_set_clear_color(r : Float32, g : Float32,
@@ -70,20 +74,36 @@ lib LibEguiCr
   fun sgl_disable_texture = egui_cr_sgl_disable_texture
   fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
 
+  # stb_truetype exposure (Crystal text stack, see backend/text.cr)
+  struct StbVertex
+    x, y, cx, cy, cx1, cy1 : Int16
+    type : UInt8
+    padding : UInt8
+  end
+
+  fun font_info_new = egui_cr_font_info_new(data : UInt8*, font_index : Int32) : Void*
+  fun font_vmetrics = egui_cr_font_vmetrics(info : Void*, ascent : Int32*,
+                                            descent : Int32*, linegap : Int32*)
+  fun font_find_glyph = egui_cr_font_find_glyph(info : Void*, unicode : Int32) : Int32
+  fun glyph_hmetrics = egui_cr_glyph_hmetrics(info : Void*, glyph : Int32,
+                                              advance : Int32*, lsb : Int32*)
+  fun glyph_kern = egui_cr_glyph_kern(info : Void*, g1 : Int32, g2 : Int32) : Int32
+  fun scale_for_pixel_height = egui_cr_scale_for_pixel_height(info : Void*,
+                                                              pixels : Float32) : Float32
+  fun glyph_shape = egui_cr_glyph_shape(info : Void*, glyph : Int32,
+                                        count : Int32*) : StbVertex*
+  fun glyph_shape_free = egui_cr_glyph_shape_free(info : Void*, vertices : StbVertex*)
+
+  # text pipeline + glyph atlas (Crystal text stack)
+  fun text_pipeline_init = egui_cr_text_pipeline_init
+  fun text_pipeline_push = egui_cr_text_pipeline_push
+  fun text_pipeline_pop = egui_cr_text_pipeline_pop
+  fun atlas_create = egui_cr_atlas_create(w : Int32, h : Int32, data : UInt8*) : UInt32
+  fun atlas_view_id = egui_cr_atlas_view_id : UInt32
+  fun atlas_update = egui_cr_atlas_update(w : Int32, h : Int32, data : UInt8*)
+
   # cursor (shim): `name` is a CSS cursor keyword
   fun set_cursor = egui_cr_set_cursor(name : UInt8*)
-
-  # fontstash / sokol_fontstash (fontstash exports camelCase names)
-  fun sfons_flush(ctx : Void*)
-  fun sfons_rgba(r : UInt8, g : UInt8, b : UInt8, a : UInt8) : UInt32
-  fun fons_add_font_mem = fonsAddFontMem(ctx : Void*, name : UInt8*, data : UInt8*, data_size : Int32, free_data : Int32) : Int32
-  fun fons_clear_state = fonsClearState(ctx : Void*)
-  fun fons_set_size = fonsSetSize(ctx : Void*, size : Float32)
-  fun fons_set_font = fonsSetFont(ctx : Void*, font : Int32) : Int32
-  fun fons_set_color = fonsSetColor(ctx : Void*, color : UInt32)
-  fun fons_draw_text = fonsDrawText(ctx : Void*, x : Float32, y : Float32, str : UInt8*, end_ : UInt8*) : Float32
-  fun fons_text_bounds = fonsTextBounds(ctx : Void*, x : Float32, y : Float32, str : UInt8*, end_ : UInt8*, bounds : Float32*) : Float32
-  fun fons_vert_metrics = fonsVertMetrics(ctx : Void*, ascender : Float32*, descender : Float32*, line_height : Float32*) : Int32
 end
 
 module Egui
@@ -93,8 +113,7 @@ module Egui
       class_getter app : Egui::App?
 
       @@events = [] of Egui::Event
-      @@fons : Void*?
-      @@font_id = -1
+      @@fonts : Egui::Backend::AtlasFonts?
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
 
@@ -180,13 +199,6 @@ module Egui
       MOUSE_SCROLL = 6
       MOUSE_MOVE  =  7
 
-      FONT_PATHS = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-        "/usr/share/fonts/truetype/roboto/unhinted/RobotoTTF/Roboto-Regular.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-      ]
-
       # eframe::run_native — blocks until the window closes.
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600) : Nil
@@ -211,10 +223,20 @@ module Egui
 
       protected def self.on_init : Nil
         LibEguiCr.gfx_init
-        @@fons = LibEguiCr.sfons_create(512, 512)
-        load_font
+        LibEguiCr.text_pipeline_init
         app = @@app.not_nil!
-        app.ctx.fonts = FontstashFonts.new(@@fons.not_nil!)
+        # Font backend: prefer FreeType (real hinting), fall back to the
+        # stb light-hint rasterizer, then to the built-in monospace stub.
+        # Candidates come from the Fonts system port (per-platform).
+        font_paths = Egui::SystemPorts::Fonts.search_paths
+        if font = FreetypeFonts.from_system(font_paths) ||
+                   LightHintedFonts.from_system(font_paths)
+          @@fonts = font
+          app.ctx.fonts = font
+        else
+          STDERR.puts "egui-cr: no system font found (tried #{font_paths.first} …)"
+          app.ctx.fonts = Egui::MonospaceFonts.new
+        end
         app.ctx.textures = SokolTextureRegistry.new
       end
 
@@ -288,6 +310,15 @@ module Egui
         LibEguiCr.set_clear_color(
           bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
           bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
+
+        # Rasterize every glyph this frame's text needs and upload the
+        # atlas BEFORE the render pass — sg_update_image is illegal inside
+        # a pass.
+        if fonts = @@fonts
+          commands.each { |cmd| fonts.touch(cmd) if cmd.is_a?(Egui::TextCmd) }
+          fonts.flush
+        end
+
         LibEguiCr.begin_pass(w, h)
 
         LibEguiCr.sgl_viewport(0, 0, w, h, true)
@@ -297,9 +328,6 @@ module Egui
         LibEguiCr.sgl_matrix_mode_modelview
         LibEguiCr.sgl_load_identity
 
-        if fons = @@fons
-          LibEguiCr.sfons_flush(fons)
-        end
         commands.each { |cmd| paint(cmd) }
 
         LibEguiCr.end_pass
@@ -512,26 +540,42 @@ module Egui
 
 
       def self.paint_text(cmd : Egui::TextCmd) : Nil
-        fons = @@fons
-        return unless fons
+        fonts = @@fonts
+        return unless fonts
 
         apply_scissor(cmd.clip)
 
-        LibEguiCr.fons_clear_state(fons)
-        LibEguiCr.fons_set_size(fons, cmd.size.to_f32)
-        LibEguiCr.fons_set_font(fons, @@font_id)
+        # TextCmd.pos anchors the LEFT-CENTER of the text box; convert to a
+        # baseline using the font's ascender/descender.
+        asc, desc = fonts.metrics_at(cmd.size)
+        baseline = (cmd.pos.y + (asc + desc) / 2.0).round.to_f32
+
+        view = fonts.atlas_view_id
+        return if view.zero?
+
         color = cmd.color
-        LibEguiCr.fons_set_color(fons,
-          LibEguiCr.sfons_rgba(color.r, color.g, color.b, color.a))
-
-        # TextCmd.pos anchors the LEFT-CENTER of the text box; convert
-        # to a baseline using the font's ascender/descender.
-        asc, desc = FontstashFonts.metrics(fons, cmd.size)
-        baseline = (cmd.pos.y + (asc + desc) / 2.0).to_f32
-
-        cmd.text.to_unsafe # ensure the string has a contiguous buffer
-        LibEguiCr.fons_draw_text(fons, cmd.pos.x.to_f32, baseline,
-          cmd.text.to_unsafe, Pointer(UInt8).null)
+        x_origin = cmd.pos.x
+        # Glyph quads snap to whole screen pixels (rounded pen + rounded
+        # baseline), fractional advances in between — like upstream egui's
+        # pixel snapping, unlike fontstash which rounded advances too.
+        LibEguiCr.sgl_bind_texture(view)
+        LibEguiCr.sgl_enable_texture
+        LibEguiCr.text_pipeline_push
+        LibEguiCr.sgl_begin_quads
+        fonts.walk(cmd.text, cmd.size) do |pen, g|
+          next if g.w == 0 || g.h == 0
+          x0 = (x_origin + pen + g.xoff).round.to_f32
+          y0 = baseline - g.ytop.to_f32
+          x1 = x0 + g.w.to_f32
+          y1 = y0 + g.h.to_f32
+          LibEguiCr.sgl_v2f_t2f_c4b(x0, y0, g.u0, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1, y0, g.u1, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1, y1, g.u1, g.v1, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x0, y1, g.u0, g.v1, color.r, color.g, color.b, color.a)
+        end
+        LibEguiCr.sgl_end
+        LibEguiCr.text_pipeline_pop
+        LibEguiCr.sgl_disable_texture
       end
 
       def self.quad(r : Egui::Rect, c : Egui::Color32) : Nil
@@ -655,27 +699,6 @@ module Egui
         quad(r, c)
       end
 
-      def self.load_font : Nil
-        fons = @@fons.not_nil!
-        FONT_PATHS.each do |path|
-          next unless File.exists?(path)
-          data = File.read(path)
-          # fonsAddFontMem does NOT copy: the buffer must outlive the app.
-          data_bytes = data.to_unsafe
-          @@font_data = data
-          id = LibEguiCr.fons_add_font_mem(fons, "sans", data_bytes,
-            data.bytesize, 0)
-          if id >= 0
-            @@font_id = id
-            return
-          end
-        end
-        STDERR.puts "egui-cr: no system font found (tried #{FONT_PATHS.first} …)"
-        @@font_id = -1
-      end
-
-      class_property font_data : String?
-
       # GPU textures via the shim (sg_make_image/sampler/view); the
       # core sees opaque UInt64 handles only.
       class SokolTextureRegistry < Egui::TextureRegistry
@@ -688,52 +711,6 @@ module Egui
 
         def load(path : String) : UInt64
           LibEguiCr.load_image(path.to_unsafe).to_u64
-        end
-      end
-
-      # Real font metrics for the core's text measurement seam
-      # (egui `Fonts`/`Galley` equivalent).
-      class FontstashFonts < Egui::Fonts
-        @metrics = {} of Float64 => {Float64, Float64}
-
-        def initialize(@fons : Void*)
-        end
-
-        def measure(text : String, size : Float64) : Egui::Vec2
-          return Egui::Vec2.zero if text.empty?
-          asc, desc = metrics_at(size)
-          bounds = StaticFloat32Array.new(4)
-          width = LibEguiCr.fons_text_bounds(@fons, 0.0f32, 0.0f32,
-            text.to_unsafe, Pointer(UInt8).null, bounds)
-          Egui::Vec2.new(width.to_f64, asc - desc)
-        end
-
-        def self.metrics(fons : Void*, size : Float64) : {Float64, Float64}
-          asc = uninitialized Float32
-          desc = uninitialized Float32
-          line = uninitialized Float32
-          LibEguiCr.fons_set_size(fons, size.to_f32)
-          LibEguiCr.fons_vert_metrics(fons,
-            pointerof(asc), pointerof(desc), pointerof(line))
-          {asc.to_f64, desc.to_f64}
-        end
-
-        private def metrics_at(size : Float64) : {Float64, Float64}
-          @metrics[size] ||= begin
-            m = FontstashFonts.metrics(@fons, size)
-            m
-          end
-        end
-
-        # A tiny fixed buffer that behaves like `float[4]`.
-        class StaticFloat32Array
-          def initialize(n : Int32)
-            @buf = Pointer(Float32).malloc(n)
-          end
-
-          def to_unsafe : Float32*
-            @buf
-          end
         end
       end
 

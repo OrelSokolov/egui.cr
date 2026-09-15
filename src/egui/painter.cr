@@ -110,22 +110,27 @@ module Egui
 
     def initialize
       @commands = [] of PaintCmd
-      @layers = [] of Order
-      @layer = Order::Background
+      @layers = [] of Int32
+      @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
 
     def clear : Nil
       @commands.clear
       @layers.clear
-      @layer = Order::Background
+      @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
 
     # Which layer subsequently pushed commands belong to (egui
-    # `Painter::with_layer_id`).
+    # `Painter::with_layer_id`): either a named Order or an explicit
+    # numeric z (see `LayerId`).
     def layer=(order : Order)
-      @layer = order
+      @layer = order.z
+    end
+
+    def layer=(z : Int32)
+      @layer = z.clamp(0, MAX_LAYER_Z)
     end
 
     def clip=(rect : Rect)
@@ -225,12 +230,14 @@ module Egui
     end
 
     # egui `GraphicLayers::drain(order)`: flatten per layer, back to
-    # front (Background → Middle → Foreground → Tooltip).
+    # front — ascending z; within one z, push order (registration
+    # order) decides, so a container's back-filled frame stays under
+    # its contents.
     def commands_in_layer_order : Array(PaintCmd)
       out = [] of PaintCmd
-      Order.each do |order|
+      @layers.uniq.sort.each do |z|
         @commands.each_with_index do |cmd, i|
-          out << cmd if @layers[i] == order
+          out << cmd if @layers[i] == z
         end
       end
       out

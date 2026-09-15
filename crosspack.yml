@@ -100,6 +100,20 @@ build:
         "*":
           verify: pkg-config --exists xi
 
+    freetype-dev:           # primary font backend (backend/freetype.cr)
+      hosts:
+        debian:
+          verify: pkg-config --exists freetype2
+          install: sudo apt-get install -y libfreetype-dev
+        fedora:
+          verify: pkg-config --exists freetype2
+          install: sudo dnf install -y freetype-devel
+        arch:
+          verify: pkg-config --exists freetype2
+          install: sudo pacman -S --needed freetype2
+        "*":
+          verify: pkg-config --exists freetype2
+
   matrix:
     - id: linux
       build: linux/amd64
@@ -120,8 +134,10 @@ package:
   summary: egui-cr demo — immediate-mode GUI for Crystal over sokol_gfx
   description: |-
     egui-cr demo application: a 1:1 Crystal port of the egui (Rust)
-    immediate-mode GUI architecture, rendered through sokol_gfx with
-    fontstash text. The widgets_gallery example shows every widget
+    immediate-mode GUI architecture, rendered through sokol_gfx with a
+    Crystal-native text stack (FreeType-hinted glyphs, stb light-hint
+    fallback).
+    The widgets_gallery example shows every widget
     (buttons, checkboxes, sliders, combos, text edits, menus, modals)
     laid out on the panel system with a scrollable widget list.
   sources: builds
@@ -161,3 +177,9 @@ deps:
       ubuntu: { "*": [libxi6] }
       fedora: { "*": [libXi] }
       arch: { "*": [libxi] }
+  libfreetype:             # primary font backend
+    targets:
+      debian: { "*": [libfreetype6] }
+      ubuntu: { "*": [libfreetype6] }
+      fedora: { "*": [freetype] }
+      arch: { "*": [freetype2] }

@@ -17,6 +17,11 @@ class GalleryApp < Egui::App
   @modal_open = false
   @buffer = "edit me"
   @color = Egui::Color32.rgb(0, 122, 204)
+  @seg = 0
+  @sel = false
+  @tree_sel = ""
+  @date = Time.local(2026, 9, 15)
+  @enabled = true
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
@@ -29,6 +34,8 @@ class GalleryApp < Egui::App
       "Style", ["Themes", "Cursors"], closable: true),
     Egui::Sidebar::Section.new(
       "Containers", ["Scroll", "Modal"], closable: true),
+    Egui::Sidebar::Section.new(
+      "Layout", ["Grid", "Table", "Tree", "Plot", "Enabled"], closable: true),
   ]
 
   COMBO_OPTIONS = ["First", "Second", "Third"]
@@ -90,6 +97,11 @@ class GalleryApp < Egui::App
           when {"Style", "Cursors"}          then cursors_gallery(scroll)
           when {"Containers", "Scroll"}      then scroll_gallery(scroll)
           when {"Containers", "Modal"}       then modal_gallery(scroll)
+          when {"Layout", "Grid"}            then grid_gallery(scroll)
+          when {"Layout", "Table"}           then table_gallery(scroll)
+          when {"Layout", "Tree"}            then tree_gallery(scroll)
+          when {"Layout", "Plot"}            then plot_gallery(scroll)
+          when {"Layout", "Enabled"}         then enabled_gallery(scroll)
           end
         end
       end
@@ -156,6 +168,14 @@ class GalleryApp < Egui::App
         s.fill_active = Egui::Color32.rgb(140, 25, 25)
       end)
     end
+    # Right-click anything below — a context menu opens at the pointer
+    # (egui `Response#context_menu`; `menu_item` rows close it, a click
+    # elsewhere dismisses it).
+    ui.label("Context menu (right-click me):").context_menu do |menu|
+      menu.menu_item("Copy") { }
+      menu.menu_item("Paste") { }
+      menu.menu_item("Delete") { }
+    end
   end
 
   private def inputs_gallery(ui : Egui::Ui) : Nil
@@ -179,6 +199,24 @@ class GalleryApp < Egui::App
     ui.label("Combo / text edit:")
     ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
     ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
+    ui.separator
+
+    ui.label("Toggle / segmented / selectable:")
+    ui.toggle_button(@checked, "Switch (#{@checked})") { |v| @checked = v }
+    ui.horizontal do |row|
+      row.label("Segment:")
+      row.segmented(@seg, ["One", "Two", "Three"]) { |i| @seg = i }
+    end
+    ui.horizontal do |row|
+      row.label("Selectable:")
+      row.selectable(@sel, "selectable label (#{@sel})") { |v| @sel = v }
+    end
+    ui.separator
+
+    ui.label("Date picker:")
+    ui.date_picker("gallery_date", @date) { |t| @date = t }
+    ui.drag_value(@drag, speed: 0.1, suffix: " px",
+      format: ->(v : Float64) { "%.1f" % v }) { |v| @drag = v }
   end
 
   private def text_gallery(ui : Egui::Ui) : Nil
@@ -299,6 +337,85 @@ class GalleryApp < Egui::App
     ui.label("Everything below is blocked while it is open — open it from here or from the Buttons tab.")
     if ui.button("Open modal").clicked?
       @modal_open = true
+    end
+  end
+
+  # Aligned columns: column widths are measured frame N and applied
+  # frame N+1 (persisted per grid in Memory), like upstream egui Grid.
+  private def grid_gallery(ui : Egui::Ui) : Nil
+    ui.label("Grid (aligned columns):")
+    ui.grid("gallery_grid") do |grid|
+      grid.label("Setting"); grid.label("Value"); grid.label("Note"); grid.end_row
+      grid.label("width"); grid.label("1920"); grid.label("pixels, screen"); grid.end_row
+      grid.label("height"); grid.label("1080"); grid.label("a much longer note that sets the column width"); grid.end_row
+      grid.label("scale"); grid.label("100%"); grid.label("—"); grid.end_row
+    end
+  end
+
+  private def table_gallery(ui : Egui::Ui) : Nil
+    ui.label("Table (header + striped rows, on Grid):")
+    ui.table("gallery_table", ["File", "Size", "Modified"],
+      [0.5, 0.2, 0.3]) do |rows|
+      rows.label("README.md"); rows.label("4 KB"); rows.label("today"); rows.end_row
+      rows.label("shard.yml"); rows.label("1 KB"); rows.label("yesterday"); rows.end_row
+      rows.label("src/"); rows.label("—"); rows.label("2 days ago"); rows.end_row
+      rows.label("lib/libegui_cr_sokol.a"); rows.label("2.1 MB"); rows.label("last build"); rows.end_row
+    end
+  end
+
+  # Tree state (which branches are open) lives in Memory keyed by node
+  # path — the app only tracks the selected leaf.
+  private def tree_gallery(ui : Egui::Ui) : Nil
+    ui.label("Tree view (open/close state is app-independent):")
+    ui.label("selected: #{@tree_sel.empty? ? "(none)" : @tree_sel}")
+    ui.tree_view("gallery_tree") do |tree|
+      tree.node("src", default_open: true) do |sub|
+        sub.leaf("egui.cr", @tree_sel == "src/egui.cr") { @tree_sel = "src/egui.cr" }
+        sub.node("widgets", default_open: true) do |leaf|
+          leaf.leaf("button.cr", @tree_sel == "src/widgets/button.cr") { @tree_sel = "src/widgets/button.cr" }
+          leaf.leaf("slider.cr", @tree_sel == "src/widgets/slider.cr") { @tree_sel = "src/widgets/slider.cr" }
+        end
+      end
+      tree.leaf("README.md", @tree_sel == "README.md") { @tree_sel = "README.md" }
+    end
+  end
+
+  # Line + scatter over shared axes; drag to pan, wheel to zoom (around
+  # the pointer). Bounds auto-fit until the first interaction, then
+  # persist in Memory keyed by the plot id.
+  private def plot_gallery(ui : Egui::Ui) : Nil
+    ui.label("Plot (drag to pan, wheel to zoom):")
+    sin = (0..100).map { |i|
+      x = i * 0.1
+      {x, Math.sin(x)}
+    }
+    peaks = sin.select { |_, y| y > 0.95 }
+    ui.plot("gallery_plot", height: 220) do |p|
+      p.line("sin(x)", sin)
+      p.points("peaks", peaks)
+    end
+  end
+
+  # egui `ui.enabled(flag)`: the region renders, but every Response is
+  # dead and a scrim is painted over it. Toggling re-enables the same
+  # widgets with their state intact (open flag, checkbox, focus).
+  private def enabled_gallery(ui : Egui::Ui) : Nil
+    ui.label("ui.enabled(flag) — grayed regions keep their state:")
+    ui.toggle_button(@enabled, "Enable the block below") { |v| @enabled = v }
+    ui.separator
+    ui.enabled(@enabled) do |block|
+      block.label("The widgets inside are dead while disabled:")
+      block.checkbox(@checked, "checkbox (state kept)") { |v| @checked = v }
+      Egui::CollapsingHeader.new("header kept open/closed too")
+        .show(block) { |inner| inner.label("nested content") }
+      block.button("Can't click me")
+    end
+    ui.label("Columns (ui.columns n):")
+    ui.columns(3) do |cols|
+      cols.each_with_index do |col, i|
+        col.label("column #{i}")
+        col.label("second line")
+      end
     end
   end
 end

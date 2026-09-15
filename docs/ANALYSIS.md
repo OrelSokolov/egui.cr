@@ -23,7 +23,7 @@ egui-cr equivalents:
 | emath | `src/egui/math.cr` (Vec2/Pos2/Rect) |
 | ecolor | `src/egui/color.cr` (Color32) |
 | epaint (subset: paint list) | `src/egui/painter.cr` (RectCmd/TextCmd/NoopCmd) |
-| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `FontstashFonts` |
+| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `FreetypeFonts`/`LightHintedFonts` |
 | egui core | `src/egui/{id,sense,input,memory,response,layout,style,ui,context,app}.cr`, `src/egui/widgets/*` |
 | egui-winit + renderer | `backend/sokol_shim.c` + `src/egui/backend/sokol.cr` (sokol_app events, sokol_gfx/sokol_gl rendering, fontstash text) |
 | eframe | `Egui::App` + `Egui::Backend::Sokol.run` |
@@ -164,9 +164,9 @@ Upstream: winit event loop + glow/wgpu renderer + repaint scheduling
 via `ViewportOutput::repaint_delay`. egui-cr slice 1: sokol_app
 window/GL context (X11, `SOKOL_NO_ENTRY` + `sapp_run` driven from
 Crystal `main`), sokol_gfx pass per frame, sokol_gl quads for rects,
-fontstash (via `util/sokol_fontstash.h`) for text, continuous repaint
-(vsync). On-demand repaint (`request_repaint`) is the next backend
-step.
+the Crystal text stack (`backend/text.cr`) for text — see section 10 —
+continuous repaint (vsync). On-demand repaint (`request_repaint`) is
+the next backend step.
 
 ## 6. Verified behavior (slice 1)
 
@@ -280,3 +280,75 @@ straight from `update`, freezing the frame loop for the whole dialog.
   next frame. Specs (`spec/system_ports_spec.cr`) cover delivery,
   cancel→nil, non-blocking pump, and concurrent requests headlessly
   with fake work procs.
+
+## 10. Delta: Crystal text stack (two font backends)
+
+Upstream 0.34 switched font rendering from `ab_glyph` to `skrifa` +
+`vello_cpu` with TrueType hinting on by default ("sharper text");
+fontstash's stb_truetype path cannot hint at all, which made port text
+look blurry (measured: every glyph edge carried a ~1px gray shoulder,
+1px horizontal strokes rendered at ~53% intensity). The port replaces
+fontstash with a Crystal-side text stack — fontstash/fons are gone from
+the runtime path. Two backends share it:
+
+- `src/egui/backend/freetype.cr` (`FreetypeFonts`) — **primary**: a
+  direct Crystal binding of FreeType (`libfreetype`), rasterizing
+  hinted 8-bit coverage bitmaps via `FT_Load_Glyph` with
+  `FT_LOAD_DEFAULT | FT_LOAD_RENDER`. Real TrueType/CFF hinting instead
+  of a heuristic, so stem weights are even and crossbars come out
+  crisp. The big opaque structs (`FT_FaceRec`, `FT_GlyphSlotRec`) are
+  partially mirrored with field offsets verified via `offsetof(3)`;
+  everything else goes through real FreeType functions. Sizes are
+  requested via `FT_Request_Size` (NOMINAL, 26.6) as `size` pixels of
+  (ascender − descender) height — the same convention the stb backend
+  and fontstash's FreeType path used, so widget layout does not shift
+  between backends. `FT_Face`'s size is stateful: `set_size` runs
+  before every call that depends on it. Vertical metrics are computed
+  linearly from font units, because FreeType's scaled ascender/descender
+  are rounded to whole pixels (DejaVu: 13/−4 = 17px at size 16).
+- `src/egui/backend/text.cr` (`LightHintedFonts`, fallback for systems
+  without FreeType): stb_truetype outline → **light Y-hint** →
+  rasterize → atlas.
+  - *Light hint*: straight horizontal outline edges are collected,
+    clustered in pixel space (≤0.5px) and snapped to whole pixel rows
+    (paired as strokes, thickness quantized to `ceil` px, min 1; thin
+    features that would collapse are left unhinted; the second edge of
+    a stroke is found by ray-cast when it is a curve). All Y
+    coordinates pass through the resulting piecewise-linear map with a
+    pinned baseline anchor (0→0) and identity outside the anchor range,
+    so hinted glyphs never shift relative to unhinted neighbours. X is
+    untouched — the port of FreeType's "light"/vertical-only hinting.
+  - *Rasterizer*: curves flattened adaptively, nonzero-winding scanline
+    with 4×4 supersampling.
+- Shared infrastructure (`AtlasFonts`, `Glyph`, `GlyphAtlas` in
+  `text.cr`): 1024² RGBA atlas (white RGB, coverage alpha), shelf packer
+  with 1px borders against LINEAR bleed, stream texture updated before
+  the render pass (`sg_update_image` is illegal inside a pass — hence
+  `touch` + `flush` between `end_frame` and `begin_pass`), a
+  {glyph id, size} glyph cache, and one `walk` (fractional advances +
+  kerning) shared by measure and draw so they can never disagree.
+  Coverage goes through the upstream dark-mode contrast curve
+  `alpha = 2c − c²` (epaint
+  `FontColorTransferFunction::TwoCoverageMinusCoverageSq`) in both
+  backends.
+- *Draw path*: one textured quad per glyph through a dedicated sgl
+  pipeline (straight alpha blend; the sokol_gl default pipeline has no
+  blending), quads snapped to whole screen pixels, fractional advances
+  + kerning (fontstash rounded advances to whole pixels, which made
+  letter spacing uneven).
+- Backend selection (`backend/sokol.cr` `on_init`): `FreetypeFonts` →
+  `LightHintedFonts` → built-in `MonospaceFonts` (stub) — first that
+  loads a system font wins. Candidate font files come from the Fonts
+  system port (`src/egui/system_ports/fonts.cr`: per-platform lists
+  selected at compile time — win32/darwin/Linux). Build-time dep:
+  `pkg-config freetype2` (see crosspack.yml); runtime dep: libfreetype6.
+- `backend/stb_truetype_shim.c`: the vendored `stb_truetype.h` compiled
+  as its own translation unit (default malloc; fontstash compiles the
+  same header `STBTT_STATIC` with a FONScontext-bound allocator, which
+  is why the exposure cannot live in `sokol_shim.c`). Exposes font
+  info/vmetrics/glyph lookup/hmetrics/kern/`stbtt_GetGlyphShape`.
+- `bin/fontpreview` (`examples/fontpreview.cr`): full Latin + Cyrillic
+  alphabets, digits, punctuation at sizes 12–32 — the visual test bed.
+  Verified by pixel analysis with the FreeType backend: crossbars of
+  e/A/Е/Б render full-row at even weight with 1px stems, baselines stay
+  uniform, Cyrillic descenders (д ц щ у) intact.

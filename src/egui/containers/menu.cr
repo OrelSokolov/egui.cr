@@ -7,6 +7,39 @@
 # hovering another root button switches to it (upstream MenuState).
 
 module Egui
+  # Context menus (egui `Response::context_menu`, containers/menu.rs):
+  # a secondary-button press over the widget opens a popup menu at the
+  # pointer; built on the same popup system as `Ui#menu_button`, so
+  # `menu_item` rows close it and a click elsewhere dismisses it.
+  class Response
+    def context_menu(&block : Ui ->) : self
+      menu_id = "context_menu_#{@id.value}"
+
+      # Open on secondary press (upstream opens on click; press feels
+      # snappier and needs no per-button click classification). Checks
+      # pointer-in-rect rather than `hovered?` so it works on widgets
+      # without hover sense (labels). The anchor rides `Areas` —
+      # unpruned per-frame state — so the popup stays where it was
+      # opened, not where the pointer wanders.
+      pop_id = Id.from("popup/#{menu_id}")
+      if @ctx.input.secondary_pressed? &&
+         (pos = @ctx.input.secondary_pos) && @rect.contains?(pos)
+        @ctx.memory.areas.set_pos(pop_id, pos)
+        @ctx.open_popup(menu_id)
+      end
+
+      if @ctx.popup_open?(menu_id)
+        anchor = @ctx.memory.areas.pos_for(pop_id, @rect.min)
+        @ctx.popup(menu_id, anchor) do |menu_ui|
+          menu_ui.menu_popup_key = menu_id
+          yield menu_ui
+        end
+      end
+
+      self
+    end
+  end
+
   # Vertical padding inside menu rows — dropdown items and bar buttons
   # alike. Roomier than `button_padding.y` so rows breathe like a
   # native menu.

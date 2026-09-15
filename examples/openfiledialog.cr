@@ -1,55 +1,65 @@
-# egui-cr: async native file dialogs — OpenFileDialog demo.
-#
-# The dialog call never blocks the frame: it spawns a worker fiber
-# (AsyncDialogs) and the chosen path arrives in the callback on a
-# later frame. While the picker is open the UI keeps rendering —
-# watch the spinner animate and the frame counter climb, then pick
-# (or cancel) in the native zenity/kdialog window.
+# Native file dialogs through SystemPorts (zenity/kdialog, fiber-backed
+# and never blocking the frame loop): pick a file, then a destination to
+# copy it to. The chosen paths arrive in the on_done callbacks a few
+# frames later — the app state updates and the UI reflects it.
 
 require "../src/egui"
 require "../src/egui/backend/sokol"
 
 class OpenFileDialogApp < Egui::App
-  @picks = [] of String
-  @busy = false
+  @picked : String? = nil
+  @save_to : String? = nil
+  @status = "Nothing picked yet."
 
   def update(ctx : Egui::Context) : Nil
-    ctx.window("OpenFileDialog", Egui::Pos2.new(40.0, 40.0), width: 420.0) do |ui|
-      ui.heading("Async native dialog")
+    ctx.central_panel do |ui|
+      ui.heading("Open file dialog")
+      ui.label(@status)
+      ui.separator
 
-      busy = @busy || Egui::SystemPorts::AsyncDialogs.pending?
-      if ui.button("Open file…").clicked? && !busy
-        @busy = true
+      if ui.button("Open file…").clicked?
+        @status = "Opening dialog…"
         Egui::SystemPorts::OpenFileDialog.show(
-          title: "Pick a picture",
-          filters: ["*.png", "*.jpg", "*.jpeg"]) do |path|
-          @busy = false
-          @picks.unshift(path || "(cancelled)")
+          title: "Pick any file",
+          filters: [] of String
+        ) do |path|
+          if path
+            @picked = path
+            @status = "Picked: #{path}"
+          else
+            @status = "Canceled (or no zenity/kdialog on PATH)."
+          end
         end
       end
 
-      if busy
-        ui.horizontal do |row|
-          row.spinner
-          row.label("dialog is open — the UI keeps rendering…")
+      if (p = @picked)
+        ui.label("Source: #{p}")
+        if ui.button("Choose destination…").clicked?
+          Egui::SystemPorts::SaveFileDialog.show(
+            title: "Copy #{File.basename(p)} to…",
+            default_name: File.basename(p)
+          ) do |dest|
+            if dest
+              begin
+                File.copy(p, dest)
+                @save_to = dest
+                @status = "Copied to: #{dest}"
+              rescue e : IO::Error | File::Error
+                @status = "Copy failed: #{e.message}"
+              end
+            end
+          end
         end
+        ui.label("Destination: #{@save_to || "(none)"}") if @save_to
       end
 
-      unless @picks.empty?
-        ui.separator
-        ui.label("picks (newest first):")
-        @picks.first(5).each { |pick| ui.label("  #{pick}") }
+      if Egui::SystemPorts::AsyncDialogs.pending?
+        ui.spinner
+        ui.label("Dialog is open — the UI keeps running.")
       end
-
-      if ui.button("Quit").clicked?
-        Egui::SystemPorts::Quit.quit!
-      end
-    end
-
-    ctx.bottom_panel("fps") do |ui|
-      ui.label("FPS: #{"%.1f" % ctx.fps}  (frame #{(ctx.input.dt * 1000).round(1)} ms)")
     end
   end
 end
 
-Egui::Backend::Sokol.run(OpenFileDialogApp.new, title: "egui-cr — OpenFileDialog")
+Egui::Backend::Sokol.run(OpenFileDialogApp.new,
+  title: "egui-cr — file dialogs", width: 520, height: 320)

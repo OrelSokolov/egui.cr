@@ -11,7 +11,8 @@ module Egui
     include Widget
 
     def initialize(@value : Float64, @speed : Float64 = 1.0,
-                   @prefix : String = "", @suffix : String = "")
+                   @prefix : String = "", @suffix : String = "",
+                   @format : (Float64 -> String)? = nil)
     end
 
     def ui(ui : Ui) : Response
@@ -70,7 +71,8 @@ module Egui
     end
 
     private def display_text : String
-      "#{@prefix}#{Slider.format_value(@value)}#{@suffix}"
+      body = @format ? @format.not_nil!.call(@value) : Slider.format_value(@value)
+      "#{@prefix}#{body}#{@suffix}"
     end
 
     # The buffer lives in IdTypeMap under the widget id (which survives

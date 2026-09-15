@@ -33,6 +33,14 @@ module Egui
         offset += Vec2.new(0.0, delta.y * style.scroll_speed) unless delta.y.zero?
       end
 
+      # Clamp BEFORE layout using the previous frame's content size
+      # (upstream `ScrollState::prepare`): otherwise the content is
+      # laid out and painted past the limit for one frame and snapped
+      # back the next — visible jitter when the wheel keeps firing at
+      # either end of the range.
+      max_offset_prev = {prev_content.y - height, 0.0}.max
+      offset = Vec2.new(0.0, offset.y.clamp(0.0, max_offset_prev))
+
       memory.register_scroll_area(id, viewport, ui.layer)
 
       # Lay the content out inside the viewport shifted by the offset;

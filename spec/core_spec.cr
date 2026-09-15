@@ -432,6 +432,45 @@ describe "system state" do
       .map(&.text).should_not contain("POPUP")
   end
 
+  it "popup layer occludes the hover of widgets underneath" do
+    ctx = Egui::Context.new
+    ctx.open_popup("menu")
+
+    # A central-panel rect (z=0) an open popup (z=99) sits right on top
+    # of: hovering the popup item must not highlight what's beneath.
+    under_rect = Egui::Rect.from_min_size(
+      Egui::Pos2.new(10.0, 40.0), Egui::Vec2.new(200.0, 60.0))
+    item_center = nil
+
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("menu", Egui::Pos2.new(20.0, 40.0), width: 120.0) do |ui|
+      item_center = ui.button("Item").rect.center
+    end
+    under_hovered = true
+    ctx.central_panel do |ui|
+      under_hovered = ui.interact(under_rect, ui.next_widget_id,
+        Egui::Sense.click).hovered?
+    end
+    ctx.end_frame
+
+    # the popup really covers the point we're about to hover
+    under_rect.contains?(item_center.not_nil!).should be_true
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(item_center.not_nil!)], time: 0.032)
+    item_hovered = false
+    ctx.popup("menu", Egui::Pos2.new(20.0, 40.0), width: 120.0) do |ui|
+      item_hovered = ui.button("Item").hovered?
+    end
+    ctx.central_panel do |ui|
+      under_hovered = ui.interact(under_rect, ui.next_widget_id,
+        Egui::Sense.click).hovered?
+    end
+    ctx.end_frame
+
+    item_hovered.should be_true
+    under_hovered.should be_false
+  end
+
   it "detects duplicate widget ids" do
     ctx = Egui::Context.new
     id = Egui::Id.from("dup")
@@ -1361,6 +1400,44 @@ describe "scroll area (phase 5)" do
     (offset.y - (content.y - 100.0)).abs.should be < 1.0
   end
 
+  it "clamps the offset before layout at the limit (no overshoot jitter)" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(50.0, 50.0))], 0.032)
+
+    # Frame that overshoots hard: the layout offset must already be
+    # clamped against the previous content size (upstream clamps in
+    # ScrollState::prepare), so the last row is painted just above the
+    # viewport bottom — not flung far above it and snapped back next
+    # frame (scrolling down moves the content up past the limit).
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 100_000.0))], 0.048)
+    last_row_y = ctx.painter.commands.select(Egui::TextCmd).last.pos.y
+    last_row_y.should be > 0.0
+    last_row_y.should be < 100.0
+
+    # Further wheel events at the limit change nothing and keep painting
+    # at the clamped offset.
+    3.times do |i|
+      draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 50.0))], 0.064 + i * 0.016)
+      offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+      content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+      offset.y.should be_close(content.y - 100.0, 1.0)
+      last_row_y = ctx.painter.commands.select(Egui::TextCmd).last.pos.y
+      last_row_y.should be > 0.0
+      last_row_y.should be < 100.0
+    end
+  end
+
   it "dragging the scrollbar thumb scrolls the content" do
     ctx = Egui::Context.new
     scroll_id = Egui::Id.from("spec").child(1)
@@ -2286,5 +2363,418 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
     draw2.call([Egui::Event.pointer_moved(Egui::Pos2.new(700.0, 500.0))], 0.064)
     ctx.painter.commands.select(Egui::RectCmd)
       .find(&.fill.==(red)).should_not be_nil
+  end
+end
+
+describe "new widgets (selectable, toggle, segmented)" do
+  it "SelectableLabel paints the selection fill and reports toggles" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    fill = nil
+    ctx.window("demo") do |ui|
+      ui.selectable_label(true, "chosen")
+    end
+    ctx.end_frame
+    selection = ctx.style.visuals.selection_fill
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill.==(selection)).should_not be_nil
+  end
+
+  it "SelectableLabel click flips through the block helper" do
+    ctx = Egui::Context.new
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.selectable_label(false, "row").rect.center }
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.selectable_label(false, "row") }
+    ctx.end_frame
+    new_value = nil
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    ctx.window("demo") do |ui|
+      ui.selectable(false, "row") { |v| new_value = v }
+    end
+    ctx.end_frame
+    new_value.should be_true
+  end
+
+  it "ToggleButton reports a toggle on click" do
+    ctx = Egui::Context.new
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.add(Egui::ToggleButton.new(false, "sw")).rect.center }
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.add(Egui::ToggleButton.new(false, "sw")) }
+    ctx.end_frame
+    changed = false
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    ctx.window("demo") do |ui|
+      changed = ui.add(Egui::ToggleButton.new(false, "sw")).changed?
+    end
+    ctx.end_frame
+    changed.should be_true
+  end
+
+  it "SegmentedControl publishes the clicked index" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      ui.add(Egui::SegmentedControl.new(0, ["A", "B", "C"]))
+    end
+    ctx.end_frame
+
+    # click on the "B" label (its text sits inside cell 1)
+    b_text = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("B")).not_nil!
+    target = b_text.pos + Egui::Vec2.new(2.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+      Egui::Event.pointer_pressed(target)], time: 0.032)
+    ctx.window("demo") { |ui| ui.add(Egui::SegmentedControl.new(0, ["A", "B", "C"])) }
+    ctx.end_frame
+    picked = nil
+    raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.048)
+    ctx.window("demo") do |ui|
+      ui.segmented(0, ["A", "B", "C"]) { |i| picked = i }
+    end
+    ctx.end_frame
+    picked.should eq(1)
+  end
+end
+
+describe "Grid" do
+  it "aligns columns across rows from the second frame on" do
+    ctx = Egui::Context.new
+    cols = [] of Tuple(Array(Float64), Array(Float64))
+
+    2.times do |i|
+      raw_frame(ctx, time: 0.016 * (i + 1))
+      ctx.window("demo") do |ui|
+        grid = Egui::Grid.new("g")
+        grid.show(ui) do |g|
+          g.label("left"); g.label("right"); g.end_row
+          g.label("a much wider left cell"); g.label("r"); g.end_row
+        end
+        # dig the label rects out of this frame's commands
+      end
+      ctx.end_frame
+      texts = ctx.painter.commands.select(Egui::TextCmd)
+      left = texts.select { |t| {"left", "a much wider left cell"}.includes?(t.text) }
+        .map(&.pos.x)
+      right = texts.select { |t| {"right", "r"}.includes?(t.text) }.map(&.pos.x)
+      cols << {left, right}
+    end
+
+    # frame 1: unaligned (widths not yet measured); frame 2: aligned
+    cols[1][0].size.should eq(2)
+    (cols[1][0][1] - cols[1][0][0]).abs.should be < 0.01
+    (cols[1][1][1] - cols[1][1][0]).abs.should be < 0.01
+    # and the right column starts after the widest left cell
+    cols[1][1][0].should be > cols[1][0][0]
+  end
+end
+
+describe "Response#context_menu" do
+  it "opens a menu on secondary press and closes on a click elsewhere" do
+    ctx = Egui::Context.new
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.label("right-click me").rect.center }
+    ctx.end_frame
+
+    open_menu = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.window("demo") do |ui|
+        resp = ui.label("right-click me")
+        resp.context_menu { |menu| menu.menu_item("Say hi") { } }
+        open_menu = ctx.popup_open?("context_menu_#{resp.id.value}")
+      end
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::TextCmd)
+        .any?(&.text.==("Say hi"))
+    end
+
+    # secondary press opens the menu; the item renders this same frame
+    draw.call([Egui::Event.pointer_pressed(center.not_nil!, button: :secondary)], 0.032)
+      .should be_true
+    open_menu.should be_true
+
+    # a primary click on another widget dismisses it (the button lives
+    # in a bottom panel, far from the popup covering the label)
+    ok_center = nil
+    raw_frame(ctx, time: 0.04)
+    ctx.window("demo") do |ui|
+      ui.label("right-click me").context_menu do |menu|
+        menu.menu_item("Say hi") { }
+      end
+    end
+    ctx.bottom_panel("btn") { |ui| ok_center = ui.button("Elsewhere").rect.center }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(ok_center.not_nil!),
+      Egui::Event.pointer_pressed(ok_center.not_nil!)], time: 0.056)
+    ctx.window("demo") do |ui|
+      ui.label("right-click me").context_menu do |menu|
+        menu.menu_item("Say hi") { }
+      end
+    end
+    ctx.bottom_panel("btn") { |ui| ui.button("Elsewhere") }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(ok_center.not_nil!)], time: 0.072)
+    menu_key = nil
+    ctx.window("demo") do |ui|
+      resp = ui.label("right-click me")
+      resp.context_menu { |menu| menu.menu_item("Say hi") { } }
+      menu_key = "context_menu_#{resp.id.value}"
+    end
+    ctx.end_frame
+    # popups close in Memory#end_frame — after rendering
+    ctx.popup_open?(menu_key.not_nil!).should be_false
+  end
+end
+
+describe "TreeView" do
+  it "shows default-open children and toggles on click" do
+    ctx = Egui::Context.new
+    node_center = nil
+    child_seen = false
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.window("demo") do |ui|
+        ui.tree_view("t") do |tree|
+          tree.node("branch", default_open: true) do |sub|
+            sub.leaf("leaf-row") { }
+          end
+        end
+        # rect of the branch row: first interact this frame (the header)
+        texts = ctx.painter.commands.select(Egui::TextCmd)
+        child_seen = texts.any?(&.text.==("leaf-row"))
+        node_center = texts.find(&.text.==("branch")).try(&.pos) || node_center
+      end
+      ctx.end_frame
+      child_seen
+    end
+
+    draw.call([] of Egui::Event, 0.016).should be_true
+
+    # click the branch row: press+release cycles open→closed
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(node_center.not_nil! + Egui::Vec2.new(10.0, 0.0)),
+      Egui::Event.pointer_pressed(node_center.not_nil! + Egui::Vec2.new(10.0, 0.0))], time: 0.032)
+    ctx.window("demo") do |ui|
+      ui.tree_view("t") do |tree|
+        tree.node("branch", default_open: true) do |sub|
+          sub.leaf("leaf-row") { }
+        end
+      end
+    end
+    ctx.end_frame
+    draw.call([Egui::Event.pointer_released(node_center.not_nil! + Egui::Vec2.new(10.0, 0.0))], 0.048)
+      .should be_false
+  end
+end
+
+describe "Table" do
+  it "renders headers and striped body rows" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      ui.table("t", ["File", "Size"]) do |rows|
+        rows.label("a.txt"); rows.label("1 KB"); rows.end_row
+        rows.label("b.txt"); rows.label("2 KB"); rows.end_row
+      end
+    end
+    ctx.end_frame
+
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    {"File", "Size", "a.txt", "b.txt"}.each { |t| texts.should contain(t) }
+    # striped body: some RectCmd carries a fill (the row stripe)
+    rects = ctx.painter.commands.select(Egui::RectCmd)
+    rects.count(&.fill).should be > 1
+  end
+end
+
+describe "Ui helpers (phase 7)" do
+  it "enabled(false) blocks clicks inside; re-enabling keeps the widget alive" do
+    ctx = Egui::Context.new
+    enabled = false
+    center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.window("demo") do |ui|
+        ui.enabled(enabled) do |block|
+          center = block.button("Dead").rect.center
+        end
+      end
+      ctx.end_frame
+    end
+
+    # layout frame: learn where the button is
+    draw.call([] of Egui::Event, 0.016)
+
+    # press + release while disabled: no click
+    draw.call([Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], 0.032)
+    clicked = true
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    ctx.window("demo") do |ui|
+      ui.enabled(enabled) { |block| clicked = block.button("Dead").clicked? }
+    end
+    ctx.end_frame
+    clicked.should be_false
+
+    # same structure, now enabled: press+release clicks (the widget id
+    # survived the disabled frames, so the click classification works)
+    enabled = true
+    draw.call([Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], 0.064)
+    draw.call([] of Egui::Event, 0.08)
+    fired = false
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.096)
+    ctx.window("demo") do |ui|
+      ui.enabled(enabled) { |block| fired = block.button("Dead").clicked? }
+    end
+    ctx.end_frame
+    fired.should be_true
+  end
+
+  it "add_sized advances the cursor by the exact cell size" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    first = second = nil
+    ctx.window("demo") do |ui|
+      first = ui.add_sized(Egui::Vec2.new(150.0, 40.0), Egui::Label.new("x")).rect
+      second = ui.label("after").rect
+    end
+    ctx.end_frame
+    gap = second.not_nil!.top - (first.not_nil!.top + 40.0)
+    gap.should be_close(ctx.style.spacing.item_spacing.y, 0.1)
+  end
+
+  it "columns splits the width into equal columns" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    xs = [] of Float64
+    ctx.window("demo") do |ui|
+      ui.columns(3) do |cols|
+        cols.each { |c| xs << c.cursor.x }
+      end
+    end
+    ctx.end_frame
+    xs.size.should eq(3)
+    # equal gaps between the column cursors
+    d1 = xs[1] - xs[0]
+    d2 = xs[2] - xs[1]
+    (d1 - d2).abs.should be < 0.01
+  end
+end
+
+describe "DatePicker" do
+  it "opens a calendar popup and a day click hands back the date" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    # open the popup
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    picked = nil
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+
+    ctx.popup_open?("date_picker/d").should be_true
+    # "September 2026" header + weekday row rendered
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("September 2026")
+
+    # click day "20": press + release over its cell
+    day = ctx.painter.commands.select(Egui::TextCmd).find { |t| t.text == "20" }
+    day.should_not be_nil
+    target = day.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+      Egui::Event.pointer_pressed(target)], time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.08)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| picked = t } }
+    ctx.end_frame
+    picked.not_nil!.day.should eq(20)
+    ctx.popup_open?("date_picker/d").should be_false
+  end
+end
+
+describe "Plot" do
+  it "auto-fits bounds, draws the series and grid, then pan sticks" do
+    ctx = Egui::Context.new
+    pts = [{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.5}]
+
+    raw_frame(ctx)
+    rect = nil
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("p", height: 150.0)
+      p.line("data", pts)
+      rect = p.show(ui).rect
+    end
+    ctx.end_frame
+
+    rect.not_nil!.height.should be_close(150.0, 0.01)
+    cmds = ctx.painter.commands
+    # 2 line segments for 3 points + 8 grid lines
+    cmds.select(Egui::LineCmd).size.should be >= 10
+    cmds.select(Egui::TextCmd).map(&.text).should contain("data")
+
+    # drag pans: bounds leave auto mode and stay for the next frame
+    from = Egui::Pos2.new(rect.not_nil!.center.x + 20.0, rect.not_nil!.center.y)
+    to = Egui::Pos2.new(rect.not_nil!.center.x - 20.0, rect.not_nil!.center.y)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(from),
+      Egui::Event.pointer_pressed(from)], time: 0.032)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("p", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(to)], time: 0.048)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("p", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(to)], time: 0.064)
+    auto = false
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("p", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+      id = Egui::Id.from("plot/p")
+      auto = ctx.memory.data.get_int(id.child(3), 1) == 1
+    end
+    ctx.end_frame
+    auto.should be_false # a drag locks the bounds
+  end
+end
+
+describe "DragValue format" do
+  it "renders through the custom formatter" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      ui.drag_value(3.14159, format: ->(v : Float64) { "%.3f rad" % v }) { }
+    end
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("3.142 rad")
   end
 end

@@ -169,6 +169,11 @@ module Egui
     getter? pointer_down : Bool
     getter? pointer_pressed : Bool
     getter? pointer_released : Bool
+    # Secondary (right) button: a press this frame and where it landed —
+    # enough to open context menus on press without plumbing the full
+    # per-button pointer state.
+    getter? secondary_pressed : Bool
+    getter secondary_pos : Pos2?
     getter scroll : Vec2
     getter time : Float64
     getter dt : Float64
@@ -191,7 +196,9 @@ module Egui
                    @keys_pressed : Set(KeyCode) = Set(KeyCode).new,
                    @keys_released : Set(KeyCode) = Set(KeyCode).new,
                    @text : String = "",
-                   @modifiers : Modifiers = Modifiers.new)
+                   @modifiers : Modifiers = Modifiers.new,
+                   @secondary_pressed : Bool = false,
+                   @secondary_pos : Pos2? = nil)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -242,6 +249,8 @@ module Egui
       keys_released = Set(KeyCode).new
       text = ""
       modifiers = prev.try(&.modifiers) || Modifiers.new
+      secondary_pressed = false
+      secondary_pos : Pos2? = nil
 
       raw.events.each do |e|
         case e.type
@@ -252,6 +261,9 @@ module Egui
             down = true
             pressed = true
             pos = e.pos unless e.pos.nil?
+          elsif e.button.secondary?
+            secondary_pressed = true
+            secondary_pos = e.pos
           end
         in .pointer_button_released?
           if e.button.primary?
@@ -288,7 +300,8 @@ module Egui
       end
 
       new(raw.screen_rect, pos, down, pressed, released, scroll, raw.time, dt,
-        delta, velocity, keys_down, keys_pressed, keys_released, text, modifiers)
+        delta, velocity, keys_down, keys_pressed, keys_released, text, modifiers,
+        secondary_pressed, secondary_pos)
     end
   end
 end
