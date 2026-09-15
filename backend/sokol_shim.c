@@ -484,6 +484,9 @@ void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
 //
 //   X11: core protocol calls + _NET_WM_STATE client messages (EWMH).
 //   Win32: SetWindowPos / ShowWindow / GetSystemMetrics.
+//   macOS: NSWindow/NSScreen through AppKit (the shim compiles as
+//   ObjC there; the calls arrive on the main thread from the frame
+//   callback, as AppKit requires).
 
 #if defined(_SAPP_LINUX)
 
@@ -577,10 +580,66 @@ void egui_cr_screen_size(int* w, int* h) {
     *h = GetSystemMetrics(SM_CYSCREEN);
 }
 
+#elif defined(__APPLE__)
+
+// macOS: the sokol_app NSWindow, driven through AppKit. Zoom stands in
+// for maximize (it toggles between the user frame and a frame filling
+// the screen's visibleFrame), which matches the maximize/restore pair
+// the X11 backend expresses with _NET_WM_STATE.
+
+static NSWindow* sh_mac_window(void) {
+    return (NSWindow*)sapp_macos_get_window();
+}
+
+void egui_cr_set_window_size(int w, int h) {
+    NSWindow* win = sh_mac_window();
+    if (!win) return;
+    NSRect f = [win frame];
+    f.origin.y += f.size.height - (CGFloat)h; // keep the top-left corner
+    f.size.width = (CGFloat)w;
+    f.size.height = (CGFloat)h;
+    [win setFrame:f display:YES animate:NO];
+}
+
+void egui_cr_set_window_position(int x, int y) {
+    NSWindow* win = sh_mac_window();
+    if (!win) return;
+    NSScreen* scr = [win screen];
+    if (!scr) scr = [NSScreen mainScreen];
+    if (!scr) return;
+    NSRect vf = [scr visibleFrame];
+    NSPoint tl; // y is bottom-up in AppKit; the port speaks top-left
+    tl.x = vf.origin.x + (CGFloat)x;
+    tl.y = vf.origin.y + vf.size.height - (CGFloat)y;
+    [win setFrameTopLeftPoint:tl];
+}
+
+void egui_cr_window_minimize(void) {
+    NSWindow* win = sh_mac_window();
+    if (win) [win miniaturize:nil];
+}
+
+void egui_cr_window_maximize(void) {
+    NSWindow* win = sh_mac_window();
+    if (win && ![win isZoomed]) [win zoom:nil];
+}
+
+void egui_cr_window_restore(void) {
+    NSWindow* win = sh_mac_window();
+    if (win && [win isZoomed]) [win zoom:nil];
+}
+
+void egui_cr_screen_size(int* w, int* h) {
+    NSScreen* scr = [NSScreen mainScreen];
+    if (!scr) { *w = 0; *h = 0; return; }
+    NSRect f = [scr frame]; // points, like sokol on macOS (high_dpi)
+    *w = (int)f.size.width;
+    *h = (int)f.size.height;
+}
+
 #else
 
-// macOS / other backends: not wired yet (needs AppKit through the ObjC
-// runtime). The calls are no-ops.
+// Other backends: not wired yet. The calls are no-ops.
 void egui_cr_set_window_size(int w, int h) { (void)w; (void)h; }
 void egui_cr_set_window_position(int x, int y) { (void)x; (void)y; }
 void egui_cr_window_minimize(void) {}

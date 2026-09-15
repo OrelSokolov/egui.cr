@@ -75,11 +75,9 @@ Differences from the Linux build:
 
 - the vendor C shim is compiled as Objective-C (`cc -x objective-c`) and
   linked against the Cocoa/OpenGL/QuartzCore frameworks
-- system ports that shell out to `zenity`/`xdg-open` (dialogs, URL
-  opening) return nil/false on macOS — not wired yet
-- window management calls (resize/move/minimize/screen size) are no-ops
-  (they need AppKit through the ObjC runtime); cursor switching IS wired
-  (CSS keywords → NSCursor)
+- system ports shell out to `osascript`/`open` (dialogs, message
+  boxes, notifications, URL opening, user dirs) and manage the window
+  through AppKit (NSWindow/NSScreen from the ObjC shim)
 
 ## Status
 
