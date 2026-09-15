@@ -21,6 +21,12 @@
 
 require "./text"
 
+# Windows is excluded at compile time: no FreeType import library is
+# assumed to be present there, so the binding and FreetypeFonts below
+# exist only off-Windows — on win32 the backend goes straight to the
+# LightHintedFonts (stb) rasterizer.
+{% unless flag?(:win32) %}
+
 # Minimal FreeType binding: only what FreetypeFonts needs. The three big
 # structs are partially mirrored — see the offset notes in the header
 # comment. Field layout is plain C (Crystal structs follow it), so the
@@ -237,3 +243,5 @@ module Egui
     end
   end
 end
+
+{% end %}

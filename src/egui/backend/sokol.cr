@@ -12,6 +12,14 @@ require "./text"
 require "./freetype"
 
 @[Link("egui_cr_sokol")]
+{% if flag?(:win32) %}
+# sokol_app/Win32 + WGL: windowing/GDI and the GL context live in the
+# system DLLs — no X11 stack, no dl/pthread/m (MSVC CRT is implicit).
+@[Link("opengl32")]
+@[Link("gdi32")]
+@[Link("user32")]
+@[Link("shell32")]
+{% else %}
 @[Link("GL")]
 @[Link("X11")]
 @[Link("Xi")]
@@ -19,6 +27,7 @@ require "./freetype"
 @[Link("dl")]
 @[Link("pthread")]
 @[Link("m")]
+{% end %}
 lib LibEguiCr
   alias InitCb = ->
   alias FrameCb = ->
@@ -230,9 +239,16 @@ module Egui
         # Font backend: prefer FreeType (real hinting), fall back to the
         # stb light-hint rasterizer, then to the built-in monospace stub.
         # Candidates come from the Fonts system port (per-platform).
+        # Windows: no FreeType binding is linked there (see freetype.cr),
+        # so the stb rasterizer is the primary backend.
         font_paths = Egui::SystemPorts::Fonts.search_paths
-        if font = FreetypeFonts.from_system(font_paths) ||
+        font = {% if flag?(:win32) %}
+                 LightHintedFonts.from_system(font_paths)
+               {% else %}
+                 FreetypeFonts.from_system(font_paths) ||
                    LightHintedFonts.from_system(font_paths)
+               {% end %}
+        if font
           @@fonts = font
           app.ctx.fonts = font
         else

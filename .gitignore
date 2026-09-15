@@ -5,6 +5,10 @@
 /logs/
 *.o
 *.a
+*.obj
+*.lib
+*.exe
+*.pdb
 shard.lock
 
 # Full upstream clones kept on disk for reference only:
