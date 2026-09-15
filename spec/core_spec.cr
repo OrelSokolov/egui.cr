@@ -2261,7 +2261,7 @@ describe "Sidebar (sections + tabs)" do
     after.should be > before + 12.0
   end
 
-  it "nests a close button per closable tab: the X eats the click" do
+  it "shows the close X only on tab hover; the X eats the click" do
     ctx = Egui::Context.new
     sections = [Egui::Sidebar::Section.new("One", ["A", "B"], closable: true)]
     section = 0
@@ -2270,38 +2270,57 @@ describe "Sidebar (sections + tabs)" do
 
     draw = ->(events : Array(Egui::Event), time : Float64) do
       raw_frame(ctx, events: events, time: time)
-      widget_ui(ctx).sidebar(sections, section, tab,
+      resp = widget_ui(ctx).sidebar(sections, section, tab,
         on_close: ->(s : Int32, t : Int32) { closed = {s, t} }) do |s, t|
         section = s
         tab = t
       end
       ctx.end_frame
+      resp
     end
 
+    # idle: only the SELECTED tab's close X is painted and registered
     draw.call([] of Egui::Event, 0.016)
-    # one X (2 line segments) per closable tab
-    ctx.painter.commands.select(Egui::LineCmd).size.should eq(4)
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(2)
     # hit targets: wide rects are tabs, small ones the nested X buttons
     tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 100.0 }
-    close_rects = ctx.memory.widget_rects.values.select { |r| r.width <= 100.0 }
     tab_rects.size.should eq(2)
-    close_rects.size.should eq(2)
+    selected_x = ctx.memory.widget_rects.values
+      .find { |r| r.width <= 100.0 }.not_nil!
+    # the idle X belongs to the selected (first) tab
+    selected_x.center.y.should be < tab_rects[1].min.y
 
-    # click the second tab's X: reported closed, tab NOT selected
-    x = close_rects[1].center
+    # hover the second tab's body: its X appears too (4 line segments
+    # now) and registers a hit target
+    body = Egui::Pos2.new(tab_rects[1].min.x + 20.0, tab_rects[1].center.y)
+    draw.call([Egui::Event.pointer_moved(body)], 0.032)
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(4)
+    x_rect = ctx.memory.widget_rects.values
+      .select { |r| r.width <= 100.0 }
+      .find { |r| r.center.y > tab_rects[1].min.y }.not_nil!
+
+    # hovering the X itself keeps the TAB hovered: the weak hover fill
+    # still covers the whole tab row (not just the X's own highlight)
+    x = x_rect.center
+    draw.call([Egui::Event.pointer_moved(x)], 0.048)
+    hover_fill = ctx.stylesheet.resolve("sidebar.tab", "hover")
+      .color?("fill").not_nil!
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == hover_fill && c.rect.width > 100.0 }.should be_true
+
+    # press + release over the X: reported closed, tab NOT selected
     draw.call([Egui::Event.pointer_moved(x),
-      Egui::Event.pointer_pressed(x)], 0.032)
-    draw.call([Egui::Event.pointer_released(x)], 0.048)
+      Egui::Event.pointer_pressed(x)], 0.064)
+    draw.call([Egui::Event.pointer_released(x)], 0.080)
     closed.should eq({0, 1})
     section.should eq(0)
     tab.should eq(0)
 
     # the tab body (away from the X) still selects normally — click
     # the *second* tab's body; the first one is already selected
-    body = Egui::Pos2.new(tab_rects[1].min.x + 20.0, tab_rects[1].center.y)
     draw.call([Egui::Event.pointer_moved(body),
-      Egui::Event.pointer_pressed(body)], 0.064)
-    draw.call([Egui::Event.pointer_released(body)], 0.080)
+      Egui::Event.pointer_pressed(body)], 0.096)
+    draw.call([Egui::Event.pointer_released(body)], 0.112)
     section.should eq(0)
     tab.should eq(1)
     closed.should eq({0, 1}) # no new close
@@ -2697,7 +2716,7 @@ describe "TreeView" do
 end
 
 describe "Table" do
-  it "renders headers and striped body rows" do
+  it "renders headers and body rows without row backgrounds" do
     ctx = Egui::Context.new
     raw_frame(ctx)
     ctx.window("demo") do |ui|
@@ -2710,9 +2729,9 @@ describe "Table" do
 
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     {"File", "Size", "a.txt", "b.txt"}.each { |t| texts.should contain(t) }
-    # striped body: some RectCmd carries a fill (the row stripe)
+    # no row stripes: the only filled rect is the window background
     rects = ctx.painter.commands.select(Egui::RectCmd)
-    rects.count(&.fill).should be > 1
+    rects.count(&.fill).should eq(1)
   end
 end
 
@@ -2879,6 +2898,64 @@ describe "DatePicker" do
     end
     # after two full clicks: first opened, second toggled closed
     ctx.popup_open?("date_picker/d").should be_false
+  end
+
+  it "arrow buttons switch the month and roll the year over" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+
+    pid = Egui::Id.from("date_picker/d")
+    time = 0.048
+    click_prev = ->do
+      target = ctx.memory.widget_rects[pid.child(0xE0_u64)].not_nil!.center
+      # press, release, then one more frame: the new month is written
+      # during the release frame's render, so it only shows up next frame
+      3.times do |i|
+        events = i.zero? ?
+          [Egui::Event.pointer_moved(target), Egui::Event.pointer_pressed(target)] :
+          (i == 1 ? [Egui::Event.pointer_released(target)] : [] of Egui::Event)
+        raw_frame(ctx, events: events, time: time += 0.016)
+        ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+        ctx.end_frame
+      end
+    end
+
+    click_prev.call
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("August 2026")
+    ctx.popup_open?("date_picker/d").should be_true
+
+    # the shown month must survive frames (end-frame pruning kept it)
+    raw_frame(ctx, time: time += 0.016)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("August 2026")
+
+    # the arrows are pinned to the popup edges: their outer edges must
+    # not move when the month title changes width
+    left_before = ctx.memory.widget_rects[pid.child(0xE0_u64)].not_nil!.left
+    right_before = ctx.memory.widget_rects[pid.child(0xE1_u64)].not_nil!.right
+
+    # eight more presses back: Sep 2026 → Dec 2025 (year rolls over)
+    8.times { click_prev.call }
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("December 2025")
+    ctx.memory.widget_rects[pid.child(0xE0_u64)].not_nil!.left
+      .should be_close(left_before, 0.01)
+    ctx.memory.widget_rects[pid.child(0xE1_u64)].not_nil!.right
+      .should be_close(right_before, 0.01)
   end
 end
 

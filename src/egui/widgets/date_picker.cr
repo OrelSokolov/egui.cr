@@ -84,12 +84,17 @@ module Egui
 
       year = mem.data.get_int(@pid.child(1), @value.year)
       month = mem.data.get_int(@pid.child(2), @value.month)
+      # The shown month/year cells have no #interact call of their own —
+      # mark them used so they survive end-frame pruning (like Plot's
+      # bounds or Grid's column widths).
+      mem.use_id(@pid.child(1))
+      mem.use_id(@pid.child(2))
       first = Time.local(year, month, 1, location: loc)
       days = first.at_end_of_month.day
       # Monday-first offset of the 1st
       offset = first.day_of_week.value - 1
 
-      header(popup: ui, year: year, month: month) do |delta|
+      header(ui, year, month) do |delta|
         m = month + delta
         y = year
         while m < 1
@@ -166,18 +171,35 @@ module Egui
       a.year == b.year && a.month == b.month && a.day == b.day
     end
 
-    private def header(popup : Ui, year : Int32, month : Int32,
+    # Header: ‹ and › pinned to the popup's inner edges so they don't
+    # jump when a shorter/longer month title changes the row's layout;
+    # the title is centered between them. Absolute placement + manual
+    # cursor advance — the same idiom the day grid uses.
+    private def header(ui : Ui, year : Int32, month : Int32,
                        &shift : Int32 ->) : Nil
+      ctx = ui.ctx
+      style = ui.style
+      font_size = style.font_size
       title = "#{MONTHS[month - 1]} #{year}"
-      popup.horizontal do |row|
-        if small_button(row, @pid.child(0xE0_u64), "‹")
-          shift.call(-1)
-        end
-        row.label(title)
-        if small_button(row, @pid.child(0xE1_u64), "›")
-          shift.call(1)
-        end
-      end
+      title_w = ctx.fonts.measure(title, font_size).x
+
+      h = style.spacing.interact_size.y
+      bw = {ctx.fonts.measure("‹", font_size).x + 16.0, h}.max
+      width = ui.max_rect.width
+      top = ui.cursor
+      left = Rect.from_min_size(top, Vec2.new(bw, h))
+      right = Rect.from_min_size(Pos2.new(top.x + width - bw, top.y),
+        Vec2.new(bw, h))
+
+      shift.call(-1) if button_at(ui, @pid.child(0xE0_u64), "‹", left)
+      ui.painter.text(
+        Pos2.new(top.x + (width - title_w) / 2.0, top.y + h / 2.0),
+        title, font_size, style.visuals.text_color)
+      shift.call(1) if button_at(ui, @pid.child(0xE1_u64), "›", right)
+
+      ui.min_rect = ui.min_rect.union(
+        Rect.from_min_size(top, Vec2.new(width, h)))
+      ui.cursor = Pos2.new(ui.max_rect.min.x, top.y + h)
     end
 
     MONTHS = {"January", "February", "March", "April", "May", "June",
@@ -188,8 +210,18 @@ module Egui
       ctx = ui.ctx
       style = ui.style
       text_size = ctx.fonts.measure(text, style.font_size)
-      rect = ui.allocate_at_least(
-        Vec2.new(text_size.x + 8.0, style.spacing.interact_size.y * 0.8))
+      size = Vec2.new(
+        {text_size.x + 16.0, style.spacing.interact_size.y}.max,
+        style.spacing.interact_size.y)
+      button_at(ui, id, text, ui.allocate_at_least(size))
+    end
+
+    # A header button painted into an explicit rect (the arrows are
+    # pinned by #header; #small_button allocates one for "Today").
+    private def button_at(ui : Ui, id : Id, text : String, rect : Rect) : Bool
+      ctx = ui.ctx
+      style = ui.style
+      text_size = ctx.fonts.measure(text, style.font_size)
       response = ui.interact(rect, id, Sense.click)
       if response.hovered?
         ui.painter.rect(rect, 3.0, style.visuals.button_hovered)

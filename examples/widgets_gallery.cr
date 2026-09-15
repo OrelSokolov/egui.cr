@@ -20,6 +20,7 @@ class GalleryApp < Egui::App
   @seg = 0
   @sel = false
   @tree_sel = ""
+  @opened : String? = nil
   @date = Time.local(2026, 9, 15)
   @enabled = true
 
@@ -33,7 +34,7 @@ class GalleryApp < Egui::App
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
     Egui::Sidebar::Section.new(
-      "Containers", ["Scroll", "Modal"], closable: true),
+      "Containers", ["Scroll", "Modal", "Dialogs"], closable: true),
     Egui::Sidebar::Section.new(
       "Layout", ["Grid", "Table", "Tree", "Plot", "Enabled"], closable: true),
   ]
@@ -97,6 +98,7 @@ class GalleryApp < Egui::App
           when {"Style", "Cursors"}          then cursors_gallery(scroll)
           when {"Containers", "Scroll"}      then scroll_gallery(scroll)
           when {"Containers", "Modal"}       then modal_gallery(scroll)
+          when {"Containers", "Dialogs"}     then dialogs_gallery(scroll)
           when {"Layout", "Grid"}            then grid_gallery(scroll)
           when {"Layout", "Table"}           then table_gallery(scroll)
           when {"Layout", "Tree"}            then tree_gallery(scroll)
@@ -340,6 +342,25 @@ class GalleryApp < Egui::App
     end
   end
 
+  # System ports demo (from the hello example): the native file picker
+  # runs in its own fiber (AsyncDialogs) and never blocks the frame —
+  # the path arrives in the callback on a later frame, meanwhile the
+  # UI keeps rendering ("opening…" row).
+  private def dialogs_gallery(ui : Egui::Ui) : Nil
+    ui.label("Native open-file dialog (fiber-backed, non-blocking):")
+    if ui.button("Open file…").clicked?
+      @opened = nil
+      Egui::SystemPorts::OpenFileDialog.show(
+        filters: ["*.png", "*.jpg"]) { |path| @opened = path }
+    end
+    if Egui::SystemPorts::AsyncDialogs.pending?
+      ui.spinner
+      ui.label("opening…")
+    else
+      ui.label("opened: #{@opened || "—"}")
+    end
+  end
+
   # Aligned columns: column widths are measured frame N and applied
   # frame N+1 (persisted per grid in Memory), like upstream egui Grid.
   private def grid_gallery(ui : Egui::Ui) : Nil
@@ -353,7 +374,7 @@ class GalleryApp < Egui::App
   end
 
   private def table_gallery(ui : Egui::Ui) : Nil
-    ui.label("Table (header + striped rows, on Grid):")
+    ui.label("Table (header + aligned rows, on Grid):")
     ui.table("gallery_table", ["File", "Size", "Modified"],
       [0.5, 0.2, 0.3]) do |rows|
       rows.label("README.md"); rows.label("4 KB"); rows.label("today"); rows.end_row

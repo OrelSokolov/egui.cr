@@ -3,7 +3,10 @@
 # Checkbox pattern — the app owns it, passes the current section/tab in,
 # and reads the new selection back through the `Ui#sidebar` block when
 # it changed this frame. Sections can be `closable`: each tab row nests
-# a close button (X) — the nested widget interacts after the tab, so
+# a close button (X), always shown on the selected tab and elsewhere
+# only while its tab is hovered (immediate mode gives the parent's
+# hover state the same frame, before the child is drawn — no style
+# cascade needed). The nested widget interacts after the tab, so
 # hit-testing routes the click to the X and the app gets `on_close`.
 #
 # Styling goes through the global `StyleSheet` (CSS-like classes):
@@ -20,9 +23,10 @@ module Egui
     include Widget
 
     # A titled group of tabs. `closable` arms the per-tab close button
-    # (an X nested inside the tab row — the nested widget interacts
-    # after the tab, so hit-testing hands the click to the X, not the
-    # tab; a close never selects the tab).
+    # (an X nested inside the tab row — always rendered on the selected
+    # tab, on the others only while hovered; the nested widget
+    # interacts after the tab, so hit-testing hands the click to the X,
+    # not the tab; a close never selects the tab).
     class Section
       getter title : String
       getter tabs : Array(String)
@@ -123,11 +127,18 @@ module Egui
           id = ui.next_widget_id
           tab_resp = ui.interact(rect, id, Sense.click)
 
-          # Nested close button: interacts AFTER the tab so it is the
-          # topmost widget under the pointer (hit-testing picks the
-          # latest one) — the X eats the click, the tab never fires.
+          # Nested close button, live on the selected tab (always — a
+          # close affordance must not hide on the tab you are working
+          # in) and on any hovered tab; on the rest it is neither
+          # painted nor hit-tested in idle. Hover is rect containment
+          # on the same layer, so the tab STAYS hovered while the
+          # pointer is over its X (which sits inside the tab rect): no
+          # flicker when the X appears under the cursor. Interacts
+          # AFTER the tab so it is the topmost widget under the pointer
+          # (hit-testing picks the latest one) — the X eats the click,
+          # the tab never fires.
           close_resp : Response? = nil
-          if section.closable?
+          if section.closable? && (selected || tab_resp.hovered?)
             icon = text_size.y * 0.66
             x_rect = Rect.from_min_size(
               Pos2.new(rect.right - tab_pad.right - icon,
@@ -135,14 +146,13 @@ module Egui
               Vec2.new(icon, icon))
             close_resp = ui.interact(x_rect, ui.next_widget_id, Sense.click)
           end
-          x_hovered = close_resp.try(&.hovered?) || false
 
           # State overlay on top of the base vars: the selected tab
-          # gets the accent fill, hover the weak one (the tab does not
-          # count as hovered while the pointer is over its X).
+          # gets the accent fill, hover the weak one (kept over the X
+          # too — hovering the close button must not un-hover the tab).
           state_vars = if selected
             sheet.resolve(TAB_CLASS, "selected")
-          elsif tab_resp.hovered? && !x_hovered
+          elsif tab_resp.hovered?
             sheet.resolve(TAB_CLASS, "hover")
           else
             tab

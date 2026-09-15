@@ -1,4 +1,4 @@
-# Table — a striped, header-first table for everyday data rows, built
+# Table — a header-first table for everyday data rows, built
 # on `Grid` with pinned column widths (a deliberately slim cousin of
 # egui_extras' virtualized `Table`: no lazy loading, no resizable
 # columns — wrap it in a `ScrollArea` for long lists).
@@ -13,8 +13,7 @@
 module Egui
   class Table
     def initialize(id : String, @headers : Array(String),
-                   @fractions : Array(Float64)? = nil,
-                   @striped : Bool = true)
+                   @fractions : Array(Float64)? = nil)
       @id = Id.from("table/#{id}")
     end
 
@@ -34,8 +33,8 @@ module Egui
       end
       ui.separator
 
-      Grid.new(@id.child(2_u64).value.to_s, widths: widths,
-        striped: @striped).show(ui) { |grid| yield grid }
+      Grid.new(@id.child(2_u64).value.to_s,
+        widths: widths).show(ui) { |grid| yield grid }
     end
   end
 end

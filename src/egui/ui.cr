@@ -263,7 +263,7 @@ module Egui
       TreeView.new(id).show(self) { |tree| yield tree }
     end
 
-    # Header + striped body table; see `Table`.
+    # Header + body table; see `Table`.
     def table(id : String, headers : Array(String),
               fractions : Array(Float64)? = nil, &block : Grid ->) : Nil
       Table.new(id, headers, fractions).show(self) { |rows| yield rows }

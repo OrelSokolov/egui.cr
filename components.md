@@ -298,16 +298,21 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       state text color). Specs: preset assembly, default selectors,
       live button restyle, inline-override precedence.
 - [x] Nested buttons / closable tabs (user request): `Section#closable`
-      arms an X button nested inside each sidebar tab row. The nested
-      widget interacts AFTER its parent, and `Memory#topmost_at` picks
+      arms an X button nested inside each sidebar tab row — always
+      rendered and hit-tested on the selected tab, on the others only
+      while their tab is hovered (immediate mode: the
+      parent's hover state is known the same frame, before the child
+      is drawn — no style cascade needed; the tab stays hovered over
+      its X since hover is rect containment). The nested widget
+      interacts AFTER its parent, and `Memory#topmost_at` picks
       the latest-created widget under the pointer — so the X eats the
       click (a close never selects the tab) and the tab body still
       selects normally. `Sidebar#closed` / `Ui#sidebar(on_close:)`
       report `{section, tab}`; the gallery removes the tab (and the
       section when it empties), with selection index fix-up and an
-      empty-state guard. Specs: X hit targets vs tab rects, close
-      without selection, tab click away from the X, empty section
-      list.
+      empty-state guard. Specs: X always on the selected tab, hover-only
+      elsewhere, tab hover kept over the X, close without selection, tab
+      click away from the X, empty section list.
 - [x] Wheel scroll speed (user request): `Style#scroll_speed` —
       pixels per wheel notch (sokol reports ±1.0 per notch; the raw
       delta was being applied as pixels → 1px per notch). Default 60

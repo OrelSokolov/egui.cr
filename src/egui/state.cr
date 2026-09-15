@@ -30,12 +30,17 @@ module Egui
     end
 
     def get(id : Id, default : Cell) : Cell
-      @cells[id]? || default
+      # nil-check, not `||`: a stored `false` cell is falsy (get_bool note).
+      v = @cells[id]?
+      v.nil? ? default : v
     end
 
     def get_bool(id : Id, default : Bool = false) : Bool
+      # NOTE: must not be `v.as?(Bool) || default` — a stored `false`
+      # is falsy and would read back as the default (a TreeView node
+      # with default_open: true could never be collapsed).
       v = @cells[id]?
-      v.as?(Bool) || default
+      v.is_a?(Bool) ? v : default
     end
 
     def set_bool(id : Id, value : Bool) : Nil
