@@ -239,16 +239,9 @@ module Egui
         # Font backend: prefer FreeType (real hinting), fall back to the
         # stb light-hint rasterizer, then to the built-in monospace stub.
         # Candidates come from the Fonts system port (per-platform).
-        # Windows: no FreeType binding is linked there (see freetype.cr),
-        # so the stb rasterizer is the primary backend.
         font_paths = Egui::SystemPorts::Fonts.search_paths
-        font = {% if flag?(:win32) %}
-                 LightHintedFonts.from_system(font_paths)
-               {% else %}
-                 FreetypeFonts.from_system(font_paths) ||
+        if font = FreetypeFonts.from_system(font_paths) ||
                    LightHintedFonts.from_system(font_paths)
-               {% end %}
-        if font
           @@fonts = font
           app.ctx.fonts = font
         else
@@ -321,7 +314,8 @@ module Egui
         commands = app.ctx.end_frame
 
         # egui `PlatformOutput::cursor_icon`: apply when it changed —
-        # the shim maps the CSS keyword onto the Xcursor theme.
+        # the shim maps the CSS keyword onto the platform cursors
+        # (Xcursor theme / Win32 IDC_*).
         icon = app.ctx.cursor_icon
         if icon != @@cursor
           @@cursor = icon

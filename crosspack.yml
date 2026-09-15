@@ -113,8 +113,9 @@ build:
 
     freetype-dev:           # primary font backend (backend/freetype.cr)
       hosts:
-        windows:               # FreeType is compile-time off on win32 (stb fallback)
-          verify: cmd /c exit /b 0
+        windows:               # fetched from ubawurinna/freetype-windows-binaries
+          verify: cmd /c if not exist lib\freetype.lib exit 1 & if not exist bin\freetype.dll exit 1
+          install: scripts\fetch_freetype.bat
         debian:
           verify: pkg-config --exists freetype2
           install: sudo apt-get install -y libfreetype-dev
@@ -191,27 +192,40 @@ deps:
       ubuntu: { "*": [libgl1] }
       fedora: { "*": [libgl] }
       arch: { "*": [libglvnd] }
+      windows: system           # opengl32.dll ships with the OS
   libx11:
     targets:
       debian: { "*": [libx11-6] }
       ubuntu: { "*": [libx11-6] }
       fedora: { "*": [libX11] }
       arch: { "*": [libx11] }
+      windows: none             # sokol_app uses Win32/WGL there
   libxcursor:              # not in crosspack's canonical list — resolves fine
     targets:
       debian: { "*": [libxcursor1] }
       ubuntu: { "*": [libxcursor1] }
       fedora: { "*": [libXcursor] }
       arch: { "*": [libxcursor] }
+      windows: none             # Win32 IDC_* stock cursors
   libxi:                   # not in crosspack's canonical list — resolves fine
     targets:
       debian: { "*": [libxi6] }
       ubuntu: { "*": [libxi6] }
       fedora: { "*": [libXi] }
       arch: { "*": [libxi] }
+      windows: none             # raw Win32 input via sokol_app
   libfreetype:             # primary font backend
     targets:
       debian: { "*": [libfreetype6] }
       ubuntu: { "*": [libfreetype6] }
       fedora: { "*": [freetype] }
       arch: { "*": [freetype2] }
+      windows: bundled          # bin\freetype.dll ships next to the exes
+  vc-redist:               # the FreeType DLL needs the VC++ v14 runtime
+    targets:
+      windows:
+        "*": [Microsoft.VCRedist.2015+.x64]
+      debian: none              # the Linux build does not use MSVC binaries
+      ubuntu: none
+      fedora: none
+      arch: none

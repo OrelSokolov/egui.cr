@@ -255,7 +255,11 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       style `Visuals#interact_cursor` (pointer by default over
       clickables — `cursor: pointer`), `Button#cursor(icon)` override;
       backend adapter `egui_cr_set_cursor` in the shim (X11+Xcursor
-      with cursor-font fallback, Win32 IDC map, macOS stub);
+      with cursor-font fallback, Win32 IDC map + WndProc subclass so
+      WM_SETCURSOR re-applies our cursor instead of the class arrow —
+      a plain SetCursor was reset by sokol's own WM_SETCURSOR handler
+      on every mouse move; Win32 `none` = 1x1 transparent CreateCursor,
+      macOS stub);
       gallery demo: a button per cursor in the "Cursors" section.
       Specs: exact CSS strings, round-trip, hover→pointer + reset,
       per-widget override, drag_value ew-resize.

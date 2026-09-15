@@ -25,6 +25,9 @@ desc "Build vendor C code (sokol_app/gfx/glue/gl + fontstash) into #{NATIVE_LIB}
 task "build:native" do
   FileUtils.mkdir_p("lib")
   if WINDOWS
+    # FreeType import lib + dll (scripts/fetch_freetype.bat is a no-op
+    # once lib/freetype.lib and bin/freetype.dll are in place).
+    sh "scripts\\fetch_freetype.bat"
     msvc(
       # /MD: match Crystal's windows-msvc binaries (dynamic CRT) — avoids
       # the LNK4098 LIBCMT clash and two-CRT havoc at runtime.
