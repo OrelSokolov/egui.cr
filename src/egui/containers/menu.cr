@@ -7,16 +7,24 @@
 # hovering another root button switches to it (upstream MenuState).
 
 module Egui
+  # Vertical padding inside menu rows — dropdown items and bar buttons
+  # alike. Roomier than `button_padding.y` so rows breathe like a
+  # native menu.
+  MENU_PAD_Y = 6.0
+
   class Context
     # egui `MenuBar::ui` — a native-looking strip pinned to the top of
     # the screen. Like `#top_panel`, it claims its strip out of
     # #available_rect so later panels start below the bar instead of
-    # painting over it. `bar.menu_button("File") { |ui| … }` fills it.
+    # painting over it. The strip is exactly one menu row tall and the
+    # buttons fill its full height — no padding between the buttons
+    # and the bar. `bar.menu_button("File") { |ui| … }` fills it.
     def menu_bar(&block : Ui ->) : Nil
       avail = @available_rect
       pad = style.spacing.window_padding
-      line_h = style.font_size * Fonts::LINE_H_FACTOR
-      height = line_h + 2 * pad.y
+      line_h = {style.font_size * Fonts::LINE_H_FACTOR,
+        style.spacing.interact_size.y}.max
+      height = line_h + 2 * MENU_PAD_Y
 
       outer = Rect.from_min_size(avail.min, Vec2.new(avail.width, height))
       @available_rect = Rect.new(Pos2.new(outer.left, outer.bottom),
@@ -30,8 +38,8 @@ module Egui
           style.visuals.window_stroke, 1.0))
 
       ui = Ui.new(self, Id.from("menu_bar"),
-        Rect.from_min_size(outer.min + Vec2.new(pad.x, pad.y),
-          Vec2.new(outer.width - 2 * pad.x, line_h)),
+        Rect.from_min_size(Pos2.new(outer.min.x + pad.x, outer.min.y),
+          Vec2.new(outer.width - 2 * pad.x, height)),
         Layout.left_to_right)
       yield ui
 
@@ -44,14 +52,16 @@ module Egui
 
   class Ui
     # egui `MenuButton` — a root menu entry. Click to open; hover to
-    # switch when another menu is already open.
+    # switch when another menu is already open. The button fills the
+    # menu bar's full height so its highlight runs edge-to-edge with
+    # the strip, like a native bar entry.
     def menu_button(label : String, &block : Ui ->) : Nil
       font_size = style.font_size
       pad = style.spacing.button_padding
       text_size = ctx.fonts.measure(label, font_size)
 
       rect = allocate_at_least(Vec2.new(text_size.x + 2 * pad.x,
-        {text_size.y, style.spacing.interact_size.y}.max))
+        {available_height, text_size.y}.max))
       id = next_widget_id
       response = interact(rect, id, Sense.click)
 
@@ -87,8 +97,12 @@ module Egui
         label, font_size, visuals.text_color)
 
       if mine_open
+        # Zero vertical pad: the frame starts right at the first item
+        # and ends right after the last one (the rows already poke out
+        # horizontally to cover the side padding).
+        pad_x = ctx.style.spacing.window_padding.x
         ctx.popup(popup_key, Pos2.new(rect.left, rect.bottom),
-          width: 180.0) do |menu_ui|
+          width: 180.0, pad: Vec2.new(pad_x, 0.0)) do |menu_ui|
           menu_ui.menu_popup_key = popup_key
           yield menu_ui
         end
@@ -110,9 +124,12 @@ module Egui
       font_size = style.font_size
       pad = style.spacing.button_padding
       label_size = ctx.fonts.measure(label, font_size)
-      height = {label_size.y, style.spacing.interact_size.y}.max
 
       shortcut_size = shortcut ? ctx.fonts.measure(shortcut, font_size) : Vec2.zero
+      # Row height includes the menu vertical padding so the hover
+      # highlight breathes around the label like a native menu row.
+      height = {label_size.y + 2 * MENU_PAD_Y,
+        style.spacing.interact_size.y}.max
       shortcut_gap = shortcut ? 24.0 : 0.0
       natural_w = 2 * pad.x + label_size.x + shortcut_gap + shortcut_size.x
       row_w = {available_width, natural_w}.max
@@ -126,8 +143,9 @@ module Egui
         Vec2.new(row_w + 2 * wpad, height))
       @min_rect = @min_rect.union(
         Rect.from_min_size(@cursor, Vec2.new(natural_w, height)))
-      @cursor = @layout.advance(@cursor, Vec2.new(row_w, height),
-        style.spacing.item_spacing)
+      # Rows stack flush: no item_spacing gap between menu items, so
+      # the hover highlight bands are contiguous like a native menu.
+      @cursor = @layout.advance(@cursor, Vec2.new(row_w, height), Vec2.zero)
       response = interact(rect, id, Sense.click)
 
       visuals = style.visuals

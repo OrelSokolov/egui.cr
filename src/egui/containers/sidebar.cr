@@ -2,27 +2,66 @@
 # a sidebar of titled sections, each holding tabs. Selection follows the
 # Checkbox pattern — the app owns it, passes the current section/tab in,
 # and reads the new selection back through the `Ui#sidebar` block when
-# it changed this frame.
+# it changed this frame. Sections can be `closable`: each tab row nests
+# a close button (X) — the nested widget interacts after the tab, so
+# hit-testing routes the click to the X and the app gets `on_close`.
+#
+# Styling goes through the global `StyleSheet` (CSS-like classes):
+#   sidebar          — tab_spacing (the gap between tab buttons)
+#   sidebar.section  — font_size, margin.top/left/…, text_color
+#   sidebar.tab      — padding.top/right/bottom/left, height,
+#                      text_color + :hover/:selected overlays
+#                      (fill, text_color)
+# The theme presets ship the defaults (`default_theme.cr`);
+# every key is introspectable via `ctx.stylesheet.dump`.
 
 module Egui
   class Sidebar
     include Widget
 
-    # A titled group of tabs.
+    # A titled group of tabs. `closable` arms the per-tab close button
+    # (an X nested inside the tab row — the nested widget interacts
+    # after the tab, so hit-testing hands the click to the X, not the
+    # tab; a close never selects the tab).
     class Section
       getter title : String
       getter tabs : Array(String)
+      getter? closable : Bool
 
-      def initialize(@title : String, @tabs : Array(String))
+      def initialize(@title : String, @tabs : Array(String),
+                     @closable : Bool = false)
       end
+    end
+
+    # Element classes for `StyleSheet` tweaks from app code:
+    #   ctx.stylesheet.rule(Sidebar::TAB_CLASS, …)
+    ROOT_CLASS    = "sidebar"
+    SECTION_CLASS = "sidebar.section"
+    TAB_CLASS     = "sidebar.tab"
+
+    def style_class : String?
+      ROOT_CLASS
     end
 
     getter selected_section : Int32
     getter selected_tab : Int32
+    # The tab whose close button was clicked this frame — `{section,
+    # tab}` indices, nil when nothing closed. The app removes the tab
+    # from its own state (and fixes the selection).
+    getter closed : {Int32, Int32}?
 
-    def initialize(@sections : Array(Section),
-                   @selected_section : Int32 = 0,
-                   @selected_tab : Int32 = 0)
+    def initialize(sections : Array(Section), selected_section : Int32 = 0,
+                   selected_tab : Int32 = 0)
+      @sections = sections
+      @closed = nil
+      if sections.empty?
+        @selected_section = 0
+        @selected_tab = 0
+      else
+        @selected_section = selected_section.clamp(0, sections.size - 1)
+        @selected_tab = selected_tab.clamp(
+          0, sections[@selected_section].tabs.size - 1)
+      end
     end
 
     # The selected section's title (for headings / dispatch).
@@ -36,50 +75,112 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
+      # Nothing to navigate — hand back a dead response instead of
+      # raising (an app may legitimately close every tab).
+      if @sections.empty?
+        rect = ui.allocate_at_least(Vec2.new(ui.available_width, 0.0))
+        return ui.interact(rect, ui.next_widget_id, Sense.none)
+      end
+
+      ctx = ui.ctx
+      sheet = ctx.stylesheet
       style = ui.style
       visuals = style.visuals
-      font_size = style.font_size
+
+      root = sheet.resolve(ROOT_CLASS)
+      sec = sheet.resolve(SECTION_CLASS)
+      tab = sheet.resolve(TAB_CLASS)
+
+      tab_gap = root.f64("tab_spacing", 0.0)
+      sec_font = sec.f64("font_size", style.font_size * 0.8)
+      sec_margin = sec.box("margin")
+      sec_color = sec.color("text_color", visuals.fade_color(visuals.text_color))
+      tab_font = tab.f64("font_size", style.font_size)
+      tab_pad = tab.box("padding")
+
       response : Response? = nil
 
       @sections.each_with_index do |section, si|
+        # Space above each section block (replaces separators).
+        ui.cursor = Pos2.new(ui.cursor.x + sec_margin.left,
+          ui.cursor.y + sec_margin.top)
+
         # Section title: small, faded, uppercase — not clickable, the
         # tabs below it do the navigation.
-        title_size = font_size * 0.8
         rect = ui.allocate_at_least(
-          Vec2.new(ui.available_width, title_size * Fonts::LINE_H_FACTOR))
-        ui.painter.text(rect.left_center, section.title.upcase, title_size,
-          visuals.fade_color(visuals.text_color))
+          Vec2.new(ui.available_width, sec_font * Fonts::LINE_H_FACTOR))
+        ui.painter.text(rect.left_center, section.title.upcase, sec_font,
+          sec_color)
 
-        section.tabs.each_with_index do |tab, ti|
+        section.tabs.each_with_index do |title, ti|
           selected = si == @selected_section && ti == @selected_tab
-          size = Vec2.new(ui.available_width, style.spacing.interact_size.y)
+          text_size = ctx.fonts.measure(title, tab_font)
+          # Padding grows the button around its text (CSS box model).
+          size = Vec2.new(ui.available_width,
+            {tab.f64("height", style.spacing.interact_size.y),
+             text_size.y + tab_pad.vertical}.max)
           rect = ui.allocate_at_least(size)
           id = ui.next_widget_id
           tab_resp = ui.interact(rect, id, Sense.click)
 
-          # Selected tab gets the accent fill, hover the weak one —
-          # selection stays distinguishable from hover.
-          if selected
-            ui.painter.rect(rect, 3.0, visuals.selection_fill)
-          elsif tab_resp.hovered?
-            ui.painter.rect(rect, 3.0, visuals.button_weak)
+          # Nested close button: interacts AFTER the tab so it is the
+          # topmost widget under the pointer (hit-testing picks the
+          # latest one) — the X eats the click, the tab never fires.
+          close_resp : Response? = nil
+          if section.closable?
+            icon = text_size.y * 0.66
+            x_rect = Rect.from_min_size(
+              Pos2.new(rect.right - tab_pad.right - icon,
+                rect.center.y - icon / 2.0),
+              Vec2.new(icon, icon))
+            close_resp = ui.interact(x_rect, ui.next_widget_id, Sense.click)
           end
+          x_hovered = close_resp.try(&.hovered?) || false
+
+          # State overlay on top of the base vars: the selected tab
+          # gets the accent fill, hover the weak one (the tab does not
+          # count as hovered while the pointer is over its X).
+          state_vars = if selected
+            sheet.resolve(TAB_CLASS, "selected")
+          elsif tab_resp.hovered? && !x_hovered
+            sheet.resolve(TAB_CLASS, "hover")
+          else
+            tab
+          end
+          if (fill = state_vars.color?("fill"))
+            ui.painter.rect(rect, 3.0, fill)
+          end
+          text_color = state_vars.color("text_color", visuals.text_color)
           ui.painter.text(
-            Pos2.new(rect.min.x + style.spacing.button_padding.x,
-              rect.center.y),
-            tab, font_size, visuals.text_color)
+            Pos2.new(rect.min.x + tab_pad.left,
+              rect.min.y + tab_pad.top + text_size.y / 2.0),
+            title, tab_font, text_color)
+
+          if (cr = close_resp)
+            x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
+            if cr.hovered?
+              ui.painter.rect(cr.rect, 3.0, visuals.button_hovered)
+            end
+            Icons.draw(ui.painter, :close, cr.rect, x_color)
+          end
+
+          # Flush tab list: drop the layout's item_spacing between the
+          # buttons, keep only the styled tab_spacing gap.
+          ui.cursor = Pos2.new(ui.cursor.x, rect.max.y + tab_gap)
 
           response ||= tab_resp
-          if tab_resp.clicked? && !selected
+          if (cr = close_resp) && cr.clicked?
+            @closed = {si, ti}
+            response = cr
+            ctx.request_repaint
+          elsif tab_resp.clicked? && !selected
             @selected_section = si
             @selected_tab = ti
             tab_resp.mark_changed
             response = tab_resp
-            ui.ctx.request_repaint
+            ctx.request_repaint
           end
         end
-
-        ui.separator unless si == @sections.size - 1
       end
 
       response.not_nil!
@@ -89,10 +190,17 @@ module Egui
   class Ui
     # `ui.sidebar(sections, section, tab) { |s, t| … }` — shows a Sidebar
     # and hands back the new selection when it changed this frame.
+    # `on_close` (optional) fires with `{section, tab}` indices when a
+    # tab's nested close button was clicked — the app removes the tab.
     def sidebar(sections : Array(Sidebar::Section), selected_section : Int32,
-                selected_tab : Int32, &on_select : Int32, Int32 ->) : Response
+                selected_tab : Int32,
+                on_close : ((Int32, Int32) ->)? = nil,
+                &on_select : Int32, Int32 ->) : Response
       widget = Sidebar.new(sections, selected_section, selected_tab)
       response = add(widget)
+      if (closed = widget.closed) && on_close
+        on_close.call(closed[0], closed[1])
+      end
       if response.changed?
         on_select.call(widget.selected_section, widget.selected_tab)
       end

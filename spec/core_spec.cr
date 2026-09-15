@@ -815,12 +815,72 @@ describe "phase 2 widgets" do
     ctx.memory.open_popups.should be_empty
   end
 
+  it "menu item click wins over a background widget under the popup" do
+    ctx = Egui::Context.new
+    clicked_item = false
+    clicked_under = false
+
+    run_frame = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.menu_bar do |bar|
+        bar.menu_button("File") do |menu|
+          menu.menu_item("Open") { clicked_item = true }
+        end
+      end
+      # A clickable panel widget directly under the open dropdown: the
+      # popup registers EARLIER in the frame (menu bar renders first)
+      # but lives on the Foreground layer, so the click must land on
+      # the menu item, not on what's painted underneath.
+      ctx.central_panel do |ui|
+        clicked_under = true if ui.button("Underneath").clicked?
+      end
+      ctx.end_frame
+    end
+
+    run_frame.call([] of Egui::Event, 0.016)
+    file_center = ctx.memory.widget_rects.values.first.center
+    run_frame.call([Egui::Event.pointer_moved(file_center),
+      Egui::Event.pointer_pressed(file_center),
+      Egui::Event.pointer_released(file_center)], 0.032)
+
+    ctx.memory.open_popups.should_not be_empty
+
+    # rects: [File button, menu item, panel button] — the item must
+    # actually overlap the panel button or the spec proves nothing:
+    # click a point covered by BOTH (the popup is on the Foreground
+    # layer but registers earlier than the panel below it).
+    rects = ctx.memory.widget_rects.values
+    item_rect, under_rect = rects[1], rects[2]
+    overlap_min = Egui::Pos2.new({item_rect.left, under_rect.left}.max,
+      {item_rect.top, under_rect.top}.max)
+    overlap_max = Egui::Pos2.new({item_rect.right, under_rect.right}.min,
+      {item_rect.bottom, under_rect.bottom}.min)
+    (overlap_max.x - overlap_min.x).should be > 0
+    (overlap_max.y - overlap_min.y).should be > 0
+    click_at = Egui::Pos2.new((overlap_min.x + overlap_max.x) / 2.0,
+      (overlap_min.y + overlap_max.y) / 2.0)
+
+    run_frame.call([Egui::Event.pointer_moved(click_at),
+      Egui::Event.pointer_pressed(click_at),
+      Egui::Event.pointer_released(click_at)], 0.048)
+
+    clicked_item.should be_true
+    clicked_under.should be_false
+    ctx.memory.open_popups.should be_empty
+  end
+
   it "menu_bar reserves the top strip so panels don't paint over it" do
     ctx = Egui::Context.new
     raw_frame(ctx, time: 0.016)
     ctx.menu_bar { |bar| bar.menu_button("File") { |menu| menu.menu_item("New") { } } }
     bar_bottom = ctx.available_rect.min.y
     bar_bottom.should be > 0
+
+    # the bar button fills the strip's full height — no padding between
+    # the button and the bar itself
+    button = ctx.memory.widget_rects.values.first
+    button.top.should be_close(0.0, 0.5)
+    button.bottom.should be_close(bar_bottom, 0.5)
 
     side = ctx.side_panel(:left, "side", width: 100.0) { |ui| ui.label("side") }
     side.min.y.should be_close(bar_bottom, 0.01)
@@ -844,6 +904,7 @@ describe "phase 2 widgets" do
       ctx.menu_bar do |bar|
         bar.menu_button("File") do |menu|
           menu.menu_item("New", "Ctrl+N") { }
+          menu.menu_item("Open…", "Ctrl+O") { }
         end
       end
       ctx.end_frame
@@ -859,14 +920,27 @@ describe "phase 2 widgets" do
     # let the measured popup size snap, then inspect one stable frame
     draw.call([] of Egui::Event, 0.048)
 
-    item_rect = ctx.memory.widget_rects.values.last
+    rects = ctx.memory.widget_rects.values
+    first, second = rects[-2], rects[-1]
 
     # full-bleed: the item row (highlight + click area) spans the
     # popup frame edge-to-edge, frame hugs the widest item
     frame = ctx.painter.commands.select(Egui::RectCmd)
       .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
-    frame.rect.width.should be_close(item_rect.width, 0.5)
+    frame.rect.width.should be_close(second.width, 0.5)
     frame.rect.width.should be < 180.0 # no more fixed-width right gap
+
+    # the frame hugs the items vertically too: no window_padding band
+    # above the first item or below the last one
+    frame.rect.top.should be_close(first.top, 0.5)
+    frame.rect.bottom.should be_close(second.bottom, 0.5)
+
+    # row height includes the menu vertical padding around the text
+    text_h = ctx.fonts.measure("New", ctx.style.font_size).y
+    second.height.should be >= text_h + 2 * Egui::MENU_PAD_Y - 0.5
+
+    # rows stack flush: no item_spacing band between menu items
+    second.top.should be_close(first.bottom, 0.5)
 
     # shortcut is right-aligned inside the row: label left of shortcut
     pad_x = ctx.style.spacing.button_padding.x
@@ -874,10 +948,10 @@ describe "phase 2 widgets" do
       .select { |t| t.text == "New" || t.text == "Ctrl+N" }
     label = texts.find(&.text.==("New")).not_nil!
     shortcut = texts.find(&.text.==("Ctrl+N")).not_nil!
-    label.pos.x.should be_close(item_rect.left + pad_x, 0.5)
+    label.pos.x.should be_close(first.left + pad_x, 0.5)
     shortcut.pos.x.should be > label.pos.x
     shortcut.pos.x.should be_close(
-      item_rect.right - pad_x -
+      first.right - pad_x -
         ctx.fonts.measure("Ctrl+N", ctx.style.font_size).x, 0.5)
   end
 
@@ -1356,6 +1430,37 @@ describe "scroll area (phase 5)" do
     outer_offset = ctx.memory.data.get_vec2(outer_id, Egui::Vec2.zero).y
     inner_offset.should be > 0.0
     outer_offset.should eq(0.0)
+  end
+
+  it "scales wheel notches by style.scroll_speed (px per notch)" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        60.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(50.0, 50.0))], 0.016)
+    # the backend reports ±1.0 per wheel notch
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.032)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.048)
+    before = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    before.should be > 0.0
+
+    # once ownership is stable, one notch moves exactly scroll_speed px
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.064)
+    after = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    after.should be_close(before + ctx.style.scroll_speed, 0.01)
+
+    # the speed is theme-tunable at runtime
+    ctx.theme.style.scroll_speed = 120.0
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.080)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+      .should be_close(after + 120.0, 0.01)
   end
 end
 
@@ -1915,5 +2020,271 @@ describe "Sidebar (sections + tabs)" do
     # the fill sits on the selected tab (y, the second), not on x
     selected.rect.min.y.should be_close(y_rect.min.y, 0.01)
     selected.rect.min.y.should be > x_rect.min.y
+  end
+
+  it "styles tabs from the stylesheet: flush list, no separators, padded boxes" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    widget_ui(ctx).sidebar(
+      [Egui::Sidebar::Section.new("S", ["a", "b"])], 0, 0) { |s, t| }
+    ctx.end_frame
+
+    a_rect, b_rect = ctx.memory.widget_rects.values
+    # zero gap between tab buttons (only the styled tab_spacing may
+    # separate them; the layout's item_spacing is dropped)
+    (b_rect.min.y - a_rect.max.y).should be_close(
+      ctx.stylesheet.resolve("sidebar").f64("tab_spacing", 0.0), 0.01)
+    # no separator lines anymore — sections are spaced, not ruled
+    ctx.painter.commands.select(Egui::LineCmd).should be_empty
+    # padding grows the button: height ≥ text + padding.top + padding.bottom
+    pad = ctx.stylesheet.resolve("sidebar.tab").box("padding")
+    text_h = ctx.fonts.measure("a", ctx.style.font_size).y
+    a_rect.height.should be >= text_h + pad.vertical
+  end
+
+  it "re-reads the stylesheet after a live rule tweak" do
+    ctx = Egui::Context.new
+    sheet = ctx.stylesheet
+
+    raw_frame(ctx)
+    widget_ui(ctx).sidebar(
+      [Egui::Sidebar::Section.new("S", ["a"])], 0, 0) { |s, t| }
+    ctx.end_frame
+    before = ctx.memory.widget_rects.values.first.height
+
+    # CSS-like runtime restyle: more tab padding → taller buttons
+    sheet.rule(Egui::Sidebar::TAB_CLASS, Egui::StyleVars{
+      "padding.top"    => 14.0,
+      "padding.bottom" => 14.0,
+    })
+    raw_frame(ctx, time: 0.032)
+    widget_ui(ctx).sidebar(
+      [Egui::Sidebar::Section.new("S", ["a"])], 0, 0) { |s, t| }
+    ctx.end_frame
+    after = ctx.memory.widget_rects.values.first.height
+    after.should be > before + 12.0
+  end
+
+  it "nests a close button per closable tab: the X eats the click" do
+    ctx = Egui::Context.new
+    sections = [Egui::Sidebar::Section.new("One", ["A", "B"], closable: true)]
+    section = 0
+    tab = 0
+    closed = nil.as({Int32, Int32}?)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).sidebar(sections, section, tab,
+        on_close: ->(s : Int32, t : Int32) { closed = {s, t} }) do |s, t|
+        section = s
+        tab = t
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # one X (2 line segments) per closable tab
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(4)
+    # hit targets: wide rects are tabs, small ones the nested X buttons
+    tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 100.0 }
+    close_rects = ctx.memory.widget_rects.values.select { |r| r.width <= 100.0 }
+    tab_rects.size.should eq(2)
+    close_rects.size.should eq(2)
+
+    # click the second tab's X: reported closed, tab NOT selected
+    x = close_rects[1].center
+    draw.call([Egui::Event.pointer_moved(x),
+      Egui::Event.pointer_pressed(x)], 0.032)
+    draw.call([Egui::Event.pointer_released(x)], 0.048)
+    closed.should eq({0, 1})
+    section.should eq(0)
+    tab.should eq(0)
+
+    # the tab body (away from the X) still selects normally — click
+    # the *second* tab's body; the first one is already selected
+    body = Egui::Pos2.new(tab_rects[1].min.x + 20.0, tab_rects[1].center.y)
+    draw.call([Egui::Event.pointer_moved(body),
+      Egui::Event.pointer_pressed(body)], 0.064)
+    draw.call([Egui::Event.pointer_released(body)], 0.080)
+    section.should eq(0)
+    tab.should eq(1)
+    closed.should eq({0, 1}) # no new close
+  end
+
+  it "survives an empty section list" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    widget_ui(ctx).sidebar([] of Egui::Sidebar::Section, 0, 0) { |s, t| }
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::LineCmd).should be_empty
+  end
+end
+
+describe "StyleSheet (CSS-like classes)" do
+  it "cascades in two layers: class defaults first, states always on top" do
+    sheet = Egui::StyleSheet.new
+    sheet.rule("sidebar", Egui::StyleVars{"fill" => Egui::Color32.rgb(1, 1, 1)})
+    # a second rule on the same selector merges per key, CSS-cascade style
+    sheet.rule("sidebar", Egui::StyleVars{"font_size" => 14.0})
+    sheet.rule("sidebar.tab", Egui::StyleVars{
+      "fill"   => Egui::Color32.rgb(2, 2, 2),
+      "height" => 30.0,
+    })
+    sheet.rule("sidebar:hover", Egui::StyleVars{
+      "fill"   => Egui::Color32.rgb(9, 9, 9),
+      "height" => 5.0,
+    })
+    sheet.rule("sidebar.tab:hover", Egui::StyleVars{"fill" => Egui::Color32.rgb(3, 3, 3)})
+
+    # class layer (defaults): more specific class wins per key
+    base = sheet.resolve("sidebar.tab")
+    base["font_size"].should eq(14.0)                    # inherited from ancestor
+    base["fill"].should eq(Egui::Color32.rgb(2, 2, 2))   # own class wins
+    base["height"].should eq(30.0)
+
+    hover = sheet.resolve("sidebar.tab", "hover")
+    # states always override classes — even the ancestor state beats
+    # the leaf class default ("height" only set by sidebar:hover)
+    hover["height"].should eq(5.0)
+    # among states the leaf wins ("fill")
+    hover["fill"].should eq(Egui::Color32.rgb(3, 3, 3))
+    # the class-only resolve stays unaffected by overlays
+    sheet.resolve("sidebar.tab")["fill"].should eq(Egui::Color32.rgb(2, 2, 2))
+  end
+
+  it "caches merged bags between frames; rule() drops the cache" do
+    sheet = Egui::StyleSheet.new
+    sheet.rule("x", Egui::StyleVars{"height" => 10.0})
+
+    a = sheet.resolve("x")
+    sheet.resolve("x").same?(a).should be_true
+
+    sheet.rule("x", Egui::StyleVars{"height" => 20.0})
+    sheet.resolve("x").same?(a).should be_false
+    sheet.resolve("x")["height"].should eq(20.0)
+  end
+
+  it "coerces Int32 keys to Float64; boxes read per-side with shorthand fallback" do
+    vars = Egui::StyleVars.new
+    vars["height"] = 24
+    vars.f64("height", 0.0).should eq(24.0)
+    vars.f64("missing", 7.0).should eq(7.0)
+    vars.f64?("fill").should be_nil # wrong type = unset, not a crash
+
+    # per-side keys; missing sides fall back to the scalar shorthand,
+    # then to 0 (CSS: `padding: 10px` sets all sides)
+    box = Egui::StyleVars{"padding" => 10.0, "padding.left" => 24}
+    pad = box.box("padding")
+    pad.top.should eq(10.0)
+    pad.right.should eq(10.0)
+    pad.bottom.should eq(10.0)
+    pad.left.should eq(24.0) # Int32 key coerced
+    pad.vertical.should eq(20.0)
+    pad.horizontal.should eq(34.0)
+    Egui::StyleVars.new.box("padding").top.should eq(0.0)
+  end
+
+  it "introspects: classes, selectors and dump list every key" do
+    theme = Egui::Theme.dark
+    sheet = theme.sheet
+
+    sheet.classes.should contain("sidebar")
+    sheet.classes.should contain("sidebar.tab")
+    sheet.selectors.should contain("sidebar.tab")
+    sheet.selectors.should contain("sidebar.tab:hover")
+    sheet.selectors.should contain("sidebar.tab:selected")
+
+    io = IO::Memory.new
+    sheet.dump(io)
+    tree = io.to_s
+    {"sidebar", "section", "tab", ":hover", ":selected", "padding.top",
+     "padding.left", "padding.bottom", "padding.right",
+     "tab_spacing", "margin.top", "font_size"}.each do |key|
+      tree.should contain(key)
+    end
+    # values render CSS-ish: colors as #rrggbbaa hex
+    hex = sprintf("#%02x%02x%02x%02x", 0, 122, 204, 255)
+    tree.should contain(hex)
+    sheet.to_s.should contain("sidebar") # to_s goes through dump
+  end
+
+  it "theme presets ship sidebar defaults that follow the palette" do
+    dark = Egui::Theme.dark
+    light = Egui::Theme.light
+
+    dark.sheet.resolve("sidebar.tab", "selected")["fill"]
+      .should eq(dark.style.visuals.selection_fill)
+    dark.sheet.resolve("sidebar.tab", "hover")["fill"]
+      .should eq(dark.style.visuals.button_weak)
+    # each preset owns its sheet — light hover follows light visuals
+    light.sheet.resolve("sidebar.tab", "hover")["fill"]
+      .should eq(light.style.visuals.button_weak)
+    light.sheet.should_not be(dark.sheet)
+  end
+end
+
+describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
+  it "assembles the presets; Theme.dark/light delegate to it" do
+    Egui::DefaultTheme.dark.name.should eq("dark")
+    Egui::DefaultTheme.light.name.should eq("light")
+    Egui::DefaultTheme.dark.style.visuals.selection_fill
+      .should eq(Egui::Theme.dark.style.visuals.selection_fill)
+
+    # custom preset derived from the defaults
+    custom = Egui::DefaultTheme.build("ocean", dark: true)
+    custom.style.visuals.dark.should be_true
+    custom.sheet.selectors.should contain("button:hover")
+  end
+
+  it "ships class rules for every styled element" do
+    sheet = Egui::Theme.dark.sheet
+    {"sidebar", "sidebar.tab", "sidebar.tab:selected",
+     "button", "button:hover", "button:active"}.each do |sel|
+      sheet.selectors.should contain(sel)
+    end
+    sheet.resolve("button")["fill"]
+      .should eq(Egui::Theme.dark.style.visuals.button_weak)
+  end
+
+  it "buttons restyle live through their class (padding box, hover fill)" do
+    ctx = Egui::Context.new
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      rect = widget_ui(ctx).button("OK").rect
+      ctx.end_frame
+      rect
+    end
+
+    before = draw.call([] of Egui::Event, 0.016)
+
+    # thicker padding → taller button, same class, next frame
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "padding.top"    => 14.0,
+      "padding.bottom" => 14.0,
+    })
+    after = draw.call([] of Egui::Event, 0.032)
+    # 4→14 top and bottom: exactly +20
+    after.height.should be_close(before.height + 20.0, 0.01)
+
+    # class state rule paints the hover fill
+    orange = Egui::Color32.rgb(255, 140, 0)
+    ctx.stylesheet.rule("button:hover", Egui::StyleVars{"fill" => orange})
+    draw.call([Egui::Event.pointer_moved(after.center)], 0.048)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill.==(orange)).should_not be_nil
+
+    # per-widget #style still beats the class (inline > stylesheet)
+    red = Egui::Color32.rgb(170, 40, 40)
+    draw2 = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.fill = red })
+      ctx.end_frame
+    end
+    # park the pointer away so the button is in its base state
+    draw2.call([Egui::Event.pointer_moved(Egui::Pos2.new(700.0, 500.0))], 0.064)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill.==(red)).should_not be_nil
   end
 end

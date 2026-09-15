@@ -148,11 +148,18 @@ module Egui
     property spacing : Spacing
     property visuals : Visuals
     property font_size : Float64
+    # Wheel scroll speed in pixels per wheel notch. The sokol backend
+    # reports ±1.0 per notch, so this multiplies the raw delta
+    # (touchpads send small fractional deltas, scaled the same way).
+    # Default 60 ≈ three text lines per notch. Tune per app:
+    # `ctx.theme.style.scroll_speed = 100.0`.
+    property scroll_speed : Float64
 
     def initialize
       @spacing = Spacing.new
       @visuals = Visuals.new
       @font_size = 16.0
+      @scroll_speed = 60.0
     end
 
     # Deep copy: clones Spacing and Visuals, copies font_size. Used by
@@ -162,6 +169,7 @@ module Egui
       other.spacing = spacing.clone
       other.visuals = visuals.clone
       other.font_size = font_size
+      other.scroll_speed = scroll_speed
       other
     end
   end

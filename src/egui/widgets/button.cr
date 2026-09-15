@@ -24,6 +24,10 @@ module Egui
     def initialize(@text : String)
     end
 
+    def style_class : String?
+      "button"
+    end
+
     # CSS `cursor` style for this button — the icon the mouse shows
     # while hovering it (default: `style.visuals.interact_cursor`).
     def cursor(icon : CursorIcon) : self
@@ -53,11 +57,25 @@ module Egui
 
     def ui(ui : Ui) : Response
       sense = Sense.click | Sense::Focusable
-      style = effective_style(ui)
-      pad = style.spacing.button_padding
 
-      text_size = ui.ctx.fonts.measure(@text, style.font_size)
-      size = text_size + pad * 2.0
+      # Full cascade (theme → button class → :hover/:active overlay →
+      # per-widget `#style`): see `default_theme.cr` for the class
+      # defaults. Sizing uses the state-less style; the state only
+      # picks colors, re-resolved after the interaction verdict.
+      sheet = ui.ctx.stylesheet
+      class_vars = sheet.resolve("button")
+      style = effective_style(ui, class_vars)
+
+      # Per-side padding box; falls back to Spacing#button_padding
+      # (symmetric) when the class leaves it unset.
+      bp = style.spacing.button_padding
+      pad = class_vars.box?("padding") ||
+            StyleBox.new(bp.y, bp.x, bp.y, bp.x)
+
+      font_size = style.font_size
+      text_size = ui.ctx.fonts.measure(@text, font_size)
+      size = Vec2.new(text_size.x + pad.horizontal,
+        text_size.y + pad.vertical)
       if (name = @icon) && Icons::NAMES.includes?(name)
         size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
       end
@@ -72,18 +90,22 @@ module Egui
         ui.ctx.set_cursor_icon(cursor)
       end
 
+      # The state overlay slots UNDER any `#style` overrides, so an
+      # inline fill still wins over `button:hover`.
+      state = response.active? ? "active" : response.hovered? ? "hover" : nil
+      paint_style = state ? effective_style(ui, class_vars, state) : style
+      fill = paint_style.visuals.button_fill(response.hovered?, response.active?)
       if (grad = @gradient) && !response.active?
         ui.painter.rect(rect, rounding: 4.0, fill: grad[0], fill2: grad[1],
-          stroke_color: style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
       else
-        fill = style.visuals.button_fill(response.hovered?, response.active?)
         ui.painter.rect(rect, rounding: 4.0, fill: fill,
-          stroke_color: style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
       end
 
       # Content: optional icon + centered text.
-      content_left = rect.left + pad.x
-      content_w = rect.width - 2 * pad.x
+      content_left = rect.left + pad.left
+      content_w = rect.width - pad.horizontal
       if (tex = @image_texture) && !tex.zero?
         icon_box = Rect.from_min_size(
           Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
@@ -103,8 +125,7 @@ module Egui
       end
       pos = Pos2.new(content_left + (content_w - text_size.x).clamp(0.0, Float64::MAX) / 2.0,
         rect.center.y)
-      ui.painter.text(pos, @text, style.font_size,
-        style.visuals.text_color)
+      ui.painter.text(pos, @text, font_size, paint_style.visuals.text_color)
 
       response.paint_focus_ring
       response

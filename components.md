@@ -266,6 +266,54 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       `Response#changed?`). `examples/widgets_gallery.cr` navigates
       its per-widget galleries through it. Specs: tab/section clicks
       switch the selection, selected tab painted with the accent fill.
+- [x] StyleSheet — CSS-like class styling (user request):
+      `src/egui/stylesheet.cr` — a global tree of dotted-path classes
+      (`sidebar.tab`) holding mergeable `StyleVars` bags (a Hash
+      subclass: colors/floats/bools per key; paddings/margins are
+      per-side CSS boxes — `padding.top/left/right/bottom` with the
+      scalar `padding` shorthand) plus per-state overlays
+      (`sidebar.tab:hover`, `:selected`). Two cascade layers, CSS-1:1:
+      class rules are defaults (root→leaf, specific wins), state rules
+      always override them (root→leaf, leaf wins); per-widget
+      `Widget#style` overrides sit above both (inline > stylesheet).
+      Merged bags are cached across frames (a `rule` tweak drops the
+      cache). Lives on the `Theme` (`ctx.stylesheet`). Introspection:
+      `#classes`, `#selectors`, `#dump(io)` / `puts ctx.stylesheet`
+      (colors as #rrggbbaa). Sidebar styles entirely through it (tab
+      padding box, zero tab gap, section margin box instead of
+      separators, hover/selected fills); `Widget#style_class` is the
+      adoption hook for other widgets. Gallery demos live restyle
+      (Themes tab) + stylesheet dump (View menu). Specs: two-layer
+      cascade precedence, cache invalidation, Int32→Float64 coercion,
+      per-side boxes with shorthand fallback, dump content, preset
+      palettes, sidebar layout read from the sheet.
+- [x] DefaultTheme (user request): `src/egui/default_theme.cr` — the
+      complete default theme in one file ("user-agent stylesheet"):
+      base palette (dark/light) + element class rules for everything
+      styled through classes (`sidebar.*`, `button.*`). `Theme.dark` /
+      `Theme.light` delegate to it; `DefaultTheme.build("name", dark:)`
+      is the derivation point for custom presets. Class rules set only
+      what differs from the base Style (the rest inherits). Button is
+      the second class consumer (padding box, hover/active fills,
+      state text color). Specs: preset assembly, default selectors,
+      live button restyle, inline-override precedence.
+- [x] Nested buttons / closable tabs (user request): `Section#closable`
+      arms an X button nested inside each sidebar tab row. The nested
+      widget interacts AFTER its parent, and `Memory#topmost_at` picks
+      the latest-created widget under the pointer — so the X eats the
+      click (a close never selects the tab) and the tab body still
+      selects normally. `Sidebar#closed` / `Ui#sidebar(on_close:)`
+      report `{section, tab}`; the gallery removes the tab (and the
+      section when it empties), with selection index fix-up and an
+      empty-state guard. Specs: X hit targets vs tab rects, close
+      without selection, tab click away from the X, empty section
+      list.
+- [x] Wheel scroll speed (user request): `Style#scroll_speed` —
+      pixels per wheel notch (sokol reports ±1.0 per notch; the raw
+      delta was being applied as pixels → 1px per notch). Default 60
+      (≈ three text lines), theme-tunable at runtime. Spec: one notch
+      moves exactly `scroll_speed` px after ownership settles, and a
+      live `scroll_speed` change takes effect next frame.
 - [ ] Ui helpers: `add_sized`, `scope`, `enabled(flag)`, `columns`.
 - [ ] `src/egui/grid.cr` ← `crates/egui/src/grid.rs`.
 - [ ] `Response#context_menu` (right-click menus, needs P2 menu).

@@ -1,10 +1,13 @@
 # Global theming (a thin layer over the upstream `Style` port).
 #
-# `Theme` bundles a `Style` (spacing + visuals + font size) under a name,
-# with `Theme.dark` / `Theme.light` presets. The active theme lives on the
-# `Context` (`ctx.theme`) — assigning `ctx.theme = Theme.light` swaps it
-# instantly: immediate-mode widgets re-read the theme style every frame,
-# so the whole UI repaints with the new palette on the next frame.
+# `Theme` bundles a `Style` (spacing + visuals + font size) and a
+# `StyleSheet` (CSS-like element classes) under a name. All default
+# values — palette AND element class rules — live in `default_theme.cr`
+# (`DefaultTheme`); the presets below are just aliases into it. The
+# active theme lives on the `Context` (`ctx.theme`) — assigning
+# `ctx.theme = Theme.light` swaps it instantly: immediate-mode widgets
+# re-read the theme style every frame, so the whole UI repaints with
+# the new palette on the next frame.
 #
 # `WidgetStyle` is the per-widget override layer: every field is nilable,
 # nil meaning "inherit from the theme". `WidgetStyle#merge_over(base)`
@@ -16,56 +19,22 @@ module Egui
     getter name : String
     getter? dark : Bool
     getter style : Style
+    # CSS-like class styles for this theme (see `StyleSheet`) — swaps
+    # together with the palette on `ctx.theme = …`.
+    getter sheet : StyleSheet
 
     def initialize(@name : String, @dark : Bool, @style : Style = Style.new)
+      @sheet = StyleSheet.new
     end
 
-    # The default palette (the dark theme egui upstream ships). `Style`'s
-    # `Visuals`/`Spacing` defaults *are* this palette; built explicitly
-    # here so `Theme.dark` stays correct even if the class defaults move.
+    # The default presets, assembled from the full defaults in
+    # `default_theme.cr` (base palette + element class rules).
     def self.dark : Theme
-      theme = new("dark", true)
-      v = theme.style.visuals
-      v.dark = true
-      v.interact_cursor = CursorIcon::Pointer
-      v.window_fill = Color32.rgba(27, 27, 30, 235)
-      v.window_stroke = Color32.rgba(80, 80, 80, 255)
-      v.panel_fill = Color32.rgba(22, 22, 24, 255)
-      v.text_color = Color32.rgba(235, 235, 235, 255)
-      v.title_color = Color32.rgba(250, 250, 250, 255)
-      v.button_weak = Color32.rgba(60, 60, 60, 180)
-      v.button_hovered = Color32.rgba(85, 85, 85, 200)
-      v.button_active = Color32.rgba(110, 110, 110, 220)
-      v.button_stroke = Color32.rgba(96, 96, 96, 255)
-      v.selection_fill = Color32.rgba(0, 122, 204, 255)
-      v.hyperlink_color = Color32.rgba(102, 170, 255, 255)
-      v.separator_color = Color32.rgba(90, 90, 90, 255)
-      v.modal_dim = Color32.rgba(0, 0, 0, 140)
-      theme
+      DefaultTheme.dark
     end
 
-    # Light palette — same structure, inverted luminance. The accent
-    # (`selection_fill`) is kept; the hyperlink darkens for contrast on
-    # light panels.
     def self.light : Theme
-      theme = new("light", false)
-      v = theme.style.visuals
-      v.dark = false
-      v.interact_cursor = CursorIcon::Pointer
-      v.window_fill = Color32.rgba(252, 252, 252, 245)
-      v.window_stroke = Color32.rgba(190, 190, 190, 255)
-      v.panel_fill = Color32.rgba(243, 243, 243, 255)
-      v.text_color = Color32.rgba(35, 35, 35, 255)
-      v.title_color = Color32.rgba(15, 15, 15, 255)
-      v.button_weak = Color32.rgba(228, 228, 228, 255)
-      v.button_hovered = Color32.rgba(209, 209, 209, 255)
-      v.button_active = Color32.rgba(185, 185, 185, 255)
-      v.button_stroke = Color32.rgba(160, 160, 160, 255)
-      v.selection_fill = Color32.rgba(0, 122, 204, 255)
-      v.hyperlink_color = Color32.rgba(0, 92, 170, 255)
-      v.separator_color = Color32.rgba(200, 200, 200, 255)
-      v.modal_dim = Color32.rgba(0, 0, 0, 70)
-      theme
+      DefaultTheme.light
     end
 
     def to_s(io : IO) : Nil

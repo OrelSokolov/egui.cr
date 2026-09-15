@@ -25,10 +25,12 @@ module Egui
       offset = memory.data.get_vec2(id, Vec2.zero)
       prev_content = memory.data.get_vec2(id.child(0), Vec2.new(0.0, height))
 
-      # Wheel scroll — only if this viewport owns the delta.
+      # Wheel scroll — only if this viewport owns the delta. The raw
+      # delta is in wheel notches (±1.0 per click from the backend);
+      # `style.scroll_speed` scales it to pixels.
       if memory.active_scroll_area? == id
         delta = ui.ctx.input.scroll
-        offset += Vec2.new(0.0, delta.y) unless delta.y.zero?
+        offset += Vec2.new(0.0, delta.y * style.scroll_speed) unless delta.y.zero?
       end
 
       memory.register_scroll_area(id, viewport, ui.layer)

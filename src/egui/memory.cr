@@ -439,22 +439,29 @@ module Egui
 
 
     # Topmost widget containing `pos` whose sense satisfies the filter.
-    # Registration order == paint order; the last match is on top.
-    # Hit-tests resolve against the previous frame's geometry.
+    # Layer Order wins first (see `layer.cr`: paint order and hit-test
+    # priority follow Order — a Foreground popup always beats the panel
+    # under it, even though the popup registers earlier in the frame);
+    # within the same Order the last registration (paint order) is on
+    # top. Hit-tests resolve against the previous frame's geometry.
     private def topmost_at(pos : Pos2?, &sense_filter : Sense -> Bool) : Id?
       return nil unless pos
       hit = nil
+      hit_order = Order::Background.value
       @prev_widget_rects.each do |id, rect|
         if rect.contains?(pos)
           sense = @prev_widget_senses[id]?
           next if sense.nil? || !sense_filter.call(sense)
           clip = @prev_widget_clips[id]?
           next if clip && !clip.contains?(pos)
+          order = (@prev_widget_layers[id]? || LayerId.background).order
           if @modal_open
-            layer = @prev_widget_layers[id]?
-            next unless layer && layer.order.foreground?
+            next unless order.foreground?
           end
-          hit = id
+          if hit.nil? || order.value >= hit_order
+            hit = id
+            hit_order = order.value
+          end
         end
       end
       hit

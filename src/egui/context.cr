@@ -90,6 +90,11 @@ module Egui
       @theme.style
     end
 
+    # The active theme's CSS-like class styles (see `StyleSheet`).
+    def stylesheet : StyleSheet
+      @theme.sheet
+    end
+
     def end_frame : Array(PaintCmd)
       @memory.end_frame
       @painter.commands_in_layer_order
@@ -265,9 +270,11 @@ module Egui
     end
 
     # egui popup (containers/popup.rs): rides the Foreground layer,
-    # closes when a click lands outside it (Memory#end_frame).
+    # closes when a click lands outside it (Memory#end_frame). `pad`
+    # overrides the frame's inner padding (menus pass a zero vertical
+    # pad so the frame hugs the first/last item).
     def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
-              &block : Ui ->) : Nil
+              pad : Vec2? = nil, &block : Ui ->) : Nil
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
 
@@ -277,7 +284,7 @@ module Egui
       width = @memory.layer_sizes[pop_id]?.try(&.x) || width
 
       layer = LayerId.new(Order::Foreground, pop_id)
-      pad = style.spacing.window_padding
+      pad ||= style.spacing.window_padding
 
       @painter.layer = Order::Foreground
       bg_index = @painter.add_noop

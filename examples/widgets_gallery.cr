@@ -7,17 +7,6 @@ require "../src/egui"
 require "../src/egui/backend/sokol"
 
 class GalleryApp < Egui::App
-  # Sidebar navigation: sections of tabs; the central panel dispatches
-  # on the selected (section, tab) pair.
-  SECTIONS = [
-    Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Display", "Color"]),
-    Egui::Sidebar::Section.new(
-      "Style", ["Themes", "Cursors"]),
-    Egui::Sidebar::Section.new(
-      "Containers", ["Scroll", "Modal"]),
-  ]
-
   @checked = false
   @radio : Int32 = 1
   @section : Int32 = 0
@@ -28,6 +17,19 @@ class GalleryApp < Egui::App
   @modal_open = false
   @buffer = "edit me"
   @color = Egui::Color32.rgb(0, 122, 204)
+
+  # Sidebar navigation: sections of tabs, all closable — the X nested
+  # in each tab removes it (and the whole section when it empties).
+  # Mutable app state (not a constant) because tabs disappear.
+  @sections = [
+    Egui::Sidebar::Section.new(
+      "Widgets", ["Buttons", "Inputs", "Text", "Display", "Color"],
+      closable: true),
+    Egui::Sidebar::Section.new(
+      "Style", ["Themes", "Cursors"], closable: true),
+    Egui::Sidebar::Section.new(
+      "Containers", ["Scroll", "Modal"], closable: true),
+  ]
 
   COMBO_OPTIONS = ["First", "Second", "Third"]
 
@@ -45,6 +47,9 @@ class GalleryApp < Egui::App
       end
       bar.menu_button("View") do |menu|
         menu.menu_item("Toggle modal") { @modal_open = true }
+        # Introspection: the whole style tree (classes → states → keys)
+        # goes to stdout — `ctx.stylesheet.dump` accepts any IO.
+        menu.menu_item("Dump stylesheet (stdout)") { puts ctx.stylesheet }
         # Instant global theme swap: assigning ctx.theme restyles the
         # whole UI on the next frame.
         menu.menu_item(ctx.theme.dark? ? "Light theme" : "Dark theme") do
@@ -54,9 +59,11 @@ class GalleryApp < Egui::App
     end
 
     # Side panel hosting the Sidebar widget — it draws the sections and
-    # tabs and hands back the new selection when a tab is clicked.
+    # tabs, hands back the new selection when a tab is clicked, and
+    # reports closes from the nested X buttons.
     ctx.side_panel(:left, "nav", width: 220.0) do |ui|
-      ui.sidebar(SECTIONS, @section, @tab) do |section, tab|
+      ui.sidebar(@sections, @section, @tab,
+        on_close: ->(si : Int32, ti : Int32) { close_tab(si, ti) }) do |section, tab|
         @section = section
         @tab = tab
       end
@@ -66,20 +73,24 @@ class GalleryApp < Egui::App
     # scrolls — everything inside the block goes on the scroll area's
     # inner Ui (putting widgets on the outer one would overlap).
     ctx.central_panel do |ui|
-      ui.scroll_area do |scroll|
-        scroll.heading(SECTIONS[@section].tabs[@tab])
-        scroll.separator
+      if @sections.empty?
+        ui.label("Every tab is closed — nowhere to navigate. (Restart the app to get them back.)")
+      else
+        ui.scroll_area do |scroll|
+          scroll.heading(@sections[@section].tabs[@tab])
+          scroll.separator
 
-        case {SECTIONS[@section].title, SECTIONS[@section].tabs[@tab]}
-        when {"Widgets", "Buttons"}        then buttons_gallery(scroll)
-        when {"Widgets", "Inputs"}         then inputs_gallery(scroll)
-        when {"Widgets", "Text"}           then text_gallery(scroll)
-        when {"Widgets", "Display"}        then display_gallery(scroll)
-        when {"Widgets", "Color"}          then color_gallery(scroll)
-        when {"Style", "Themes"}           then themes_gallery(scroll, ctx)
-        when {"Style", "Cursors"}          then cursors_gallery(scroll)
-        when {"Containers", "Scroll"}      then scroll_gallery(scroll)
-        when {"Containers", "Modal"}       then modal_gallery(scroll)
+          case {@sections[@section].title, @sections[@section].tabs[@tab]}
+          when {"Widgets", "Buttons"}        then buttons_gallery(scroll)
+          when {"Widgets", "Inputs"}         then inputs_gallery(scroll)
+          when {"Widgets", "Text"}           then text_gallery(scroll)
+          when {"Widgets", "Display"}        then display_gallery(scroll)
+          when {"Widgets", "Color"}          then color_gallery(scroll)
+          when {"Style", "Themes"}           then themes_gallery(scroll, ctx)
+          when {"Style", "Cursors"}          then cursors_gallery(scroll)
+          when {"Containers", "Scroll"}      then scroll_gallery(scroll)
+          when {"Containers", "Modal"}       then modal_gallery(scroll)
+          end
         end
       end
     end
@@ -95,9 +106,35 @@ class GalleryApp < Egui::App
     end
 
     ctx.bottom_panel("fps") do |ui|
-      ui.label("FPS: #{"%.1f" % ctx.fps} — " \
-               "#{SECTIONS[@section].title} / #{SECTIONS[@section].tabs[@tab]}")
+      if @sections.empty?
+        ui.label("FPS: #{"%.1f" % ctx.fps}")
+      else
+        ui.label("FPS: #{"%.1f" % ctx.fps} — " \
+                 "#{@sections[@section].title} / #{@sections[@section].tabs[@tab]}")
+      end
     end
+  end
+
+  # A tab's X was clicked: drop the tab (the whole section when it
+  # empties) and fix the selection indices around the removal.
+  private def close_tab(si : Int32, ti : Int32) : Nil
+    section = @sections[si]
+    tabs = section.tabs.dup
+    tabs.delete_at(ti)
+
+    if tabs.empty?
+      @sections.delete_at(si)
+      @section -= 1 if si < @section
+    else
+      @sections[si] = Egui::Sidebar::Section.new(section.title, tabs,
+        closable: true)
+    end
+
+    return if @sections.empty?
+
+    @section = @section.clamp(0, @sections.size - 1)
+    @tab -= 1 if si == @section && ti < @tab
+    @tab = @tab.clamp(0, @sections[@section].tabs.size - 1)
   end
 
   private def buttons_gallery(ui : Egui::Ui) : Nil
@@ -198,6 +235,43 @@ class GalleryApp < Egui::App
     ui.add(Egui::Hyperlink.new("orange link (hyperlink_color override)",
         "https://github.com/emilk/egui")
       .style { |s| s.hyperlink_color = Egui::Color32.rgb(230, 140, 30) })
+
+    ui.separator
+    sidebar_style_gallery(ui, ctx)
+  end
+
+  private def sidebar_style_gallery(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    # Live CSS-like restyle: `rule` merges into the class bag and the
+    # sidebar re-reads it next frame (the merged bags are cached, a
+    # rule drops the cache — nothing is rebuilt per frame). All the
+    # defaults these tweaks build on live in src/egui/default_theme.cr.
+    ui.label("Sidebar stylesheet (live restyle, defaults in default_theme.cr):")
+    sheet = ctx.stylesheet
+    pad = sheet.resolve(Egui::Sidebar::TAB_CLASS).box("padding")
+    margin = sheet.resolve(Egui::Sidebar::SECTION_CLASS).box("margin")
+    ui.horizontal do |row|
+      if row.button("− padding").clicked?
+        sheet.rule(Egui::Sidebar::TAB_CLASS, Egui::StyleVars{
+          "padding.top"    => (pad.top - 1).clamp(0.0, 24.0),
+          "padding.bottom" => (pad.bottom - 1).clamp(0.0, 24.0),
+        })
+      end
+      if row.button("+ padding").clicked?
+        sheet.rule(Egui::Sidebar::TAB_CLASS, Egui::StyleVars{
+          "padding.top"    => (pad.top + 1).clamp(0.0, 24.0),
+          "padding.bottom" => (pad.bottom + 1).clamp(0.0, 24.0),
+        })
+      end
+      if row.button("− margin").clicked?
+        sheet.rule(Egui::Sidebar::SECTION_CLASS,
+          Egui::StyleVars{"margin.top" => (margin.top - 2).clamp(0.0, 40.0)})
+      end
+      if row.button("+ margin").clicked?
+        sheet.rule(Egui::Sidebar::SECTION_CLASS,
+          Egui::StyleVars{"margin.top" => (margin.top + 2).clamp(0.0, 40.0)})
+      end
+    end
+    ui.label("tab padding.top #{"%.1f" % pad.top}, section margin.top #{"%.1f" % margin.top}")
   end
 
   private def cursors_gallery(ui : Egui::Ui) : Nil
