@@ -6,9 +6,10 @@
 #     walk (fractional advances + kerning) used by both measure and draw.
 #     Draw-side, glyph quads snap to whole screen pixels.
 #   * LightHintedFonts — fallback rasterizer: stb_truetype outlines
-#     (exposed by the shim) with a Crystal-side light Y-hint before 4x4
-#     supersampled scanline conversion — a heuristic port of upstream
-#     egui's "sharper text" work. Used when FreeType is unavailable.
+#     (exposed by the shim) with a Crystal-side light hint on BOTH axes
+#     before 4x4 supersampled scanline conversion — an approximation of
+#     FreeType's full grid-fitting (snapped stems/bars + whole-pixel
+#     advances). Used when FreeType is unavailable.
 #   * FreetypeFonts (backend/freetype.cr) — the primary backend: a direct
 #     FreeType binding rasterizing hinted 8-bit coverage bitmaps.
 #
@@ -53,6 +54,12 @@ module Egui
       abstract def metrics_at(size : Float64) : {Float64, Float64}
       protected abstract def build_glyph(gid : Int32, size : Float64) : Glyph
 
+      # Extra spacing between letters (px) — added BETWEEN glyphs only,
+      # never after the last one, so `measure` widths stay exact.
+      # Backends whose glyph placement reads tighter than their
+      # reference open this up (live-tunable: fontpreview exposes it).
+      property letter_spacing : Float64 = 0.0
+
       # --- Egui::Fonts -------------------------------------------------------
 
       def measure(text : String, size : Float64) : Egui::Vec2
@@ -68,9 +75,10 @@ module Egui
         return 0.0 if text.empty? || !loaded?
         pen = 0.0
         prev = 0
-        text.each_char do |ch|
+        text.each_char_with_index do |ch, idx|
           gid = glyph_index(ch.ord)
           pen += kern_px(prev, gid, size) if prev > 0
+          pen += letter_spacing if idx > 0
           g = glyph(gid, size)
           yield pen, g
           pen += g.advance
@@ -81,6 +89,25 @@ module Egui
 
       def glyph(gid : Int32, size : Float64) : Glyph
         @glyphs[{gid, size_key(size)}] ||= build_glyph(gid, size)
+      end
+
+      # Rasterized coverage bitmap as text (debug/tests) — works for
+      # every backend: glyphs land in the shared atlas either way.
+      def debug_bitmap(ch : Char, size : Float64) : Nil
+        g = glyph(glyph_index(ch.ord), size)
+        puts "#{ch.inspect}: w=#{g.w} h=#{g.h} ytop=#{g.ytop} adv=#{g.advance.round(2)}"
+        return if g.w == 0
+        cov = @atlas.debug_region(g)
+        scale = " .:-=+*#%@"
+        g.h.times do |row|
+          line = String.build do |s|
+            g.w.times do |col|
+              a4 = cov[row * g.w + col]?
+              s << scale[{(a4 ? a4.not_nil!.to_i32 * 10 // 256 : 0), 9}.min]
+            end
+          end
+          puts "  #{line}"
+        end
       end
 
       # Rasterize every glyph a text command needs. Called before the render
@@ -105,9 +132,11 @@ module Egui
     end
 
     # Fallback backend: stb_truetype outlines with a Crystal-side light
-    # Y-hint (snap horizontal strokes to pixel rows) before scanline
-    # conversion. See the header comment and docs/ANALYSIS.md; for real
-    # hinting prefer FreetypeFonts.
+    # hint on both axes (snap horizontal strokes to pixel rows, vertical
+    # stems to pixel columns, thickness to whole pixels, grid-fitted
+    # advances) — approximating FreeType's full grid-fitting. See the
+    # header comment and docs/ANALYSIS.md; for real hinting prefer
+    # FreetypeFonts.
     class LightHintedFonts < AtlasFonts
 
       # One straight edge of the flattened outline, in bitmap pixels (y down).
@@ -131,9 +160,16 @@ module Egui
       @info : Void*
       @asc : Float64 = 0.0
       @desc : Float64 = 0.0 # negative, font units
+      @cap_units : Float64 = 0.0    # cap height, font units (blue zones)
+      @xheight_units : Float64 = 0.0
 
       def initialize(@font_data : String)
         super()
+        # The heuristic keeps glyphs at their design positions (no
+        # positional snap — see the X-hinting notes), which next to
+        # FreeType's hinted advances reads tight; open the tracking up
+        # slightly (0.22px tuned by eye against the FreeType tab).
+        @letter_spacing = 0.22
         # stbtt does not copy the buffer: @font_data must outlive the font
         # (instance field, so it does).
         data = @font_data.to_unsafe
@@ -149,7 +185,32 @@ module Egui
           LibEguiCr.font_vmetrics(@info, pointerof(asc), pointerof(desc), pointerof(gap))
           @asc = asc.to_f64
           @desc = desc.to_f64
+          @cap_units, @xheight_units = measure_zone_heights
         end
+      end
+
+      # Cap/x-height in font units — the blue-zone anchors for the
+      # curve-extreme snap (augment_blue_zones). stb exposes no such
+      # metrics, so they are measured from reference glyph outlines.
+      private def measure_zone_heights : {Float64, Float64}
+        cap = outline_ymax('I') || outline_ymax('Н') || 0.0
+        xh = outline_ymax('x') || outline_ymax('о') || 0.0
+        {cap, xh}
+      end
+
+      private def outline_ymax(ch : Char) : Float64?
+        gid = glyph_index(ch.ord)
+        return nil if gid == 0
+        count = uninitialized Int32
+        shape = LibEguiCr.glyph_shape(@info, gid, pointerof(count))
+        return nil if count == 0 || shape.null?
+        ymax = nil
+        count.times do |i|
+          v = shape[i]
+          ymax = v.y.to_f64 if ymax.nil? || v.y > ymax.not_nil!
+        end
+        LibEguiCr.glyph_shape_free(@info, shape)
+        ymax
       end
 
       def loaded? : Bool
@@ -165,6 +226,7 @@ module Egui
       end
 
       def kern_px(prev_gid : Int32, gid : Int32, size : Float64) : Float64
+        # Fractional, like the advances — the draw path snaps positions.
         LibEguiCr.glyph_kern(@info, prev_gid, gid).to_f64 * scale_at(size)
       end
 
@@ -211,9 +273,14 @@ module Egui
         end
       end
 
-      # AtlasFonts: rasterize via stb outline + light Y-hint.
+      # AtlasFonts: rasterize via stb outline + two-axis light hint.
       def build_glyph(gid : Int32, size : Float64) : Glyph
         s = scale_at(size)
+        # Fractional advance: glyph POSITIONS are snapped to whole pixels
+        # at draw time (round(pen + xoff), see paint_text), not advances —
+        # rounding each advance accumulates error down a run
+        # (sum(round) != round(sum)), drifting long words by several
+        # pixels. This matches upstream egui's pixel snapping.
         adv = advance_of(gid).to_f64 * s
 
         count = uninitialized Int32
@@ -225,14 +292,16 @@ module Egui
         LibEguiCr.glyph_shape_free(@info, shape)
         return blank if contours.empty?
 
-        hint = light_hint_map(contours, s)
+        yhint = axis_hint_map(contours, s, axis_y: true)
+        xhint = axis_hint_map(contours, s, axis_y: false)
+        yhint = augment_blue_zones(contours, s, yhint)
 
-        # Bounding box in pixel space (y up), after the hint remap.
+        # Bounding box in pixel space (y up), after the hint remaps.
         x_min = y_min = Float64::MAX
         x_max = y_max = Float64::MIN
         each_outline_point(contours) do |x, y|
-          px = x * s
-          py = remap_y(y * s, hint)
+          px = remap(x * s, xhint)
+          py = remap(y * s, yhint)
           x_min = {x_min, px}.min
           x_max = {x_max, px}.max
           y_min = {y_min, py}.min
@@ -247,7 +316,7 @@ module Egui
         if w > 0 && h > 0 && w <= atlas.size && h <= atlas.size
           edges = [] of Edge
           to_bitmap = ->(x : Float64, y : Float64) {
-            {x * s - left, top - remap_y(y * s, hint)}
+            {remap(x * s, xhint) - left, top - remap(y * s, yhint)}
           }
           contours.each do |contour|
             flatten_contour(contour, to_bitmap, edges)
@@ -320,39 +389,43 @@ module Egui
         return nil if count == 0 || shape.null?
         contours = parse_contours(shape, count)
         LibEguiCr.glyph_shape_free(@info, shape)
-        light_hint_map(contours, scale_at(size))
+        light_hint_map_y(contours, scale_at(size))
       end
 
-      # Rasterized coverage bitmap as text (debug/tests).
-      def debug_bitmap(ch : Char, size : Float64) : Nil
-        g = glyph(glyph_index(ch.ord), size)
-        puts "#{ch.inspect}: w=#{g.w} h=#{g.h} ytop=#{g.ytop} adv=#{g.advance.round(2)}"
-        return if g.w == 0
-        cov = atlas.debug_region(g)
-        scale = " .:-=+*#%@"
-        g.h.times do |row|
-          line = String.build do |s|
-            g.w.times do |col|
-              a4 = cov[row * g.w + col]?
-              s << scale[{(a4 ? a4.not_nil!.to_i32 * 10 // 256 : 0), 9}.min]
-            end
-          end
-          puts "  #{line}"
-        end
+      # The light-hint X anchor map for a glyph (orig px -> hinted px).
+      # Public for tests/debugging of the hinting heuristic.
+      def light_hint_x_for(ch : Char, size : Float64) : Array({Float64, Float64})?
+        return nil unless loaded?
+        gid = glyph_index(ch.ord)
+        count = uninitialized Int32
+        shape = LibEguiCr.glyph_shape(@info, gid, pointerof(count))
+        return nil if count == 0 || shape.null?
+        contours = parse_contours(shape, count)
+        LibEguiCr.glyph_shape_free(@info, shape)
+        axis_hint_map(contours, scale_at(size), axis_y: false)
       end
 
-      # --- light Y-hint --------------------------------------------------------
+      private def light_hint_map_y(contours, scale : Float64)
+        axis_hint_map(contours, scale, axis_y: true)
+      end
+
+      # --- light hint (both axes) ----------------------------------------------
       #
-      # Collects straight horizontal edges wide enough to matter (the
-      # crossbars of e/H/A, stem tops and bottoms), clusters their pixel Ys
-      # and snaps each cluster to a whole row. Returns a monotone
-      # piecewise-linear map (orig py -> hinted py); nil = nothing to snap.
-      private def light_hint_map(contours, scale : Float64) : Array({Float64, Float64})?
+      # Collects straight edges perpendicular to the axis, long enough to
+      # matter (the crossbars of e/H/A for Y; the stems of l/I/n for X),
+      # clusters their positions in pixel space and snaps each cluster to
+      # a whole pixel row (Y) or column (X) — the fallback's
+      # approximation of FreeType's full grid-fitting: vertical stems
+      # come out as crisp pixel columns, not AA-fuzzed bands. Returns a
+      # monotone piecewise-linear map (orig px -> hinted px); nil =
+      # nothing to snap.
+      private def axis_hint_map(contours, scale : Float64,
+                                axis_y : Bool) : Array({Float64, Float64})?
         # Approximate polygon in pixel space (curves through their control
         # points) — used to ray-cast the thickness of strokes whose second
         # edge is a curve, and to probe which side of an edge is interior.
         poly = [] of {Float64, Float64, Float64, Float64}
-        edges = [] of {Float64, Float64} # {y px, x mid} of horizontal edges
+        edges = [] of {Float64, Float64} # {pos px, cross-axis mid} of edges
         contours.each do |sx, sy, cmds|
           fx, fy = sx, sy                 # previous point, font units
           px, py = sx * scale, sy * scale # previous point, pixels
@@ -361,8 +434,12 @@ module Egui
             case cmd.kind
             when VLINE
               poly << {px, py, x, y}
-              if fy == cmd.y && (cmd.x - fx).abs * scale >= 1.5
-                edges << {py, (px + x) / 2.0}
+              if axis_y
+                if fy == cmd.y && (cmd.x - fx).abs * scale >= 1.5
+                  edges << {py, (px + x) / 2.0}
+                end
+              elsif fx == cmd.x && (cmd.y - fy).abs * scale >= 1.5
+                edges << {px, (py + y) / 2.0}
               end
             when VCURVE
               cx, cy = cmd.cx * scale, cmd.cy * scale
@@ -381,30 +458,62 @@ module Egui
         end
         return nil if edges.empty?
 
-        # Nonzero-winding probe (leftward ray).
+        # Stroke-search window, in pixels, scaled with the em size: a
+        # stem is ~0.09*size px and a counter ~0.15*size, so 0.13*size
+        # sits between them at every size. A fixed window (the 1.5/2.5px
+        # this used to be) stops pairing strokes above ~20px — both
+        # edges then snap to integers independently and large-size stems
+        # render as flat, visibly thinner columns ('Е'/'Б' at 24-32px).
+        win = scale * (@asc - @desc) * 0.13
+
+        # Nonzero-winding probe: leftward ray for Y, upward ray for X.
         inside = ->(qx : Float64, qy : Float64) do
           w = 0
-          poly.each do |x0, y0, x1, y1|
-            if (y0 <= qy) != (y1 <= qy)
-              t = (qy - y0) / (y1 - y0)
-              xc = x0 + t * (x1 - x0)
-              w += xc <= qx ? (y1 > y0 ? 1 : -1) : 0
+          if axis_y
+            poly.each do |x0, y0, x1, y1|
+              if (y0 <= qy) != (y1 <= qy)
+                t = (qy - y0) / (y1 - y0)
+                xc = x0 + t * (x1 - x0)
+                w += xc <= qx ? (y1 > y0 ? 1 : -1) : 0
+              end
+            end
+          else
+            poly.each do |x0, y0, x1, y1|
+              if (x0 <= qx) != (x1 <= qx)
+                t = (qx - x0) / (x1 - x0)
+                yc = y0 + t * (y1 - y0)
+                w += yc <= qy ? (x1 > x0 ? 1 : -1) : 0
+              end
             end
           end
           w != 0
         end
 
-        # Nearest outline crossing of a vertical ray from (qx, qy).
-        crossing = ->(qx : Float64, qy : Float64, up : Bool) do
+        # Nearest outline crossing of a ray cast along the axis.
+        crossing = ->(qx : Float64, qy : Float64, pos_dir : Bool) do
           best = nil
-          poly.each do |x0, y0, x1, y1|
-            next if x0 == x1
-            if (x0 <= qx) != (x1 <= qx)
-              yc = y0 + (qx - x0) / (x1 - x0) * (y1 - y0)
-              if up && yc > qy + 0.01
-                best = yc if best.nil? || yc < best.not_nil!
-              elsif !up && yc < qy - 0.01
-                best = yc if best.nil? || yc > best.not_nil!
+          if axis_y
+            poly.each do |x0, y0, x1, y1|
+              next if x0 == x1
+              if (x0 <= qx) != (x1 <= qx)
+                yc = y0 + (qx - x0) / (x1 - x0) * (y1 - y0)
+                if pos_dir && yc > qy + 0.01
+                  best = yc if best.nil? || yc < best.not_nil!
+                elsif !pos_dir && yc < qy - 0.01
+                  best = yc if best.nil? || yc > best.not_nil!
+                end
+              end
+            end
+          else
+            poly.each do |x0, y0, x1, y1|
+              next if y0 == y1
+              if (y0 <= qy) != (y1 <= qy)
+                xc = x0 + (qy - y0) / (y1 - y0) * (x1 - x0)
+                if pos_dir && xc > qx + 0.01
+                  best = xc if best.nil? || xc < best.not_nil!
+                elsif !pos_dir && xc < qx - 0.01
+                  best = xc if best.nil? || xc > best.not_nil!
+                end
               end
             end
           end
@@ -413,72 +522,105 @@ module Egui
 
         edges.sort_by!(&.[0])
         # Cluster edges closer than half a pixel (one stroke drawn as
-        # several segments lands on slightly different Ys).
-        clusters = [] of {Float64, Float64} # {y px, x mid}
-        acc_y = edges[0][0]
-        acc_x = edges[0][1]
+        # several segments lands on slightly different positions).
+        clusters = [] of {Float64, Float64} # {pos px, cross-axis mid}
+        acc_pos = edges[0][0]
+        acc_mid = edges[0][1]
         cnt = 1
         (1...edges.size).each do |i|
           a, b = edges[i - 1][0], edges[i][0]
           if b - a <= 0.5
-            acc_y += edges[i][0]
-            acc_x += edges[i][1]
+            acc_pos += edges[i][0]
+            acc_mid += edges[i][1]
             cnt += 1
           else
-            clusters << {acc_y / cnt, acc_x / cnt}
-            acc_y, acc_x = edges[i][0], edges[i][1]
+            clusters << {acc_pos / cnt, acc_mid / cnt}
+            acc_pos, acc_mid = edges[i][0], edges[i][1]
             cnt = 1
           end
         end
-        clusters << {acc_y / cnt, acc_x / cnt}
+        clusters << {acc_pos / cnt, acc_mid / cnt}
 
-        # Snap. Clusters closer than 1.5px are the two edges of ONE
-        # stroke: quantize it as a unit — lower edge to the nearest row,
-        # thickness to ceil(t) (min 1px). A ~1.1px stroke must not
-        # collapse to a single hairline row while the unhinted vertical
-        # stem next to it keeps ~1.5px of apparent width (the top bar of
-        # Cyrillic 'г' looking emaciated next to its own stem). A stroke
-        # whose second edge is a CURVE (also 'г') is measured by casting a
-        # vertical ray from the straight edge toward the interior, then
+        # Snap. Clusters within `win` are the two edges of ONE stroke:
+        # quantize it as a unit — Y: lower edge to the nearest pixel and
+        # thickness to `round(t)` (crossbars come out as solid pixel
+        # rows); X: keep the position, quantize only the thickness. A
+        # stroke whose second edge is a CURVE is measured by casting an
+        # axis ray from the straight edge toward the interior, then
         # quantized the same way. Hairlines (<0.5px) are left unhinted.
         map = [] of {Float64, Float64}
         i = 0
         while i < clusters.size
-          y, xmid = clusters[i]
+          pos, mid = clusters[i]
           partner = clusters[i + 1]?
-          if partner && partner[0] - y < 1.5
-            lo, hi = y, partner[0]
+          if partner && partner[0] - pos < win
+            lo, hi = pos, partner[0]
             i += 2
           else
-            interior_below = inside.call(xmid, y - 0.05)
-            opposite = crossing.call(xmid, y, !interior_below)
-            if opposite && (opposite - y).abs < 2.5
-              lo, hi = interior_below ? {opposite, y} : {y, opposite}
+            interior_neg = axis_y ? inside.call(mid, pos - 0.05)
+                                  : inside.call(pos - 0.05, mid)
+            opposite = crossing.call(axis_y ? mid : pos,
+                                     axis_y ? pos : mid, !interior_neg)
+            if opposite && (opposite - pos).abs < win
+              lo, hi = interior_neg ? {opposite, pos} : {pos, opposite}
             else
-              map << {y, y.round}
+              # X: an unpaired straight edge gets NO anchor. Snapping it
+              # to a pixel column shifts that part of the glyph by up to
+              # 0.5px while the rest stays put (piecewise-linear map =>
+              # shear): 'a' leaned right, 'b' left, and the pair read as
+              # merged. The pen is fractional anyway, so a glyph-local
+              # integer snap never lands on a screen pixel column.
               i += 1
+              next if !axis_y
+              map << {pos, pos.round}
               next
             end
             i += 1
           end
           t = hi - lo
           if t >= 0.5
-            # Stroke-thickness quantization: plain ceil(), min 1px. (A
-            # bolder rule — anything above 0.75px to 2px — made every
-            # small horizontal stroke look fat; this backend is now only
-            # the fallback anyway, see FreetypeFonts for real hinting.)
-            t_q = {t.ceil.to_i, 1}.max
-            lo_q = lo.round.to_i
-            hi_q = lo_q + t_q
-            map << {lo, lo_q.to_f64}
-            map << {hi, hi_q.to_f64}
+            if axis_y
+              # Y: quantize thickness to whole pixels (min 1), rounded to
+              # the nearest — crossbars come out as solid pixel rows.
+              lo_q = lo.round.to_i
+              t_q = {t.round.to_i, 1}.max
+              map << {lo, lo_q.to_f64}
+              map << {hi, (lo_q + t_q).to_f64}
+            else
+              # X: keep the stem at its natural position (no leading-edge
+              # snap — see the unpaired-edge comment above), set its
+              # thickness to the natural width but never below 1px solid
+              # — FreeType grid-fits sub-pixel stems (0.5px at small
+              # sizes) up to one full column. Plus a light stem darkening
+              # (+0.15px, what FT's autohinter does): DejaVu's bytecode
+              # widens stems when hinting (design 2.05px renders as ~2.3
+              # at 24px), so raw natural width reads thin next to the
+              # FreeType tab.
+              map << {lo, lo}
+              map << {hi, lo + {t, 1.0}.max + 0.15}
+            end
           end
         end
         return nil if map.empty?
 
-        # Leftover interactions (lone edges next to pairs) can break the
-        # monotonicity of the snapped sequence: push apart when the
-        # originals are far enough, otherwise drop the later anchor.
+        fix_monotonic(map)
+
+        # Pin the baseline (Y only): y=0 must map to 0. Without this,
+        # glyphs whose strokes snapped up/down shift as a whole relative
+        # to unhinted neighbours (e.g. 'e' sinking a pixel below 'o' —
+        # every glyph with a crossbar carries its snap delta into the
+        # baseline). X has no natural anchor.
+        if axis_y
+          map << {0.0, 0.0}
+          map.sort_by!(&.[0])
+        end
+        map
+      end
+
+      # Keep the anchor sequence strictly increasing in snapped space:
+      # push apart when the originals allow it, otherwise drop the later
+      # anchor.
+      private def fix_monotonic(map : Array({Float64, Float64})) : Nil
         map.sort_by!(&.[0])
         k = 1
         while k < map.size
@@ -495,39 +637,79 @@ module Egui
             k += 1
           end
         end
+      end
 
-        # Pin the baseline: y=0 must map to 0. Without this, glyphs whose
-        # strokes snapped up/down shift as a whole relative to unhinted
-        # neighbours (e.g. 'e' sinking a pixel below 'o' — every glyph
-        # with a crossbar carries its snap delta into the baseline).
-        map << {0.0, 0.0}
-        map.sort_by!(&.[0])
+      # Blue-zone snap for the Y extremes (what FreeType's blue zones do
+      # with overshoot): the outline's topmost/bottommost points snap to
+      # the nearest zone — baseline, x-height, cap height, measured from
+      # the font itself — when within 0.7px, otherwise to the nearest
+      # pixel row with a 0.25px inward bias. Without this, round glyphs
+      # ('0'-'9', 'о', 'е') keep their ±0.5px overshoot and render 1-2px
+      # taller than FreeType, with faint rows above/below the body.
+      private def augment_blue_zones(contours, scale : Float64, ymap : Array({Float64,
+                                                                                Float64})?) : Array({Float64, Float64})?
+        y_min = y_max = nil
+        each_outline_point(contours) do |_x, y|
+          py = y * scale
+          y_min = py if y_min.nil? || py < y_min.not_nil!
+          y_max = py if y_max.nil? || py > y_max.not_nil!
+        end
+        return ymap if y_min.nil?
+        y_min = y_min.not_nil!
+        y_max = y_max.not_nil!
+        map = ymap ? ymap.dup : [] of {Float64, Float64}
+        zones = [0.0]
+        zones << (@xheight_units * scale).round if @xheight_units > 0
+        zones << (@cap_units * scale).round if @cap_units > 0
+        # Skip only when an existing anchor already sits AT or BEYOND the
+        # extreme (it governs that end); an anchor on this side but
+        # closer to the baseline must not leave the overshoot unhinted
+        # ('е' keeping a faint row below the baseline).
+        unless map.any? { |o, _| o >= y_max - 0.01 && (o - y_max).abs < 0.75 }
+          map << {y_max, zone_snap(y_max, zones) || (y_max - 0.25).round}
+        end
+        unless map.any? { |o, _| o <= y_min + 0.01 && (o - y_min).abs < 0.75 }
+          map << {y_min, zone_snap(y_min, zones) || (y_min + 0.25).round}
+        end
+        return ymap if map.size == (ymap ? ymap.not_nil!.size : 0)
+        map << {0.0, 0.0} # keep the baseline pinned
+        fix_monotonic(map)
         map
       end
 
-      # Piecewise-linear remap through the anchors. Outside the outermost
-      # anchors the mapping is the identity — the baseline anchor at 0 and
-      # the untouched cap/overshoot region keep every glyph on the same
-      # baseline; only the distance between snapped strokes flexes.
-      private def remap_y(y : Float64, map : Array({Float64, Float64})?) : Float64
-        return y unless map
+      private def zone_snap(v : Float64, zones : Array(Float64), tol = 0.7) : Float64?
+        best = nil
+        zones.each do |z|
+          d = (v - z).abs
+          best = z if d <= tol && (best.nil? || d < (v - best.not_nil!).abs)
+        end
+        best
+      end
+
+      # Piecewise-linear remap through the anchors (axis-agnostic).
+      # Outside the outermost anchors the mapping is the identity — the
+      # baseline anchor at 0 (Y) and the untouched overshoot regions keep
+      # every glyph on the same baseline; only the distance between
+      # snapped strokes flexes.
+      private def remap(v : Float64, map : Array({Float64, Float64})?) : Float64
+        return v unless map
         # Strict inequalities: the outermost anchors themselves must hit
-        # the interpolation path (y == first[0] / y == last[0]), not the
+        # the interpolation path (v == first[0] / v == last[0]), not the
         # identity branches — otherwise the first/last snapped edge never
         # moves (the top bar of 'г' staying unhinted while its underside
         # snapped, collapsing the bar).
         first = map[0]
-        return y if y < first[0]
+        return v if v < first[0]
         last = map[-1]
-        return y if y > last[0]
+        return v if v > last[0]
         (1...map.size).each do |i|
           a, b = map[i - 1], map[i]
-          if y >= a[0] && y <= b[0]
-            t = (y - a[0]) / {b[0] - a[0], 1e-9}.max
+          if v >= a[0] && v <= b[0]
+            t = (v - a[0]) / {b[0] - a[0], 1e-9}.max
             return a[1] + t * (b[1] - a[1])
           end
         end
-        y
+        v
       end
 
       # --- flatten + rasterize --------------------------------------------------
@@ -710,13 +892,15 @@ module Egui
         @dirty = true
       end
 
-      # Create/update the GPU texture. Outside of a render pass only.
+      # Create/update this atlas's GPU texture. Outside of a render
+      # pass only. The shim keeps a per-instance registry keyed by the
+      # view id, so several backends' atlases can coexist.
       def flush : Nil
         return if @view_id != 0 && !@dirty
         if @view_id == 0
           @view_id = LibEguiCr.atlas_create(@size, @size, @rgba)
         else
-          LibEguiCr.atlas_update(@size, @size, @rgba)
+          LibEguiCr.atlas_update(@view_id, @size, @size, @rgba)
         end
         @dirty = false
       end

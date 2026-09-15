@@ -18,9 +18,14 @@ module Egui
       sp = style.spacing
       thickness = sp.interact_size.y
 
-      width = {sp.slider_width,
-               ui.available_width - label_width(ui, style)}.max
-      rect = ui.allocate_at_least(Vec2.new(width, thickness))
+      # The label is part of the widget: allocate rail + label together,
+      # so min_rect (and any auto-sizing parent) stays within the
+      # available width. Painting the label OUTSIDE the allocated rect
+      # made every containing window grow a little each frame.
+      label_w = label_width(ui, style)
+      width = {sp.slider_width, ui.available_width - label_w}.max
+      outer = ui.allocate_at_least(Vec2.new(width + label_w, thickness))
+      rect = Rect.from_min_size(outer.min, Vec2.new(width, thickness))
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
 
