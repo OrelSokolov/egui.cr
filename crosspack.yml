@@ -32,6 +32,9 @@ build:
 
     c-toolchain:
       hosts:
+        windows:               # cl.exe via vcvars64 — see Rakefile#msvc
+          verify: cmd /c ""C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | findstr /r .*"
+          install: winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
         debian:
           verify: cc --version
           install: sudo apt-get install -y build-essential
@@ -46,6 +49,8 @@ build:
 
     gl-dev:
       hosts:
+        windows:               # opengl32.lib ships with the Windows SDK (c-toolchain)
+          verify: cmd /c exit /b 0
         debian:
           verify: pkg-config --exists gl
           install: sudo apt-get install -y libgl1-mesa-dev
@@ -60,6 +65,8 @@ build:
 
     x11-dev:
       hosts:
+        windows:               # no X11 on Windows — sokol_app uses Win32/WGL
+          verify: cmd /c exit /b 0
         debian:
           verify: pkg-config --exists x11
           install: sudo apt-get install -y libx11-dev
@@ -74,6 +81,8 @@ build:
 
     xcursor-dev:
       hosts:
+        windows:               # cursors come from Win32 IDC_* stock cursors
+          verify: cmd /c exit /b 0
         debian:
           verify: pkg-config --exists xcursor
           install: sudo apt-get install -y libxcursor-dev
@@ -88,6 +97,8 @@ build:
 
     xi-dev:
       hosts:
+        windows:               # raw Win32 input via sokol_app
+          verify: cmd /c exit /b 0
         debian:
           verify: pkg-config --exists xi
           install: sudo apt-get install -y libxi-dev
@@ -102,6 +113,8 @@ build:
 
     freetype-dev:           # primary font backend (backend/freetype.cr)
       hosts:
+        windows:               # FreeType is compile-time off on win32 (stb fallback)
+          verify: cmd /c exit /b 0
         debian:
           verify: pkg-config --exists freetype2
           install: sudo apt-get install -y libfreetype-dev
@@ -126,6 +139,20 @@ build:
         include: ["*"]
         to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
 
+    # windows-11.0 is crosspack's fixed Windows host target (version is
+    # nominal — every mingw/mswin Ruby reports windows-11.0).
+    - id: windows
+      build: windows/amd64
+      steps:
+        - crystal spec          # specs must pass — same gate as CI
+        - rake build:native     # vendor C (cl.exe) -> lib/egui_cr_sokol.lib
+        - rake build:examples   # bin/hello.exe, bin/widgets_gallery.exe
+      artifacts:
+        from: bin
+        include: ["*.exe", "*.dll"]   # Crystal drops gc.dll/iconv-2.dll next to exes
+        to: [windows-11.0]
+        mode: copy              # symlinks need dev-mode/admin on Windows
+
 # Packing: egui-cr ships a demo application (widgets_gallery), so unlike
 # a pure library shard it does carry a package: section. `crosspack run`
 # builds for this host and launches the first executable from builds/.
@@ -143,7 +170,12 @@ package:
   sources: builds
   prefix: usr/local
   payload:
-    - widgets_gallery
+    # Windows binaries carry .exe — the common key stays extension-less
+    # and resolves to the real file name per target (executables and
+    # links below reference the key, not the file).
+    widgets_gallery:
+      windows: widgets_gallery.exe
+      "*": widgets_gallery
   executables:
     - widgets_gallery
   links:

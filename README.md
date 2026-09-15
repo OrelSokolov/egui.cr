@@ -46,6 +46,10 @@ rake build:examples   &:: vendor C (cl.exe) + crystal build -> bin\
 bin\hello
 ```
 
+`crosspack deps` / `crosspack build` also work on Windows (host
+target `windows-11.0`; the matrix entry lands exes + DLLs into
+`builds\windows\11.0\x86_64`).
+
 Differences from the Linux build:
 
 - the native library is `lib\egui_cr_sokol.lib` (MSVC resolves
