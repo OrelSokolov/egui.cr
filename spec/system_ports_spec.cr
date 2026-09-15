@@ -75,12 +75,19 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::Screen.dpi_scale.should eq(1.0)
   end
 
-  it "UserDirs resolves XDG paths with spec defaults" do
+  it "UserDirs resolves platform base dirs with spec defaults" do
     home = Egui::SystemPorts::UserDirs.home
     home.should_not be_empty
-    Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
-    Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
-    Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
+    {% if flag?(:darwin) %}
+      Egui::SystemPorts::UserDirs.config.should eq(File.join(home, "Library/Application Support"))
+      Egui::SystemPorts::UserDirs.data.should eq(File.join(home, "Library/Application Support"))
+      Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, "Library/Caches"))
+      Egui::SystemPorts::UserDirs.documents.should eq(File.join(home, "Documents"))
+    {% else %}
+      Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
+      Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
+      Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
+    {% end %}
   end
 
   it "Fonts lists per-platform candidates, best-first" do

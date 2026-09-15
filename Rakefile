@@ -1,6 +1,7 @@
 require "fileutils"
 
 WINDOWS    = Gem.win_platform?
+DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
@@ -36,8 +37,11 @@ task "build:native" do
       "lib\\sokol_shim.obj lib\\stb_truetype_shim.obj"
     )
   else
+    # macOS: sokol_app's backend is Objective-C (Cocoa/NSOpenGL), so the
+    # shim must be compiled as ObjC even though it is a .c file.
+    shim_lang = DARWIN ? "-x objective-c" : ""
     sh <<-SH
-      cc -O2 -c backend/sokol_shim.c \
+      cc -O2 #{shim_lang} -c backend/sokol_shim.c \
         -Ivendor/sokol \
         -Ivendor/fontstash \
         -Ivendor \
@@ -58,6 +62,14 @@ task "build:examples" => ["build:native"] do
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.
   lib_flag = WINDOWS ? "/LIBPATH:#{libdir}" : "-L#{libdir}"
+  if DARWIN
+    # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
+    # brew prefix (-L only — @[Link("freetype")] already adds -lfreetype).
+    ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
+    ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
+    lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
+               "-framework OpenGL -framework QuartzCore"
+  end
   EXAMPLES.each do |name|
     sh "crystal build examples/#{name}.cr -o bin/#{name} --link-flags \"#{lib_flag}\""
   end

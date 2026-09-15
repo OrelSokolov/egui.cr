@@ -61,6 +61,11 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .width = width,
         .height = height,
         .window_title = title,
+        // Full-resolution framebuffer on HighDPI/retina displays: without
+        // this the compositor upscales a 1x framebuffer (~2x on retina) and
+        // every rasterized glyph edge goes soft — text quality is dominated
+        // by this, not by the rasterizer.
+        .high_dpi = true,
         .sample_count = 4, // MSAA: smooth circle/arc/line edges
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .logger.func = slog_func,
@@ -266,7 +271,9 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
 //     themes use the CSS keywords — with a core cursor-font fallback
 //     table for names the theme is missing.
 //   Win32: IDC_* stock cursors (LoadCursor/SetCursor).
-//   macOS: not wired yet (needs NSCursor through the ObjC runtime).
+//   macOS: NSCursor class methods (the shim is compiled as ObjC there);
+//     diagonal resize cursors exist only as private NSCursor methods,
+//     resolved at runtime with a public fallback.
 
 #if defined(_SAPP_LINUX) // X11 backend (this sokol version gates it with _SAPP_LINUX, not _SAPP_X11)
 
@@ -375,10 +382,95 @@ void egui_cr_set_cursor(const char* css_name) {
     }
 }
 
+#elif defined(__APPLE__)
+
+// macOS: NSCursor mapping. The frame callback runs on the main thread (as
+// NSCursor requires). CSS `none` hides the cursor until the mouse moves,
+// matching how egui hides it during drags.
+
+static char g_mac_cursor[32];
+
+// Diagonal resize cursors are private NSCursor class methods (winit uses
+// them too) — look them up at runtime, fall back when absent.
+static NSCursor* sh_mac_private_cursor(const char* sel_name) {
+    SEL sel = sel_getUid(sel_name);
+    if ([NSCursor respondsToSelector:sel])
+        return [NSCursor performSelector:sel];
+    return nil;
+}
+
+static NSCursor* sh_mac_private_or(const char* sel_name, NSCursor* fallback) {
+    NSCursor* c = sh_mac_private_cursor(sel_name);
+    return c ? c : fallback;
+}
+
+static NSCursor* sh_mac_cursor(const char* css) {
+    if (strcmp(css, "pointer") == 0)       return [NSCursor pointingHandCursor];
+    if (strcmp(css, "grab") == 0)          return [NSCursor openHandCursor];
+    if (strcmp(css, "grabbing") == 0 ||    // closed hand doubles as move/
+        strcmp(css, "move") == 0 ||        // all-scroll: macOS has no
+        strcmp(css, "all-scroll") == 0)    // dedicated four-way cursor
+        return [NSCursor closedHandCursor];
+    if (strcmp(css, "text") == 0)          return [NSCursor IBeamCursor];
+    if (strcmp(css, "vertical-text") == 0) { // not in the public headers
+        NSCursor* c = sh_mac_private_cursor("IBeamCursorForVerticalLayoutCursor");
+        return c ? c : [NSCursor IBeamCursor];
+    }
+    if (strcmp(css, "crosshair") == 0 ||
+        strcmp(css, "cell") == 0 ||
+        strcmp(css, "zoom-in") == 0 ||     // macOS has no zoom cursors
+        strcmp(css, "zoom-out") == 0)
+        return [NSCursor crosshairCursor];
+    if (strcmp(css, "not-allowed") == 0 ||
+        strcmp(css, "no-drop") == 0)       return [NSCursor operationNotAllowedCursor];
+    if (strcmp(css, "progress") == 0 ||    // macOS has no watch cursor —
+        strcmp(css, "wait") == 0) {        // busy spinner (private header),
+        NSCursor* c = sh_mac_private_cursor("busyButClickableCursor"); // closest
+        return c ? c : [NSCursor arrowCursor];
+    }
+    if (strcmp(css, "alias") == 0)         return [NSCursor dragLinkCursor];
+    if (strcmp(css, "copy") == 0)          return [NSCursor dragCopyCursor];
+    if (strcmp(css, "ew-resize") == 0 ||
+        strcmp(css, "col-resize") == 0)    return [NSCursor resizeLeftRightCursor];
+    if (strcmp(css, "ns-resize") == 0 ||
+        strcmp(css, "row-resize") == 0)    return [NSCursor resizeUpDownCursor];
+    if (strcmp(css, "e-resize") == 0)      return [NSCursor resizeRightCursor];
+    if (strcmp(css, "w-resize") == 0)      return [NSCursor resizeLeftCursor];
+    if (strcmp(css, "n-resize") == 0)      return [NSCursor resizeUpCursor];
+    if (strcmp(css, "s-resize") == 0)      return [NSCursor resizeDownCursor];
+    if (strcmp(css, "nesw-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthEastSouthWestCursor",
+                                 [NSCursor resizeUpDownCursor]);
+    if (strcmp(css, "nwse-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthWestSouthEastCursor",
+                                 [NSCursor resizeUpDownCursor]);
+    if (strcmp(css, "ne-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthEastCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "sw-resize") == 0)
+        return sh_mac_private_or("_windowResizeSouthWestCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "nw-resize") == 0)
+        return sh_mac_private_or("_windowResizeNorthWestCursor", [NSCursor arrowCursor]);
+    if (strcmp(css, "se-resize") == 0)
+        return sh_mac_private_or("_windowResizeSouthEastCursor", [NSCursor arrowCursor]);
+    // default / context-menu / help and unknown names: arrow (macOS has
+    // no help or context-menu cursor)
+    return [NSCursor arrowCursor];
+}
+
+void egui_cr_set_cursor(const char* css_name) {
+    if (strlen(css_name) >= sizeof(g_mac_cursor)) return;
+    if (strcmp(g_mac_cursor, css_name) == 0) return; // dedupe per-frame calls
+    strcpy(g_mac_cursor, css_name);
+    if (strcmp(css_name, "none") == 0) {
+        [NSCursor setHiddenUntilMouseMoves:YES];
+        return;
+    }
+    [sh_mac_cursor(css_name) set];
+}
+
 #else
 
-// macOS / other backends: cursor switching not wired (macOS needs
-// NSCursor via the ObjC runtime). The call is a no-op.
+// Other backends: cursor switching not wired. The call is a no-op.
 void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
 
 #endif
@@ -392,6 +484,9 @@ void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
 //
 //   X11: core protocol calls + _NET_WM_STATE client messages (EWMH).
 //   Win32: SetWindowPos / ShowWindow / GetSystemMetrics.
+//   macOS: NSWindow/NSScreen through AppKit (the shim compiles as
+//   ObjC there; the calls arrive on the main thread from the frame
+//   callback, as AppKit requires).
 
 #if defined(_SAPP_LINUX)
 
@@ -485,10 +580,66 @@ void egui_cr_screen_size(int* w, int* h) {
     *h = GetSystemMetrics(SM_CYSCREEN);
 }
 
+#elif defined(__APPLE__)
+
+// macOS: the sokol_app NSWindow, driven through AppKit. Zoom stands in
+// for maximize (it toggles between the user frame and a frame filling
+// the screen's visibleFrame), which matches the maximize/restore pair
+// the X11 backend expresses with _NET_WM_STATE.
+
+static NSWindow* sh_mac_window(void) {
+    return (NSWindow*)sapp_macos_get_window();
+}
+
+void egui_cr_set_window_size(int w, int h) {
+    NSWindow* win = sh_mac_window();
+    if (!win) return;
+    NSRect f = [win frame];
+    f.origin.y += f.size.height - (CGFloat)h; // keep the top-left corner
+    f.size.width = (CGFloat)w;
+    f.size.height = (CGFloat)h;
+    [win setFrame:f display:YES animate:NO];
+}
+
+void egui_cr_set_window_position(int x, int y) {
+    NSWindow* win = sh_mac_window();
+    if (!win) return;
+    NSScreen* scr = [win screen];
+    if (!scr) scr = [NSScreen mainScreen];
+    if (!scr) return;
+    NSRect vf = [scr visibleFrame];
+    NSPoint tl; // y is bottom-up in AppKit; the port speaks top-left
+    tl.x = vf.origin.x + (CGFloat)x;
+    tl.y = vf.origin.y + vf.size.height - (CGFloat)y;
+    [win setFrameTopLeftPoint:tl];
+}
+
+void egui_cr_window_minimize(void) {
+    NSWindow* win = sh_mac_window();
+    if (win) [win miniaturize:nil];
+}
+
+void egui_cr_window_maximize(void) {
+    NSWindow* win = sh_mac_window();
+    if (win && ![win isZoomed]) [win zoom:nil];
+}
+
+void egui_cr_window_restore(void) {
+    NSWindow* win = sh_mac_window();
+    if (win && [win isZoomed]) [win zoom:nil];
+}
+
+void egui_cr_screen_size(int* w, int* h) {
+    NSScreen* scr = [NSScreen mainScreen];
+    if (!scr) { *w = 0; *h = 0; return; }
+    NSRect f = [scr frame]; // points, like sokol on macOS (high_dpi)
+    *w = (int)f.size.width;
+    *h = (int)f.size.height;
+}
+
 #else
 
-// macOS / other backends: not wired yet (needs AppKit through the ObjC
-// runtime). The calls are no-ops.
+// Other backends: not wired yet. The calls are no-ops.
 void egui_cr_set_window_size(int w, int h) { (void)w; (void)h; }
 void egui_cr_set_window_position(int x, int y) { (void)x; (void)y; }
 void egui_cr_window_minimize(void) {}

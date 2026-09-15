@@ -61,6 +61,24 @@ Differences from the Linux build:
 - system ports that shell out to `zenity`/`xdg-open` (dialogs, URL
   opening, user dirs) return nil/false on Windows — not wired yet
 
+### macOS
+
+The same commands work on macOS (host target `macos`; artifacts land in
+`builds/macos/aarch64` on Apple Silicon). Requirements:
+
+- [Crystal](https://crystal-lang.org/install/) for macOS (`brew install crystal`)
+- Xcode Command Line Tools (`xcode-select --install`)
+- Homebrew FreeType + pkg-config (`brew install freetype pkg-config`) —
+  X11/xcursor are not needed, sokol_app uses Cocoa there
+
+Differences from the Linux build:
+
+- the vendor C shim is compiled as Objective-C (`cc -x objective-c`) and
+  linked against the Cocoa/OpenGL/QuartzCore frameworks
+- system ports shell out to `osascript`/`open` (dialogs, message
+  boxes, notifications, URL opening, user dirs) and manage the window
+  through AppKit (NSWindow/NSScreen from the ObjC shim)
+
 ## Status
 
 Slice 1: the core frame loop (RawInput → begin_frame → app update →
