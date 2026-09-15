@@ -16,6 +16,11 @@ Conventions for every phase:
   (`ctx.memory` / `frame_cache`), never in widget instances.
 - Style additions go into `src/egui/style.cr` as plain properties
   (the current `Spacing`/`Visuals` classes grow in place).
+- System/OS ports (quit, native dialogs, clipboard, …) live in
+  `src/egui/system_ports/`, one file per port under `Egui::SystemPorts`;
+  platform-heavy calls stay behind an installable implementation the
+  backend wires (see `quit.cr`), stdlib-backed ones may run directly
+  (see `dialog.cr`).
 - Every phase adds specs to `spec/core_spec.cr` (layout math and interaction
   via synthetic `RawInput`s) and extends `examples/widgets_gallery.cr`
   (created in phase 1) for manual visual checks.

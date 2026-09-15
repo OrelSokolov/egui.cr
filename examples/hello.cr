@@ -15,12 +15,24 @@ require "../src/egui/backend/sokol"
 
 class HelloApp < Egui::App
   @count = 0
+  @opened : String? = nil
 
   def update(ctx : Egui::Context) : Nil
     # Movable window: drag the title bar (window position is system
     # state — Areas), the body content sits below it.
     ctx.window("Hello egui-cr", Egui::Pos2.new(40.0, 40.0), width: 360.0) do |ui|
       ui.heading("Hello World!")
+
+      # System ports demo: native dialogs + cross-platform exit.
+      if ui.button("Open file…").clicked?
+        @opened = Egui::SystemPorts::OpenFileDialog.show(
+          filters: ["*.png", "*.jpg"])
+      end
+      ui.label("opened: #{@opened || "—"}")
+
+      if ui.button("Quit").clicked?
+        Egui::SystemPorts::Quit.quit!
+      end
 
       # CollapsingHeader: open/closed flag is system state (IdTypeMap),
       # not app state — try collapsing and watch it survive.

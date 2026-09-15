@@ -62,6 +62,7 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .height = height,
         .window_title = title,
         .sample_count = 4, // MSAA: smooth circle/arc/line edges
+        .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .logger.func = slog_func,
     };
     sapp_run(&desc);
@@ -276,5 +277,120 @@ void egui_cr_set_cursor(const char* css_name) {
 // macOS / other backends: cursor switching not wired (macOS needs
 // NSCursor via the ObjC runtime). The call is a no-op.
 void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
+
+#endif
+
+// --- window management -------------------------------------------------------
+//
+// System ports that sokol_app does not expose itself: resize, move,
+// minimize/maximize/restore and the primary screen size. Title, fullscreen
+// and clipboard go straight to sokol_app from Crystal (its exported
+// functions are linked from this static lib).
+//
+//   X11: core protocol calls + _NET_WM_STATE client messages (EWMH).
+//   Win32: SetWindowPos / ShowWindow / GetSystemMetrics.
+
+#if defined(_SAPP_LINUX)
+
+static void sh_net_wm_state(Display* dpy, Window win, long action,
+                            const char* state_a, const char* state_b) {
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = win;
+    ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_STATE", False);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = action; // 0 = unset, 1 = set, 2 = toggle
+    ev.xclient.data.l[1] = (long)XInternAtom(dpy, state_a, False);
+    ev.xclient.data.l[2] = state_b ? (long)XInternAtom(dpy, state_b, False) : 0;
+    XSendEvent(dpy, RootWindow(dpy, DefaultScreen(dpy)), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+}
+
+void egui_cr_set_window_size(int w, int h) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    XResizeWindow(dpy, win, w, h);
+    XFlush(dpy);
+}
+
+void egui_cr_set_window_position(int x, int y) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    XMoveWindow(dpy, win, x, y);
+    XFlush(dpy);
+}
+
+void egui_cr_window_minimize(void) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    XIconifyWindow(dpy, win, DefaultScreen(dpy));
+    XFlush(dpy);
+}
+
+void egui_cr_window_maximize(void) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    sh_net_wm_state(dpy, win, 1, "_NET_WM_STATE_MAXIMIZED_VERT",
+                    "_NET_WM_STATE_MAXIMIZED_HORZ");
+}
+
+void egui_cr_window_restore(void) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    sh_net_wm_state(dpy, win, 0, "_NET_WM_STATE_MAXIMIZED_VERT",
+                    "_NET_WM_STATE_MAXIMIZED_HORZ");
+}
+
+void egui_cr_screen_size(int* w, int* h) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    if (!dpy) { *w = 0; *h = 0; return; }
+    *w = XDisplayWidth(dpy, DefaultScreen(dpy));
+    *h = XDisplayHeight(dpy, DefaultScreen(dpy));
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+void egui_cr_set_window_size(int w, int h) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    SetWindowPos(hwnd, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
+}
+
+void egui_cr_set_window_position(int x, int y) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+}
+
+void egui_cr_window_minimize(void) { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MINIMIZE); }
+void egui_cr_window_maximize(void) { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE); }
+void egui_cr_window_restore(void)  { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_RESTORE); }
+
+void egui_cr_screen_size(int* w, int* h) {
+    *w = GetSystemMetrics(SM_CXSCREEN);
+    *h = GetSystemMetrics(SM_CYSCREEN);
+}
+
+#else
+
+// macOS / other backends: not wired yet (needs AppKit through the ObjC
+// runtime). The calls are no-ops.
+void egui_cr_set_window_size(int w, int h) { (void)w; (void)h; }
+void egui_cr_set_window_position(int x, int y) { (void)x; (void)y; }
+void egui_cr_window_minimize(void) {}
+void egui_cr_window_maximize(void) {}
+void egui_cr_window_restore(void) {}
+void egui_cr_screen_size(int* w, int* h) { *w = 0; *h = 0; }
 
 #endif

@@ -34,6 +34,19 @@ lib LibEguiCr
   fun sapp_height : Int32
   fun sapp_dpi_scale : Float32
   fun sapp_quit
+  fun sapp_is_fullscreen : Bool
+  fun sapp_toggle_fullscreen
+  fun sapp_set_window_title = sapp_set_window_title(title : UInt8*)
+  fun sapp_set_clipboard_string = sapp_set_clipboard_string(str : UInt8*)
+  fun sapp_get_clipboard_string : UInt8*
+
+  # window management (shim: X11 / Win32)
+  fun set_window_size = egui_cr_set_window_size(w : Int32, h : Int32)
+  fun set_window_position = egui_cr_set_window_position(x : Int32, y : Int32)
+  fun window_minimize = egui_cr_window_minimize
+  fun window_maximize = egui_cr_window_maximize
+  fun window_restore = egui_cr_window_restore
+  fun screen_size = egui_cr_screen_size(w : Int32*, h : Int32*)
 
   # sokol_gl
   fun sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
@@ -83,6 +96,79 @@ module Egui
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
 
+      # System port Quit → sokol_app `sapp_quit`: closes the window on
+      # every backend platform and leaves the run loop.
+      class QuitPort < Egui::SystemPorts::Quit::Implementation
+        def quit : Nil
+          LibEguiCr.sapp_quit
+        end
+      end
+
+      # System port Window → sokol_app (title, fullscreen) + shim
+      # (resize/move/minimize/maximize: X11 core + _NET_WM_STATE, Win32).
+      class WindowPort < Egui::SystemPorts::Window::Implementation
+        def set_title(title : String) : Nil
+          title.to_unsafe # ensure a contiguous buffer
+          LibEguiCr.sapp_set_window_title(title.to_unsafe)
+        end
+
+        def set_size(width : Int32, height : Int32) : Nil
+          LibEguiCr.set_window_size(width, height)
+        end
+
+        def set_position(x : Int32, y : Int32) : Nil
+          LibEguiCr.set_window_position(x, y)
+        end
+
+        def minimize : Nil
+          LibEguiCr.window_minimize
+        end
+
+        def maximize : Nil
+          LibEguiCr.window_maximize
+        end
+
+        def restore : Nil
+          LibEguiCr.window_restore
+        end
+
+        def toggle_fullscreen : Nil
+          LibEguiCr.sapp_toggle_fullscreen
+        end
+
+        def fullscreen? : Bool
+          LibEguiCr.sapp_is_fullscreen
+        end
+      end
+
+      # System port Screen → sokol dpi scale + primary monitor size (shim).
+      class ScreenPort < Egui::SystemPorts::Screen::Implementation
+        def size : Egui::Vec2?
+          w = uninitialized Int32
+          h = uninitialized Int32
+          LibEguiCr.screen_size(pointerof(w), pointerof(h))
+          return nil if w <= 0 || h <= 0
+          Egui::Vec2.new(w.to_f64, h.to_f64)
+        end
+
+        def dpi_scale : Float64
+          LibEguiCr.sapp_dpi_scale.to_f64
+        end
+      end
+
+      # System port Clipboard → sokol_app set/get clipboard string.
+      class ClipboardPort < Egui::SystemPorts::Clipboard::Implementation
+        def set(text : String) : Nil
+          text.to_unsafe # ensure a contiguous buffer
+          LibEguiCr.sapp_set_clipboard_string(text.to_unsafe)
+        end
+
+        def get : String?
+          ptr = LibEguiCr.sapp_get_clipboard_string
+          ptr ? String.new(ptr) : nil
+        end
+      end
+
       # sapp_event_type values (sokol_app.h)
       KEY_DOWN    = 1
       KEY_UP      = 2
@@ -103,6 +189,10 @@ module Egui
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600) : Nil
         @@app = app
+        Egui::SystemPorts::Quit.use(QuitPort.new)
+        Egui::SystemPorts::Window.use(WindowPort.new)
+        Egui::SystemPorts::Screen.use(ScreenPort.new)
+        Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
 
         init = ->{ on_init }
         frame = ->{ on_frame }
