@@ -61,7 +61,10 @@ module Egui
       end
 
       if ctx.popup_open?(@popup_id)
-        ctx.popup(@popup_id, rect.min, width: 7 * CELL + 24.0) do |popup|
+        # Anchor below the button like combo boxes/menus (upstream): the
+        # popup must not cover its own toggle.
+        ctx.popup(@popup_id, Pos2.new(rect.left, rect.bottom),
+          width: 7 * CELL + 24.0) do |popup|
           calendar(popup, on_change)
         end
       end

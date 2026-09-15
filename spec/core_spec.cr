@@ -432,6 +432,52 @@ describe "system state" do
       .map(&.text).should_not contain("POPUP")
   end
 
+  it "closes a popup on a click on empty space (no widget hit)" do
+    ctx = Egui::Context.new
+    empty = Egui::Pos2.new(500.0, 400.0) # no widget anywhere near
+
+    # open → rect registered
+    ctx.open_popup("menu")
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+    ctx.popup_open?("menu").should be_true
+
+    # click the void: press + release far from any widget
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(empty),
+      Egui::Event.pointer_pressed(empty)], time: 0.032)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(empty)], time: 0.048)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+
+    ctx.popup_open?("menu").should be_false
+  end
+
+  it "does not close a popup when the click lands inside its padding" do
+    ctx = Egui::Context.new
+
+    # open → rect registered
+    ctx.open_popup("menu")
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+
+    # click the frame border area (inside the popup rect, no widget there)
+    inside = Egui::Pos2.new(101.0, 101.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(inside),
+      Egui::Event.pointer_pressed(inside)], time: 0.032)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(inside)], time: 0.048)
+    ctx.popup("menu", Egui::Pos2.new(100.0, 100.0)) { |ui| ui.label("POPUP") }
+    ctx.end_frame
+
+    ctx.popup_open?("menu").should be_true
+    ctx.close_popup("menu")
+  end
+
   it "popup layer occludes the hover of widgets underneath" do
     ctx = Egui::Context.new
     ctx.open_popup("menu")
@@ -852,6 +898,40 @@ describe "phase 2 widgets" do
 
     clicked_item.should be_true
     ctx.memory.open_popups.should be_empty
+  end
+
+  it "menu dropdown closes on a click on empty space and resets menu state" do
+    ctx = Egui::Context.new
+
+    run_frame = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.menu_bar do |bar|
+        bar.menu_button("File") do |menu|
+          menu.menu_item("Open") { }
+        end
+      end
+      ctx.central_panel { |ui| ui.label("void") }
+      ctx.end_frame
+    end
+
+    # frame 1: layout; frame 2: click File to open the dropdown
+    run_frame.call([] of Egui::Event, 0.016)
+    file_center = ctx.memory.widget_rects.values.first.center
+    run_frame.call([Egui::Event.pointer_moved(file_center),
+      Egui::Event.pointer_pressed(file_center),
+      Egui::Event.pointer_released(file_center)], 0.032)
+
+    ctx.memory.open_popups.should_not be_empty
+    ctx.memory.menu_open.should_not be_nil
+
+    # click empty central-panel space far from any widget
+    empty = Egui::Pos2.new(400.0, 300.0)
+    run_frame.call([Egui::Event.pointer_moved(empty),
+      Egui::Event.pointer_pressed(empty)], 0.048)
+    run_frame.call([Egui::Event.pointer_released(empty)], 0.064)
+
+    ctx.memory.open_popups.should be_empty
+    ctx.memory.menu_open.should be_nil
   end
 
   it "menu item click wins over a background widget under the popup" do
@@ -2710,6 +2790,56 @@ describe "DatePicker" do
     ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| picked = t } }
     ctx.end_frame
     picked.not_nil!.day.should eq(20)
+    ctx.popup_open?("date_picker/d").should be_false
+  end
+
+  it "closes the calendar on a click on empty space outside it" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    # open the popup
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+
+    # click far away from the window — nothing interactive there
+    empty = Egui::Pos2.new(600.0, 500.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(empty),
+      Egui::Event.pointer_pressed(empty)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(empty)], time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+
+    ctx.popup_open?("date_picker/d").should be_false
+  end
+
+  it "toggles the calendar closed on a second button click" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    # open, then click the button again — must close, not stay open
+    2.times do |i|
+      raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+        Egui::Event.pointer_pressed(center.not_nil!),
+        Egui::Event.pointer_released(center.not_nil!)],
+        time: 0.032 + 0.016 * i)
+      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.end_frame
+    end
+    # after two full clicks: first opened, second toggled closed
     ctx.popup_open?("date_picker/d").should be_false
   end
 end

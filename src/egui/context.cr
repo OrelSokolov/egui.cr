@@ -299,6 +299,7 @@ module Egui
         anchor,
         Pos2.new(ui.min_rect.right + pad.x, ui.min_rect.bottom + pad.y))
       @memory.layer_sizes[pop_id] = outer.size
+      @memory.popup_rects[pop_id] = outer
       @painter.clip = outer
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 4.0, style.visuals.window_fill,

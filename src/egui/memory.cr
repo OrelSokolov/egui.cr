@@ -54,6 +54,9 @@ module Egui
     # Container content sizes (modal dialog size for centering) — same
     # pruning exemption.
     getter layer_sizes : Hash(Id, Vec2)
+    # Screen rects of open popups, refreshed by Context#popup every frame
+    # they render — the containment test of close-on-outside-click.
+    getter popup_rects : Hash(Id, Rect)
     # Widget-generated texture cache (color picker gradients): named
     # ids so regenerated-once textures aren't re-uploaded every frame.
     getter texture_cache : Hash(String, UInt64)
@@ -97,6 +100,9 @@ module Egui
     @moved_too_much_for_click : Bool
     @clicked_id : Id?
     @clicked_count : Int32
+    # Where a completed click gesture landed, even when no widget was
+    # hit (empty space/label) — popup close-on-outside needs it.
+    @any_click_pos : Pos2?
     @last_click_pos : Pos2?
     @last_click_time : Float64
     @last_click_count : Int32
@@ -131,6 +137,7 @@ module Egui
     @tooltip_starts = {} of Id => Float64
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
+    @popup_rects = {} of Id => Rect
     @texture_cache = {} of String => UInt64
     @color_cache = {} of Color32 => Hsva
     @scroll_rects = {} of Id => Tuple(Rect, LayerId)
@@ -159,6 +166,7 @@ module Egui
       @moved_too_much_for_click = false
       @clicked_id = nil
       @clicked_count = 0
+      @any_click_pos = nil
       @last_click_pos = nil
       @last_click_time = -1.0
       @last_click_count = 0
@@ -234,6 +242,7 @@ module Egui
       @focus.begin_frame
       @clicked_id = nil
       @clicked_count = 0
+      @any_click_pos = nil
       @drag_started_id = nil
       @drag_stopped_id = nil
 
@@ -270,6 +279,10 @@ module Egui
 
       # --- release: click classification (single/double/triple) ---
       if input.pointer_released?
+        # A completed click gesture anywhere on screen — even when no
+        # widget was hit (empty space), which is exactly the case
+        # close-on-outside-click must catch.
+        @any_click_pos = input.pointer_pos unless @moved_too_much_for_click
         click_id = @potential_click_id
         if click_id && !@moved_too_much_for_click &&
            rect_contains?(click_id, input.pointer_pos)
@@ -428,22 +441,33 @@ module Egui
     def close_popup(id : Id) : Nil
       @open_popups.delete(id)
       @popups_opened_this_frame.delete(id)
+      @popup_rects.delete(id)
     end
 
     def close_all_popups : Nil
       @open_popups.clear
+      @popup_rects.clear
     end
 
     private def close_popups_if_clicked_elsewhere : Nil
       return if @open_popups.empty?
-      clicked = @clicked_id
-      return unless clicked
-      layer = @widget_layers[clicked]? || @prev_widget_layers[clicked]?
-      # A popup opened by this very click survives it (the open happens
-      # during rendering, after the click was classified).
-      candidates = @open_popups - @popups_opened_this_frame
-      return if candidates.empty?
-      close_all_popups unless layer && layer.order.foreground?
+      pos = @any_click_pos
+      return unless pos
+      @open_popups.dup.each do |pop_id|
+        # A popup opened by this very click survives it (the open happens
+        # during rendering, after the click was classified).
+        next if @popups_opened_this_frame.includes?(pop_id)
+        # A click inside the popup — including its non-interactive parts
+        # (frame padding, the calendar header) — is not "elsewhere".
+        next if @popup_rects[pop_id]?.try(&.contains?(pos))
+        @open_popups.delete(pop_id)
+        @popup_rects.delete(pop_id)
+      end
+      # Drop a stale menu state if its popup just closed (the menu bar's
+      # hover-to-switch reads it).
+      if (menu = @menu_open) && !@open_popups.includes?(Id.from("popup/#{menu}"))
+        @menu_open = nil
+      end
     end
 
     # --- internals ------------------------------------------------------
