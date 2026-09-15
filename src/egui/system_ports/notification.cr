@@ -1,10 +1,10 @@
 # System port Notification: desktop notifications.
 #
-# Linux/BSD uses `notify-send` (org.freedesktop.Notifications); Windows
-# shows a balloon through the WinForms `NotifyIcon` (System.Windows.Forms
-# is part of the OS). Fire-and-forget; returns false when the backend is
-# missing. Non-blocking — it returns as soon as the notification is
-# dispatched.
+# Linux/BSD uses `notify-send` (org.freedesktop.Notifications); macOS
+# uses `display notification` through osascript; Windows shows a balloon
+# through the WinForms `NotifyIcon` (System.Windows.Forms is part of the
+# OS). Fire-and-forget; returns false when the backend is missing.
+# Non-blocking — it returns as soon as the notification is dispatched.
 
 module Egui
   module SystemPorts
@@ -29,6 +29,10 @@ module Egui
             s << "$n.Dispose()\n"
           end
           Dialogs.spawn_powershell(script)
+        {% elsif flag?(:darwin) %}
+          script = %(display notification "#{Dialogs.as_quote(body)}" ) +
+                   %(with title "#{Dialogs.as_quote(summary)}")
+          Dialogs.run?("osascript", ["-e", script])
         {% else %}
           return false unless Dialogs.which("notify-send")
           args = [summary]

@@ -1,7 +1,7 @@
 # Crystal text stack. This file holds the glyph-atlas infrastructure
 # shared by the two font backends, plus the fallback rasterizer:
 #
-#   * AtlasFonts — the `Egui::Fonts` base: a shared 1024² RGBA atlas
+#   * AtlasFonts — the `Egui::Fonts` base: a shared 2048² RGBA atlas
 #     (white RGB, coverage alpha), a {glyph id, size} glyph cache and one
 #     walk (fractional advances + kerning) used by both measure and draw.
 #     Draw-side, glyph quads snap to whole screen pixels.
@@ -112,9 +112,11 @@ module Egui
 
       # Rasterize every glyph a text command needs. Called before the render
       # pass: sg_update_image is illegal inside a pass, so the atlas must be
-      # uploaded first (see flush).
-      def touch(cmd : Egui::TextCmd) : Nil
-        walk(cmd.text, cmd.size) { |_, _| }
+      # uploaded first (see flush). `scale` = framebuffer pixels per point —
+      # glyphs are rasterized at the physical size (crisp on retina); 1.0
+      # for callers without a window (specs, fontpreview tabs).
+      def touch(cmd : Egui::TextCmd, scale : Float64 = 1.0) : Nil
+        walk(cmd.text, cmd.size * scale) { |_, _| }
       end
 
       # Upload dirty atlas regions to the GPU. Must run outside a pass.
@@ -842,7 +844,9 @@ module Egui
 
     # --- atlas (shared by the font backends) -----------------------------------
 
-    ATLAS_SIZE = 1024
+    # 2048² so retina (2x) rasterizations — 4x the area — still fit
+    # alongside the point-size copies the measure path bakes.
+    ATLAS_SIZE = 2048
 
     # RGBA8 glyph atlas with shelf packing. RGB is white; alpha is the
     # glyph coverage — the draw path multiplies by the text color.

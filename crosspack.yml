@@ -27,6 +27,9 @@ build:
         arch:
           verify: crystal --version
           install: sudo pacman -S --needed crystal
+        darwin:
+          verify: crystal --version
+          install: brew install crystal
         "*":
           verify: crystal --version
 
@@ -44,6 +47,9 @@ build:
         arch:
           verify: cc --version
           install: sudo pacman -S --needed base-devel
+        darwin:
+          verify: cc --version
+          install: xcode-select --install
         "*":
           verify: cc --version
 
@@ -51,6 +57,8 @@ build:
       hosts:
         windows:               # opengl32.lib ships with the Windows SDK (c-toolchain)
           verify: cmd /c exit /b 0
+        darwin:                # OpenGL framework ships with macOS
+          verify: /usr/bin/true
         debian:
           verify: pkg-config --exists gl
           install: sudo apt-get install -y libgl1-mesa-dev
@@ -67,6 +75,8 @@ build:
       hosts:
         windows:               # no X11 on Windows — sokol_app uses Win32/WGL
           verify: cmd /c exit /b 0
+        darwin:                # no X11 on macOS — sokol_app uses Cocoa
+          verify: /usr/bin/true
         debian:
           verify: pkg-config --exists x11
           install: sudo apt-get install -y libx11-dev
@@ -83,6 +93,8 @@ build:
       hosts:
         windows:               # cursors come from Win32 IDC_* stock cursors
           verify: cmd /c exit /b 0
+        darwin:                # cursors come from NSCursor via the ObjC runtime
+          verify: /usr/bin/true
         debian:
           verify: pkg-config --exists xcursor
           install: sudo apt-get install -y libxcursor-dev
@@ -99,6 +111,8 @@ build:
       hosts:
         windows:               # raw Win32 input via sokol_app
           verify: cmd /c exit /b 0
+        darwin:                # NSEvent input via sokol_app
+          verify: /usr/bin/true
         debian:
           verify: pkg-config --exists xi
           install: sudo apt-get install -y libxi-dev
@@ -116,6 +130,9 @@ build:
         windows:               # fetched from ubawurinna/freetype-windows-binaries
           verify: cmd /c if not exist lib\freetype.lib exit 1 & if not exist bin\freetype.dll exit 1
           install: scripts\fetch_freetype.bat
+        darwin:
+          verify: pkg-config --exists freetype2
+          install: brew install freetype pkg-config
         debian:
           verify: pkg-config --exists freetype2
           install: sudo apt-get install -y libfreetype-dev
@@ -139,6 +156,19 @@ build:
         from: bin
         include: ["*"]
         to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
+
+    # macOS host target; arm64 on Apple Silicon (x86_64 hosts would build
+    # under Rosetta with an x86_64 brew prefix).
+    - id: macos
+      build: darwin/arm64
+      steps:
+        - crystal spec          # specs must pass — same gate as CI
+        - rake build:native     # vendor C (ObjC/Cocoa) -> lib/libegui_cr_sokol.a
+        - rake build:examples   # bin/hello, bin/widgets_gallery, ...
+      artifacts:
+        from: bin
+        include: ["*"]
+        to: [macos]
 
     # windows-11.0 is crosspack's fixed Windows host target (version is
     # nominal — every mingw/mswin Ruby reports windows-11.0).

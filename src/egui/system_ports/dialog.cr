@@ -1,12 +1,13 @@
 # System ports OpenFileDialog / SaveFileDialog: native file pickers.
 #
 # Linux/BSD shell out to `zenity` (GNOME &c) or `kdialog` (KDE), the
-# common toolkit-free way to get a native dialog. Windows runs the
-# WinForms picker through PowerShell (`System.Windows.Forms` — part of
-# the OS, no extra dependency); the script travels base64-encoded
-# (`-EncodedCommand`) so titles, filters and paths need no quoting
-# gymnastics. Other platforms are not wired yet: the request completes
-# with nil on the next frame.
+# common toolkit-free way to get a native dialog; macOS shells out to
+# `osascript` (AppleScript `choose file` / `choose file name`). Windows
+# runs the WinForms picker through PowerShell (`System.Windows.Forms` —
+# part of the OS, no extra dependency); the script travels base64-
+# encoded (`-EncodedCommand`) so titles, filters and paths need no
+# quoting gymnastics. Other platforms are not wired yet: the request
+# completes with nil on the next frame.
 #
 # The call is NEVER blocking: `show` only starts a request and returns
 # immediately. The dialog itself runs in its own fiber (`AsyncDialogs`)
@@ -112,19 +113,26 @@ module Egui
       end
     end
 
-    # zenity/kdialog plumbing shared by the dialog-based system ports.
-    # On Windows this module also hosts the PowerShell runner used by
+    # Dialog-tool plumbing shared by the dialog-based system ports:
+    # zenity/kdialog on Linux/BSD, osascript (AppleScript) on macOS;
+    # on Windows this module also hosts the PowerShell runner used by
     # the dialog, message-box and notification ports.
     module Dialogs
       @@tool : String?
 
-      # First available dialog helper on PATH: "zenity", "kdialog" or nil.
-      # Windows never needs one — the ports go through PowerShell/Win32.
+      # First available dialog helper on PATH: "osascript" on macOS,
+      # "zenity" or "kdialog" on Linux/BSD, or nil. Windows never needs
+      # one — the ports go through PowerShell/Win32.
       def self.tool : String?
         {% if flag?(:win32) %}
           nil
         {% else %}
-          @@tool ||= which("zenity") || which("kdialog")
+          @@tool ||=
+            if {{ flag?(:darwin) }}
+              which("osascript")
+            else
+              which("zenity") || which("kdialog")
+            end
         {% end %}
       end
 
@@ -168,6 +176,8 @@ module Egui
                               directory : String?) : String?
         {% if flag?(:win32) %}
           ps_dialog("OpenFileDialog", title, filters, directory, nil)
+        {% elsif flag?(:darwin) %}
+          mac_choose_file(title, filters, directory)
         {% else %}
           case tool
           when "zenity"
@@ -188,6 +198,8 @@ module Egui
                               directory : String?, default_name : String?) : String?
         {% if flag?(:win32) %}
           ps_dialog("SaveFileDialog", title, filters, directory, default_name)
+        {% elsif flag?(:darwin) %}
+          mac_choose_file_name(title, directory, default_name)
         {% else %}
           case tool
           when "zenity"
@@ -283,6 +295,55 @@ module Egui
             pats = filters.join(";")
             "Files (#{pats})|#{pats}|All files (*.*)|*.*"
           end
+        end
+      {% end %}
+
+      {% if flag?(:darwin) %}
+        # --- macOS (osascript / AppleScript) --------------------------------
+
+        # Escape `s` for an AppleScript double-quoted string literal.
+        def self.as_quote(s : String) : String
+          s.gsub('\\', "\\\\").gsub('"', "\\\"")
+        end
+
+        # `choose file` → POSIX path of the pick, or nil on cancel. Only
+        # simple `*.ext` filter patterns map to AppleScript `of type`.
+        protected def self.mac_choose_file(title : String, filters : Array(String),
+                                           directory : String?) : String?
+          script = String.build do |sb|
+            sb << "POSIX path of (choose file with prompt \"#{as_quote(title)}\""
+            exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact
+            unless exts.empty?
+              sb << " of type {#{exts.map { |e| "\"#{as_quote(e)}\"" }.join(", ")}}"
+            end
+            sb << " default location (POSIX file \"#{as_quote(directory)}\")" if directory
+            sb << ")"
+          end
+          run("osascript", ["-e", script])
+        end
+
+        # `choose file name` (the save dialog) → POSIX path, or nil on
+        # cancel.
+        protected def self.mac_choose_file_name(title : String, directory : String?,
+                                                default_name : String?) : String?
+          script = String.build do |sb|
+            sb << "POSIX path of (choose file name with prompt \"#{as_quote(title)}\""
+            sb << " default name \"#{as_quote(default_name)}\"" if default_name
+            sb << " default location (POSIX file \"#{as_quote(directory)}\")" if directory
+            sb << ")"
+          end
+          run("osascript", ["-e", script])
+        end
+
+        # `display dialog` — the MessageBox substrate. One OK button, or
+        # Cancel+OK when *confirm*: osascript exits 0 only for OK (Cancel
+        # raises "User canceled" → nonzero), which `run?` maps to a Bool.
+        protected def self.mac_display_dialog(message : String, title : String,
+                                              icon : String, confirm : Bool) : Bool
+          buttons = confirm ? %({"Cancel", "OK"}) : %({"OK"})
+          script = %(display dialog "#{as_quote(message)}" with title "#{as_quote(title)}" ) +
+                   %(buttons #{buttons} default button "OK" with icon #{icon})
+          run?("osascript", ["-e", script])
         end
       {% end %}
     end

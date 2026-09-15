@@ -168,6 +168,29 @@ module Egui
     # Areas state moves the window; click/hover → bring to top), build
     # contents, back-fill the frame, title.
     WINDOW_MIN_SIZE = Vec2.new(120.0, 80.0)
+
+    # Upstream `Area` defaults to `constrain: true`: floating regions
+    # never exceed the screen and are shifted back inside it
+    # (`Context::constrain_window_rect_to_area`, area.rs). The width is
+    # capped at the screen width, floored at `min_width` (the parent
+    # widget for anchored popups — the floor wins, so a popup at the
+    # right edge shifts left instead of shrinking below its parent),
+    # then the position is clamped so the rect stays inside. Frames
+    # without a screen (headless specs with a zero `screen_rect`) skip
+    # the constraint.
+    private def constrain_floating(pos : Pos2, size : Vec2,
+                                   min_width : Float64? = nil,
+                                   constrain_y : Bool = false) : {Pos2, Vec2}
+      screen = @input.screen_rect
+      return {pos, size} if screen.width <= 0.0
+      w = {size.x, screen.width}.min
+      w = {w, min_width.not_nil!}.max if min_width
+      x = pos.x.clamp(screen.left, {screen.right - w, screen.left}.max)
+      y = constrain_y ?
+        pos.y.clamp(screen.top, {screen.bottom - size.y, screen.top}.max) : pos.y
+      {Pos2.new(x, y), Vec2.new(w, size.y)}
+    end
+
     def window(title : String, default_pos : Pos2 = Pos2.new(24.0, 24.0),
                width : Float64 = 380.0, &block : Ui ->) : Nil
       win_id = Id.from("window/#{title}")
@@ -183,13 +206,6 @@ module Egui
       # the grip the size is fixed and overflowing content is clipped
       # to the window rect.
       fixed = @memory.fixed_size_layers.includes?(win_id)
-      clip = fixed ? Rect.from_min_size(pos, size) :
-                     Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
-      content_size = Vec2.new(size.x - 2 * pad.x,
-        fixed ? {size.y - title_h - 2 * pad.y, 1.0}.max : 1e6)
-
-      @painter.layer = Order::Middle
-      bg_index = @painter.add_noop
 
       # Title bar: drag moves the window, interaction brings it to top.
       title_rect = Rect.from_min_size(pos, Vec2.new(size.x, title_h))
@@ -198,12 +214,23 @@ module Egui
       if title_resp.dragged?
         @memory.areas.move_by(win_id, title_resp.drag_delta)
         pos = @memory.areas.pos_for(win_id, default_pos)
-        clip = clip.translate(title_resp.drag_delta) if fixed
       end
       if title_resp.hovered? || title_resp.pressed? || title_resp.dragged?
         @memory.areas.bring_to_top(layer)
       end
 
+      # Constrain to the screen: the width never exceeds it, the
+      # position shifts so the rect stays inside — a window can't be
+      # dragged or sized off-screen.
+      pos, size = constrain_floating(pos, size, WINDOW_MIN_SIZE.x, fixed)
+      @memory.areas.set_pos(win_id, pos)
+      clip = fixed ? Rect.from_min_size(pos, size) :
+                     Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      content_size = Vec2.new(size.x - 2 * pad.x,
+        fixed ? {size.y - title_h - 2 * pad.y, 1.0}.max : 1e6)
+
+      @painter.layer = Order::Middle
+      bg_index = @painter.add_noop
       @painter.clip = clip
       content_min = pos + Vec2.new(pad.x, title_h + pad.y)
       ui = Ui.new(self, win_id,
@@ -235,6 +262,11 @@ module Egui
         size = size + grip_resp.drag_delta
         size = Vec2.new({size.x, WINDOW_MIN_SIZE.x}.max,
           {size.y, WINDOW_MIN_SIZE.y}.max)
+        # Never past the screen edges (upstream `Resize` max_size).
+        screen = @input.screen_rect
+        if screen.width > 0.0
+          size = size.min(Vec2.new(screen.right - pos.x, screen.bottom - pos.y))
+        end
         outer = Rect.new(outer.min, outer.min + size)
       end
       @memory.layer_sizes[win_id] = outer.size
@@ -266,6 +298,11 @@ module Egui
       area_id = Id.from("area/#{id}")
       layer = LayerId.new(Order::Middle, area_id)
       pos = @memory.areas.pos_for(area_id, default_pos)
+      # Constrain to the screen like a window (upstream `Area`
+      # constrain: true).
+      pos, constrained = constrain_floating(pos, Vec2.new(width, 0.0))
+      width = constrained.x
+      @memory.areas.set_pos(area_id, pos)
 
       probe = Rect.from_min_size(pos, Vec2.new(width, 1.0))
       probe_resp = interact(area_id.child(0_u64), probe, Sense.click, layer)
@@ -287,7 +324,8 @@ module Egui
     # overrides the frame's inner padding (menus pass a zero vertical
     # pad so the frame hugs the first/last item).
     def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
-              pad : Vec2? = nil, &block : Ui ->) : Nil
+              pad : Vec2? = nil, min_width : Float64? = nil,
+              &block : Ui ->) : Nil
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
 
@@ -295,6 +333,14 @@ module Egui
       # themselves from their items' natural widths (via Ui#min_rect),
       # so frame one opens at `width`, later frames hug the content.
       width = @memory.layer_sizes[pop_id]?.try(&.x) || width
+
+      # Keep inside the screen (upstream `Area` constrain): floor at the
+      # parent widget's width (`min_width`, e.g. the ComboBox button) so
+      # the popup is never narrower than what opened it, then shift the
+      # anchor left — a popup at the right edge opens fully visible.
+      anchor, constrained = constrain_floating(anchor, Vec2.new(width, 0.0),
+        min_width)
+      width = constrained.x
 
       layer = LayerId.new(Order::Foreground, pop_id)
       pad ||= style.spacing.window_padding
@@ -348,6 +394,9 @@ module Egui
       layer = LayerId.new(Order::Foreground, modal_id)
       screen = @input.screen_rect
       pad = style.spacing.window_padding
+
+      # Never wider than the screen (upstream `Area` constrain).
+      width = {width, screen.width}.min if screen.width > 0.0
 
       # Dim everything below (theme-driven scrim — `Visuals#modal_dim`).
       @painter.layer = Order::Foreground

@@ -1,8 +1,11 @@
-# System port UserDirs: where an app should persist its state.
+# System port UserDirs: where an app should persist its state — home
+# plus the per-platform base dirs.
 #
-# Linux/BSD reads home ($HOME) plus the XDG base dirs (config/data/
-# cache) straight from the environment, and resolves `documents` &c.
-# through `xdg-user-dir`. Windows uses %USERPROFILE% / %APPDATA% (roaming
+# Linux/BSD reads the XDG base directory spec straight from the
+# environment (defaults ~/.config, ~/.local/share, ~/.cache) and goes
+# through `xdg-user-dir` for `documents` &c. macOS uses the Library
+# layout (~/Library/Application Support, ~/Library/Caches) and the
+# fixed home subfolders. Windows uses %USERPROFILE% / %APPDATA% (roaming
 # config) / %LOCALAPPDATA% (local data; cache is a "cache" subfolder —
 # the Electron convention), and resolves known folders (Documents,
 # Downloads, Pictures) through `SHGetKnownFolderPath` (shell32).
@@ -30,43 +33,64 @@ module Egui
         {% end %}
       end
 
-      # User-specific configuration (%APPDATA% / $XDG_CONFIG_HOME,
-      # default ~/.config).
+      # User-specific configuration: $XDG_CONFIG_HOME (default
+      # ~/.config) on Linux/BSD; ~/Library/Application Support on macOS;
+      # %APPDATA% (roaming) on Windows.
       def self.config : String
         {% if flag?(:win32) %}
           ENV["APPDATA"]? || home
+        {% elsif flag?(:darwin) %}
+          File.join(home, "Library/Application Support")
         {% else %}
           xdg_path("XDG_CONFIG_HOME", ".config")
         {% end %}
       end
 
-      # User-specific data (%LOCALAPPDATA% / $XDG_DATA_HOME, default
-      # ~/.local/share).
+      # User-specific data: $XDG_DATA_HOME (default ~/.local/share) on
+      # Linux/BSD; ~/Library/Application Support on macOS;
+      # %LOCALAPPDATA% on Windows.
       def self.data : String
         {% if flag?(:win32) %}
           ENV["LOCALAPPDATA"]? || config
+        {% elsif flag?(:darwin) %}
+          File.join(home, "Library/Application Support")
         {% else %}
           xdg_path("XDG_DATA_HOME", ".local/share")
         {% end %}
       end
 
-      # User-specific non-essential cache (%LOCALAPPDATA%\cache /
-      # $XDG_CACHE_HOME, default ~/.cache).
+      # User-specific non-essential cache: $XDG_CACHE_HOME (default
+      # ~/.cache) on Linux/BSD; ~/Library/Caches on macOS;
+      # %LOCALAPPDATA%\cache on Windows.
       def self.cache : String
         {% if flag?(:win32) %}
           File.join(data, "cache")
+        {% elsif flag?(:darwin) %}
+          File.join(home, "Library/Caches")
         {% else %}
           xdg_path("XDG_CACHE_HOME", ".cache")
         {% end %}
       end
 
       # A known/XDG user dir by its name ("DOCUMENTS", "DOWNLOADS",
-      # "PICTURES", …), or nil when not available. Results are cached.
+      # "PICTURES", …), or nil when not available. Linux/BSD resolves
+      # through `xdg-user-dir`; macOS maps to the fixed home subfolder
+      # (only when it exists); Windows through `SHGetKnownFolderPath`.
+      # Results are cached on Windows.
       def self.user_dir(name : String) : String?
         {% if flag?(:win32) %}
           guid = KNOWN_FOLDERS[name]?
           return nil unless guid
           @@known_cache[name] ||= known_folder(guid)
+        {% elsif flag?(:darwin) %}
+          folder = {"DESKTOP"   => "Desktop",
+                    "DOCUMENTS" => "Documents",
+                    "DOWNLOADS" => "Downloads",
+                    "MUSIC"     => "Music",
+                    "PICTURES"  => "Pictures",
+                    "VIDEOS"    => "Movies"}[name]? || name
+          dir = File.join(home, folder)
+          Dir.exists?(dir) ? dir : nil
         {% else %}
           Dialogs.run("xdg-user-dir", [name])
         {% end %}

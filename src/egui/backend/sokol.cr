@@ -19,6 +19,11 @@ require "./freetype"
 @[Link("gdi32")]
 @[Link("user32")]
 @[Link("shell32")]
+{% elsif flag?(:darwin) %}
+# sokol_app/macOS = Cocoa + NSOpenGL. Frameworks are passed by the
+# Rakefile's --link-flags (-framework Cocoa/OpenGL/QuartzCore), and
+# brew's libfreetype resolves through -L/opt/homebrew/lib — no -l links
+# are needed here.
 {% else %}
 @[Link("GL")]
 @[Link("X11")]
@@ -127,6 +132,9 @@ module Egui
       @@fonts : Egui::Backend::AtlasFonts?
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
+      # Framebuffer pixels per UI point (retina: 2.0). UI layout and paint
+      # commands stay in points; text is rasterized at the physical size.
+      @@pixels_per_point : Float64 = 1.0
 
       # System port Quit → sokol_app `sapp_quit`: closes the window on
       # every backend platform and leaves the run loop.
@@ -263,6 +271,13 @@ module Egui
                                   sx : Float32, sy : Float32, mods : UInt32,
                                   btn : UInt32, key : UInt32,
                                   chr : UInt32) : Nil
+        # sokol reports pointer positions in framebuffer pixels (macOS
+        # multiplies by the backing scale); the UI works in points
+        # (sapp_width), like upstream egui's pixels_per_point conversion.
+        if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
+          mx /= scale
+          my /= scale
+        end
         case type
         when MOUSE_MOVE
           @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
@@ -301,11 +316,18 @@ module Egui
         # before begin_frame so callbacks land in a stable frame state.
         Egui::SystemPorts::AsyncDialogs.pump
 
+        # sokol reports sizes in FRAMEBUFFER pixels (sapp_width on retina
+        # with high_dpi is 2x the window points); the UI lays out in
+        # points, like upstream egui with pixels_per_point.
+        ppp = LibEguiCr.sapp_dpi_scale.to_f64
+        @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+
         app = @@app.not_nil!
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(
           Egui::Rect.from_min_size(Egui::Pos2.zero,
-            Egui::Vec2.new(LibEguiCr.sapp_width.to_f64, LibEguiCr.sapp_height.to_f64)),
+            Egui::Vec2.new(LibEguiCr.sapp_width.to_f64 / @@pixels_per_point,
+              LibEguiCr.sapp_height.to_f64 / @@pixels_per_point)),
           @@events, time)
         @@events = [] of Egui::Event
 
@@ -322,8 +344,12 @@ module Egui
           LibEguiCr.set_cursor(icon.to_css.to_unsafe)
         end
 
-        w = LibEguiCr.sapp_width
-        h = LibEguiCr.sapp_height
+        # Framebuffer pixels (native resolution on retina) and their
+        # point-space counterparts.
+        fb_w = LibEguiCr.sapp_width
+        fb_h = LibEguiCr.sapp_height
+        w = fb_w.to_f64 / @@pixels_per_point
+        h = fb_h.to_f64 / @@pixels_per_point
         # Backdrop follows the theme (its base surface color) so edges
         # never flash the stale palette after a theme swap.
         bg = app.ctx.style.visuals.panel_fill
@@ -331,17 +357,22 @@ module Egui
           bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
           bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
 
-        # Rasterize every glyph this frame's text needs and upload the
-        # atlas BEFORE the render pass — sg_update_image is illegal inside
-        # a pass.
+        # Rasterize every glyph this frame's text needs (at the PHYSICAL
+        # pixel size — see paint_text) and upload the atlas BEFORE the
+        # render pass — sg_update_image is illegal inside a pass.
         if fonts = @@fonts
-          commands.each { |cmd| fonts.touch(cmd) if cmd.is_a?(Egui::TextCmd) }
+          commands.each do |cmd|
+            fonts.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
+          end
           fonts.flush
         end
 
-        LibEguiCr.begin_pass(w, h)
+        LibEguiCr.begin_pass(fb_w, fb_h)
 
-        LibEguiCr.sgl_viewport(0, 0, w, h, true)
+        # Ortho stays in POINTS; the framebuffer-sized viewport scales them
+        # up on retina, so all geometry (rects/lines/circles/images) renders
+        # at native resolution without per-command changes.
+        LibEguiCr.sgl_viewport(0, 0, fb_w, fb_h, true)
         LibEguiCr.sgl_matrix_mode_projection
         LibEguiCr.sgl_load_identity
         LibEguiCr.sgl_ortho(0.0f32, w.to_f32, h.to_f32, 0.0f32, -1.0f32, 1.0f32)
@@ -376,12 +407,14 @@ module Egui
       # screen.center - size/2 — clipping away a stroke sitting on the
       # rect edge (the invisible bottom border). Round outward instead:
       # floor the min corner, ceil the size, so every partially-covered
-      # pixel row/column stays inside the scissor.
+      # pixel row/column stays inside the scissor. Scissor rects are in
+      # FRAMEBUFFER pixels — scale the point-space clip by ppp first.
       def self.apply_scissor(clip : Egui::Rect) : Nil
-        x = clip.min.x.floor
-        y = clip.min.y.floor
-        w = {clip.max.x.ceil - x, 1.0}.max
-        h = {clip.max.y.ceil - y, 1.0}.max
+        s = @@pixels_per_point
+        x = (clip.min.x * s).floor
+        y = (clip.min.y * s).floor
+        w = {(clip.max.x * s).ceil - x, 1.0}.max
+        h = {(clip.max.y * s).ceil - y, 1.0}.max
         LibEguiCr.sgl_scissor_rectf(
           x.to_f32, y.to_f32, w.to_f32, h.to_f32, true)
       end
@@ -565,37 +598,49 @@ module Egui
 
         apply_scissor(cmd.clip)
 
+        # Text is the one thing that must be rasterized at PHYSICAL
+        # resolution: at 1x-on-retina every coverage edge goes soft after
+        # the compositor upscale. Metrics are linear in size, so all
+        # positions below are simply the point-space ones times `ppp`;
+        # the glyph quads then snap to whole framebuffer pixels (rounded
+        # pen + rounded baseline) like upstream egui's pixel snapping.
+        ppp = @@pixels_per_point
+        draw_size = cmd.size * ppp
+
         # TextCmd.pos anchors the LEFT-CENTER of the text box; convert to a
         # baseline using the font's ascender/descender.
-        asc, desc = fonts.metrics_at(cmd.size)
-        baseline = (cmd.pos.y + (asc + desc) / 2.0).round.to_f32
+        asc, desc = fonts.metrics_at(draw_size)
+        baseline = ((cmd.pos.y + (asc + desc) / 2.0 / ppp) * ppp).round.to_f32
 
         view = fonts.atlas_view_id
         return if view.zero?
 
         color = cmd.color
-        x_origin = cmd.pos.x
-        # Glyph quads snap to whole screen pixels (rounded pen + rounded
-        # baseline), fractional advances in between — like upstream egui's
-        # pixel snapping, unlike fontstash which rounded advances too.
+        x_origin = cmd.pos.x * ppp
+        inv = (1.0 / ppp).to_f32 # emit in points; the viewport scales back
+        # letter_spacing is absolute px — widen it with the draw size so
+        # the tracking reads the same at 2x as at 1x.
+        saved_spacing = fonts.letter_spacing
+        fonts.letter_spacing = saved_spacing * ppp
         LibEguiCr.sgl_bind_texture(view)
         LibEguiCr.sgl_enable_texture
         LibEguiCr.text_pipeline_push
         LibEguiCr.sgl_begin_quads
-        fonts.walk(cmd.text, cmd.size) do |pen, g|
+        fonts.walk(cmd.text, draw_size) do |pen, g|
           next if g.w == 0 || g.h == 0
           x0 = (x_origin + pen + g.xoff).round.to_f32
           y0 = baseline - g.ytop.to_f32
           x1 = x0 + g.w.to_f32
           y1 = y0 + g.h.to_f32
-          LibEguiCr.sgl_v2f_t2f_c4b(x0, y0, g.u0, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1, y0, g.u1, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1, y1, g.u1, g.v1, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x0, y1, g.u0, g.v1, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
         end
         LibEguiCr.sgl_end
         LibEguiCr.text_pipeline_pop
         LibEguiCr.sgl_disable_texture
+        fonts.letter_spacing = saved_spacing
       end
 
       def self.quad(r : Egui::Rect, c : Egui::Color32) : Nil

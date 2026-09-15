@@ -82,6 +82,11 @@ describe Egui::SystemPorts do
       Egui::SystemPorts::UserDirs.config.should eq(ENV["APPDATA"]? || home)
       Egui::SystemPorts::UserDirs.data.should eq(ENV["LOCALAPPDATA"]? || Egui::SystemPorts::UserDirs.config)
       Egui::SystemPorts::UserDirs.cache.should eq(File.join(Egui::SystemPorts::UserDirs.data, "cache"))
+    {% elsif flag?(:darwin) %}
+      Egui::SystemPorts::UserDirs.config.should eq(File.join(home, "Library/Application Support"))
+      Egui::SystemPorts::UserDirs.data.should eq(File.join(home, "Library/Application Support"))
+      Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, "Library/Caches"))
+      Egui::SystemPorts::UserDirs.documents.should eq(File.join(home, "Documents"))
     {% else %}
       Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
       Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))

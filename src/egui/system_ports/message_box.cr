@@ -3,8 +3,9 @@
 # Windows calls `MessageBoxW` (user32) directly — instant, native, no
 # subprocess. Linux/BSD shells out to zenity (--info/--warning/--error/
 # --question) or kdialog (--msgbox/--sorry/--error/--yesno), whichever
-# is on PATH. Like the file dialogs, the call blocks (modal): the frame
-# loop freezes until the user dismisses the box.
+# is on PATH. macOS uses `display dialog` through osascript (icon
+# note/caution/stop/question). Like the file dialogs, the call blocks
+# (modal): the frame loop freezes until the user dismisses the box.
 
 module Egui
   module SystemPorts
@@ -32,6 +33,8 @@ module Egui
       def self.info(message : String, title : String = "Information") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONINFO)
+        {% elsif flag?(:darwin) %}
+          Dialogs.mac_display_dialog(message, title, "note", false)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--info", "--title=#{title}", "--text=#{message}"])
@@ -45,6 +48,8 @@ module Egui
       def self.warning(message : String, title : String = "Warning") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONWARNING)
+        {% elsif flag?(:darwin) %}
+          Dialogs.mac_display_dialog(message, title, "caution", false)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--warning", "--title=#{title}", "--text=#{message}"])
@@ -58,6 +63,8 @@ module Egui
       def self.error(message : String, title : String = "Error") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONERROR)
+        {% elsif flag?(:darwin) %}
+          Dialogs.mac_display_dialog(message, title, "stop", false)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--error", "--title=#{title}", "--text=#{message}"])
@@ -72,6 +79,8 @@ module Egui
       def self.confirm(message : String, title : String = "Confirm") : Bool
         {% if flag?(:win32) %}
           LibUser32.MessageBoxW(nil, message.to_utf16, title.to_utf16, MB_YESNO) == IDYES
+        {% elsif flag?(:darwin) %}
+          Dialogs.mac_display_dialog(message, title, "question", true)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--question", "--title=#{title}", "--text=#{message}"])

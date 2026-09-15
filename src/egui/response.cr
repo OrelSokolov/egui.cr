@@ -140,10 +140,20 @@ module Egui
       text_size = @ctx.fonts.measure(text, font_size)
       margin = Vec2.new(6.0, 4.0)
       pos = @ctx.input.pointer_pos.not_nil! + Vec2.new(16.0, 16.0)
+      size = text_size + margin * 2.0
+
+      # Keep inside the screen: flip back left/up at the right/bottom
+      # edge so the tooltip is always fully visible.
+      screen = @ctx.input.screen_rect
+      if screen.width > 0.0
+        pos = Pos2.new(
+          { {pos.x, screen.right - size.x}.min, screen.left }.max,
+          { {pos.y, screen.bottom - size.y}.min, screen.top }.max)
+      end
 
       painter.layer = Order::Tooltip
-      painter.clip = Rect.from_min_size(pos, text_size + margin * 2.0)
-      painter.rect(Rect.from_min_size(pos, text_size + margin * 2.0), 4.0,
+      painter.clip = Rect.from_min_size(pos, size)
+      painter.rect(Rect.from_min_size(pos, size), 4.0,
         style.visuals.window_fill, style.visuals.window_stroke, 1.0)
       painter.text(pos + margin, text, font_size, style.visuals.text_color)
       painter.layer = Order::Background

@@ -371,7 +371,8 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       in IdTypeMap and leave auto mode on first interaction.
 - [x] `DragValue` custom formatter (`ui.drag_value(format: ->(v) { … })`)
       on top of prefix/suffix.
-- [x] `examples/openfiledialog.cr` — native zenity/kdialog pickers via
+- [x] `examples/openfiledialog.cr` — native pickers (zenity/kdialog on
+      Linux/BSD, osascript on macOS) via
       the existing fiber-backed `SystemPorts::OpenFileDialog` /
       `SaveFileDialog` (the Rakefile example list already expected it).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).

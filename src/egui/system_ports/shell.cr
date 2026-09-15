@@ -4,8 +4,8 @@
 #
 # Windows calls `ShellExecuteW` (shell32) directly — the documented way
 # to launch a URL or folder with the default handler. Linux/BSD shells
-# out to `xdg-open`. The call blocks only for the launcher itself, not
-# for the app it spawns.
+# out to `xdg-open`, macOS to `open` / `open -R`. The call blocks only
+# for the launcher itself, not for the app it spawns.
 
 module Egui
   module SystemPorts
@@ -24,6 +24,9 @@ module Egui
       def self.show(url : String) : Bool
         {% if flag?(:win32) %}
           Shell.execute("open", url)
+        {% elsif flag?(:darwin) %}
+          return false unless Dialogs.which("open")
+          Dialogs.run?("open", [url])
         {% else %}
           return false unless Dialogs.which("xdg-open")
           Dialogs.run?("xdg-open", [url])
@@ -36,6 +39,9 @@ module Egui
       def self.show(path : String) : Bool
         {% if flag?(:win32) %}
           Shell.execute("open", File.dirname(File.expand_path(path)))
+        {% elsif flag?(:darwin) %}
+          return false unless Dialogs.which("open")
+          Dialogs.run?("open", ["-R", File.expand_path(path)])
         {% else %}
           return false unless Dialogs.which("xdg-open")
           Dialogs.run?("xdg-open", [File.dirname(File.expand_path(path))])
