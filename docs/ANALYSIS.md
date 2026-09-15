@@ -251,3 +251,32 @@ Upstream keeps `Style` on the Context (`Context::style`) with
   frame (`egui_cr_set_clear_color`), and TextEdit uses
   `spacing.button_padding` + `effective_style` instead of a private
   pad literal.
+
+## 9. Delta: async native dialogs (`AsyncDialogs`)
+
+Upstream opens native file dialogs through `rfd`, which never blocks
+the UI thread. The old port called `Process.run` (zenity/kdialog)
+straight from `update`, freezing the frame loop for the whole dialog.
+
+- `src/egui/system_ports/dialog.cr`: `OpenFileDialog.show` /
+  `SaveFileDialog.show` are now non-blocking — they take an
+  `&on_done : String? ->` block and return immediately. The blocking
+  `Dialogs.open`/`Dialogs.save` are `protected`: a dialog can never
+  run on the caller's fiber.
+- `AsyncDialogs` (same file): each request gets a worker fiber; the
+  blocking `Process.run` suspends only that fiber. Completed requests
+  queue for delivery; everything is single-threaded (fibers switch
+  cooperatively), so the queues need no locks.
+- The run loop (`sapp_run`) never returns control to the Crystal
+  scheduler, so spawned fibers would never run on their own — the
+  backend pumps: `Sokol.on_frame` calls `AsyncDialogs.pump` before
+  `begin_frame`, which does one bounded scheduler pass
+  (`select` + `timeout(1ms)` ≈ 1ms/frame, only while a dialog is
+  open) and then delivers callbacks in the main fiber, before
+  `app.update` — safe to touch app state. `AsyncDialogs.pending?`
+  drives "opening…" UI states (see examples/hello.cr).
+- Verified live on X11: while zenity is open the loop keeps rendering
+  at ~60fps; cancel/choose delivers the path (nil on cancel) on the
+  next frame. Specs (`spec/system_ports_spec.cr`) cover delivery,
+  cancel→nil, non-blocking pump, and concurrent requests headlessly
+  with fake work procs.

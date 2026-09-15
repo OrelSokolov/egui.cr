@@ -1,7 +1,7 @@
 require "fileutils"
 
 NATIVE_LIB = "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog"]
 
 desc "Build vendor C code (sokol_app/gfx/glue/gl + fontstash) into #{NATIVE_LIB}"
 task "build:native" do

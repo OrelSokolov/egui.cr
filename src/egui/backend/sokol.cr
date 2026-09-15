@@ -255,6 +255,11 @@ module Egui
       end
 
       protected def self.on_frame : Nil
+        # Advance async system ports (file dialogs) — one bounded
+        # scheduler pass, then deliver completed requests. Must run
+        # before begin_frame so callbacks land in a stable frame state.
+        Egui::SystemPorts::AsyncDialogs.pump
+
         app = @@app.not_nil!
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(

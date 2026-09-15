@@ -5,6 +5,8 @@ require "../src/egui"
 # dialogs, MessageBox, notifications, OpenUrl) are NOT invoked here —
 # they would open real windows / spawn apps on a desktop machine. The
 # injectable ports are exercised through their defaults and recorders.
+# AsyncDialogs IS exercised, with fake work procs instead of real
+# dialog processes (same fiber path, no desktop needed).
 
 class QuitRecorder < Egui::SystemPorts::Quit::Implementation
   getter count = 0
@@ -79,5 +81,74 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
     Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
     Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
+  end
+end
+
+# Drain any leftover async-dialog requests so worker fibers can't
+# leak across tests.
+def drain_async_dialogs : Nil
+  50.times do
+    Egui::SystemPorts::AsyncDialogs.pump
+    break unless Egui::SystemPorts::AsyncDialogs.pending?
+  end
+end
+
+describe Egui::SystemPorts::AsyncDialogs do
+  it "delivers the result via callback on a later pump" do
+    got = [] of String?
+    Egui::SystemPorts::AsyncDialogs.start(-> { "picked.png" }, ->(path : String?) { got << path })
+    Egui::SystemPorts::AsyncDialogs.pending?.should be_true
+    got.should be_empty
+
+    Egui::SystemPorts::AsyncDialogs.pump
+    got.should eq(["picked.png"])
+    Egui::SystemPorts::AsyncDialogs.pending?.should be_false
+  end
+
+  it "delivers nil for a cancelled/failed dialog" do
+    got = [] of String?
+    Egui::SystemPorts::AsyncDialogs.start(-> { nil.as(String?) }, ->(path : String?) { got << path })
+    Egui::SystemPorts::AsyncDialogs.pump
+    got.should eq([nil])
+  end
+
+  it "does not block the frame while the dialog is open" do
+    got = [] of String?
+    Egui::SystemPorts::AsyncDialogs.start(
+      -> { sleep 50.milliseconds; "slow.png" },
+      ->(path : String?) { got << path })
+
+    # A pump while the worker fiber is still waiting must return in
+    # ~1ms (the bounded scheduler pass), not after the worker.
+    start = Time.instant
+    Egui::SystemPorts::AsyncDialogs.pump
+    (Time.instant - start).total_milliseconds.should be < 50
+    got.should be_empty
+    Egui::SystemPorts::AsyncDialogs.pending?.should be_true
+
+    # Later pumps deliver as soon as the work finishes.
+    100.times do
+      Egui::SystemPorts::AsyncDialogs.pump
+      break unless Egui::SystemPorts::AsyncDialogs.pending?
+    end
+    got.should eq(["slow.png"])
+  ensure
+    drain_async_dialogs
+  end
+
+  it "delivers multiple concurrent requests in completion order" do
+    got = [] of String?
+    Egui::SystemPorts::AsyncDialogs.start(-> { "a.png" }, ->(p : String?) { got << p })
+    Egui::SystemPorts::AsyncDialogs.start(-> { "b.png" }, ->(p : String?) { got << p })
+    100.times do
+      Egui::SystemPorts::AsyncDialogs.pump
+      break if got.size == 2
+    end
+    got.should eq(["a.png", "b.png"])
+  end
+
+  it "pump is a no-op (and instant) when idle" do
+    Egui::SystemPorts::AsyncDialogs.pending?.should be_false
+    Egui::SystemPorts::AsyncDialogs.pump # must not raise / block
   end
 end
