@@ -75,13 +75,36 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::Screen.dpi_scale.should eq(1.0)
   end
 
-  it "UserDirs resolves XDG paths with spec defaults" do
+  it "UserDirs resolves platform base dirs with spec defaults" do
     home = Egui::SystemPorts::UserDirs.home
     home.should_not be_empty
-    Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
-    Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
-    Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
+    {% if flag?(:win32) %}
+      Egui::SystemPorts::UserDirs.config.should eq(ENV["APPDATA"]? || home)
+      Egui::SystemPorts::UserDirs.data.should eq(ENV["LOCALAPPDATA"]? || Egui::SystemPorts::UserDirs.config)
+      Egui::SystemPorts::UserDirs.cache.should eq(File.join(Egui::SystemPorts::UserDirs.data, "cache"))
+    {% else %}
+      Egui::SystemPorts::UserDirs.config.should eq(File.join(home, ".config"))
+      Egui::SystemPorts::UserDirs.data.should eq(File.join(home, ".local/share"))
+      Egui::SystemPorts::UserDirs.cache.should eq(File.join(home, ".cache"))
+    {% end %}
   end
+
+  {% if flag?(:win32) %}
+    it "Dialogs.which finds PATHEXT executables on PATH" do
+      Egui::SystemPorts::Dialogs.which("powershell").should_not be_nil
+      Egui::SystemPorts::Dialogs.which("surely-not-a-real-tool-xyz").should be_nil
+    end
+
+    it "Dialogs.run_powershell round-trips stdout via EncodedCommand" do
+      Egui::SystemPorts::Dialogs.run_powershell("Write-Output 'ok'").should eq("ok")
+    end
+
+    it "UserDirs.documents resolves a real known folder" do
+      docs = Egui::SystemPorts::UserDirs.documents
+      docs.should_not be_nil
+      File.directory?(docs.not_nil!).should be_true
+    end
+  {% end %}
 
   it "Fonts lists per-platform candidates, best-first" do
     paths = Egui::SystemPorts::Fonts.search_paths

@@ -27,7 +27,7 @@ class OpenFileDialogApp < Egui::App
             @picked = path
             @status = "Picked: #{path}"
           else
-            @status = "Canceled (or no zenity/kdialog on PATH)."
+            @status = "Canceled."
           end
         end
       end

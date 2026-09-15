@@ -61,8 +61,12 @@ Differences from the Linux build:
   next to the exes; its VC++ v14 runtime requirement is declared in the
   runtime `deps:` section (`vc-redist` → winget
   `Microsoft.VCRedist.2015+.x64`)
-- system ports that shell out to `zenity`/`xdg-open` (dialogs, URL
-  opening, user dirs) return nil/false on Windows — not wired yet
+- the Windows system ports are native: file dialogs run the WinForms
+  picker through PowerShell (`-EncodedCommand`), MessageBox calls
+  `MessageBoxW` (user32), OpenUrl/reveal use `ShellExecuteW` (shell32),
+  notifications are NotifyIcon balloons, and user dirs come from
+  `%APPDATA%`/`%LOCALAPPDATA%` + `SHGetKnownFolderPath`; Linux keeps the
+  `zenity`/`kdialog`/`xdg-open` subprocess ports
 
 ## Status
 
