@@ -259,6 +259,13 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       gallery demo: a button per cursor in the "Cursors" section.
       Specs: exact CSS strings, round-trip, hover→pointer + reset,
       per-widget override, drag_value ew-resize.
+- [x] Sidebar container (user request): `src/egui/containers/sidebar.cr`
+      (egui.cr-native, no upstream counterpart) — titled sections of
+      full-width tab rows; the app owns the selection (Checkbox
+      pattern: passed in, handed back via `Ui#sidebar` block +
+      `Response#changed?`). `examples/widgets_gallery.cr` navigates
+      its per-widget galleries through it. Specs: tab/section clicks
+      switch the selection, selected tab painted with the accent fill.
 - [ ] Ui helpers: `add_sized`, `scope`, `enabled(flag)`, `columns`.
 - [ ] `src/egui/grid.cr` ← `crates/egui/src/grid.rs`.
 - [ ] `Response#context_menu` (right-click menus, needs P2 menu).

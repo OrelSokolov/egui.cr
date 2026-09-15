@@ -1844,3 +1844,76 @@ describe "Visuals#fade_color (theme-aware weak variants)" do
     light.fade_color(light.text_color, 0.55).r.should be > light.text_color.r
   end
 end
+
+describe "Sidebar (sections + tabs)" do
+  it "renders sections and tabs and reports the new selection on click" do
+    ctx = Egui::Context.new
+    sections = [
+      Egui::Sidebar::Section.new("One", ["A", "B"]),
+      Egui::Sidebar::Section.new("Two", ["C"]),
+    ]
+    section = 0
+    tab = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      resp = widget_ui(ctx).sidebar(sections, section, tab) do |s, t|
+        section = s
+        tab = t
+      end
+      ctx.end_frame
+      resp
+    end
+
+    # frame 1: layout — section titles (uppercased) + tab texts painted
+    draw.call([] of Egui::Event, 0.016)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    {"ONE", "TWO", "A", "B", "C"}.each { |t| texts.should contain(t) }
+    section.should eq(0)
+    tab.should eq(0)
+
+    # tab interaction rects in creation order (A, B, C) — skip the
+    # 1px separator rect between the sections
+    a_rect, b_rect, c_rect =
+      ctx.memory.widget_rects.values.select { |r| r.height > 5.0 }
+
+    # click tab B (same section) — press, then release lands the click
+    draw.call([Egui::Event.pointer_moved(b_rect.center),
+      Egui::Event.pointer_pressed(b_rect.center)], 0.032)
+    resp = draw.call([Egui::Event.pointer_released(b_rect.center)], 0.048)
+    resp.changed?.should be_true
+    section.should eq(0)
+    tab.should eq(1)
+
+    # click tab C — the selection jumps to the other section
+    draw.call([Egui::Event.pointer_moved(c_rect.center),
+      Egui::Event.pointer_pressed(c_rect.center)], 0.064)
+    draw.call([Egui::Event.pointer_released(c_rect.center)], 0.080)
+    section.should eq(1)
+    tab.should eq(0)
+
+    # clicking the already-selected tab reports no change
+    draw.call([Egui::Event.pointer_moved(c_rect.center),
+      Egui::Event.pointer_pressed(c_rect.center)], 0.096)
+    resp = draw.call([Egui::Event.pointer_released(c_rect.center)], 0.112)
+    resp.changed?.should be_false
+    section.should eq(1)
+    tab.should eq(0)
+  end
+
+  it "paints the selected tab with the selection fill and the hovered one weak" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    widget_ui(ctx).sidebar(
+      [Egui::Sidebar::Section.new("S", ["x", "y"])], 0, 1) { |s, t| }
+    ctx.end_frame
+
+    x_rect, y_rect = ctx.memory.widget_rects.values
+    selected = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.selection_fill }.not_nil!
+    # the fill sits on the selected tab (y, the second), not on x
+    selected.rect.min.y.should be_close(y_rect.min.y, 0.01)
+    selected.rect.min.y.should be > x_rect.min.y
+  end
+end
