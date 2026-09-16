@@ -82,17 +82,20 @@ module Egui
       widget.ui(self)
     end
 
-    def label(text : String, wrap : Bool = false) : Response
-      add(Label.new(text, wrap: wrap))
+    # `align` mirrors CSS `text-align` on a block: the label reserves
+    # the full row width and paints at :left/:center/:right.
+    def label(text : String, wrap : Bool = false, align : Symbol = :left) : Response
+      add(Label.new(text, wrap: wrap, align: align))
     end
 
     # egui `ui.label(RichText)`.
-    def rich(text : RichText, wrap : Bool = false) : Response
+    def rich(text : RichText, wrap : Bool = false, align : Symbol? = nil) : Response
+      text.align(align) if align && align != :left
       add(Label.new(text, wrap: wrap))
     end
 
-    def heading(text : String) : Response
-      rich(RichText.new(text).heading(style.font_size))
+    def heading(text : String, align : Symbol = :left) : Response
+      rich(RichText.new(text).heading(style.font_size), align: align)
     end
 
     def button(text : String) : Response
@@ -182,6 +185,20 @@ module Egui
       response
     end
 
+    # egui `TextEdit::multiline` (`ui.text_edit_multiline(&mut String)`):
+    # a wrapping, multi-row editor — Enter breaks lines, Up/Down move
+    # between them, the view scrolls to keep the caret visible. The
+    # block fires with the new buffer whenever it changed this frame.
+    def text_edit_multiline(buffer : String, hint : String? = nil,
+                            rows : Int32 = 4,
+                            &on_change : String ->) : Response
+      response = add(TextEdit.new(buffer, hint, multiline: true, rows: rows))
+      if response.changed? && (text = response.widget_text)
+        on_change.call(text)
+      end
+      response
+    end
+
     # egui `ui.image(texture, size)`.
     def image(texture_id : UInt64, size : Vec2,
               tint : Color32 = Color32.new(255, 255, 255, 255)) : Response
@@ -202,8 +219,9 @@ module Egui
       add(Hyperlink.new(url, url))
     end
 
-    def hyperlink_to(label : String, url : String) : Response
-      add(Hyperlink.new(label, url))
+    def hyperlink_to(label : String, url : String,
+                     align : Symbol = :left) : Response
+      add(Hyperlink.new(label, url, align))
     end
 
     # egui `ui.selectable_label(selected, text)` (upstream 0.36:

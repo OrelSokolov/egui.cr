@@ -60,25 +60,35 @@ module Egui
     property fill : Color32?
     property fill_hovered : Color32?
     property fill_active : Color32?
-    property stroke : Color32?
+    # Border color (CSS `border-color`): the 1px outline drawn around
+    # buttons, checkboxes, text edits, … (upstream `WidgetVisuals`
+    # stroke color — see `Visuals#border_color`).
+    property border_color : Color32?
+    # Gradient fill (CSS `background: linear-gradient(...)`): when set,
+    # the widget paints it instead of the plain fill.
+    property background_gradient : Gradient?
     # Accent: progress bar fill, slider handle, selection.
     property selection_fill : Color32?
     property separator_color : Color32?
     property hyperlink_color : Color32?
     property font_size : Float64?
     property button_padding : Vec2?
+    # Block text alignment (CSS `text-align`): :left/:center/:right.
+    property text_align : Symbol?
 
     def initialize
       @text_color = nil
       @fill = nil
       @fill_hovered = nil
       @fill_active = nil
-      @stroke = nil
+      @border_color = nil
+      @background_gradient = nil
       @selection_fill = nil
       @separator_color = nil
       @hyperlink_color = nil
       @font_size = nil
       @button_padding = nil
+      @text_align = nil
     end
 
     # Effective style = the theme's Style with every non-nil override
@@ -98,8 +108,11 @@ module Egui
       if (c = @fill_active)
         v.button_active = c
       end
-      if (c = @stroke)
-        v.button_stroke = c
+      if (c = @border_color)
+        v.border_color = c
+      end
+      if (g = @background_gradient)
+        v.background_gradient = g
       end
       if (c = @selection_fill)
         v.selection_fill = c
@@ -115,6 +128,9 @@ module Egui
       end
       if (c = @button_padding)
         merged.spacing.button_padding = c
+      end
+      if (a = @text_align)
+        merged.text_align = a
       end
       merged
     end

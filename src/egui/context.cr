@@ -14,6 +14,18 @@
 # closes on outside click; #bottom_panel pins to the screen bottom.
 
 module Egui
+  # Which side of its anchor widget a popup opens on (upstream
+  # `popup_below_or_above_widget` & friends). Dropdowns default to
+  # `Below`; when the preferred side runs out of screen space
+  # `Context#popup` flips to the opposite one, so e.g. a date picker
+  # at the bottom of the screen opens upward instead of off-screen.
+  enum PopupDirection
+    Below
+    Above
+    Right
+    Left
+  end
+
   class Context
     getter memory : Memory
     getter input : InputState
@@ -320,11 +332,17 @@ module Egui
     end
 
     # egui popup (containers/popup.rs): rides the Foreground layer,
-    # closes when a click lands outside it (Memory#end_frame). `pad`
-    # overrides the frame's inner padding (menus pass a zero vertical
-    # pad so the frame hugs the first/last item).
-    def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
+    # closes when a click lands outside it (Memory#end_frame).
+    # `anchor` is either the popup's top-left point (context menus at
+    # the pointer — placed as given) or the anchor widget's rect — with
+    # a rect the popup opens on `direction`'s side and flips to the
+    # opposite side when that one runs out of screen space (the
+    # roomier side wins; the size comes from the popup's last frame).
+    # `pad` overrides the frame's inner padding (menus pass a zero
+    # vertical pad so the frame hugs the first/last item).
+    def popup(id : String, anchor : Pos2 | Rect, width : Float64 = 220.0,
               pad : Vec2? = nil, min_width : Float64? = nil,
+              direction : PopupDirection = PopupDirection::Below,
               &block : Ui ->) : Nil
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
@@ -332,13 +350,17 @@ module Egui
       # Snap to last frame's measured size (like #modal): menus size
       # themselves from their items' natural widths (via Ui#min_rect),
       # so frame one opens at `width`, later frames hug the content.
-      width = @memory.layer_sizes[pop_id]?.try(&.x) || width
+      # The measured height also drives the above/below flip.
+      size = @memory.layer_sizes[pop_id]? || Vec2.new(width, 0.0)
+      width = size.x
+
+      pos = anchor.is_a?(Rect) ? popup_anchor(anchor, direction, size) : anchor
 
       # Keep inside the screen (upstream `Area` constrain): floor at the
       # parent widget's width (`min_width`, e.g. the ComboBox button) so
       # the popup is never narrower than what opened it, then shift the
       # anchor left — a popup at the right edge opens fully visible.
-      anchor, constrained = constrain_floating(anchor, Vec2.new(width, 0.0),
+      pos, constrained = constrain_floating(pos, Vec2.new(width, 0.0),
         min_width)
       width = constrained.x
 
@@ -347,15 +369,15 @@ module Egui
 
       @painter.layer = Order::Foreground
       bg_index = @painter.add_noop
-      @painter.clip = Rect.from_min_size(anchor, Vec2.new(width, 1e6))
+      @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
       ui = Ui.new(self, pop_id,
-        Rect.from_min_size(anchor + Vec2.new(pad.x, pad.y),
+        Rect.from_min_size(pos + Vec2.new(pad.x, pad.y),
           Vec2.new(width - 2 * pad.x, 1e6)))
       ui.layer = layer
       yield ui
 
       outer = Rect.new(
-        anchor,
+        pos,
         Pos2.new(ui.min_rect.right + pad.x, ui.min_rect.bottom + pad.y))
       @memory.layer_sizes[pop_id] = outer.size
       @memory.popup_rects[pop_id] = outer
@@ -365,6 +387,36 @@ module Egui
           style.visuals.window_stroke, 1.0))
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
+    # Top-left corner for a popup opening off a widget rect in
+    # `direction`, flipped to the opposite side when the preferred one
+    # lacks screen space: a dropdown near the screen bottom opens
+    # upward, one anchored `Right` at the right edge opens leftward.
+    # Ties and first-frame unknown size keep the preferred side.
+    private def popup_anchor(rect : Rect, direction : PopupDirection,
+                             size : Vec2) : Pos2
+      screen = @input.screen_rect
+      return Pos2.new(rect.left, rect.bottom) if screen.width <= 0.0
+
+      below = screen.bottom - rect.bottom
+      above = rect.top - screen.top
+      right = screen.right - rect.right
+      left = rect.left - screen.left
+
+      case direction
+      when .below? then direction = PopupDirection::Above if size.y > below && above > below
+      when .above? then direction = PopupDirection::Below if size.y > above && below > above
+      when .right? then direction = PopupDirection::Left if size.x > right && left > right
+      when .left?  then direction = PopupDirection::Right if size.x > left && right > left
+      end
+
+      case direction
+      when .above? then Pos2.new(rect.left, {rect.top - size.y, screen.top}.max)
+      when .right? then Pos2.new(rect.right, rect.top)
+      when .left?  then Pos2.new(rect.left - size.x, rect.top)
+      else              Pos2.new(rect.left, rect.bottom) # .below?
+      end
     end
 
     def popup_open?(id : String) : Bool

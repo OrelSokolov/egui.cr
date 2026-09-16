@@ -8,7 +8,7 @@ module Egui
   class Hyperlink
     include Widget
 
-    def initialize(@label : String, @url : String)
+    def initialize(@label : String, @url : String, @align : Symbol = :left)
     end
 
     def ui(ui : Ui) : Response
@@ -16,7 +16,15 @@ module Egui
       font_size = style.font_size
       text_size = ui.ctx.fonts.measure(@label, font_size)
 
-      rect = ui.allocate_at_least(text_size)
+      # Like Label: a centered/right-aligned link is block-level.
+      size = text_size
+      size = Vec2.new({size.x, ui.available_width}.max, size.y) if @align != :left
+      rect = ui.allocate_at_least(size)
+      x = rect.min.x
+      if @align != :left
+        spare = rect.width - text_size.x
+        x = @align == :center ? rect.left + spare / 2.0 : rect.right - text_size.x
+      end
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
       # Upstream: a pointing hand over links, independent of the
@@ -31,7 +39,8 @@ module Egui
       rich = RichText.new(@label).color(color).underline
       runs = rich.runs(font_size, color)
       galley = ui.ctx.fonts.layout(runs)
-      ui.painter.paint_galley(rect.min, galley, ui.ctx.fonts, color)
+      ui.painter.paint_galley(Egui::Pos2.new(x, rect.min.y), galley,
+        ui.ctx.fonts, color)
 
       response.paint_focus_ring(2.0)
       Hyperlink.open_url(@url) if response.clicked?

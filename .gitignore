@@ -17,3 +17,5 @@ shard.lock
 .ref/
 
 egui-upstream/
+
+alacritty/

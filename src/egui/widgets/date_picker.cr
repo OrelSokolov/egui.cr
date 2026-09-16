@@ -44,7 +44,7 @@ module Egui
         painter_fill = visuals.button_fill(false, false)
       end
       ui.painter.rect(rect, 4.0, painter_fill,
-        visuals.button_stroke, 1.0)
+        visuals.border_color, 1.0)
       ui.painter.text(Pos2.new(rect.left + pad.x, rect.center.y),
         text, style.font_size, visuals.text_color)
       response.paint_focus_ring
@@ -61,10 +61,15 @@ module Egui
       end
 
       if ctx.popup_open?(@popup_id)
-        # Anchor below the button like combo boxes/menus (upstream): the
-        # popup must not cover its own toggle.
-        ctx.popup(@popup_id, Pos2.new(rect.left, rect.bottom),
-          width: 7 * CELL + 24.0) do |popup|
+        # Anchored to the button rect (not a point): near the screen
+        # bottom the popup flips open above it (Context#popup), so the
+        # calendar never renders off-screen. The width is exactly the
+        # calendar grid plus the frame padding — every row reports the
+        # same grid width back to min_rect, so the popup never
+        # re-snaps to a measured size and nothing shifts between
+        # frames.
+        grid_w = COLS * CELL + 2 * ctx.style.spacing.window_padding.x
+        ctx.popup(@popup_id, rect, width: grid_w) do |popup|
           calendar(popup, on_change)
         end
       end
@@ -72,7 +77,29 @@ module Egui
       response
     end
 
+    # The calendar is laid out on one shared grid: `COLS` cells of
+    # `CELL` px flush against the popup's inner left edge. The weekday
+    # header, the day rows and the popup width all align to these
+    # columns — anything sized per-widget (a generic horizontal row
+    # with item spacing, or the popup's snap-to-measured width) would
+    # drift off them.
     CELL = 30.0
+    COLS = 7
+    WEEKDAYS = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"}
+
+    # Left edge of grid column `col`.
+    private def cell_x(ui : Ui, col : Int32) : Float64
+      ui.max_rect.min.x + col * CELL
+    end
+
+    # Report one full grid-width row to the popup's min_rect — every
+    # row is exactly `COLS * CELL` wide, which is what keeps the popup
+    # width stable frame to frame.
+    private def union_row(ui : Ui, y : Float64, h : Float64) : Nil
+      ui.min_rect = ui.min_rect.union(
+        Rect.from_min_size(Pos2.new(ui.max_rect.min.x, y),
+          Vec2.new(COLS * CELL, h)))
+    end
 
     private def calendar(ui : Ui, on_change : Time ->) : Nil
       ctx = ui.ctx
@@ -109,28 +136,34 @@ module Egui
         mem.data.set_int(@pid.child(2), m)
       end
 
-      # weekday row
-      ui.horizontal do |row|
-        {% for d in %w[Mo Tu We Th Fr Sa Su] %}
-          row.label({{ d }})
-        {% end %}
+      # weekday row — same cell geometry as the day grid below, so the
+      # day names sit exactly over their columns (a generic horizontal
+      # row would space them by label width + item spacing instead)
+      week_y = ui.cursor.y
+      week_h = font_size * Fonts::LINE_H_FACTOR
+      WEEKDAYS.each_with_index do |name, col|
+        tw = ctx.fonts.measure(name, font_size).x
+        ui.painter.text(
+          Pos2.new(cell_x(ui, col) + (CELL - tw) / 2.0, week_y + week_h / 2.0),
+          name, font_size, visuals.text_color)
       end
+      union_row(ui, week_y, week_h)
+      ui.cursor = Pos2.new(ui.max_rect.min.x, week_y + week_h)
 
-      # day grid: absolute cells, flush rows (no item spacing), like
-      # menu_item — the popup hugs the grid.
+      # day grid: full rows of `COLS` cells, flush (no item spacing) —
+      # the popup hugs the grid.
       today = Time.local.in(loc)
       cell_h = {font_size * Fonts::LINE_H_FACTOR,
         style.spacing.interact_size.y}.max
       (0..5).each do |week|
         row_done = false
-        7.times do |col|
-          day = week * 7 + col - offset + 1
+        COLS.times do |col|
+          day = week * COLS + col - offset + 1
           if day < 1 || day > days
             next # empty leading/trailing cells
           end
-          x = ui.cursor.x + col * CELL
-          y = ui.cursor.y
-          cell = Rect.from_min_size(Pos2.new(x, y), Vec2.new(CELL, cell_h))
+          cell = Rect.from_min_size(Pos2.new(cell_x(ui, col), ui.cursor.y),
+            Vec2.new(CELL, cell_h))
           day_id = @pid.child((day + 100).to_u64)
           response = ui.interact(cell, day_id, Sense.click)
           date = Time.local(year, month, day, 12, 0, 0, location: loc)
@@ -153,10 +186,11 @@ module Egui
           end
           row_done = true
         end
-        ui.min_rect = ui.min_rect.union(
-          Rect.from_min_size(Pos2.new(ui.cursor.x, ui.cursor.y),
-            Vec2.new(7 * CELL, cell_h)))
-        ui.cursor = Pos2.new(ui.max_rect.min.x, ui.cursor.y + cell_h) if row_done
+        # An entirely empty trailing week (a 28-day February starting
+        # Monday) advances nothing — no phantom row pads the popup.
+        next unless row_done
+        union_row(ui, ui.cursor.y, cell_h)
+        ui.cursor = Pos2.new(ui.max_rect.min.x, ui.cursor.y + cell_h)
       end
 
       if small_button(ui, @pid.child(0xEE_u64), "Today")
@@ -197,8 +231,7 @@ module Egui
         title, font_size, style.visuals.text_color)
       shift.call(1) if button_at(ui, @pid.child(0xE1_u64), "›", right)
 
-      ui.min_rect = ui.min_rect.union(
-        Rect.from_min_size(top, Vec2.new(width, h)))
+      union_row(ui, top.y, h)
       ui.cursor = Pos2.new(ui.max_rect.min.x, top.y + h)
     end
 

@@ -478,6 +478,64 @@ describe "system state" do
     ctx.close_popup("menu")
   end
 
+  it "flips a popup above its anchor near the screen bottom" do
+    ctx = Egui::Context.new
+    # anchor button flush against the bottom of the 800x600 screen
+    anchor = Egui::Rect.from_min_size(
+      Egui::Pos2.new(100.0, 580.0), Egui::Vec2.new(160.0, 20.0))
+    pop_id = Egui::Id.from("popup/flip")
+
+    ctx.open_popup("flip")
+    # frame 1: renders below (unknown size), measures itself
+    raw_frame(ctx, time: 0.016)
+    ctx.popup("flip", anchor, width: 160.0) { |ui| 8.times { ui.label("row") } }
+    ctx.end_frame
+    ctx.memory.layer_sizes[pop_id].y.should be > 100.0
+
+    # frame 2: no room below → opens above the anchor
+    raw_frame(ctx, time: 0.032)
+    ctx.popup("flip", anchor, width: 160.0) { |ui| 8.times { ui.label("row") } }
+    ctx.end_frame
+    rect = ctx.memory.popup_rects[pop_id].not_nil!
+    rect.bottom.should be <= anchor.top + 0.01
+    rect.top.should be >= 0.0
+  end
+
+  it "keeps a popup below its anchor when there is room" do
+    ctx = Egui::Context.new
+    anchor = Egui::Rect.from_min_size(
+      Egui::Pos2.new(100.0, 100.0), Egui::Vec2.new(160.0, 20.0))
+    pop_id = Egui::Id.from("popup/roomy")
+
+    ctx.open_popup("roomy")
+    2.times do |i|
+      raw_frame(ctx, time: 0.016 * (i + 1))
+      ctx.popup("roomy", anchor, width: 160.0) { |ui| 3.times { ui.label("row") } }
+      ctx.end_frame
+    end
+    rect = ctx.memory.popup_rects[pop_id].not_nil!
+    rect.top.should be_close(anchor.bottom, 0.01)
+  end
+
+  it "flips a right-opening popup at the screen's right edge" do
+    ctx = Egui::Context.new
+    # anchor button flush against the right edge
+    anchor = Egui::Rect.from_min_size(
+      Egui::Pos2.new(780.0, 100.0), Egui::Vec2.new(20.0, 30.0))
+    pop_id = Egui::Id.from("popup/side")
+
+    ctx.open_popup("side")
+    2.times do |i|
+      raw_frame(ctx, time: 0.016 * (i + 1))
+      ctx.popup("side", anchor, width: 200.0,
+        direction: Egui::PopupDirection::Right) { |ui| ui.label("item") }
+      ctx.end_frame
+    end
+    rect = ctx.memory.popup_rects[pop_id].not_nil!
+    rect.right.should be <= anchor.left
+    rect.left.should be >= 0.0
+  end
+
   it "popup layer occludes the hover of widgets underneath" do
     ctx = Egui::Context.new
     ctx.open_popup("menu")
@@ -1537,24 +1595,58 @@ describe "scroll area (phase 5)" do
     content.y.should be > viewport.height
     max_offset = content.y - viewport.height
 
-    # frame 2: press the track near the bottom (below the thumb) — the
-    # thumb centers on the pointer, jumping the offset near the end
+    # frame 2: hover the bar — the overlay scrollbar reveals (and
+    # registers its hit target) only while the pointer is over the
+    # viewport, so a grab needs the hover one frame before the press
     press = Egui::Pos2.new(viewport.right - 4.0, viewport.bottom - 10.0)
-    draw.call([Egui::Event.pointer_moved(press),
-      Egui::Event.pointer_pressed(press)], 0.032)
+    draw.call([Egui::Event.pointer_moved(press)], 0.024)
+
+    # frame 3: press the track near the bottom (below the thumb) — the
+    # thumb centers on the pointer, jumping the offset near the end
+    draw.call([Egui::Event.pointer_pressed(press)], 0.032)
     offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
     offset.should be > 0.8 * max_offset
 
-    # frame 3: drag up along the bar — the offset follows proportionally
+    # frame 4: drag up along the bar — the offset follows proportionally
     up = Egui::Pos2.new(press.x, viewport.top + 10.0)
     draw.call([Egui::Event.pointer_moved(up)], 0.048)
     dragged = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
     dragged.should be < offset / 2.0
 
-    # frame 4: release — offset stays where it was dragged to
+    # frame 5: release — offset stays where it was dragged to
     draw.call([Egui::Event.pointer_released(up)], 0.064)
     after = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
     after.should be_close(dragged, 0.01)
+  end
+
+  it "reveals the overlay scrollbar only while the pointer is over the viewport" do
+    ctx = Egui::Context.new
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    track = ->{
+      ctx.painter.commands.select(Egui::RectCmd)
+        .find { |c| c.fill == ctx.style.visuals.button_weak &&
+               c.rect.width < 12.0 && c.rect.height > 80.0 }
+    }
+
+    # no pointer → nothing painted (and nothing hit-testing either)
+    draw.call([] of Egui::Event, 0.016)
+    track.call.should be_nil
+
+    # pointer over the viewport → the bar reveals the same frame
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(50.0, 50.0))], 0.032)
+    track.call.should_not be_nil
+
+    # pointer moves off the viewport → the bar is gone again
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(400.0, 400.0))], 0.048)
+    track.call.should be_nil
   end
 
   it "nested scroll areas: the inner one owns the scroll delta" do
@@ -2120,6 +2212,288 @@ describe "modal scrim follows the theme" do
   end
 end
 
+describe "window modals (WindowModal: GTK-style dialogs)" do
+  it "renders chrome + scrim and blocks interaction below; closed renders nothing" do
+    ctx = Egui::Context.new
+    below_center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      hovered = false
+      ctx.central_panel do |ui|
+        resp = ui.button("below")
+        below_center = resp.rect.center
+        hovered = resp.hovered?
+      end
+      Egui::ColorChooserModal.new("c", Egui::Color32.rgb(255, 0, 0)) { |_| }.show(ctx)
+      ctx.end_frame
+      hovered
+    end
+
+    # closed: no chrome, no blocking
+    draw.call([] of Egui::Event, 0.016)
+    ctx.memory.modal_open?.should be_false
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should_not contain("Select a Color")
+
+    # open: chrome paints, blocking latches from the next frame
+    Egui::ColorChooserModal.new("c", Egui::Color32.rgb(255, 0, 0)) { |_| }.open(ctx)
+    draw.call([] of Egui::Event, 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.modal_open?.should be_true
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Select a Color") # window title
+    texts.should contain("Select")         # button row
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any?(&.fill.==(ctx.style.visuals.modal_dim)).should be_true
+
+    # hover below is blocked
+    draw.call([Egui::Event.pointer_moved(below_center.not_nil!)], 0.064)
+      .should be_false
+  end
+
+  it "Escape and the title-bar X close the modal" do
+    ctx = Egui::Context.new
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      Egui::AboutModal.new("a", "App").show(ctx)
+      ctx.end_frame
+    end
+
+    # Escape closes
+    Egui::AboutModal.new("a", "App").open(ctx)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Escape)], 0.032)
+    ctx.memory.data.get_bool(
+      Egui::Id.from("app_modal/a").child(Egui::WindowModal::OPEN)).should be_false
+
+    # X button closes: modal centered on 800x600, first frame ~140 tall
+    Egui::AboutModal.new("a", "App").open(ctx)
+    draw.call([] of Egui::Event, 0.048)
+    draw.call([] of Egui::Event, 0.064)
+    x = Egui::Id.from("app_modal/a").child(Egui::WindowModal::CLOSE)
+    close_center = ctx.memory.widget_rects[x].not_nil!.center
+    # modest close button: hit target ≤ 20px (not a giant X)
+    ctx.memory.widget_rects[x].not_nil!.width.should be <= 20.0
+    draw.call([Egui::Event.pointer_moved(close_center),
+      Egui::Event.pointer_pressed(close_center),
+      Egui::Event.pointer_released(close_center)], 0.080)
+    ctx.memory.data.get_bool(
+      Egui::Id.from("app_modal/a").child(Egui::WindowModal::OPEN)).should be_false
+  end
+
+  it "dragging the title bar moves the modal (offset persists)" do
+    ctx = Egui::Context.new
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      Egui::AboutModal.new("w", "App").show(ctx)
+      ctx.end_frame
+    end
+
+    Egui::AboutModal.new("w", "App").open(ctx)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+
+    # press the title bar, drag right by 30px
+    title = Egui::Id.from("app_modal/w").child(Egui::WindowModal::TITLE)
+    title_center = ctx.memory.widget_rects[title].not_nil!.center
+    draw.call([Egui::Event.pointer_pressed(title_center)], 0.048)
+    draw.call([Egui::Event.pointer_moved(title_center + Egui::Vec2.new(30.0, 0.0))], 0.064)
+    offset = ctx.memory.data.get_vec2(
+      Egui::Id.from("app_modal/w").child(Egui::WindowModal::OFFSET))
+    offset.x.should be_close(30.0, 0.01)
+  end
+
+  it "ColorChooserModal: hue click notifies live, Select closes, Cancel reverts" do
+    ctx = Egui::Context.new
+    chosen = Egui::Color32.rgb(255, 0, 0)
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      Egui::ColorChooserModal.new("cc", chosen) { |c| chosen = c }.show(ctx)
+      ctx.end_frame
+    end
+
+    Egui::ColorChooserModal.new("cc", chosen) { |c| chosen = c }.open(ctx)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+
+    # the hue bar: the ~180x16 gradient strip under the SV square
+    hue = ctx.memory.widget_rects.values.find do |r|
+      r.width > 150.0 && r.height > 14.0 && r.height < 18.0
+    end.not_nil!
+    hue_pos = Egui::Pos2.new(hue.left + hue.width / 2.0, hue.center.y)
+    draw.call([Egui::Event.pointer_moved(hue_pos),
+      Egui::Event.pointer_pressed(hue_pos),
+      Egui::Event.pointer_released(hue_pos)], 0.048)
+    # h = 0.5 with s = v = 1 → cyan
+    chosen.should eq(Egui::Color32.rgb(0, 255, 255))
+
+    # Select closes, keeping the chosen color
+    select_id = Egui::Id.from("app_modal/cc").child(Egui::ColorChooserModal::BTN_SELECT)
+    sel_center = ctx.memory.widget_rects[select_id].not_nil!.center
+    draw.call([Egui::Event.pointer_moved(sel_center),
+      Egui::Event.pointer_pressed(sel_center),
+      Egui::Event.pointer_released(sel_center)], 0.064)
+    chosen.should eq(Egui::Color32.rgb(0, 255, 255))
+    ctx.memory.data.get_bool(
+      Egui::Id.from("app_modal/cc").child(Egui::WindowModal::OPEN)).should be_false
+
+    # reopen (now cyan is the open-time color), change, Cancel reverts
+    cyan = Egui::Color32.rgb(0, 255, 255)
+    Egui::ColorChooserModal.new("cc", chosen) { |c| chosen = c }.open(ctx)
+    draw.call([] of Egui::Event, 0.080)
+    draw.call([] of Egui::Event, 0.096)
+    hue_pos = Egui::Pos2.new(hue.left + hue.width * 0.1, hue.center.y)
+    draw.call([Egui::Event.pointer_moved(hue_pos),
+      Egui::Event.pointer_pressed(hue_pos),
+      Egui::Event.pointer_released(hue_pos)], 0.112)
+    chosen.should_not eq(cyan) # changed live
+    cancel = Egui::Id.from("app_modal/cc").child(Egui::ColorChooserModal::BTN_CANCEL)
+    can_center = ctx.memory.widget_rects[cancel].not_nil!.center
+    draw.call([Egui::Event.pointer_moved(can_center),
+      Egui::Event.pointer_pressed(can_center),
+      Egui::Event.pointer_released(can_center)], 0.128)
+    chosen.should eq(cyan) # reverted to the reopen color
+    ctx.memory.data.get_bool(
+      Egui::Id.from("app_modal/cc").child(Egui::WindowModal::OPEN)).should be_false
+  end
+
+  it "AboutModal paints metadata; Close button closes" do
+    ctx = Egui::Context.new
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      about = Egui::AboutModal.new("ab", "egui.cr")
+      about.version = "1.0"
+      about.comments = "A port of egui"
+      about.authors = ["Oleg"]
+      about.show(ctx)
+      ctx.end_frame
+    end
+
+    Egui::AboutModal.new("ab", "egui.cr").open(ctx)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("egui.cr")
+    texts.should contain("Version 1.0")
+    texts.should contain("- Oleg")
+    texts.should contain("About") # window title
+
+    close_btn = Egui::Id.from("app_modal/ab").child(Egui::AboutModal::BTN_CLOSE)
+    pos = ctx.memory.widget_rects[close_btn].not_nil!.center
+    draw.call([Egui::Event.pointer_moved(pos),
+      Egui::Event.pointer_pressed(pos),
+      Egui::Event.pointer_released(pos)], 0.048)
+    ctx.memory.data.get_bool(
+      Egui::Id.from("app_modal/ab").child(Egui::WindowModal::OPEN)).should be_false
+  end
+
+  it "WizardModal: Next advances, Back is dead on page 0, Finish fires and closes; reopen resets" do
+    ctx = Egui::Context.new
+    finished = false
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      Egui::WizardModal.new("wz", "Setup", 2) { finished = true }
+        .show(ctx) { |ui, page| ui.label("page #{page}") }
+      ctx.end_frame
+    end
+
+    click = ->(id : Egui::Id, time : Float64) do
+      pos = ctx.memory.widget_rects[id].not_nil!.center
+      draw.call([Egui::Event.pointer_moved(pos),
+        Egui::Event.pointer_pressed(pos),
+        Egui::Event.pointer_released(pos)], time)
+    end
+
+    Egui::WizardModal.new("wz", "Setup", 2) { }.open(ctx)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("Step 1 of 2")
+
+    wz = Egui::Id.from("app_modal/wz")
+
+    # Back on page 0 is disabled: page stays 0
+    click.call(wz.child(Egui::WizardModal::BTN_BACK), 0.048)
+    draw.call([] of Egui::Event, 0.064)
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("Step 1 of 2")
+
+    # Next → page 2, Next becomes Finish
+    click.call(wz.child(Egui::WizardModal::BTN_NEXT), 0.080)
+    draw.call([] of Egui::Event, 0.096)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Step 2 of 2")
+    texts.should contain("Finish")
+    texts.should_not contain("Next")
+
+    # Finish → on_finish fires, closes
+    click.call(wz.child(Egui::WizardModal::BTN_NEXT), 0.112)
+    finished.should be_true
+    ctx.memory.data.get_bool(wz.child(Egui::WindowModal::OPEN)).should be_false
+
+    # reopen → back on page 1
+    Egui::WizardModal.new("wz", "Setup", 2) { }.open(ctx)
+    draw.call([] of Egui::Event, 0.128)
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("Step 1 of 2")
+  end
+end
+
+describe "label text alignment (text: left/center/right)" do
+  it "block labels align within the full available width" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx) # 300 wide, starting at x = 0
+    ui.label("left")
+    ui.label("center", align: :center)
+    ui.label("right", align: :right)
+    ctx.end_frame
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    left = texts.find(&.text.==("left")).not_nil!
+    center = texts.find(&.text.==("center")).not_nil!
+    right = texts.find(&.text.==("right")).not_nil!
+    font = ctx.style.font_size
+    left.pos.x.should be < 5.0
+    center.pos.x.should be_close(
+      (300.0 - ctx.fonts.measure("center", font).x) / 2.0, 0.5)
+    right.pos.x.should be_close(
+      300.0 - ctx.fonts.measure("right", font).x, 0.5)
+  end
+
+  it "per-widget style override centers a label (WidgetStyle#text_align)" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    resp = ui.add(Egui::Label.new("styled").style do |s|
+      s.text_align = :center
+    end)
+    ctx.end_frame
+
+    # block-wide rect, text painted at the center of it
+    resp.rect.width.should be_close(300.0, 0.5)
+    text = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("styled")).not_nil!
+    expected = (300.0 - ctx.fonts.measure("styled", ctx.style.font_size).x) / 2.0
+    text.pos.x.should be_close(expected, 0.5)
+  end
+
+  it "a centered hyperlink keeps a block-wide click target" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    resp = ui.hyperlink_to("link", "https://example.com", align: :center)
+    ctx.end_frame
+
+    resp.rect.width.should be_close(300.0, 0.5)
+    text = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("link")).not_nil!
+    text.pos.x.should be > 100.0
+  end
+end
+
 describe "Visuals#fade_color (theme-aware weak variants)" do
   it "darkens on dark themes, lightens on light ones" do
     dark = Egui::Theme.dark.style.visuals
@@ -2333,6 +2707,83 @@ describe "Sidebar (sections + tabs)" do
     ctx.end_frame
     ctx.painter.commands.select(Egui::LineCmd).should be_empty
   end
+
+  it "scrolls its sections when they overflow the host panel" do
+    ctx = Egui::Context.new
+    # 20 sections × (title + one tab) far exceed the 300px spec Ui.
+    sections = (0...20).map { |i| Egui::Sidebar::Section.new("S#{i}", ["tab"]) }
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).sidebar(sections, 0, 0) { |s, t| }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    content.y.should be > 300.0 # the content really overflows
+
+    # wheel over the sidebar (arbitration needs the pointer inside the
+    # viewport for a frame first) moves the stored offset
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(20.0, 50.0))], 0.032)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 2.0))], 0.048)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    offset.y.should be_close(2.0 * ctx.style.scroll_speed, 0.01)
+
+    # overflow painted the scrollbar track next to the tabs
+    draw.call([] of Egui::Event, 0.064)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == ctx.style.visuals.button_weak &&
+             c.rect.width < 12.0 && c.rect.height > 250.0 }.should be_true
+  end
+
+  it "paints the scrollbar flush against the host panel's right edge" do
+    ctx = Egui::Context.new
+    sections = (0...20).map { |i| Egui::Sidebar::Section.new("S#{i}", ["tab"]) }
+
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(Egui::Pos2.new(50.0, 50.0))])
+    ui = widget_ui(ctx)
+    # mimic a side panel: the Ui's max_rect is inset (300) while the
+    # clip is the full panel (320) — the bar must hug the panel edge,
+    # not float a padding-width inside it. The pointer hovers the
+    # viewport: the overlay bar paints only while hovered.
+    ui.clip = Egui::Rect.from_min_size(Egui::Pos2.zero,
+      Egui::Vec2.new(320.0, 300.0))
+    ui.sidebar(sections, 0, 0) { |s, t| }
+    ctx.end_frame
+
+    track = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.button_weak &&
+             c.rect.width < 12.0 && c.rect.height > 250.0 }.not_nil!
+    track.rect.right.should be_close(320.0, 0.01)
+  end
+
+  it "auto-scrolls a programmatically changed selection into view" do
+    ctx = Egui::Context.new
+    sections = (0...20).map { |i| Egui::Sidebar::Section.new("S#{i}", ["tab"]) }
+    section = 0
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      widget_ui(ctx).sidebar(sections, section, 0) { |s, t| section = s }
+      ctx.end_frame
+    end
+
+    draw.call(0.016) # mount: remembers the incoming selection, no scroll yet
+    draw.call(0.032)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should eq(0.0)
+
+    # the app jumps the selection to a far section — the sidebar
+    # scrolls just enough to reveal that tab next frame
+    section = 15
+    draw.call(0.048)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    offset.should be > 0.0
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero).y
+    offset.should be < content # still clamped into the content
+  end
 end
 
 describe "StyleSheet (CSS-like classes)" do
@@ -2475,11 +2926,11 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
 
     # thicker padding → taller button, same class, next frame
     ctx.stylesheet.rule("button", Egui::StyleVars{
-      "padding.top"    => 14.0,
-      "padding.bottom" => 14.0,
+      "padding.top"    => 18.0,
+      "padding.bottom" => 18.0,
     })
     after = draw.call([] of Egui::Event, 0.032)
-    # 4→14 top and bottom: exactly +20
+    # 8→18 top and bottom: exactly +20
     after.height.should be_close(before.height + 20.0, 0.01)
 
     # class state rule paints the hover fill
@@ -2500,6 +2951,44 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
     draw2.call([Egui::Event.pointer_moved(Egui::Pos2.new(700.0, 500.0))], 0.064)
     ctx.painter.commands.select(Egui::RectCmd)
       .find(&.fill.==(red)).should_not be_nil
+  end
+
+  it "buttons take their gradient from the stylesheet (background_gradient)" do
+    ctx = Egui::Context.new
+    grad = Egui::Gradient.new(Egui::Color32.rgb(60, 150, 90),
+      Egui::Color32.rgb(24, 80, 48))
+    ctx.stylesheet.rule("button.go",
+      Egui::StyleVars{"background_gradient" => grad})
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      rect = widget_ui(ctx).add(Egui::Button.new("Go").css("go")).rect
+      ctx.end_frame
+      rect
+    end
+
+    # base state: the class rule's gradient, verbatim
+    rect = draw.call([] of Egui::Event, 0.016)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == grad.top && c.fill2 == grad.bottom }
+      .should_not be_nil
+
+    # hover: computed Bootstrap-2 shading of the styled gradient
+    draw.call([Egui::Event.pointer_moved(rect.center)], 0.032)
+    shaded = grad.mul(0.85)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == shaded.top && c.fill2 == shaded.bottom }
+      .should_not be_nil
+
+    # an explicit :hover gradient rule wins over the computed shade
+    pinned = Egui::Gradient.new(Egui::Color32.rgb(1, 2, 3),
+      Egui::Color32.rgb(4, 5, 6))
+    ctx.stylesheet.rule("button.go:hover",
+      Egui::StyleVars{"background_gradient" => pinned})
+    draw.call([Egui::Event.pointer_moved(rect.center)], 0.048)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == pinned.top && c.fill2 == pinned.bottom }
+      .should_not be_nil
   end
 end
 
@@ -2957,6 +3446,49 @@ describe "DatePicker" do
     ctx.memory.widget_rects[pid.child(0xE1_u64)].not_nil!.right
       .should be_close(right_before, 0.01)
   end
+
+  it "aligns weekday names over their day columns on a stable-width grid" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15) # September 2026
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("grid", value) { }.rect.center }
+    ctx.end_frame
+
+    # open the popup
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("grid", value) { } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("grid", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/grid").should be_true
+
+    pop_id = Egui::Id.from("popup/date_picker/grid")
+    grid_w = 7 * 30.0 + 2 * ctx.style.spacing.window_padding.x
+    # every row reports exactly the grid width — the popup never re-snaps
+    ctx.memory.layer_sizes[pop_id].x.should be_close(grid_w, 0.01)
+    ctx.memory.popup_rects[pop_id].not_nil!.width.should be_close(grid_w, 0.01)
+
+    # one more frame: the width must not drift
+    raw_frame(ctx, time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("grid", value) { } }
+    ctx.end_frame
+    ctx.memory.layer_sizes[pop_id].x.should be_close(grid_w, 0.01)
+
+    # each weekday name is centered inside its own 30px column
+    grid_left = ctx.memory.popup_rects[pop_id].not_nil!.left +
+                ctx.style.spacing.window_padding.x
+    names = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"}
+    ctx.painter.commands.select(Egui::TextCmd)
+      .select { |t| names.includes?(t.text) }.each do |t|
+      col = names.index(t.text).not_nil!
+      center_x = t.pos.x + ctx.fonts.measure(t.text, t.size).x / 2.0
+      center_x.should be >= grid_left + col * 30.0
+      center_x.should be <= grid_left + (col + 1) * 30.0
+    end
+  end
 end
 
 describe "Plot" do
@@ -3160,5 +3692,219 @@ describe "floating containers are constrained to the screen" do
       .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
     tip.rect.right.should be <= SCREEN.right
     tip.rect.bottom.should be <= SCREEN.bottom
+  end
+end
+
+describe "multiline text edit, TabBar, VScrollBar, InfoBar" do
+  it "multiline: Enter breaks lines, Up/Down move between them" do
+    ctx = Egui::Context.new
+    buffer = "ab"
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.text_edit_multiline(buffer, rows: 3) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+      id
+    end
+
+    id = draw.call([] of Egui::Event, 0.016)
+    rect = ctx.memory.widget_rects[id].not_nil!
+    # rows * line height + vertical button padding
+    rect.height.should be_close(
+      3 * 16.0 * Egui::Fonts::LINE_H_FACTOR +
+      2 * ctx.style.spacing.button_padding.y, 0.01)
+
+    # click the first row's right edge to focus (cursor at row end)
+    click = Egui::Pos2.new(rect.right - 1.0, rect.top + 4.0 + 10.0)
+    draw.call([Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click),
+      Egui::Event.pointer_released(click)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.focus.has_focus?(id).should be_true
+
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Enter)], 0.064)
+    buffer.should eq("ab\n")
+    draw.call([Egui::Event.text_input("c")], 0.080)
+    buffer.should eq("ab\nc")
+    draw.call([Egui::Event.text_input("d")], 0.096)
+    buffer.should eq("ab\ncd")
+
+    # caret at buffer end (line 1); Up → same column on line 0
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Up)], 0.112)
+    draw.call([Egui::Event.text_input("X")], 0.128)
+    buffer.should eq("abX\ncd")
+
+    # Home/End are line-wise: End of line 0 is after "abX"
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home)], 0.144)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End)], 0.160)
+    draw.call([Egui::Event.text_input("!")], 0.176)
+    buffer.should eq("abX!\ncd")
+
+    # focus never left the field
+    ctx.memory.focus.has_focus?(id).should be_true
+  end
+
+  it "multiline: clicking a row places the cursor on that row" do
+    ctx = Egui::Context.new
+    buffer = "a\nb"
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.text_edit_multiline(buffer, rows: 3) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = ctx.memory.widget_rects[id].not_nil!
+
+    # click the left edge of the SECOND row → cursor before "b"
+    row_h = 16.0 * Egui::Fonts::LINE_H_FACTOR
+    click = Egui::Pos2.new(rect.left + 6.0, rect.top + 4.0 + row_h + 10.0)
+    draw.call([Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click),
+      Egui::Event.pointer_released(click)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focus active
+
+    draw.call([Egui::Event.text_input("X")], 0.064)
+    buffer.should eq("a\nXb")
+  end
+
+  it "TabBar: clicking a tab selects it and paints the accent" do
+    ctx = Egui::Context.new
+    selected = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.tabs(["One", "Two", "Three"], selected) { |i| selected = i }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    selected.should eq(0)
+    visuals = ctx.style.visuals
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    lines.any? { |c| c.color == visuals.selection_fill }.should be_true
+
+    # click tab 2 ("Three"): cell = text (28.8) + 2*pad.x, gap 8
+    pad_x = ctx.style.spacing.button_padding.x
+    cell_w = 3 * 9.6 + 2 * pad_x
+    tab2 = Egui::Pos2.new(2 * (cell_w + 8.0) + cell_w / 2.0, 14.0)
+    draw.call([Egui::Event.pointer_moved(tab2),
+      Egui::Event.pointer_pressed(tab2),
+      Egui::Event.pointer_released(tab2)], 0.032)
+    selected.should eq(2)
+  end
+
+  it "TabBar: closable X closes without selecting the tab" do
+    ctx = Egui::Context.new
+    selected = 0
+    closed = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.tabs(["One", "Two", "Three"], selected,
+        closable: true,
+        on_close: ->(i : Int32) { closed = i }) { |i| selected = i }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # hover tab 1 so its X appears, then click the X.
+    # cell = text (28.8) + 2*pad.x + icon (20.8*0.66≈13.73) + icon_spacing 6
+    pad_x = ctx.style.spacing.button_padding.x
+    icon = 20.8 * 0.66
+    cell_w = 3 * 9.6 + 2 * pad_x + icon + 6.0
+    x_center = Egui::Pos2.new(cell_w + 8.0 + cell_w - pad_x - icon / 2.0, 14.0)
+    draw.call([Egui::Event.pointer_moved(x_center)], 0.032)
+    draw.call([Egui::Event.pointer_pressed(x_center),
+      Egui::Event.pointer_released(x_center)], 0.048)
+
+    closed.should eq(1)
+    selected.should eq(0)
+  end
+
+  it "VScrollBar: dragging the thumb moves and clamps the offset" do
+    ctx = Egui::Context.new
+    offset = 0.0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.vscrollbar(offset, 500.0, 100.0, height: 100.0) { |o| offset = o }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    offset.should eq(0.0)
+
+    # press inside the thumb (top of the track), then drag down.
+    # thumb_h = 100*100/500 = 20; scrollable = 80; max_offset = 400.
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(4.0, 10.0)),
+      Egui::Event.pointer_pressed(Egui::Pos2.new(4.0, 10.0))], 0.032)
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(4.0, 40.0))], 0.048)
+    offset.should be_close(150.0, 0.01) # (40 - grab 10) * 400 / 80
+
+    # drag past the bottom → clamped to content - viewport
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(4.0, 95.0))], 0.064)
+    offset.should be_close(400.0, 0.01)
+  end
+
+  it "InfoBar: paints the level fill and dismisses via its X" do
+    ctx = Egui::Context.new
+    dismissed = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.infobar("something went wrong", level: :error) { dismissed += 1 }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    fill = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::InfoBar::ERROR_FILL }
+    fill.not_nil!.rect.width.should be > 0.0
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("something went wrong")
+
+    # X sits at the right edge: click it → the bar dismisses itself
+    bar = fill.not_nil!.rect
+    x_click = Egui::Pos2.new(bar.right - 8.0 - 6.8, bar.center.y)
+    draw.call([Egui::Event.pointer_moved(x_click),
+      Egui::Event.pointer_pressed(x_click),
+      Egui::Event.pointer_released(x_click)], 0.032)
+    dismissed.should eq(1)
+  end
+
+  it "InfoBar: auto_hide expires the message after N seconds" do
+    ctx = Egui::Context.new
+    dismissed = 0
+
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      ui = widget_ui(ctx)
+      ui.infobar("saved", level: :success, auto_hide: 1.0) { dismissed += 1 }
+      ctx.end_frame
+    end
+
+    draw.call(0.016)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == Egui::InfoBar::SUCCESS_FILL }.should be_true
+
+    draw.call(0.500) # still shown
+    dismissed.should eq(0)
+
+    draw.call(1.200) # past 1s → hidden + dismissed exactly once
+    dismissed.should eq(1)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == Egui::InfoBar::SUCCESS_FILL }.should be_false
   end
 end

@@ -30,7 +30,7 @@ module Egui
         Vec2.new(icon, icon))
       ui.painter.rect(icon_rect, 3.0,
         visuals.button_fill(response.hovered?, response.active?),
-        visuals.button_stroke, 1.0)
+        visuals.border_color, 1.0)
 
       if @checked
         # A two-segment checkmark (upstream draws a font glyph; we use

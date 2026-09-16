@@ -1,6 +1,10 @@
 # Port of egui_upstream/crates/egui/src/containers/scroll_area.rs
 # (vertical-only stage: wheel scrolling, offset state, clipping,
-# scrollbar painting + thumb dragging; kinetic scrolling follows later).
+# overlay scrollbar + thumb dragging; kinetic scrolling follows later).
+#
+# The scrollbar is an overlay: it appears (and hit-tests) only while
+# the pointer is over the viewport — or while its thumb is grabbed —
+# so it never steals clicks from the content underneath.
 #
 # State (upstream ScrollState): scroll offset + content size, stored
 # per-id in IdTypeMap. The viewport registers itself with Memory for
@@ -9,14 +13,21 @@
 
 module Egui
   class ScrollArea
-    def initialize(@max_height : Float64? = nil)
+    # Width of the painted scrollbar track. Containers hosting their
+    # own rows inside a ScrollArea (Sidebar's close-X tabs) reserve
+    # this as a gutter while scrollable so the bar never covers an
+    # interactive element.
+    BAR_WIDTH = 8.0
+
+    def initialize(@max_height : Float64? = nil, @id : Id? = nil,
+                   @bar_right : Float64? = nil)
     end
 
     def show(ui : Ui, &block : Ui ->) : Rect
       style = ui.style
       fonts = ui.ctx.fonts
       memory = ui.ctx.memory
-      id = ui.next_widget_id
+      id = @id || ui.next_widget_id
 
       height = {@max_height || ui.available_height, ui.available_height}.min
       viewport = Rect.from_min_size(ui.cursor,
@@ -75,56 +86,86 @@ module Egui
       # pointer — grabbing the thumb keeps the grab point, pressing the
       # track centers the thumb on the pointer.
       if content_size.y > viewport.height && viewport.height > 0.0
-        bar_w = 8.0
+        bar_w = BAR_WIDTH
+        # Where the bar's right edge sits. Default: flush with the
+        # viewport. Hosts whose Ui is inset from the real container
+        # edge (panels pad their Ui by window_padding) pass the clip's
+        # right edge so the bar hugs the panel edge instead of floating
+        # a padding-width inside it (the Sidebar look). Values at the
+        # infinite-clip sentinel fall back to the viewport edge.
+        bar_right = viewport.right
+        if (br = @bar_right) && br < 1e8
+          bar_right = br
+        end
         track = Rect.from_min_size(
-          Pos2.new(viewport.right - bar_w, viewport.top),
+          Pos2.new(bar_right - bar_w, viewport.top),
           Vec2.new(bar_w, viewport.height))
         bar_id = id.child(2)
-        response = ui.interact(track, bar_id, Sense.click_and_drag)
 
-        thumb_h = (viewport.height * viewport.height / content_size.y)
-          .clamp(12.0, viewport.height)
-        scrollable = viewport.height - thumb_h
-        thumb_y = ->(off : Float64) : Float64 do
-          max_offset > 0.0 ? viewport.top + scrollable * off / max_offset
-                            : viewport.top
-        end
+        # Overlay scrollbar (user request): the bar exists only while
+        # the pointer is over this viewport — hover-to-reveal, nothing
+        # painted or hit-tested otherwise, so clicks pass through to
+        # the content underneath. A grab in progress keeps it alive
+        # even if the pointer slips off the viewport mid-drag (the
+        # grab latch is non-NaN while the thumb is held). A pointer
+        # that arrived this frame reveals the bar immediately, but
+        # grabbing needs it registered one frame earlier — hover
+        # first, then press, like macOS overlay bars.
+        grabbing = !memory.data.get_f64(bar_id, Float64::NAN).nan?
+        revealed = grabbing ||
+                   !!(pointer = ui.ctx.input.pointer_pos) &&
+                   viewport.contains?(pointer) && ui.clip.contains?(pointer)
 
-        # Upstream `scroll_start_offset_from_top_left`: where inside the
-        # thumb the pointer grabbed, latched at interaction start and
-        # cleared when the pointer leaves (NaN = no grab in progress).
-        if (response.pressed? || response.dragged?) &&
-           (pointer = ui.ctx.input.pointer_pos)
-          grab = memory.data.get_f64(bar_id, Float64::NAN)
-          if grab.nan?
-            thumb_now = Rect.from_min_size(
-              Pos2.new(track.left, thumb_y.call(offset.y)),
-              Vec2.new(bar_w, thumb_h))
-            grab = thumb_now.contains?(pointer) ? pointer.y - thumb_now.top
-                                                : thumb_h / 2.0
-            memory.data.set_f64(bar_id, grab)
+        if revealed
+          response = ui.interact(track, bar_id, Sense.click_and_drag)
+
+          thumb_h = (viewport.height * viewport.height / content_size.y)
+            .clamp(12.0, viewport.height)
+          scrollable = viewport.height - thumb_h
+          thumb_y = ->(off : Float64) : Float64 do
+            max_offset > 0.0 ? viewport.top + scrollable * off / max_offset
+                              : viewport.top
           end
-          if scrollable > 0.0
-            offset = Vec2.new(0.0,
-              ((pointer.y - grab - track.top) * max_offset / scrollable)
-                .clamp(0.0, max_offset))
-            memory.data.set_vec2(id, offset)
+
+          # Upstream `scroll_start_offset_from_top_left`: where inside the
+          # thumb the pointer grabbed, latched at interaction start and
+          # cleared when the pointer leaves (NaN = no grab in progress).
+          if (response.pressed? || response.dragged?) &&
+             (drag_pointer = ui.ctx.input.pointer_pos)
+            grab = memory.data.get_f64(bar_id, Float64::NAN)
+            if grab.nan?
+              thumb_now = Rect.from_min_size(
+                Pos2.new(track.left, thumb_y.call(offset.y)),
+                Vec2.new(bar_w, thumb_h))
+              grab = thumb_now.contains?(drag_pointer) ? drag_pointer.y - thumb_now.top
+                                                       : thumb_h / 2.0
+              memory.data.set_f64(bar_id, grab)
+            end
+            if scrollable > 0.0
+              offset = Vec2.new(0.0,
+                ((drag_pointer.y - grab - track.top) * max_offset / scrollable)
+                  .clamp(0.0, max_offset))
+              memory.data.set_vec2(id, offset)
+            end
+          else
+            memory.data.set_f64(bar_id, Float64::NAN)
           end
+
+          visuals = style.visuals
+          ui.painter.rect(track, 4.0, visuals.button_weak)
+
+          thumb = Rect.from_min_size(
+            Pos2.new(track.left + 1.0, thumb_y.call(offset.y) + 1.0),
+            Vec2.new(bar_w - 2.0, {thumb_h - 2.0, 4.0}.max))
+          thumb_color = visuals.button_hovered
+          if response.pressed? || response.dragged? || response.hovered?
+            thumb_color = visuals.selection_fill
+          end
+          ui.painter.rect(thumb, 3.0, thumb_color)
         else
+          # Hidden bar: no hit target, and clear any stale grab latch.
           memory.data.set_f64(bar_id, Float64::NAN)
         end
-
-        visuals = style.visuals
-        ui.painter.rect(track, 4.0, visuals.button_weak)
-
-        thumb = Rect.from_min_size(
-          Pos2.new(track.left + 1.0, thumb_y.call(offset.y) + 1.0),
-          Vec2.new(bar_w - 2.0, {thumb_h - 2.0, 4.0}.max))
-        thumb_color = visuals.button_hovered
-        if response.pressed? || response.dragged? || response.hovered?
-          thumb_color = visuals.selection_fill
-        end
-        ui.painter.rect(thumb, 3.0, thumb_color)
       end
 
       ui.min_rect = ui.min_rect.union(viewport)

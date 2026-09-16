@@ -225,7 +225,7 @@ Upstream keeps `Style` on the Context (`Context::style`) with
   unchanged). `App#theme`/`#theme=` delegate to the Context.
 - `WidgetStyle`: per-widget overrides where every field is nilable,
   nil = inherit from the theme (`text_color`, `fill`/`fill_hovered`/
-  `fill_active`, `stroke`, `selection_fill`, `separator_color`,
+  `fill_active`, `border_color`, `selection_fill`, `separator_color`,
   `hyperlink_color`, `font_size`, `button_padding`).
   `#merge_over(base : Style)` clones the theme's Style and copies the
   non-nil fields in — the theme is never mutated.
@@ -433,3 +433,44 @@ entirely — initial widths were used raw everywhere.
   button (previously only true on the opening frame).
 - Tooltips (`Response#show_tooltip`) flip back left/up at the
   right/bottom screen edge instead of overflowing.
+
+## 12. Delta: window-like modal dialogs (GTK pattern, egui.cr-native)
+
+`WindowModal` (`containers/window_modal.cr`, no upstream counterpart)
+is a class of modals that imitate an OS window inside the app — the
+GTK `GtkDialog` shape layered on the existing modal machinery
+(`Memory#mark_modal` + Foreground layer + scrim):
+
+- Window chrome shared by every subclass: title bar (title text,
+  ✕ close button, drag-to-move via a persistent offset from the
+  centered position, constrained to the screen), content area
+  (`#body`), GTK-style right-aligned button strip (`#buttons`,
+  `#button_row` helper with disabled-button graying).
+- Open state, drag offset and per-dialog data live in
+  `Memory#data`/`layer_sizes` keyed by `Id.from("app_modal/<id>")`
+  with high child salts (0x1xx–0x2xx) so they never collide with
+  `Ui#next_widget_id` counters; subclasses are stateless value
+  objects built each frame. Escape closes (GTK default,
+  `close_on_escape = false` opts out).
+- `ColorChooserModal` (GtkColorChooserDialog): the phase-6
+  ColorPicker plus old/new swatch preview, a two-way-synced `#rrggbb`
+  entry, a 19-color default palette; notifies live (GTK
+  `notify::rgba`), Select closes, Cancel reverts to the open-time
+  color.
+- `AboutModal` (GtkAboutDialog): logo/version/comments/website/
+  authors/copyright, Close. Laid out centered — block text alignment
+  (CSS `text-align`) ships with this phase: `RichText#align`,
+  `ui.label(…, align:)`, `ui.heading(align:)`, `Hyperlink`/`
+  hyperlink_to(align:)` and the `WidgetStyle#text_align` /
+  `Style#text_align` override chain; aligned labels are block-level
+  (they take the full row width). The title-bar ✕ is GTK-proportioned
+  (small hit target, inset glyph).
+- `WizardModal` (GtkAssistant): persistent current page (reset on
+  `#open`), Cancel | Back | Next buttons, Back disabled on page 0,
+  Next turns into Finish on the last page and fires the
+  constructor block.
+- Gallery: "Containers → Window Modals" tab opens all three;
+  specs cover chrome/blocking, Escape + ✕, title drag, live hue
+  notify + Select/Cancel semantics, About contents, and the full
+  wizard page cycle.
+

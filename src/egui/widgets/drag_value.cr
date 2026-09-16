@@ -59,7 +59,7 @@ module Egui
       else
         nil # plain label look until touched
       end
-      ui.painter.rect(rect, 3.0, bg, visuals.button_stroke, 1.0) if bg
+      ui.painter.rect(rect, 3.0, bg, visuals.border_color, 1.0) if bg
 
       ui.painter.text(rect.left_center, shown, font_size,
         editing ? visuals.selection_fill : visuals.text_color)

@@ -14,8 +14,10 @@ module Egui
 
     def ui(ui : Ui) : Response
       style = effective_style(ui)
-      height = {style.spacing.interact_size.y * 1.25,
-                style.font_size * 1.5}.max
+      # Not tied to interact_size (that floor is for buttons/controls
+      # and grew in the GTK-proportioned defaults) — a slim bar at
+      # 1.5 text lines, like the pre-bump sizing.
+      height = style.font_size * 1.5
       size = Vec2.new(ui.available_width, height)
       rect = ui.allocate_at_least(size)
       id = ui.next_widget_id
@@ -25,7 +27,7 @@ module Egui
 
       visuals = style.visuals
       ui.painter.rect(rect, 4.0, visuals.button_weak,
-        visuals.button_stroke, 1.0)
+        visuals.border_color, 1.0)
       if fraction > 0.0
         fill_rect = Rect.from_min_size(rect.min,
           Vec2.new(fraction * rect.width, rect.height))

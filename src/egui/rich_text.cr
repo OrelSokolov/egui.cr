@@ -9,9 +9,13 @@ module Egui
     getter size : Float64?
     getter color : Color32?
     getter? underline : Bool
+    # Block alignment (:left/:center/:right — CSS `text-align`); nil
+    # follows the style's default (Style#text_align).
+    getter align : Symbol?
 
     def initialize(@text : String, @size : Float64? = nil,
-                   @color : Color32? = nil, @underline : Bool = false)
+                   @color : Color32? = nil, @underline : Bool = false,
+                   @align : Symbol? = nil)
     end
 
     def size(s : Float64) : RichText
@@ -26,6 +30,11 @@ module Egui
 
     def underline : RichText
       @underline = true
+      self
+    end
+
+    def align(a : Symbol) : RichText
+      @align = a
       self
     end
 

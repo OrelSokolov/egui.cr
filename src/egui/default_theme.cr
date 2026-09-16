@@ -56,7 +56,7 @@ module Egui
         v.button_weak = Color32.rgba(60, 60, 60, 180)
         v.button_hovered = Color32.rgba(85, 85, 85, 200)
         v.button_active = Color32.rgba(110, 110, 110, 220)
-        v.button_stroke = Color32.rgba(96, 96, 96, 255)
+        v.border_color = Color32.rgba(96, 96, 96, 255)
         v.selection_fill = Color32.rgba(0, 122, 204, 255)
         v.hyperlink_color = Color32.rgba(102, 170, 255, 255)
         v.separator_color = Color32.rgba(90, 90, 90, 255)
@@ -70,7 +70,7 @@ module Egui
         v.button_weak = Color32.rgba(228, 228, 228, 255)
         v.button_hovered = Color32.rgba(209, 209, 209, 255)
         v.button_active = Color32.rgba(185, 185, 185, 255)
-        v.button_stroke = Color32.rgba(160, 160, 160, 255)
+        v.border_color = Color32.rgba(160, 160, 160, 255)
         v.selection_fill = Color32.rgba(0, 122, 204, 255)
         v.hyperlink_color = Color32.rgba(0, 92, 170, 255)
         v.separator_color = Color32.rgba(200, 200, 200, 255)
@@ -111,14 +111,14 @@ module Egui
         "text_color" => Color32.rgba(240, 240, 240, 255),
       })
 
-      # button
+      # button — GTK-proportioned default padding (taller buttons)
       sheet.rule("button", StyleVars{
         "fill"            => v.button_weak,
         "text_color"      => v.text_color,
-        "padding.top"     => 4.0,
-        "padding.right"   => 8.0,
-        "padding.bottom"  => 4.0,
-        "padding.left"    => 8.0,
+        "padding.top"     => 8.0,
+        "padding.right"   => 14.0,
+        "padding.bottom"  => 8.0,
+        "padding.left"    => 14.0,
       })
       sheet.rule("button:hover", StyleVars{"fill" => v.button_hovered})
       sheet.rule("button:active", StyleVars{"fill" => v.button_active})

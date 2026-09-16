@@ -7,8 +7,11 @@
 #   4. re-interact: ui.interact(rect, id, sense)
 #   5. paint: bg rect (state-colored) + centered text; return response
 #
-# egui.cr extras: `#gradient(c1, c2)` paints a vertical gradient fill,
-# `#icon(name)` draws a vector icon left of the text.
+# egui.cr extras: `#css(name)` styles the button under the element
+# class "button.<name>" (a CSS class selector — inherits every
+# "button" rule through the cascade), `#icon(name)` draws a vector
+# icon left of the text. Gradient fills come from the style system
+# (`background_gradient` — see `Visuals#background_gradient`).
 
 module Egui
   class Button
@@ -16,7 +19,7 @@ module Egui
 
     getter text : String
 
-    @gradient : Tuple(Color32, Color32)?
+    @extra_class : String?
     @icon : Symbol?
     @image_texture : UInt64?
     @cursor : CursorIcon?
@@ -25,7 +28,15 @@ module Egui
     end
 
     def style_class : String?
-      "button"
+      @extra_class ? "button.#{@extra_class}" : "button"
+    end
+
+    # Extra element class (CSS `class="button success"`): the button
+    # resolves its styles under "button.<name>", so "button.<name>*"
+    # rules add to / override the base "button" rules.
+    def css(name : String) : self
+      @extra_class = name
+      self
     end
 
     # CSS `cursor` style for this button — the icon the mouse shows
@@ -35,11 +46,11 @@ module Egui
       self
     end
 
-    # Vertical gradient fill (top c1 → bottom c2); overrides the plain
-    # state fill.
+    # Vertical gradient fill (top c1 → bottom c2) — thin wrapper over
+    # the per-widget style override; prefer the stylesheet
+    # ("button.<name>" + `background_gradient`).
     def gradient(c1 : Color32, c2 : Color32) : self
-      @gradient = {c1, c2}
-      self
+      style { |s| s.background_gradient = Gradient.new(c1, c2) }
     end
 
     # A vector icon from `Icons::NAMES`, drawn left of the text.
@@ -63,7 +74,7 @@ module Egui
       # defaults. Sizing uses the state-less style; the state only
       # picks colors, re-resolved after the interaction verdict.
       sheet = ui.ctx.stylesheet
-      class_vars = sheet.resolve("button")
+      class_vars = sheet.resolve(style_class.not_nil!)
       style = effective_style(ui, class_vars)
 
       # Per-side padding box; falls back to Spacing#button_padding
@@ -76,6 +87,10 @@ module Egui
       text_size = ui.ctx.fonts.measure(@text, font_size)
       size = Vec2.new(text_size.x + pad.horizontal,
         text_size.y + pad.vertical)
+      # Upstream Button::ui: never smaller than the style's minimum
+      # interactive size.
+      size = Vec2.new({size.x, style.spacing.interact_size.x}.max,
+        {size.y, style.spacing.interact_size.y}.max)
       if (name = @icon) && Icons::NAMES.includes?(name)
         size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
       end
@@ -95,12 +110,21 @@ module Egui
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
       paint_style = state ? effective_style(ui, class_vars, state) : style
       fill = paint_style.visuals.button_fill(response.hovered?, response.active?)
-      if (grad = @gradient) && !response.active?
-        ui.painter.rect(rect, rounding: 4.0, fill: grad[0], fill2: grad[1],
-          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+      if (grad = paint_style.visuals.background_gradient)
+        # Bootstrap-2 interaction, computed: hover shades the gradient
+        # ~15%, active ~30% — UNLESS a state rule ("button.x:hover")
+        # pins its own `background_gradient`, which is then used as-is.
+        pinned = state && sheet.state_vars(style_class.not_nil!, state)
+                                 .try(&.gradient?("background_gradient"))
+        factor = pinned ? 1.0 :
+          response.active? ? 0.70 : response.hovered? ? 0.85 : 1.0
+        shaded = grad.mul(factor)
+        ui.painter.rect(rect, rounding: 4.0, fill: shaded.top,
+          fill2: shaded.bottom,
+          stroke_color: paint_style.visuals.border_color, stroke_width: 1.0)
       else
         ui.painter.rect(rect, rounding: 4.0, fill: fill,
-          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: paint_style.visuals.border_color, stroke_width: 1.0)
       end
 
       # Content: optional icon + centered text.

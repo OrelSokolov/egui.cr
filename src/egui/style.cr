@@ -19,13 +19,16 @@ module Egui
 
     def initialize
       @item_spacing = Vec2.new(8.0, 6.0)
-      @button_padding = Vec2.new(8.0, 4.0)
+      @button_padding = Vec2.new(14.0, 8.0)
       @window_padding = Vec2.new(10.0, 8.0)
       @indent = 16.0
       @icon_width = 14.0
       @icon_width_inner = 8.0
       @icon_spacing = 6.0
-      @interact_size = Vec2.new(40.0, 18.0)
+      # GTK-proportioned minimum for interactive widgets — buttons
+      # floor at this (Button::ui sizes `text + 2*padding` then
+      # maxes with it, like upstream).
+      @interact_size = Vec2.new(48.0, 30.0)
       @slider_width = 100.0
       @slider_rail_width = 3.0
     end
@@ -60,7 +63,12 @@ module Egui
     property button_weak : Color32
     property button_hovered : Color32
     property button_active : Color32
-    property button_stroke : Color32
+    property border_color : Color32
+    # Gradient fill (CSS `background: linear-gradient(...)`): when set,
+    # buttons paint it INSTEAD of the state fill (`fill2` Gouraud); the
+    # style cascade owns it — class rules, `:hover`/`:active` overlays,
+    # per-widget `WidgetStyle#background_gradient`.
+    property background_gradient : Gradient?
     # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
     # progress bar fill, slider handle, hyperlinks.
     property selection_fill : Color32
@@ -91,7 +99,8 @@ module Egui
       @button_weak = Color32.rgba(60, 60, 60, 180)
       @button_hovered = Color32.rgba(85, 85, 85, 200)
       @button_active = Color32.rgba(110, 110, 110, 220)
-      @button_stroke = Color32.rgba(96, 96, 96, 255)
+      @border_color = Color32.rgba(96, 96, 96, 255)
+      @background_gradient = nil
       @selection_fill = Color32.rgba(0, 122, 204, 255)
       @hyperlink_color = Color32.rgba(102, 170, 255, 255)
       @separator_color = Color32.rgba(90, 90, 90, 255)
@@ -134,7 +143,8 @@ module Egui
       other.button_weak = button_weak
       other.button_hovered = button_hovered
       other.button_active = button_active
-      other.button_stroke = button_stroke
+      other.border_color = border_color
+      other.background_gradient = background_gradient
       other.selection_fill = selection_fill
       other.hyperlink_color = hyperlink_color
       other.separator_color = separator_color
@@ -148,6 +158,10 @@ module Egui
     property spacing : Spacing
     property visuals : Visuals
     property font_size : Float64
+    # Default text alignment for block labels (CSS `text-align`):
+    # :left, :center or :right. Overridden per label via
+    # `RichText#align`, `ui.label(align:)` or `WidgetStyle#text_align`.
+    property text_align : Symbol
     # Wheel scroll speed in pixels per wheel notch. The sokol backend
     # reports ±1.0 per notch, so this multiplies the raw delta
     # (touchpads send small fractional deltas, scaled the same way).
@@ -159,6 +173,7 @@ module Egui
       @spacing = Spacing.new
       @visuals = Visuals.new
       @font_size = 16.0
+      @text_align = :left
       @scroll_speed = 60.0
     end
 
@@ -169,6 +184,7 @@ module Egui
       other.spacing = spacing.clone
       other.visuals = visuals.clone
       other.font_size = font_size
+      other.text_align = text_align
       other.scroll_speed = scroll_speed
       other
     end

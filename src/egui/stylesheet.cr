@@ -35,7 +35,7 @@
 module Egui
   # The closed vocabulary of stylable values (keeps `StyleVars` a plain
   # mergeable hash while still type-safe at the getter level).
-  alias StyleValue = Color32 | Float64 | Int32 | Bool | String
+  alias StyleValue = Color32 | Gradient | Float64 | Int32 | Bool | String
 
   # CSS box model for paddings/margins/any four-sided spacing: every
   # side is its own key (`padding.top/left/right/bottom`), with the
@@ -73,6 +73,12 @@ module Egui
 
     def color(key : String, fallback : Color32) : Color32
       color?(key) || fallback
+    end
+
+    # Gradient value under `key` ("background_gradient") — nil unless
+    # the key holds a `Gradient`.
+    def gradient?(key : String) : Gradient?
+      self[key]?.as?(Gradient)
     end
 
     # Integers coerce (CSS vibes: `{"height" => 24}` reads as 24.0).
@@ -144,8 +150,11 @@ module Egui
       if (c = color?("fill_active"))
         v.button_active = c
       end
-      if (c = color?("stroke"))
-        v.button_stroke = c
+      if (c = color?("border_color"))
+        v.border_color = c
+      end
+      if (g = gradient?("background_gradient"))
+        v.background_gradient = g
       end
       if (c = color?("selection_fill"))
         v.selection_fill = c

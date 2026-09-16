@@ -64,7 +64,7 @@ module Egui
       swatch = Rect.from_min_size(Pos2.new(bar.left, bar.bottom + 6.0),
         Vec2.new(size, 12.0))
       ui.painter.rect(swatch, 3.0, hsv.to_color,
-        ui.style.visuals.button_stroke, 1.0)
+        ui.style.visuals.border_color, 1.0)
 
       outer = Rect.from_min_size(square.min,
         Vec2.new(size, swatch.bottom - square.top))

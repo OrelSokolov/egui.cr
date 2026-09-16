@@ -37,6 +37,31 @@ module Egui
     end
   end
 
+  # A two-stop vertical gradient (CSS
+  # `background: linear-gradient(top, bottom)`): the fill of gradient
+  # buttons, set as the `background_gradient` style key.
+  struct Gradient
+    getter top : Color32
+    getter bottom : Color32
+
+    def initialize(@top : Color32, @bottom : Color32)
+    end
+
+    # Both stops darkened by `factor` — the Bootstrap-2 hover/active
+    # shade of a gradient button (hover ≈ 0.85, active ≈ 0.70).
+    def mul(factor : Float64) : Gradient
+      Gradient.new(@top.mul_color(factor), @bottom.mul_color(factor))
+    end
+
+    def ==(other : Gradient) : Bool
+      @top == other.top && @bottom == other.bottom
+    end
+
+    def inspect(io : IO) : Nil
+      io << "Gradient(" << @top << " → " << @bottom << ")"
+    end
+  end
+
   # egui `ecolor::Hsva` — hue/saturation/value with alpha, all 0..=1
   # (hue wraps). Conversions ported from crates/ecolor/src/color.rs
   # (sRGB space, no gamma gymnastics — matches upstream behavior for

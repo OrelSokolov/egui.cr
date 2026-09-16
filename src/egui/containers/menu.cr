@@ -55,8 +55,10 @@ module Egui
     def menu_bar(&block : Ui ->) : Nil
       avail = @available_rect
       pad = style.spacing.window_padding
-      line_h = {style.font_size * Fonts::LINE_H_FACTOR,
-        style.spacing.interact_size.y}.max
+      # Bar height is text-driven (menus are not buttons — the
+      # interact_size floor grew with the GTK-proportioned button
+      # defaults and must not stretch menu rows).
+      line_h = style.font_size * Fonts::LINE_H_FACTOR
       height = line_h + 2 * MENU_PAD_Y
 
       outer = Rect.from_min_size(avail.min, Vec2.new(avail.width, height))
@@ -134,7 +136,9 @@ module Egui
         # and ends right after the last one (the rows already poke out
         # horizontally to cover the side padding).
         pad_x = ctx.style.spacing.window_padding.x
-        ctx.popup(popup_key, Pos2.new(rect.left, rect.bottom),
+        # The button rect anchors the dropdown: near the screen bottom
+        # it flips open above the bar (Context#popup).
+        ctx.popup(popup_key, rect,
           width: 180.0, pad: Vec2.new(pad_x, 0.0)) do |menu_ui|
           menu_ui.menu_popup_key = popup_key
           yield menu_ui
@@ -161,8 +165,9 @@ module Egui
       shortcut_size = shortcut ? ctx.fonts.measure(shortcut, font_size) : Vec2.zero
       # Row height includes the menu vertical padding so the hover
       # highlight breathes around the label like a native menu row.
-      height = {label_size.y + 2 * MENU_PAD_Y,
-        style.spacing.interact_size.y}.max
+      # Text-driven like the bar (see menu_bar): no interact_size
+      # floor — menus did not grow with the button defaults.
+      height = label_size.y + 2 * MENU_PAD_Y
       shortcut_gap = shortcut ? 24.0 : 0.0
       natural_w = 2 * pad.x + label_size.x + shortcut_gap + shortcut_size.x
       row_w = {available_width, natural_w}.max

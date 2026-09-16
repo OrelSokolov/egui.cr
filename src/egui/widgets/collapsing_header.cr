@@ -27,7 +27,7 @@ module Egui
       ui.painter.rect(
         Rect.from_min_size(Pos2.new(rect.min.x, rect.max.y - 1.0),
           Vec2.new(rect.width, 1.0)),
-        fill: v.button_stroke)
+        fill: v.border_color)
 
       if response.clicked?
         open = !open

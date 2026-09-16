@@ -195,17 +195,25 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
          `consume_key` priority; 2) selection + copy/cut/paste via shell-out
          to `xclip`/`wl-copy` (optional, rescue-noop); 3) multiline once
          ScrollArea (P5) exists; 4) IME — deferred to P7.
-      → stage 1 done (single-line, caret, click-to-place, arrows/Home/End,
-      blinking caret); stages 2–4 remain.
+      → stages 1+3 done (single-line + multiline: per-line galleys keep
+      the char↔row mapping exact, Enter/Up/Down/Home/End line-wise,
+      view scrolls to keep the caret visible, `ui.text_edit_multiline`);
+      stages 2+4 remain.
 - [x] `ui.text_edit_singleline(buffer : String, &on_change : String ->)`.
-- [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click.
+- [x] `ui.text_edit_multiline(buffer : String, hint : String?, rows : Int32,
+      &on_change : String ->)`.
+- [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click;
+  multiline Enter/Up/Down/Home/End, click-places-cursor-on-row.
 
 ## Phase 5 — scroll area, panels, resize
 
 - [x] `src/egui/containers/scroll_area.cr` ← `containers/scroll_area.rs`:
       `ScrollState {offset, content_size}` in IdTypeMap; outer Ui sizes the
       viewport, inner child Ui is offset; clipping via existing
-      `painter.clip=`; scrollbars painted as rects when content overflows.
+      `painter.clip=`; the scrollbar is an OVERLAY (user request): it
+      paints and hit-tests only while the pointer is over the viewport
+      (or the thumb is grabbed mid-drag), so a grab needs the hover one
+      frame before the press.
 - [x] Scroll arbitration: top-most scrollable containing the pointer
       consumes `input.scroll` (port of upstream scroll-target logic,
       simplified into Memory).
@@ -266,6 +274,16 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       `Response#changed?`). `examples/widgets_gallery.cr` navigates
       its per-widget galleries through it. Specs: tab/section clicks
       switch the selection, selected tab painted with the accent fill.
+      Contents scroll when they overflow the host panel (stock
+      `ScrollArea`, explicit id so the sidebar reaches the offset cells:
+      wheel + scrollbar; tab rows reserve a `BAR_WIDTH` gutter while
+      scrollable so the bar never covers the close-X buttons); a
+      selection the app hands in different from last frame's (close
+      fix-ups, restores) auto-scrolls into view. `ScrollArea` grew an
+      optional explicit `id`, the `BAR_WIDTH` constant, and a
+      `bar_right` override (the sidebar passes the panel clip's right
+      edge — panel Uis are inset by window_padding, which would float
+      the bar ~10px inside the edge) for this.
 - [x] StyleSheet — CSS-like class styling (user request):
       `src/egui/stylesheet.cr` — a global tree of dotted-path classes
       (`sidebar.tab`) holding mergeable `StyleVars` bags (a Hash
@@ -358,6 +376,22 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       click-elsewhere close, enabled blocking + id stability,
       add_sized cell, columns gaps, date-picker day click, plot
       auto-fit + drag-locks-bounds, drag_value custom format.
+- [x] User-requested widgets: `TabBar` (`containers/tab_bar.cr`) —
+      horizontal browser-style tab strip, Checkbox-pattern selection
+      (`ui.tabs(labels, sel) { |i| … }`), optional closable X per tab
+      (nested-interact pattern: a close never selects);
+      `VScrollBar` (`widgets/vscrollbar.cr`) — standalone vertical
+      scrollbar for app-owned offsets (`ui.vscrollbar(off, content,
+      viewport) { |o| … }`; thumb drag with grab latch, track press
+      centers the thumb, offset clamped to content-viewport);
+      `InfoBar` (`widgets/infobar.cr`) — Rails-style flash message
+      (`ui.infobar(msg, level: :info/:success/:warning/:error,
+      auto_hide: nil) { … }`), level-tinted fill + vector icon,
+      dismiss X, auto-hide timer in IdTypeMap. Gallery: Image tab
+      (procedural texture + failed-load placeholder), Inputs textarea,
+      Containers Tabs tab, Display infobar + vscrollbar. Specs: tab
+      select/close-without-select, vscrollbar drag + clamp, infobar
+      paint/dismiss/auto-hide.
 - [x] `src/egui/widgets/date_picker.cr` ← `egui_extras/src/datepicker/`
       (slim): `ui.date_picker(id, time) { |t| … }` — button with the
       formatted date (custom strftime), popup calendar (‹ month year ›
@@ -377,6 +411,38 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       the existing fiber-backed `SystemPorts::OpenFileDialog` /
       `SaveFileDialog` (the Rakefile example list already expected it).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
+- [x] GTK-style window modals (user request): `containers/
+      window_modal.cr` — `WindowModal`, a base class of modals that
+      imitate an OS window inside the app (title bar with drag + ✕,
+      content area, right-aligned button row, Escape to close; open
+      state/drag offset persist in Memory). Concrete dialogs:
+      `ColorChooserModal` (picker + old/new swatches + hex entry +
+      palette; live notify, Cancel reverts), `AboutModal` (GTK
+      AboutDialog fields) and `WizardModal` (GtkAssistant pages,
+      Back/Next/Finish). Gallery "Window Modals" tab + specs.
+- [x] Block text alignment (user request, CSS `text-align` analog):
+      `RichText#align(:left/:center/:right)`, `ui.label(align:)`,
+      `ui.heading(align:)`, `hyperlink_to(align:)`, plus the style
+      chain `WidgetStyle#text_align` → `Style#text_align` (theme
+      default :left). Aligned labels are block-level — they reserve
+      the full available width and paint at the aligned x. Used by
+      the GTK-style modals (centered About/wizard headers, small ✕);
+      demoed in the Text tab.
+- [x] Larger default buttons (user request): `Spacing#interact_size`
+      40x18 → 48x30 (GTK-proportioned minimum — Button now floors its
+      `text + 2*padding` size at it, like upstream `Button::ui`),
+      `Spacing#button_padding` 8x4 → 14x8, and the `button` class
+      padding box 4/8 → 8/14 in `default_theme.cr`. Dialog button
+      rows (WindowModal#button_row) floor their width at
+      `interact_size.x` too. Spec constants now derive from the
+      style instead of hardcoding the old paddings.
+- [x] ProgressBar stayed slim (user request): height no longer rides
+      `interact_size.y * 1.25` (it grew with the button bump) — a
+      fixed `font_size * 1.5` track, the pre-bump size.
+- [x] Menus stayed compact (user request): the menu bar's line height
+      and `menu_item` rows dropped their `interact_size.y` floor
+      (never binding at the old 18; it stretched menus when the
+      button minimum grew to 30) — text-driven like before.
 - [ ] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync (optional perf).
 - [ ] IME (sapp text-input events), clipboard without shell-out (optional).
