@@ -141,7 +141,10 @@ abstract `ui(ui : Ui) : Response`; `Ui#add`, `Ui#button`, `Ui#label`.
 **Label** (`widgets/label.rs`): builds text layout (`LayoutJob` →
 `Galley` via `fonts`), `allocate_exact_size(galley.size, sense)`,
 paints `TextShape`. egui-cr: `widgets/label.cr` — measure via
-`ctx.fonts.measure`, allocate, paint, `Sense.none` response.
+`ctx.fonts.measure`, allocate, paint. Selectable by default
+(`userselect: true`, upstream `interaction.selectable_labels`):
+click+drag sense, cursor/anchor system state like TextEdit, Ctrl+C
+copies the selection; `userselect: false` → `Sense.none` response.
 
 **Button** (`widgets/button.rs`, atomics in 0.36): sense = click;
 size = text + 2·button_padding; `allocate` → `interact` → paint frame
@@ -483,3 +486,34 @@ shortcuts routed through semantic actions instead of hardcoded
   rules, one-frame dispatch + consume, capture pause, the HotkeyEdit
   click→capture→bind/clear/cancel flow, and the action-driven
   menu_item (hint display + consume).
+
+## 13. Delta: kinetic scrolling + TextArea
+
+No single upstream file maps onto these two; they combine the emath
+`History` port with egui's multiline TextEdit stage.
+
+- `src/egui/history.cr`:
+  - `History` — Float64-specialized port of `emath/history.rs`
+    (min/max length, max age, `velocity` = smoothed series slope).
+  - `KineticScroller` — the state machine consuming it: wheel/thumb
+    input moves the offset directly and latches a history sample per
+    frame; once input stops, the estimated velocity flings the content
+    (clamped to MAX_VELOCITY, exponential HALF_LIFE decay,
+    `request_repaint` while the glide lives, dead stop at the content
+    edges, scrollbar thumb = direct control via `#takeover`).
+    Offset/velocity persist as IdTypeMap cells; the History objects
+    live in `Memory#scroll_history` (pruned with used ids).
+  - `ScrollArea` feeds it wheel deltas; `TextArea` does the same in its
+    own viewport.
+- `src/egui/widgets/textarea.cr` — HTML `<textarea>`-shaped multiline
+  editor (upstream `widgets/text_edit/` multiline stage): soft
+  word-wrap, cursor/selection as byte indexes mapped to rows via
+  `Galley::Row#newline_before` (a wrap break consumes no byte, a
+  newline one; blank lines now emit empty rows in `Fonts#layout`),
+  per-row selection highlight, row-wise Up/Down + line-wise Home/End,
+  Enter inserts `\n`, paste keeps line breaks, UTF-8-aware caret
+  stepping, caret auto-scroll, own scrollbar.
+  API: `ui.textarea(buffer, hint:, rows:, &on_change)`.
+- Specs: history velocity/flush, KineticScroller glide/decay/edges,
+  ScrollArea fling-after-wheel + settle-without-overshoot, textarea
+  typing/navigation/paste/wheel (core_spec.cr).

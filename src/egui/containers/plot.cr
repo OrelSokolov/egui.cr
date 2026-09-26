@@ -16,7 +16,13 @@
 # `animated: true` turns the plot into a live one: once the user pans
 # or zooms away from the default view, a "reset view" pill (custom
 # label via `#reset_label`) appears top-center; clicking it — or
-# double-clicking the plot — snaps back to the default view.
+# double-clicking the plot — snaps back to the default view. The pill
+# is not animated-only: any plot that leaves its default view shows it
+# (unless disabled via `reset_button: false`).
+#
+# `draggable: false` makes the plot read-only: no pan, no wheel zoom,
+# no reset pill — it keeps showing the default (auto-fit / fixed)
+# bounds and only repaints when new data arrives.
 
 module Egui
   class Plot
@@ -34,10 +40,11 @@ module Egui
     end
 
     def initialize(id : String, @height : Float64 = 200.0,
-                   @animated : Bool = false)
+                   @animated : Bool = false, @draggable : Bool = true,
+                   @reset_button : Bool = true)
       @pid = Id.from("plot/#{id}")
-      @lines = [] of {String, Array(Point)}
-      @dots = [] of {String, Array(Point)}
+      @lines = [] of {String, Array(Point), Color32?}
+      @dots = [] of {String, Array(Point), Color32?}
       @reset_label = "Reset view"
     end
 
@@ -45,6 +52,21 @@ module Egui
     # reset pill (or a double-click) returns to it.
     def animated(flag : Bool = true) : Plot
       @animated = flag
+      self
+    end
+
+    # Read-only mode: keep the default view (no pan, no wheel zoom, no
+    # reset pill); the plot still repaints every frame when animated.
+    def draggable(flag : Bool = true) : Plot
+      @draggable = flag
+      self
+    end
+
+    # Show the reset pill once the view deviates from the default
+    # (default true). `reset_button(false)` hides it — then only a
+    # double-click (animated plots) can restore the default view.
+    def reset_button(flag : Bool = true) : Plot
+      @reset_button = flag
       self
     end
 
@@ -63,12 +85,15 @@ module Egui
       self
     end
 
-    def line(name : String, points : Array(Point)) : Nil
-      @lines << {name, points}
+    # `color` overrides the palette color for this series.
+    def line(name : String, points : Array(Point),
+             color : Color32? = nil) : Nil
+      @lines << {name, points, color}
     end
 
-    def points(name : String, points : Array(Point)) : Nil
-      @dots << {name, points}
+    def points(name : String, points : Array(Point),
+               color : Color32? = nil) : Nil
+      @dots << {name, points, color}
     end
 
     # Widget entry point (`ui.add` / `ui.plot`); the series-collection
@@ -85,13 +110,21 @@ module Egui
 
       rect = ui.allocate_at_least(
         Vec2.new(ui.available_width, @height))
-      response = ui.interact(rect, @pid, Sense.click | Sense.drag)
+      response = ui.interact(rect, @pid,
+        @draggable ? Sense.click | Sense.drag : Sense.none)
+
+      # Wheel capture: a draggable plot is a scroll sink like a
+      # ScrollArea viewport or a textarea — register for Memory's
+      # scroll arbitration so that, with the pointer over the plot,
+      # the wheel zooms the plot and an enclosing ScrollArea no
+      # longer scrolls the page underneath.
+      mem.register_scroll_area(@pid, rect, ui.layer) if @draggable
 
       # --- pan / zoom mutate the stored bounds --------------------------
       auto = mem.data.get_int(@pid.child(3), 1) == 1
       # Animated plots: a double-click anywhere on the plot snaps the
       # view back to the default (fixed bounds / auto-fit).
-      if @animated && !auto && response.double_clicked?
+      if @animated && @draggable && !auto && response.double_clicked?
         auto = true
       end
       bounds : {Vec2, Vec2}? = nil
@@ -107,7 +140,8 @@ module Egui
         bounds = {min, max}
       end
 
-      if (b = bounds) && response.dragged? && response.drag_delta.length > 0.0
+      if (b = bounds) && @draggable && response.dragged? &&
+         response.drag_delta.length > 0.0
         d = response.drag_delta
         sx = span_x(b) / rect.width
         sy = span_y(b) / rect.height
@@ -118,8 +152,12 @@ module Egui
         auto = false
       end
 
+      # Zoom only when the plot owns this frame's wheel delta — i.e.
+      # it won scroll arbitration (pointer inside the plot, no higher
+      # scroll sink above it); see Memory#register_scroll_area.
       scroll = ctx.input.scroll
-      if response.hovered? && !scroll.y.zero? && (b = bounds) &&
+      if @draggable && response.hovered? && mem.active_scroll_area? == @pid &&
+         !scroll.y.zero? && (b = bounds) &&
          (z = zoom(scroll.y > 0 ? 0.9 : 1.1, rect, b, ctx))
         bounds = z
         store(mem, z)
@@ -165,15 +203,15 @@ module Egui
         Pos2.new(x, y)
       end
 
-      @lines.each_with_index do |(name, pts), i|
-        color = SERIES_COLORS.call(visuals, i)
+      @lines.each_with_index do |(name, pts, c), i|
+        color = c || SERIES_COLORS.call(visuals, i)
         pts.each_cons(2) do |pair|
           painter.line(to_screen.call(pair[0]), to_screen.call(pair[1]),
             2.0, color)
         end
       end
-      @dots.each_with_index do |(name, pts), i|
-        color = SERIES_COLORS.call(visuals, @lines.size + i)
+      @dots.each_with_index do |(name, pts, c), i|
+        color = c || SERIES_COLORS.call(visuals, @lines.size + i)
         pts.each do |p|
           painter.circle_filled(to_screen.call(p), 2.5, color)
         end
@@ -181,7 +219,10 @@ module Egui
 
       painter.clip = outer_clip
 
-      # axis labels + legend (unclipped — small text at the frame)
+      # axis labels + legend (unclipped — small text at the frame):
+      # y-range top-left/bottom-left, x-range bottom-right/top-right,
+      # legend top-right BELOW the min.x label so the two never
+      # overlap (upstream egui_plot keeps the legend top-right too).
       small = style.font_size * 0.8
       painter.text(Pos2.new(rect.left + 4.0, rect.min.y + small * 0.5),
         fmt(max.y), small, visuals.text_color)
@@ -192,21 +233,22 @@ module Egui
       painter.text(Pos2.new(rect.max.x - 60.0, rect.min.y + small * 0.5),
         fmt(min.x), small, visuals.text_color)
 
-      (@lines + @dots).each_with_index do |(name, _), i|
-        lx = rect.min.x + 8.0
-        ly = rect.min.y + 8.0 + i.to_f64 * small * 1.4
-        painter.line(Pos2.new(lx, ly + small * 0.4),
-          Pos2.new(lx + 14.0, ly + small * 0.4), 2.0,
-          SERIES_COLORS.call(visuals, i))
-        painter.text(Pos2.new(lx + 18.0, ly), name, small,
+      (@lines + @dots).each_with_index do |(name, _, c), i|
+        ts = ctx.fonts.measure(name, small)
+        ly = rect.min.y + small * 2.2 + i.to_f64 * small * 1.4
+        lx = rect.max.x - 26.0 - ts.x # right-aligned text end
+        painter.line(Pos2.new(lx - 18.0, ly + small * 0.4),
+          Pos2.new(lx - 4.0, ly + small * 0.4), 2.0,
+          c || SERIES_COLORS.call(visuals, i))
+        painter.text(Pos2.new(lx, ly), name, small,
           visuals.text_color)
       end
 
-      # Animated plots: once the view deviates from the default, show a
-      # reset pill top-center (drawn after the clip restore so it is
-      # never cut). Interacted after the plot rect, so hit-testing
-      # ranks it topmost and it wins the click.
-      if @animated && !auto
+      # Once the view deviates from the default, show a reset pill
+      # top-center (drawn after the clip restore so it is never cut).
+      # Interacted after the plot rect, so hit-testing ranks it topmost
+      # and it wins the click. Hidden via `reset_button: false`.
+      if @reset_button && !auto
         small = style.font_size * 0.8
         ts = ctx.fonts.measure(@reset_label, small)
         size = Vec2.new(ts.x + 16.0, ts.y + 8.0)
@@ -228,8 +270,10 @@ module Egui
         mem.use_id(@pid.child(4))
       end
 
-      response.on_hover_cursor(CursorIcon::Grab)
-      response.on_hover_and_drag_cursor(CursorIcon::Grabbing)
+      if @draggable
+        response.on_hover_cursor(CursorIcon::Grab)
+        response.on_hover_and_drag_cursor(CursorIcon::Grabbing)
+      end
       response
     end
 

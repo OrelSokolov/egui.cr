@@ -2,8 +2,15 @@
 # single-line WITH selection and clipboard; multi-line and IME follow
 # later).
 #
-# Cursor position and selection anchor are system state (Int32 byte
-# indexes under the widget id; anchor -1 = no selection) — they survive
+# Max-width mode `scroll`: the field never grows past the remaining
+# width of its region (the Ui max-size rule bounds the rect); the
+# text scrolls horizontally inside the fixed box instead, the offset
+# stored per-id and auto-following the caret so typing at either end
+# always keeps the caret (and thus the edit point) in view.
+#
+# Cursor position and selection anchor are system state (Int32
+# CHARACTER indexes under the widget id; anchor -1 = no selection) —
+# they survive
 # IdTypeMap pruning like every widget cell. While focused: text edits
 # at the cursor (replacing the selection when one exists), Backspace/
 # Delete edit around it, Left/Right/Home/End move it (Shift extends the
@@ -11,12 +18,27 @@
 # Clipboard system port, Escape drops focus. Clicking places the cursor
 # via Galley#x_at, double-clicking selects a word, dragging selects a
 # range. The new buffer flows out through Response#widget_text.
+#
+# Password mode (`password: true`): the galley is laid out on a masked
+# copy of the text — one BLACK CIRCLE per character — so the field
+# shows circles instead of what was typed. Cursor, selection, edits
+# and clipboard keep operating on the real text. The masked galley
+# has exactly one circle per character, so display geometry and edit
+# state share the same CHARACTER-COUNT space (Crystal String#[]/.size
+# count characters, not bytes) — no byte↔char translation, only a
+# clamp against the text length for stray indexes (a stale cell, a
+# click mapped onto the longer hint galley).
 
 module Egui
   class TextEdit
     include Widget
 
-    def initialize(@text : String, @hint : String? = nil)
+    # U+25CF BLACK CIRCLE — present in every candidate UI font
+    # (DejaVu, Ubuntu, Roboto, Liberation, Segoe UI, Arial, SFNS).
+    MASK_CHAR = "●"
+
+    def initialize(@text : String, @hint : String? = nil,
+                   @password : Bool = false)
     end
 
     def ui(ui : Ui) : Response
@@ -25,11 +47,27 @@ module Egui
       fonts = ui.ctx.fonts
       id = ui.next_widget_id
       anchor_id = id.child(0x5EED_u64)
+      scroll_id = id.child(0x5C20_u64)
       # The anchor cell has no #interact of its own — mark it used or
       # end-frame pruning drops the selection every frame.
       ui.ctx.memory.use_id(anchor_id)
+      ui.ctx.memory.use_id(scroll_id)
 
-      shown = @text.empty? && (hint = @hint) ? hint : @text
+      # Password mode replaces every character with MASK_CHAR for
+      # display; the masked galley has exactly one circle per
+      # character, so display geometry and edit state share the same
+      # CHARACTER-COUNT space (see the header comment). The lambdas
+      # clamp stray indexes so they never reach the string slices as
+      # out-of-bounds.
+      display = @text
+      display = String.build { |b| @text.each_char { b << MASK_CHAR } } if @password
+      n_chars = @text.size
+      # Edit-state index → galley index, and cursor_at result →
+      # edit-state index: identity, bounded to the text length.
+      d_idx = ->(i : Int32) { i.clamp(0, n_chars) }
+      r_idx = d_idx
+
+      shown = @text.empty? && (hint = @hint) ? hint : display
       runs = [TextRun.new(shown, font_size)]
       galley = fonts.layout(runs)
 
@@ -40,10 +78,21 @@ module Egui
       # way). Reserved at the focused width so focusing doesn't jitter.
       border = 2.0
       inset = Vec2.new(pad.x + border, pad.y + border)
-      size = Vec2.new(
-        {galley.size.x, style.spacing.interact_size.x}.max + inset.x * 2.0,
-        {galley.size.y, style.spacing.interact_size.y}.max + inset.y * 2.0)
+      # An empty field with no hint lays out to a zero-height galley
+      # (no rows) — fall back to the line height, the same one the
+      # caret uses, so the field keeps its height before the first
+      # character gives the galley a real row.
+      line_h = {galley.size.y, font_size * Fonts::LINE_H_FACTOR}.max
+      # Max-width mode `scroll`: natural width clamped to what the
+      # region has left — the field never grows past its parent's
+      # right edge, long text scrolls inside instead.
+      natural_w = {galley.size.x, style.spacing.interact_size.x}.max +
+                  inset.x * 2.0
+      size = Vec2.new({natural_w, ui.available_width}.min,
+        {line_h, style.spacing.interact_size.y}.max + inset.y * 2.0)
       rect = ui.allocate_at_least(size)
+      view_w = {rect.width - inset.x * 2.0, 0.0}.max
+      scroll = ui.ctx.memory.data.get_f64(scroll_id, 0.0)
       response = ui.interact(rect, id,
         Sense::Click | Sense::Drag | Sense::Focusable)
       # Upstream: text caret cursor over the edit field.
@@ -61,9 +110,10 @@ module Egui
         response.request_focus
         if (pos = ui.ctx.input.pointer_pos)
           if response.double_clicked?
-            cursor, anchor = word_range(@text, cursor_at(fonts, galley, rect, inset, pos.x))
+            cursor, anchor = word_range(@text,
+              r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x)))
           else
-            cursor = cursor_at(fonts, galley, rect, inset, pos.x)
+            cursor = r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x))
             anchor = cursor
           end
         end
@@ -71,10 +121,10 @@ module Egui
       # Drag-select: the anchor stays where the press put it, the caret
       # follows the pointer (a drag with no prior press anchors here).
       if response.drag_started? && (pos = ui.ctx.input.pointer_pos) && anchor == -1
-        anchor = cursor_at(fonts, galley, rect, inset, pos.x)
+        anchor = r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x))
       end
       if response.dragged? && (pos = ui.ctx.input.pointer_pos)
-        cursor = cursor_at(fonts, galley, rect, inset, pos.x)
+        cursor = r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x))
       end
 
       if response.has_focus?
@@ -85,6 +135,23 @@ module Egui
       end
       ui.ctx.memory.data.set_int(id, cursor)
       ui.ctx.memory.data.set_int(anchor_id, anchor)
+
+      # Caret auto-follow: while focused, shift the horizontal scroll
+      # so the caret stays inside the view (typing at either end,
+      # Home/End, clicks past the visible edge). Re-clamped against
+      # the content so shrinking text pulls the offset back.
+      max_scroll = {galley.size.x - view_w, 0.0}.max
+      scroll = scroll.clamp(0.0, max_scroll)
+      if response.has_focus?
+        caret_x = galley.x_at(0, d_idx.call(cursor), fonts)
+        if caret_x < scroll
+          scroll = caret_x
+        elsif caret_x + 1.0 > scroll + view_w
+          scroll = caret_x + 1.0 - view_w
+        end
+        scroll = scroll.clamp(0.0, max_scroll)
+      end
+      ui.ctx.memory.data.set_f64(scroll_id, scroll)
 
       visuals = style.visuals
       bg = response.has_focus? ? visuals.button_active : visuals.button_weak
@@ -103,30 +170,44 @@ module Egui
                 visuals.text_color
               end
 
+      # Content (selection, text, caret) is painted shifted by the
+      # horizontal scroll and clipped to the field's INNER rect (inside
+      # the border + padding) — a scrolled row must cut at the content
+      # edge, never paint over the padding/border zone (a wide mask
+      # glyph bleeding into the border reads as misaligned).
+      outer_clip = ui.painter.clip
+      ui.painter.clip = Rect.new(
+        Pos2.new({outer_clip.min.x, rect.min.x + inset.x}.max,
+          {outer_clip.min.y, rect.min.y + inset.y}.max),
+        Pos2.new({outer_clip.max.x, rect.max.x - inset.x}.min,
+          {outer_clip.max.y, rect.max.y - inset.y}.min))
+
       # Selection highlight behind the text (the galley is laid out on
       # the actual text, never the hint).
       sel_min = {cursor, anchor}.min
       sel_max = {cursor, anchor}.max
       if anchor >= 0 && anchor != cursor && !@text.empty?
-        x0 = galley.x_at(0, sel_min, fonts)
-        x1 = galley.x_at(0, sel_max, fonts)
+        x0 = galley.x_at(0, d_idx.call(sel_min), fonts)
+        x1 = galley.x_at(0, d_idx.call(sel_max), fonts)
         top = inner.y + 1.0
         height = {galley.size.y - 2.0, 2.0}.max
         ui.painter.rect(
-          Rect.from_min_size(Pos2.new(inner.x + x0, top),
+          Rect.from_min_size(Pos2.new(inner.x + x0 - scroll, top),
             Vec2.new(x1 - x0, height)),
           2.0, visuals.selection_fill)
       end
 
-      ui.painter.paint_galley(inner, galley, fonts, color)
+      ui.painter.paint_galley(
+        Pos2.new(inner.x - scroll, inner.y), galley, fonts, color)
 
-      # Blinking caret (1s period) while focused. An empty field with
-      # no hint lays out to a zero-height galley (no rows) — fall back
-      # to the line height so the caret stays full-size until the
-      # first character gives the galley a real row.
-      line_h = {galley.size.y, font_size * Fonts::LINE_H_FACTOR}.max
+      ui.painter.clip = outer_clip
+
+      # Blinking caret (1s period) while focused — painted AFTER the
+      # content clip is restored: auto-follow can park it exactly on
+      # the inner edge, where the half-pixel of its centered stroke
+      # would otherwise be scissored away.
       if response.has_focus? && (ui.ctx.input.time % 1.0) < 0.6
-        caret_x = inner.x + galley.x_at(0, cursor, fonts)
+        caret_x = inner.x + galley.x_at(0, d_idx.call(cursor), fonts) - scroll
         top = inner.y + 1.0
         bottom = inner.y + line_h - 1.0
         ui.painter.line(Pos2.new(caret_x, top), Pos2.new(caret_x, bottom),
@@ -138,23 +219,32 @@ module Egui
       response
     end
 
+    # Maps a pointer x to a caret index — the CHARACTER count into the
+    # row (the state keeps character indexes too; password mode's
+    # masked galley has one circle per character, so the count maps
+    # straight through). `scroll` shifts the text origin left, so the
+    # probe compares against the VISIBLE text position, not the
+    # layout origin.
     private def cursor_at(fonts : Fonts, galley : Galley, rect : Rect,
-                          pad : Vec2, pointer_x : Float64) : Int32
+                          pad : Vec2, scroll : Float64,
+                          pointer_x : Float64) : Int32
       row = galley.rows[0]?
       text = row.try(&.text) || ""
-      return text.size if pointer_x >= rect.left + pad.x + galley.size.x
+      origin = rect.left + pad.x - scroll
+      return text.size if pointer_x >= origin + galley.size.x
 
       best = 0
-      text.size.times do |i|
+      text.each_char_with_index do |_, i|
         x = galley.x_at(0, i, fonts)
         best = i
-        break if rect.left + pad.x + x >= pointer_x
+        break if origin + x >= pointer_x
       end
       best
     end
 
     # Word around `pos` for double-click selection: ASCII letters and
-    # digits group together (byte indexes, like the rest of the widget).
+    # digits group together (character indexes, like the rest of the
+    # widget).
     private def word_range(text : String, pos : Int32) : {Int32, Int32}
       return {0, text.size} if text.empty?
       pos = pos.clamp(0, text.size - 1)

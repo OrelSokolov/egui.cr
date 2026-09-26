@@ -17,7 +17,17 @@ class GalleryApp < Egui::App
   @combo = "Second"
   @modal_open = false
   @buffer = "edit me"
-  @buffer2 = "Second edit"
+  # Long enough to overflow the field — demonstrates the max-width
+  # rule: the edit stays region-width and scrolls inside instead of
+  # growing past the panel.
+  @buffer2 = "Second edit " + "1" * 80
+  # Password field demo state — masked input in the Inputs tab.
+  @password = "hunter2"
+  # Textarea demo tab: the multiline buffer — long enough to overflow
+  # the 14-row box so the kinetic scroll has something to scroll.
+  @ta_text : String = (1..40).map { |i|
+    "line #{i} — the quick brown fox jumps over the lazy dog"
+  }.join('\n')
   @color = Egui::Color32.rgb(0, 122, 204)
   @seg = 0
   @sel = false
@@ -45,7 +55,7 @@ class GalleryApp < Egui::App
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Display", "Color", "Hotkeys"],
+      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Display", "Color", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
@@ -154,6 +164,7 @@ class GalleryApp < Egui::App
           when {"Widgets", "Buttons"}        then buttons_gallery(scroll)
           when {"Widgets", "Inputs"}         then inputs_gallery(scroll)
           when {"Widgets", "Text"}           then text_gallery(scroll)
+          when {"Widgets", "Textarea"}       then textarea_gallery(scroll)
           when {"Widgets", "Display"}        then display_gallery(scroll)
           when {"Widgets", "Color"}          then color_gallery(scroll)
           when {"Widgets", "Hotkeys"}        then hotkeys_gallery(scroll)
@@ -329,6 +340,11 @@ class GalleryApp < Egui::App
     ui.label("(select with Shift+arrows or double-click / drag; Ctrl+A/C/X/V)")
     ui.separator
 
+    ui.label("Password field (circles instead of characters):")
+    ui.text_edit_singleline(@password, hint: "password…",
+      password: true) { |t| @password = t }
+    ui.separator
+
     ui.label("Toggle / segmented / selectable:")
     ui.toggle_button(@checked, "Switch (#{@checked})") { |v| @checked = v }
     ui.horizontal do |row|
@@ -353,6 +369,15 @@ class GalleryApp < Egui::App
     ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui")
     ui.label("Hover me").on_hover_text("Tooltips work!")
     ui.label("This long paragraph wraps because the label asked for it — resize the window and watch it reflow.", wrap: true)
+  end
+
+  # HTML <textarea>: soft wrap, kinetic wheel scrolling when the text
+  # outgrows the box, per-line selection, Enter/arrows/Home/End.
+  private def textarea_gallery(ui : Egui::Ui) : Nil
+    ui.label("Multiline editor — flick the wheel inside it to feel the kinetic scroll.")
+    ui.textarea(@ta_text, rows: 14) { |t| @ta_text = t }
+    ui.separator
+    ui.label("#{@ta_text.count('\n') + 1} lines, #{@ta_text.size} bytes")
   end
 
   private def display_gallery(ui : Egui::Ui) : Nil
@@ -554,7 +579,8 @@ class GalleryApp < Egui::App
   # the pointer). Bounds auto-fit until the first interaction, then
   # persist in Memory keyed by the plot id.
   private def plot_gallery(ui : Egui::Ui) : Nil
-    ui.label("Plot (drag to pan, wheel to zoom):")
+    ui.label("Plot (drag to pan, wheel to zoom; the reset pill appears once \
+the view is panned/zoomed):")
     sin = (0..100).map { |i|
       x = i * 0.1
       {x, Math.sin(x)}
@@ -562,6 +588,13 @@ class GalleryApp < Egui::App
     peaks = sin.select { |_, y| y > 0.95 }
     ui.plot("gallery_plot", height: 220) do |p|
       p.line("sin(x)", sin)
+      p.points("peaks", peaks)
+    end
+
+    ui.label("Same plot with reset_button: false — pan/zoom works, but there \
+is no way back (no pill, no double-click reset):")
+    ui.plot("gallery_plot_noreset", height: 220, reset_button: false) do |p|
+      p.line("sin(x)", sin, color: Egui::Color32.rgb(80, 140, 220))
       p.points("peaks", peaks)
     end
 
@@ -588,9 +621,18 @@ class GalleryApp < Egui::App
       # the pill or a double-click returns to the live default.
       p.fixed_bounds(now - 60.0, 0.0, now, 100.0)
       p.reset_label("Reset CPU view")
-      p.line("CPU %", pts)
+      p.line("CPU %", pts, color: Egui::Color32.rgb(120, 180, 60))
     end
     ui.label("current: #{"%.0f" % cpu_value(now)}%")
+
+    ui.separator
+    ui.label("Same animated plot with draggable: false — the view is pinned to \
+the default, no pan/zoom and no reset pill:")
+    ui.plot("cpu_plot_locked", height: 220, animated: true,
+            draggable: false) do |p|
+      p.fixed_bounds(now - 60.0, 0.0, now, 100.0)
+      p.line("CPU % (read-only)", pts, color: Egui::Color32.rgb(210, 80, 80))
+    end
   end
 
   # The emulated load for whole second `sec`: mean-reverting random walk

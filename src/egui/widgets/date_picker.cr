@@ -61,9 +61,10 @@ module Egui
       end
 
       if ctx.popup_open?(@popup_id)
-        # Anchor below the button like combo boxes/menus (upstream): the
-        # popup must not cover its own toggle.
-        ctx.popup(@popup_id, Pos2.new(rect.left, rect.bottom),
+        # Anchor below the button like combo boxes/menus (upstream), but
+        # flip above it when the screen runs out below — the popup must
+        # not cover its own toggle either way.
+        ctx.popup(@popup_id, ctx.dropdown_anchor(@popup_id, rect),
           width: 7 * CELL + 24.0) do |popup|
           calendar(popup, on_change)
         end
@@ -109,20 +110,33 @@ module Egui
         mem.data.set_int(@pid.child(2), m)
       end
 
-      # weekday row
-      ui.horizontal do |row|
-        {% for d in %w[Mo Tu We Th Fr Sa Su] %}
-          row.label({{ d }})
-        {% end %}
-      end
-
-      # day grid: absolute cells, flush rows (no item spacing), like
-      # menu_item — the popup hugs the grid.
-      today = Time.local.in(loc)
       cell_h = {font_size * Fonts::LINE_H_FACTOR,
         style.spacing.interact_size.y}.max
+
+      # weekday row — same absolute 7×CELL columns as the day grid, so
+      # the names line up with the day cells below (a plain #horizontal
+      # would pack them to the left with item spacing instead).
+      weekdays = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"}
+      color = visuals.fade_color(visuals.text_color)
+      7.times do |col|
+        label = weekdays[col]
+        tw = ctx.fonts.measure(label, font_size).x
+        ui.painter.text(
+          Pos2.new(ui.cursor.x + col * CELL + (CELL - tw) / 2.0,
+            ui.cursor.y + cell_h / 2.0),
+          label, font_size, color)
+      end
+      ui.min_rect = ui.min_rect.union(
+        Rect.from_min_size(Pos2.new(ui.cursor.x, ui.cursor.y),
+          Vec2.new(7 * CELL, cell_h)))
+      ui.cursor = Pos2.new(ui.max_rect.min.x, ui.cursor.y + cell_h)
+
+      # day grid: absolute cells, flush rows (no item spacing), like
+      # menu_item — the popup hugs the grid. Always laid out as 6 week
+      # rows (trailing ones empty when they fit) so the popup keeps the
+      # same size for every month — it must not move under the cursor.
+      today = Time.local.in(loc)
       (0..5).each do |week|
-        row_done = false
         7.times do |col|
           day = week * 7 + col - offset + 1
           if day < 1 || day > days
@@ -151,12 +165,11 @@ module Egui
             on_change.call(date)
             ctx.close_popup(@popup_id)
           end
-          row_done = true
         end
         ui.min_rect = ui.min_rect.union(
           Rect.from_min_size(Pos2.new(ui.cursor.x, ui.cursor.y),
             Vec2.new(7 * CELL, cell_h)))
-        ui.cursor = Pos2.new(ui.max_rect.min.x, ui.cursor.y + cell_h) if row_done
+        ui.cursor = Pos2.new(ui.max_rect.min.x, ui.cursor.y + cell_h)
       end
 
       if small_button(ui, @pid.child(0xEE_u64), "Today")
@@ -187,7 +200,7 @@ module Egui
         tw = ctx.fonts.measure(title, font_size).x
         row.cursor = Pos2.new(row.max_rect.center.x - tw / 2.0, row.cursor.y)
         row.label(title)
-        aw = ctx.fonts.measure("›", font_size).x + 8.0
+        aw = small_button_size(row, "›").x
         row.cursor = Pos2.new(row.max_rect.right - aw, row.cursor.y)
         if small_button(row, @pid.child(0xE1_u64), "›")
           shift.call(1)
@@ -199,12 +212,20 @@ module Egui
               "July", "August", "September", "October", "November",
               "December"}
 
+    # Shared size for the header/Today buttons — at least square with
+    # the interact height, so the narrow ‹ › glyphs stay comfortably
+    # clickable (bare glyph padding made the arrows tiny).
+    private def small_button_size(ui : Ui, text : String) : Vec2
+      tw = ui.ctx.fonts.measure(text, ui.style.font_size).x
+      h = ui.style.spacing.interact_size.y
+      Vec2.new({tw + 12.0, h}.max, h)
+    end
+
     private def small_button(ui : Ui, id : Id, text : String) : Bool
       ctx = ui.ctx
       style = ui.style
       text_size = ctx.fonts.measure(text, style.font_size)
-      rect = ui.allocate_at_least(
-        Vec2.new(text_size.x + 8.0, style.spacing.interact_size.y * 0.8))
+      rect = ui.allocate_at_least(small_button_size(ui, text))
       response = ui.interact(rect, id, Sense.click)
       if response.hovered?
         ui.painter.rect(rect, 3.0, style.visuals.button_hovered)

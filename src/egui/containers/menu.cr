@@ -135,7 +135,7 @@ module Egui
         # and ends right after the last one (the rows already poke out
         # horizontally to cover the side padding).
         pad_x = ctx.style.spacing.window_padding.x
-        ctx.popup(popup_key, Pos2.new(rect.left, rect.bottom),
+        ctx.popup(popup_key, ctx.dropdown_anchor(popup_key, rect),
           width: 180.0, pad: Vec2.new(pad_x, 0.0)) do |menu_ui|
           menu_ui.menu_popup_key = popup_key
           yield menu_ui

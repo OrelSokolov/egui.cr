@@ -34,9 +34,14 @@ module Egui
       getter width : Float64
       getter height : Float64
       getter y : Float64
+      # True when a '\n' in the source text immediately precedes this
+      # row (blank-line preservation and byte-offset mapping in
+      # TextArea — wrap-broken rows are not preceded by a newline).
+      getter? newline_before : Bool
 
       def initialize(@runs : Array(RowRun), @width : Float64,
-                     @height : Float64, @y : Float64)
+                     @height : Float64, @y : Float64,
+                     @newline_before : Bool = false)
       end
 
       def text : String

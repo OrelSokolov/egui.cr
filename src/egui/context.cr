@@ -390,6 +390,27 @@ module Egui
     # closes when a click lands outside it (Memory#end_frame). `pad`
     # overrides the frame's inner padding (menus pass a zero vertical
     # pad so the frame hugs the first/last item).
+    # Dropdown anchor (upstream `popup::above_or_below`): the popup
+    # opens below `button`, but flips above it when the button sits too
+    # close to the screen's bottom for the popup's last measured height
+    # (`Memory#layer_sizes`). The very first frame always opens below —
+    # `#popup` measures the content, and from the next frame on the
+    # side is re-picked every frame, so a button that moves (scroll,
+    # window drag) flips back and forth as space allows.
+    def dropdown_anchor(id : String, button : Rect) : Pos2
+      height = @memory.layer_sizes[Id.from("popup/#{id}")]?.try(&.y) || 0.0
+      screen = @input.screen_rect
+      return Pos2.new(button.left, button.bottom) if height <= 0.0 ||
+                                                     screen.width <= 0.0
+      space_below = screen.bottom - button.bottom
+      space_above = button.top - screen.top
+      if height > space_below && height <= space_above
+        Pos2.new(button.left, button.top - height)
+      else
+        Pos2.new(button.left, button.bottom)
+      end
+    end
+
     def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
               pad : Vec2? = nil, min_width : Float64? = nil,
               &block : Ui ->) : Nil

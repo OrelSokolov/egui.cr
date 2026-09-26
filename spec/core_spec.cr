@@ -1438,6 +1438,79 @@ describe "text edit (phase 4.5)" do
     buffer.should eq("abXcd")
   end
 
+  it "password mode masks the display but edits the real text" do
+    ctx = Egui::Context.new
+    buffer = "abcd"
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(buffer, password: true) { |t| buffer = t }
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+
+    # the field paints circles, never the buffer itself
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text).join
+    texts.should contain("●●●●")
+    texts.should_not contain("abcd")
+
+    # click between the 2nd and 3rd circle: cursor lands at "ab|cd"
+    # (monospace metrics — the mask char measures like any other)
+    click_x = rect.left + 6.0 + 2 * 9.6
+    click = Egui::Pos2.new(click_x, rect.center.y)
+    draw.call([Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click),
+      Egui::Event.pointer_released(click)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focus active
+
+    draw.call([Egui::Event.text_input("X")], 0.064)
+    buffer.should eq("abXcd")
+
+    # Backspace deletes the real char behind the caret
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Backspace)], 0.080)
+    buffer.should eq("abcd")
+
+    # the mask follows the edit — five chars, five circles (one more
+    # frame: the event frame still paints the pre-edit buffer)
+    draw.call([Egui::Event.text_input("X")], 0.096)
+    buffer.should eq("abXcd")
+    draw.call([] of Egui::Event, 0.112)
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text).join
+      .should contain("●●●●●")
+  end
+
+  it "password mode clips the scrolled row to the inner rect, not the border" do
+    ctx = Egui::Context.new
+    buffer = "0123456789" * 4 # wider than the 60px region → scrolls
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw = Egui::RawInput.new(
+        Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(60.0, 100.0)),
+        events, time)
+      ctx.begin_frame(raw)
+      ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(60.0, 100.0)))
+      ui.text_edit_singleline(buffer, password: true) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+
+    field = ctx.memory.widget_rects.values.first
+    cmd = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |c| c.text.includes?("●") }.not_nil!
+    # circles must cut at the content edge — never paint over the
+    # padding/border zone (inset = button_padding + 2px border)
+    inset = 10.0
+    cmd.clip.min.x.should be >= field.min.x + inset - 0.01
+    cmd.clip.max.x.should be <= field.max.x - inset + 0.01
+  end
+
   it "arrows move the caret within the field, not focus" do
     ctx = Egui::Context.new
     buffer = "ab"
@@ -2900,6 +2973,41 @@ describe "DatePicker" do
     ctx.popup_open?("date_picker/d").should be_false
   end
 
+  it "flips the calendar popup above the button near the screen bottom" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+
+    # a picker whose button sits close to the screen's bottom edge
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.new(0.0, 540.0),
+          Egui::Vec2.new(300.0, 36.0)))
+      center = ui.date_picker("d", value) { }.rect.center
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    button = ctx.memory.widget_rects.values.first
+
+    # click the button to open the calendar — it opens (below) and
+    # measures its height in the very release frame
+    draw.call([Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!)], 0.032)
+    draw.call([Egui::Event.pointer_released(center.not_nil!)], 0.048)
+    pop_id = Egui::Id.from("popup/date_picker/d")
+    below = ctx.memory.popup_rects[pop_id].not_nil!
+    below.top.should be_close(button.bottom, 0.01)
+    below.height.should be > SCREEN.bottom - button.bottom
+
+    # next frame the calendar flips above the button, fully on screen
+    draw.call([] of Egui::Event, 0.064)
+    above = ctx.memory.popup_rects[pop_id].not_nil!
+    above.bottom.should be_close(button.top, 0.01)
+    above.top.should be >= 0.0
+  end
+
   it "advances the shown month on a header arrow click" do
     ctx = Egui::Context.new
     value = Time.local(2026, 9, 15)
@@ -2936,6 +3044,51 @@ describe "DatePicker" do
     ctx.popup_open?("date_picker/d").should be_true
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("October 2026")
+  end
+
+  it "keeps the same popup size for every month" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    # open the popup
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+    pop_id = Egui::Id.from("popup/date_picker/d")
+    heights = [ctx.memory.popup_rects[pop_id].not_nil!.height]
+
+    # click "›" five times: Sep → … → Feb 2027 — a 28-day month starting
+    # on Monday that fits in 4 week rows; the popup must not shrink
+    5.times do |i|
+      arrow = ctx.painter.commands.select(Egui::TextCmd)
+        .find { |t| t.text == "›" }.not_nil!
+      target = arrow.pos + Egui::Vec2.new(1.0, 0.0)
+      t0 = 0.048 + 0.048 * i
+      raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+        Egui::Event.pointer_pressed(target)], time: t0)
+      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.end_frame
+      raw_frame(ctx, events: [Egui::Event.pointer_released(target)],
+        time: t0 + 0.016)
+      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.end_frame
+      # the frame after the click renders the shifted month
+      raw_frame(ctx, time: t0 + 0.032)
+      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.end_frame
+      heights << ctx.memory.popup_rects[pop_id].not_nil!.height
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("February 2027")
+    heights.each { |h| h.should be_close(heights.first, 0.01) }
   end
 
   it "closes the calendar on a click on empty space outside it" do
@@ -3038,6 +3191,199 @@ describe "Plot" do
     end
     ctx.end_frame
     auto.should be_false # a drag locks the bounds
+  end
+
+  it "stays in auto mode when draggable is disabled" do
+    ctx = Egui::Context.new
+    pts = [{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.5}]
+
+    raw_frame(ctx)
+    rect = nil
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("ro", height: 150.0).draggable(false)
+      p.line("data", pts)
+      rect = p.show(ui).rect
+    end
+    ctx.end_frame
+
+    # the same drag sequence as above must not leave the default view
+    from = Egui::Pos2.new(rect.not_nil!.center.x + 20.0, rect.not_nil!.center.y)
+    to = Egui::Pos2.new(rect.not_nil!.center.x - 20.0, rect.not_nil!.center.y)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(from),
+      Egui::Event.pointer_pressed(from)], time: 0.032)
+    ctx.window("demo") do |ui|
+      Egui::Plot.new("ro", height: 150.0).draggable(false)
+        .tap { |p| p.line("data", pts) }.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(to)], time: 0.048)
+    ctx.window("demo") do |ui|
+      Egui::Plot.new("ro", height: 150.0).draggable(false)
+        .tap { |p| p.line("data", pts) }.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(to)], time: 0.064)
+    auto = false
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("ro", height: 150.0).draggable(false)
+      p.line("data", pts)
+      p.show(ui)
+      id = Egui::Id.from("plot/ro")
+      auto = ctx.memory.data.get_int(id.child(3), 1) == 1
+    end
+    ctx.end_frame
+    auto.should be_true # read-only: bounds never leave the default view
+  end
+
+  it "captures the wheel over a plot inside a ScrollArea (no page scroll)" do
+    ctx = Egui::Context.new
+    pts = [{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.5}]
+    pid = Egui::Id.from("plot/p")
+    scroll_id = Egui::Id.from("spec").child(1)
+    center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 300.0) do |s|
+        p = Egui::Plot.new("p", height: 80.0)
+        p.line("data", pts)
+        center = p.show(s).rect.center
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout — both the viewport and the plot register as
+    # scroll sinks, and auto-fit stores the default bounds
+    draw.call([] of Egui::Event, 0.016)
+    auto_span = begin
+      b = {ctx.memory.data.get_vec2(pid.child(1), Egui::Vec2.zero),
+           ctx.memory.data.get_vec2(pid.child(2), Egui::Vec2.new(1, 1))}
+      b[1].x - b[0].x
+    end
+
+    # frame 2: wheel over the plot — the plot wins scroll arbitration:
+    # it zooms and the enclosing ScrollArea must not consume the delta
+    draw.call([Egui::Event.pointer_moved(center.not_nil!),
+               Egui::Event.scroll(Egui::Vec2.new(0.0, 20.0))], 0.032)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should eq(0.0)
+    ctx.memory.data.get_int(pid.child(3), 1).should eq(0) # left auto mode
+    min = ctx.memory.data.get_vec2(pid.child(1), Egui::Vec2.zero)
+    max = ctx.memory.data.get_vec2(pid.child(2), Egui::Vec2.new(1, 1))
+    (max.x - min.x).should_not be_close(auto_span, 0.001) # bounds re-zoomed
+
+    # frame 3: wheel below the plot, still inside the viewport — now
+    # the ScrollArea owns the delta and the page scrolls
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(150.0, 200.0)),
+               Egui::Event.scroll(Egui::Vec2.new(0.0, 20.0))], 0.064)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.abs.should be > 0.0
+  end
+
+  it "shows the reset pill on a standard plot after a drag; reset_button \
+hides it" do
+    ctx = Egui::Context.new
+    pts = [{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.5}]
+
+    # pan "pill" (default reset button) left by 40 px
+    rect = nil
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("pill", height: 150.0)
+      p.line("data", pts)
+      rect = p.show(ui).rect
+    end
+    ctx.end_frame
+    from = Egui::Pos2.new(rect.not_nil!.center.x + 20.0, rect.not_nil!.center.y)
+    to = Egui::Pos2.new(rect.not_nil!.center.x - 20.0, rect.not_nil!.center.y)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(from),
+      Egui::Event.pointer_pressed(from)], time: 0.032)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("pill", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(to)], time: 0.048)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("pill", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(to)], time: 0.064)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("pill", height: 150.0)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    labels = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    labels.should contain("Reset view") # non-animated plot still gets it
+
+    # same drag on "nopill" with reset_button: false
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("nopill", height: 150.0).reset_button(false)
+      p.line("data", pts)
+      rect = p.show(ui).rect
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(from),
+      Egui::Event.pointer_pressed(from)], time: 0.100)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("nopill", height: 150.0).reset_button(false)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(to)], time: 0.116)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("nopill", height: 150.0).reset_button(false)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(to)], time: 0.132)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("nopill", height: 150.0).reset_button(false)
+      p.line("data", pts)
+      p.show(ui)
+    end
+    ctx.end_frame
+    labels = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    labels.should_not contain("Reset view")
+  end
+
+  it "keeps the axis labels and legend entries from overlapping" do
+    ctx = Egui::Context.new
+    pts = [{0.0, 0.0}, {1.0, 1.0}, {2.0, 0.5}]
+
+    rect = nil
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      p = Egui::Plot.new("ovl", height: 150.0)
+      p.line("sin(x)", pts)
+      p.points("peaks", pts)
+      rect = p.show(ui).rect
+    end
+    ctx.end_frame
+
+    # every plot text (4 corner axis labels + 2 legend names); pos is
+    # the left-center of the text box
+    r = rect.not_nil!
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+      .select { |c| r.contains?(c.pos) }
+    texts.size.should eq 6
+    boxes = texts.map do |c|
+      ts = ctx.fonts.measure(c.text, c.size)
+      {c.pos.x, c.pos.y - ts.y / 2.0,
+       c.pos.x + ts.x, c.pos.y + ts.y / 2.0}
+    end
+    boxes.each_permutation(2) do |(a, b)|
+      overlap = !(a[2] <= b[0] || b[2] <= a[0] ||
+                  a[3] <= b[1] || b[3] <= a[1])
+      overlap.should be_false
+    end
   end
 end
 
@@ -3148,6 +3494,38 @@ describe "floating containers are constrained to the screen" do
 
     rect = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
     rect.width.should be >= 240.0
+  end
+
+  it "a combo popup near the screen bottom flips above its button" do
+    ctx = Egui::Context.new
+
+    # a combo whose button sits close to the screen's bottom edge
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.new(0.0, 540.0),
+          Egui::Vec2.new(300.0, 36.0)))
+      Egui::ComboBox.new("cb", "sel", ["a", "b", "c"], 240.0).show(ui) { |_| }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    button = ctx.memory.widget_rects.values.first
+    center = button.center
+
+    # click the combo button to open its popup — it opens (below) and
+    # measures its height in the very release frame
+    draw.call([Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)], 0.032)
+    draw.call([Egui::Event.pointer_released(center)], 0.048)
+    below = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
+    below.top.should be_close(button.bottom, 0.01)
+
+    # next frame the popup flips above the button
+    draw.call([] of Egui::Event, 0.064)
+    above = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
+    above.bottom.should be_close(button.top, 0.01)
+    above.top.should be >= 0.0
   end
 
   it "a modal on a narrow screen is never wider than the screen" do
@@ -3361,5 +3739,453 @@ describe "on-demand repaint (phase 7)" do
     raw_frame(ctx, [] of Egui::Event, 0.316)
     ctx.needs_repaint?.should be_false
     ctx.end_frame
+  end
+end
+
+describe "history (emath port, kinetic scrolling)" do
+  it "estimates velocity over the window and flushes old samples" do
+    h = Egui::History.new(2..128, 0.1)
+    h.velocity.should be_nil        # empty
+    h.add(0.000, 0.0)
+    h.velocity.should be_nil        # a lone sample estimates nothing
+    h.add(0.016, 10.0)
+    h.velocity.not_nil!.should be_close(10.0 / 0.016, 0.01)
+    h.size.should eq(2)
+
+    # Samples older than max_age drop out (but min_len keeps two).
+    h.add(0.500, 500.0)
+    h.size.should eq(2)
+    h.velocity.not_nil!.should be_close((500.0 - 10.0) / (0.500 - 0.016), 0.01)
+  end
+
+  it "kinetic scroller glides, decays and stops at the edges" do
+    ctx = Egui::Context.new
+    hist = Egui::History.new(2..128, 0.1)
+    kin = Egui::KineticScroller.new(0.0, 0.0, hist)
+
+    # A single impulse: no release velocity without a second sample.
+    kin.input(100.0, 0.016, 500.0)
+    kin.velocity.should eq(0.0)
+    kin.offset.should eq(100.0)
+
+    # Two impulses close together estimate a fling velocity (≈6250 px/s)
+    # clamped to MAX_VELOCITY.
+    kin.input(100.0, 0.032, 500.0)
+    kin.velocity.should eq(Egui::KineticScroller::MAX_VELOCITY)
+
+    # …and once input stops the offset keeps moving, decaying.
+    off1 = kin.offset
+    kin.glide(0.016, 500.0, ctx)
+    kin.offset.should be > off1
+    ctx.needs_repaint?.should be_true
+    v1 = kin.velocity
+    kin.glide(0.016, 500.0, ctx)
+    kin.velocity.should be < v1 # decayed
+
+    # Hitting the bottom edge kills the glide.
+    kin.glide(10.0, 500.0, ctx)
+    kin.offset.should eq(500.0)
+    kin.velocity.should eq(0.0)
+
+    # The scrollbar thumb takes over: no inertia afterwards.
+    kin2 = Egui::KineticScroller.new(0.0, 900.0,
+      Egui::History.new(2..128, 0.1))
+    kin2.takeover
+    kin2.velocity.should eq(0.0)
+  end
+end
+
+describe "kinetic scroll area" do
+  it "glides after the wheel stops and settles without overshoot" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    inside = Egui::Pos2.new(50.0, 50.0)
+
+    # One isolated notch: immediate offset, no fling afterwards.
+    draw.call([Egui::Event.pointer_moved(inside),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.032)
+    single = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+    single.should be > 0.0
+    draw.call([] of Egui::Event, 0.048)
+    draw.call([] of Egui::Event, 0.064)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should eq(single)
+
+    # Two notches on consecutive frames: release velocity builds and
+    # the offset keeps growing over the following idle frames.
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 2.0))], 0.080)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 2.0))], 0.096)
+    flung = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+
+    prev = flung
+    monotonic = true
+    200.times do |i|
+      draw.call([] of Egui::Event, 0.112 + i * 0.016)
+      off = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
+      monotonic &&= off >= prev
+      prev = off
+    end
+    monotonic.should be_true
+    prev.should be > flung # the glide really moved the content
+    ctx.needs_repaint?.should be_false # …and it settled
+
+    # The glide never overshoots the content bounds.
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    prev.should be <= content.y - 100.0 + 0.01
+  end
+end
+
+describe "textarea (multiline text edit)" do
+  it "layout preserves blank lines and maps newline rows" do
+    galley = Egui::Context.new.fonts.layout(
+      [Egui::TextRun.new("a\n\nb", 16.0)])
+    galley.rows.map(&.text).should eq(["a", "", "b"])
+    galley.rows[1].newline_before?.should be_true
+    galley.rows[2].newline_before?.should be_true
+    galley.rows[0].newline_before?.should be_false
+
+    # trailing newline still owes an (empty) final row for the caret
+    galley2 = Egui::Context.new.fonts.layout(
+      [Egui::TextRun.new("x\n", 16.0)])
+    galley2.rows.map(&.text).should eq(["x", ""])
+  end
+
+  it "Enter inserts newlines, arrows navigate lines, Home/End are line-wise" do
+    ctx = Egui::Context.new
+    buffer = "ab"
+    wid = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.textarea(buffer) { |t| buffer = t }
+      wid = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focused, caret at the end
+
+    # End then Enter: newline at the end of the first line.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End)], 0.064)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Enter)], 0.080)
+    buffer.should eq("ab\n")
+
+    # Type on the second line, then Home jumps to ITS start.
+    draw.call([Egui::Event.text_input("cd")], 0.096)
+    buffer.should eq("ab\ncd")
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home)], 0.112)
+    draw.call([Egui::Event.text_input("X")], 0.128)
+    buffer.should eq("ab\nXcd")
+
+    # Backspace at the START of line two removes the newline and
+    # merges the lines (Up keeps its column, Home snaps to the start).
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Up)], 0.160)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Down)], 0.168)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home)], 0.172)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Backspace)], 0.176)
+    buffer.should eq("abXcd") # \n removed → lines merged
+
+    # Down at the bottom is a no-op, caret stays at the end.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End)], 0.192)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Down)], 0.208)
+    draw.call([Egui::Event.text_input("!")], 0.224)
+    buffer.should eq("abXcd!")
+  end
+
+  it "paste keeps line breaks and wheel scrolls the viewport" do
+    ctx = Egui::Context.new
+    buffer = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj"
+    wid = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      r = ui.textarea(buffer, rows: 3) { |t| buffer = t }
+      wid = r.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # Ctrl+A/C copies everything; the clipboard port is in-memory here.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::A, Egui::Modifiers.new),
+      Egui::Event.key_pressed(Egui::KeyCode::C, ctrl)], 0.080)
+    Egui::SystemPorts::Clipboard.text.should eq("a\nb\nc\nd\ne\nf\ng\nh\ni\nj")
+
+    # Wheel over the box: the content (10 lines) overflows 3 rows, the
+    # viewport scrolls (arbitration resolves one frame later).
+    rect = ctx.memory.widget_rects[wid.not_nil!]
+    inside = Egui::Pos2.new(rect.left + 20.0, rect.top + 10.0)
+    scroll_id = wid.not_nil!.child(0x5C40_u64)
+    draw.call([Egui::Event.pointer_moved(inside)], 0.096)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.112)
+    draw.call([] of Egui::Event, 0.128)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should be > 0.0
+
+    # The wheel also scrolls a FOCUSED textarea away from the caret —
+    # keep-caret-visible must only run when the caret moved, not every
+    # frame (the caret sits at the end after the Ctrl+A/C above).
+    offset = ->{ ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y }
+    8.times do |i|
+      draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, -1.0))], 0.144 + 0.016 * i)
+    end
+    offset.call.should be_close(0.0, 0.01)
+
+    # …and moving the caret scrolls it back into view: Home moves it
+    # within the (now off-screen) last row → the viewport jumps down
+    # to the caret on that frame…
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home)], 0.288)
+    jumped = offset.call
+    jumped.should be > 0.0
+    # …then leaves the offset alone while the caret stays put.
+    draw.call([] of Egui::Event, 0.304)
+    offset.call.should be_close(jumped, 0.01)
+  end
+
+  it "clips the galley to the box — text never paints past the bottom" do
+    ctx = Egui::Context.new
+    buffer = ("line\n" * 20).rchop # 20 lines in a 3-row box
+
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    rect = ui.textarea(buffer, rows: 3) { |t| buffer = t }.rect
+    ctx.end_frame
+
+    ctx.painter.commands.select(Egui::TextCmd).each do |cmd|
+      next unless cmd.text == "line"
+      # every row's clip must end at the box's inner bottom (a clip that
+      # reaches past it lets text spill over the widgets below)
+      cmd.clip.max.y.should be <= rect.bottom
+    end
+  end
+end
+
+describe "selectable labels" do
+  it "drag-selects label text and copies it with Ctrl+C" do
+    ctx = Egui::Context.new
+    label_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      label_rect = ui.label("Hello World!").rect
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = label_rect.not_nil!
+    left = rect.min
+    right = Egui::Pos2.new(rect.right, rect.center.y)
+
+    # press at the text start, drag to the far end
+    draw.call([Egui::Event.pointer_moved(left),
+      Egui::Event.pointer_pressed(left)], 0.032)
+    draw.call([Egui::Event.pointer_moved(right)], 0.048)
+    # the selection highlight paints behind the text
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == ctx.style.visuals.selection_fill }.should be_true
+
+    # Ctrl+C (nothing holds keyboard focus) → clipboard gets the text
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::C, ctrl)], 0.064)
+    Egui::SystemPorts::Clipboard.text.should eq("Hello World!")
+  end
+
+  it "double-click selects a word" do
+    ctx = Egui::Context.new
+    label_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      label_rect = ui.label("Hello World!").rect
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = label_rect.not_nil!
+    # inside "Hello" (monospace metrics: 0.6 × 16 px per char)
+    mid = Egui::Pos2.new(rect.left + 3.0 * 9.6, rect.center.y)
+
+    # two quick clicks at the same spot → double click
+    draw.call([Egui::Event.pointer_moved(mid),
+      Egui::Event.pointer_pressed(mid)], 0.032)
+    draw.call([Egui::Event.pointer_released(mid)], 0.048)
+    draw.call([Egui::Event.pointer_pressed(mid)], 0.064)
+    draw.call([Egui::Event.pointer_released(mid)], 0.080)
+
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::C, ctrl)], 0.096)
+    Egui::SystemPorts::Clipboard.text.should eq("Hello")
+  end
+
+  it "userselect: false stays inert" do
+    ctx = Egui::Context.new
+    Egui::SystemPorts::Clipboard.text = "sentinel"
+    label_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      response = ui.label("nope", userselect: false)
+      response.sense.none?.should be_true
+      label_rect = response.rect
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = label_rect.not_nil!
+    mid = rect.center
+
+    draw.call([Egui::Event.pointer_moved(mid),
+      Egui::Event.pointer_pressed(mid)], 0.032)
+    draw.call([Egui::Event.pointer_moved(rect.max)], 0.048)
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::C, ctrl)], 0.064)
+    Egui::SystemPorts::Clipboard.text.should eq("sentinel")
+  end
+end
+
+describe "max-size rule (widgets never overflow their region)" do
+  it "allocate_space clamps the rect to max_rect" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+      Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(200.0, 100.0)))
+    rect = ui.allocate_at_least(Egui::Vec2.new(500.0, 30.0))
+    rect.width.should be_close(200.0, 0.01)
+    rect.height.should be_close(30.0, 0.01)
+    # the cursor advanced by the CLAMPED size — in a horizontal row the
+    # next widget starts past the remaining room and clamps at the
+    # region's right edge, never past it
+    row = Egui::Ui.new(ctx, Egui::Id.from("spec/row"),
+      Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(200.0, 100.0)),
+      Egui::Layout.left_to_right)
+    r1 = row.allocate_at_least(Egui::Vec2.new(150.0, 30.0))
+    r2 = row.allocate_at_least(Egui::Vec2.new(100.0, 30.0))
+    r1.width.should be_close(150.0, 0.01)
+    r2.right.should be_close(200.0, 0.01)
+    r2.width.should be < 100.0
+    ctx.end_frame
+  end
+
+  it "a long single-line edit is bounded by the region width and scrolls its caret into view" do
+    ctx = Egui::Context.new
+    buffer = "1" * 200
+    id = Egui::Id.from("x")
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(150.0, 300.0)))
+      r = ui.text_edit_singleline(buffer) { |t| buffer = t }
+      id = r.id
+      ctx.end_frame
+      r
+    end
+
+    r0 = draw.call([] of Egui::Event, 0.016)
+    r0.rect.width.should be <= 150.0
+
+    # click the right edge → focus with the caret at the end of a
+    # 200-char line — far past the 150px view
+    right_edge = Egui::Pos2.new(r0.rect.right - 1.0, r0.rect.center.y)
+    draw.call([Egui::Event.pointer_moved(right_edge),
+      Egui::Event.pointer_pressed(right_edge),
+      Egui::Event.pointer_released(right_edge)], 0.032)
+    r = draw.call([] of Egui::Event, 0.048)
+    ctx.memory.focus.has_focus?(id).should be_true
+    r.rect.width.should be <= 150.0
+
+    # the field scrolled horizontally to keep the caret visible, and
+    # the text is painted clipped to the field rect
+    scroll_id = id.child(0x5C20_u64)
+    ctx.memory.data.get_f64(scroll_id, 0.0).should be > 0.0
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    texts.each do |cmd|
+      cmd.clip.right.should be <= r.rect.right + 0.01
+    end
+
+    # Home scrolls back to the start
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home)], 0.064)
+    ctx.memory.data.get_f64(scroll_id, 0.0).should be_close(0.0, 0.01)
+  end
+end
+
+describe "text edit on multibyte text (character-index state)" do
+  it "password field: click then Backspace/typing near cyrillic stays in bounds" do
+    ctx = Egui::Context.new
+    password = "hunter2пароль"
+
+    rect = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(password, password: true) { |t| password = t }
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    # click near the right end — the caret lands inside the masked
+    # text; with byte-offset state this used to raise IndexError on
+    # the next edit (Crystal String#[] indexes by CHARACTER)
+    pos = Egui::Pos2.new(rect.not_nil!.right - 20.0, rect.not_nil!.center.y)
+    draw.call([Egui::Event.pointer_moved(pos),
+      Egui::Event.pointer_pressed(pos),
+      Egui::Event.pointer_released(pos)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Backspace)], 0.064)
+    password.size.should eq("hunter2пароль".size - 1)
+    draw.call([Egui::Event.text_input("!")], 0.080)
+    password.size.should eq("hunter2пароль".size)
+  end
+
+  it "textarea: arrows, Delete and Backspace step one character on cyrillic" do
+    ctx = Egui::Context.new
+    buffer = "привет мир\nвторая строка"
+
+    rect = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.textarea(buffer) { |t| buffer = t }
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    pos = Egui::Pos2.new(rect.not_nil!.left + 30.0, rect.not_nil!.top + 30.0)
+    draw.call([Egui::Event.pointer_moved(pos),
+      Egui::Event.pointer_pressed(pos),
+      Egui::Event.pointer_released(pos)], 0.032)
+
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End)], 0.048)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Delete)], 0.064) # no-op at the end
+    buffer.should eq("привет мир\nвторая строка")
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Backspace)], 0.080)
+    buffer.should eq("привет мир\nвторая строк") # one character gone
+    2.times do |i|
+      draw.call([Egui::Event.key_pressed(Egui::KeyCode::Left)], 0.096 + 0.016 * i)
+    end
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Delete)], 0.128)
+    buffer.should eq("привет мир\nвторая стрк") # Left x2 then Delete drops 'о'
+
   end
 end

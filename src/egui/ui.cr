@@ -50,10 +50,23 @@ module Egui
 
     # egui `Ui::allocate_at_least`: place a widget of `size` at the
     # cursor, grow `min_rect`, advance the cursor.
+    #
+    # Max-size rule (egui.cr guarantee, no upstream counterpart): a
+    # widget rect never extends past `max_rect`'s far corner — the
+    # effective max width/height of every widget is at least bounded
+    # by its parent region. How a widget FITS inside the bound is the
+    # widget's own policy (Label `wrap`, TextEdit horizontal scroll,
+    # plain clipping otherwise); this is the hard floor that makes
+    # "long content grows past the parent" impossible. Regions with a
+    # semi-infinite `max_rect` (frames, scroll contents) are
+    # unaffected by the clamp.
     def allocate_space(size : Vec2) : Rect
-      rect = Rect.from_min_size(@cursor, size)
+      max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x}.max
+      max_y = { {@cursor.y + size.y, @max_rect.bottom}.min, @cursor.y}.max
+      rect = Rect.new(@cursor, Pos2.new(max_x, max_y))
       @min_rect = @min_rect.union(rect)
-      @cursor = @layout.advance(@cursor, size, style.spacing.item_spacing)
+      @cursor = @layout.advance(@cursor, rect.size,
+        style.spacing.item_spacing)
       rect
     end
 
@@ -82,13 +95,17 @@ module Egui
       widget.ui(self)
     end
 
-    def label(text : String, wrap : Bool = false) : Response
-      add(Label.new(text, wrap: wrap))
+    # egui `ui.label` — selectable text by default (`userselect: false`
+    # for the inert paint-only label).
+    def label(text : String, wrap : Bool = false,
+              userselect : Bool = true) : Response
+      add(Label.new(text, wrap: wrap, userselect: userselect))
     end
 
     # egui `ui.label(RichText)`.
-    def rich(text : RichText, wrap : Bool = false) : Response
-      add(Label.new(text, wrap: wrap))
+    def rich(text : RichText, wrap : Bool = false,
+             userselect : Bool = true) : Response
+      add(Label.new(text, wrap: wrap, userselect: userselect))
     end
 
     def heading(text : String) : Response
@@ -172,10 +189,23 @@ module Egui
     end
 
     # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
-    # with the new buffer whenever it changed this frame.
+    # with the new buffer whenever it changed this frame. `password:
+    # true` masks the display with circles (one per character).
     def text_edit_singleline(buffer : String, hint : String? = nil,
+                             password : Bool = false,
                              &on_change : String ->) : Response
-      response = add(TextEdit.new(buffer, hint))
+      response = add(TextEdit.new(buffer, hint, password))
+      if response.changed? && (text = response.widget_text)
+        on_change.call(text)
+      end
+      response
+    end
+
+    # egui `ui.text_edit_multiline` — here an HTML-textarea-shaped
+    # widget: soft wrap, `rows` lines tall, its own kinetic scroll.
+    def textarea(buffer : String, hint : String? = nil, rows : Int32 = 8,
+                 &on_change : String ->) : Response
+      response = add(TextArea.new(buffer, hint, rows))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end
@@ -249,9 +279,14 @@ module Egui
     # egui_plot-style line/scatter plot; see `Plot`. `animated: true`
     # adds live-plot behavior: double-click (or the overlay button)
     # resets a manually panned/zoomed view back to the default.
+    # `draggable: false` makes it read-only (no pan/zoom, default view).
+    # `reset_button: false` hides the reset pill that otherwise appears
+    # on any panned/zoomed plot.
     def plot(id : String, height : Float64 = 200.0, animated : Bool = false,
+             draggable : Bool = true, reset_button : Bool = true,
              &block : Plot ->) : Response
-      p = Plot.new(id, height: height, animated: animated)
+      p = Plot.new(id, height: height, animated: animated,
+        draggable: draggable, reset_button: reset_button)
       block.call(p)
       add(p)
     end
@@ -273,11 +308,10 @@ module Egui
     end
 
     # egui `ui.add_sized(size, widget)` — lay the widget out in an
-    # exact-size cell instead of its natural size.
+    # exact-size cell instead of its natural size (still bounded by
+    # the region's max_rect, like every allocation).
     def add_sized(size : Vec2, widget : Widget) : Response
-      rect = Rect.from_min_size(@cursor, size)
-      @min_rect = @min_rect.union(rect)
-      @cursor = @layout.advance(@cursor, size, style.spacing.item_spacing)
+      rect = allocate_space(size)
       cell = child_ui(rect)
       widget.ui(cell)
     end

@@ -45,7 +45,8 @@ Conventions for every phase:
 | Frame, Menu, Tooltip, Modal | `containers/{frame,menu,tooltip,modal}.rs` | missing | **P2** |
 | Keyboard events + focus nav | `input_state/`, `memory/mod.rs:502` | missing | **P3** |
 | RichText / LayoutJob / wrapping | `widget_text.rs`, `epainter` galley | missing | **P4** |
-| TextEdit | `widgets/text_edit/` | missing | P4.5 (needs P3+P4) |
+| TextEdit | `widgets/text_edit/` | done | — |
+| TextArea (multiline, kinetic scroll) | `widgets/text_edit/` | done (`widgets/textarea.cr`) | — |
 | ScrollArea | `containers/scroll_area.rs` | missing | **P5** |
 | Panels (top/side/central), Resize, Area | `containers/{panel,resize,area}.rs` | missing | **P5** |
 | Textures, Image, button icons | `load/`, `widgets/image.rs` | missing | **P6** |
@@ -184,6 +185,10 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 - [x] Painter: extend `TextCmd` to carry per-run color; underline drawn as a
       `line` cmd at ascent height.
 - [x] `ui.label(text, wrap : Bool)` — multi-line wrapping label.
+- [x] Label selectable by default (`userselect : Bool = true`, upstream
+      `interaction.selectable_labels`): press/drag selects a range,
+      double-click a word, Ctrl+C copies through the Clipboard port;
+      `userselect: false` → inert paint-only label.
 - [x] Hyperlink full: underline + hover color via RichText.
 - [x] Specs: long text wraps into N rows within max_rect width; colored run
       produces matching TextCmd + underline LineCmd.
@@ -198,7 +203,15 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       → stage 1 done (single-line, caret, click-to-place, arrows/Home/End,
       blinking caret); stages 2–4 remain.
 - [x] `ui.text_edit_singleline(buffer : String, &on_change : String ->)`.
-- [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click.
+- [x] `src/egui/widgets/textarea.cr` — multiline stage (HTML `<textarea>`
+      shape): soft word-wrap, per-line selection/caret, own kinetic-
+      scrolled viewport + scrollbar, Enter/row-wise Up/Down/Home/End,
+      paste keeps line breaks, UTF-8-aware caret stepping, caret
+      auto-scroll. `ui.textarea(buffer, rows:, &on_change)`. Blank
+      lines preserved in layout (`Galley::Row#newline_before`).
+- [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click;
+      textarea: Enter/newlines, Up/Down/Home/End, paste, wheel scroll,
+      blank-line layout.
 
 ## Phase 5 — scroll area, panels, resize
 
@@ -209,8 +222,12 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
 - [x] Scroll arbitration: top-most scrollable containing the pointer
       consumes `input.scroll` (port of upstream scroll-target logic,
       simplified into Memory).
-- [ ] Kinetic scrolling: port `crates/emath/src/history.rs` →
-      `src/egui/history.cr` (pointer velocity EMA) — nice-to-have.
+- [x] Kinetic scrolling: port `crates/emath/src/history.rs` →
+      `src/egui/history.cr` (+ `KineticScroller`: wheel impulses feed an
+      offset History whose velocity estimate flings the content after
+      input stops, exponential decay, dead stop at edges; scrollbar
+      thumb = direct control). Wired into ScrollArea and TextArea;
+      histories persist in `Memory#scroll_history`.
 - [x] `src/egui/panel.cr`: generalize `bottom_panel`; `Context#available_rect`
       reset each `begin_frame`, each panel takes a bite;
       `#top_panel`, `#side_panel(side)`, `#central_panel`; panels must be
@@ -368,13 +385,33 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       pts) }` — shared data coords, auto-fit bounds (5% padding, flat
       series get a fixed span), drag-to-pan, wheel zoom anchored at
       the pointer, grid + corner axis labels, legend; bounds persist
-      in IdTypeMap and leave auto mode on first interaction.
+      in IdTypeMap and leave auto mode on first interaction;
+      `animated: true` adds the double-click reset; the reset pill
+      appears on any plot (animated or not) once the view deviates,
+      unless `reset_button: false`; `draggable: false` makes the plot
+      read-only (no pan/zoom/pill, default view only); `#line`/
+      `#points` accept an optional per-series `color:` override.
 - [x] `DragValue` custom formatter (`ui.drag_value(format: ->(v) { … })`)
       on top of prefix/suffix.
 - [x] `examples/openfiledialog.cr` — native pickers (zenity/kdialog on
       Linux/BSD, osascript on macOS) via
       the existing fiber-backed `SystemPorts::OpenFileDialog` /
       `SaveFileDialog` (the Rakefile example list already expected it).
+- [x] OS file drag&drop fixed: `sapp_desc.enable_dragndrop` was never set
+      (default false), so sokol silently ignored drops on every platform —
+      now enabled in `backend/sokol_shim.c` (8 files, 8 KiB paths max).
+- [x] Max-size rule (user request): widgets never overflow their
+      region — `Ui#allocate_space` clamps every allocated rect to
+      `max_rect`'s far corner (the effective max width/height of any
+      widget is bounded by its parent region; semi-infinite regions
+      are unaffected). Per-component fit policies on top of that
+      floor: Label keeps its `wrap` mode, TextEdit single-line becomes
+      a fixed-width field with horizontal scrolling (offset in
+      IdTypeMap, caret auto-follow so typing at either end stays
+      visible, content clipped to the field rect). Specs: clamped
+      allocations in vertical + horizontal regions, long-edit width
+      bound, caret-follow scroll > 0, clipped TextCmds, Home snaps
+      back to the start.
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
 - [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync — idle frames replay the last paint commands

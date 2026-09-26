@@ -41,22 +41,34 @@ module Egui
       property width = 0.0
       property height = 0.0
       property y = 0.0
+      # Whether the row to be emitted sits right after a '\n' break
+      # (blank lines emit empty rows so byte offsets stay mappable).
+      property newline_before = false
 
       def initialize(@fonts : Fonts, @max_width : Float64?)
       end
 
       def flush : Nil
-        return if @tokens.empty?
+        # A trailing '\n' still owes an empty final row; a wrap flush
+        # with nothing buffered owes nothing.
+        return if @tokens.empty? && !@newline_before
+        emit_row
+      end
+
+      def break_row : Nil
+        # A newline always ends the current line — even an empty one.
+        emit_row
+        @newline_before = true
+      end
+
+      private def emit_row : Nil
         height = (@height > 0 ? @height : 16.0) * LINE_H_FACTOR
-        @rows << build_row(@tokens, @y, height)
+        @rows << build_row(@tokens, @y, height, @newline_before)
         @y += height
         @tokens = [] of Token
         @width = 0.0
         @height = 0.0
-      end
-
-      def break_row : Nil
-        flush
+        @newline_before = false
       end
 
       def add_space(text : String, size : Float64, color : Color32?,
@@ -90,7 +102,7 @@ module Egui
       end
 
       private def build_row(tokens : Array(Token), y : Float64,
-                            height : Float64) : Galley::Row
+                            height : Float64, newline : Bool) : Galley::Row
         runs = [] of Galley::RowRun
         x = 0.0
         tokens.each do |text, size, color, underline|
@@ -104,7 +116,7 @@ module Egui
           end
           x += @fonts.measure(text, size).x
         end
-        Galley::Row.new(runs, x, height, y)
+        Galley::Row.new(runs, x, height, y, newline)
       end
     end
 

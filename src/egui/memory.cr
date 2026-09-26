@@ -74,9 +74,10 @@ module Egui
     # so end-frame pruning must not touch it.
     getter color_cache : Hash(Color32, Hsva)
 
-    # Scroll-area viewports (id → rect + layer) for scroll arbitration:
-    # the top-most viewport containing the pointer (previous frame's
-    # geometry, like widget hit-testing) owns this frame's scroll delta.
+    # Scroll-sink viewports (id → rect + layer) for scroll arbitration:
+    # scroll areas, textareas and (draggable) plots register here; the
+    # top-most sink containing the pointer (previous frame's geometry,
+    # like widget hit-testing) owns this frame's scroll delta.
     getter scroll_rects : Hash(Id, Tuple(Rect, LayerId))
     @prev_scroll_rects : Hash(Id, Tuple(Rect, LayerId))
     @active_scroll : Id?
@@ -149,6 +150,9 @@ module Egui
     @scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @active_scroll = nil
+      # Offset histories feeding kinetic scrolling (see history.cr) —
+      # keyed by the scroll area id, pruned with the rest.
+      @scroll_histories = {} of Id => History
       @duplicate_ids = [] of Id
 
       @prev_widget_rects = {} of Id => Rect
@@ -322,6 +326,7 @@ module Egui
       # Prune per-widget state of widgets that no longer exist (egui
       # `Memory::end_pass(used_ids)`).
       @data.keep_only(@used_ids)
+      @scroll_histories.select! { |id, _| @used_ids.includes?(id) }
       close_popups_if_clicked_elsewhere
     end
 
@@ -350,6 +355,11 @@ module Egui
     # The scroll area that owns this frame's scroll delta (nil = none).
     def active_scroll_area? : Id?
       @active_scroll
+    end
+
+    # Persistent offset history of a scrollable (kinetic scrolling).
+    def scroll_history(id : Id) : History
+      @scroll_histories[id] ||= History.new(2..128, 0.1)
     end
 
     # Called by Context#modal while rendering the modal this frame;

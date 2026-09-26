@@ -3,9 +3,9 @@
 # scrollbar painting + thumb dragging; kinetic scrolling follows later).
 #
 # State (upstream ScrollState): scroll offset + content size, stored
-# per-id in IdTypeMap. The viewport registers itself with Memory for
-# scroll arbitration — only the top-most viewport under the pointer
-# consumes `input.scroll`.
+# per-id in IdTypeMap. The viewport registers itself with Memory as a
+# scroll sink — only the top-most sink under the pointer (scroll area,
+# textarea, plot…) consumes `input.scroll`.
 
 module Egui
   class ScrollArea
@@ -24,22 +24,27 @@ module Egui
 
       offset = memory.data.get_vec2(id, Vec2.zero)
       prev_content = memory.data.get_vec2(id.child(0), Vec2.new(0.0, height))
+      kin_id = id.child(3)
+      memory.use_id(kin_id)
+
+      # Kinetic scrolling: the offset's History estimates a release
+      # velocity while direct input drives the offset (wheel below,
+      # thumb later); once input stops the offset glides on by that
+      # velocity, decaying (see KineticScroller).
+      max_offset_prev = {prev_content.y - height, 0.0}.max
+      kin = KineticScroller.new(offset.y,
+        memory.data.get_f64(kin_id, 0.0), memory.scroll_history(id))
 
       # Wheel scroll — only if this viewport owns the delta. The raw
       # delta is in wheel notches (±1.0 per click from the backend);
       # `style.scroll_speed` scales it to pixels.
-      if memory.active_scroll_area? == id
-        delta = ui.ctx.input.scroll
-        offset += Vec2.new(0.0, delta.y * style.scroll_speed) unless delta.y.zero?
+      if memory.active_scroll_area? == id && !ui.ctx.input.scroll.y.zero?
+        kin.input(ui.ctx.input.scroll.y * style.scroll_speed,
+          ui.ctx.input.time, max_offset_prev)
+      else
+        kin.glide(ui.ctx.input.dt, max_offset_prev, ui.ctx)
       end
-
-      # Clamp BEFORE layout using the previous frame's content size
-      # (upstream `ScrollState::prepare`): otherwise the content is
-      # laid out and painted past the limit for one frame and snapped
-      # back the next — visible jitter when the wheel keeps firing at
-      # either end of the range.
-      max_offset_prev = {prev_content.y - height, 0.0}.max
-      offset = Vec2.new(0.0, offset.y.clamp(0.0, max_offset_prev))
+      offset = Vec2.new(0.0, kin.offset)
 
       memory.register_scroll_area(id, viewport, ui.layer)
 
@@ -63,6 +68,7 @@ module Egui
       content_size = inner.min_rect.size
       max_offset = {content_size.y - viewport.height, 0.0}.max
       offset = Vec2.new(0.0, offset.y.clamp(0.0, max_offset))
+      kin_velocity = kin.velocity
       memory.data.set_vec2(id, offset)
       memory.data.set_vec2(id.child(0), content_size)
 
@@ -95,6 +101,8 @@ module Egui
         # cleared when the pointer leaves (NaN = no grab in progress).
         if (response.pressed? || response.dragged?) &&
            (pointer = ui.ctx.input.pointer_pos)
+          kin.takeover # direct control: no inertia after a thumb drag
+          kin_velocity = 0.0
           grab = memory.data.get_f64(bar_id, Float64::NAN)
           if grab.nan?
             thumb_now = Rect.from_min_size(
@@ -127,6 +135,7 @@ module Egui
         ui.painter.rect(thumb, 3.0, thumb_color)
       end
 
+      memory.data.set_f64(kin_id, kin_velocity)
       ui.min_rect = ui.min_rect.union(viewport)
       ui.cursor = ui.cursor + Vec2.new(0.0, height + style.spacing.item_spacing.y)
       viewport
