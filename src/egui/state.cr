@@ -35,7 +35,10 @@ module Egui
 
     def get_bool(id : Id, default : Bool = false) : Bool
       v = @cells[id]?
-      v.as?(Bool) || default
+      case v
+      when Bool then v
+      else default
+      end
     end
 
     def set_bool(id : Id, value : Bool) : Nil

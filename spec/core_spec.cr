@@ -359,6 +359,47 @@ describe "system state" do
       .map(&.text).should contain("INSIDE")
   end
 
+  it "tree_view node with children closes on click and stays closed" do
+    ctx = Egui::Context.new
+    base = Egui::Id.from("tree/t")
+    src_id = base.child(Egui::Id.from("src").value)
+    inner_id = src_id.child(Egui::Id.from("inner").value)
+
+    draw = ->(time : Float64, events : Array(Egui::Event)) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.window("demo") do |ui|
+        ui.tree_view("t") do |tree|
+          tree.node("src", default_open: true) do |sub|
+            sub.node("inner", default_open: true) do |inner|
+              inner.leaf("deep.cr") { }
+            end
+          end
+          tree.leaf("README.md") { }
+        end
+      end
+      ctx.end_frame
+    end
+
+    # layout: both branches open
+    draw.call(0.016, [] of Egui::Event)
+    src_rect = ctx.memory.widget_rects[src_id]?.should be_truthy
+    ctx.memory.widget_rects[inner_id]?.should be_truthy
+
+    # click the "src" row: press + release, then a settle frame
+    center = src_rect.not_nil!.center
+    draw.call(0.032, [Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)] of Egui::Event)
+    draw.call(0.048, [Egui::Event.pointer_released(center)] of Egui::Event)
+    draw.call(0.064, [] of Egui::Event)
+
+    # the stored false must survive (get_bool once fell back to the
+    # default on a stored false, reopening the node every frame)
+    ctx.memory.data.get_bool(src_id, true).should be_false
+    ctx.memory.widget_rects[inner_id]?.should be_nil
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should_not contain("inner")
+  end
+
   it "moves the window when its title bar is dragged (Areas state)" do
     ctx = Egui::Context.new
     win_id = Egui::Id.from("window/demo")
@@ -2829,6 +2870,44 @@ describe "DatePicker" do
     ctx.end_frame
     picked.not_nil!.day.should eq(20)
     ctx.popup_open?("date_picker/d").should be_false
+  end
+
+  it "advances the shown month on a header arrow click" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.end_frame
+
+    # open the popup
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+
+    # click the "›" arrow: press + release over its header cell
+    arrow = ctx.painter.commands.select(Egui::TextCmd).find { |t| t.text == "›" }
+    arrow.should_not be_nil
+    target = arrow.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+      Egui::Event.pointer_pressed(target)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+
+    # the shift is latched in Memory#data — the frame after the click
+    # renders the new month (and the click must not close the popup)
+    raw_frame(ctx, time: 0.08)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("October 2026")
   end
 
   it "closes the calendar on a click on empty space outside it" do

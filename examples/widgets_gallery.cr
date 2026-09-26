@@ -57,7 +57,7 @@ class GalleryApp < Egui::App
       bar.menu_button("File") do |menu|
         menu.menu_item("New", "Ctrl+N") { }
         menu.menu_item("Open…", "Ctrl+O") { }
-        menu.menu_item("Quit", "Ctrl+Q") { }
+        menu.menu_item("Quit", "Ctrl+Q") { Egui::SystemPorts::Quit.quit! }
       end
       bar.menu_button("Edit") do |menu|
         menu.menu_item("Undo", "Ctrl+Z") { }

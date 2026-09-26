@@ -84,6 +84,11 @@ module Egui
 
       year = mem.data.get_int(@pid.child(1), @value.year)
       month = mem.data.get_int(@pid.child(2), @value.month)
+      # The year/month cells have no #interact of their own, so mark them
+      # used — otherwise end-frame pruning drops them and the shown month
+      # resets to the selection's on the next frame.
+      mem.use_id(@pid.child(1))
+      mem.use_id(@pid.child(2))
       first = Time.local(year, month, 1, location: loc)
       days = first.at_end_of_month.day
       # Monday-first offset of the 1st
