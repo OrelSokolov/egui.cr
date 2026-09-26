@@ -55,9 +55,11 @@ module Egui
 
     # Character x-offset inside a row (caret geometry for TextEdit):
     # measured on the row's text prefix with the row's dominant size.
+    # An empty galley has no rows — the caret just sits at x=0.
     def x_at(row_index : Int32, char_index : Int32,
              fonts : Fonts) : Float64
-      row = @rows[row_index]
+      row = @rows[row_index]?
+      return 0.0 unless row
       size = row.runs.map(&.size).max? || fonts_default
       prefix = row.text[0, {char_index, row.text.size}.min]
       fonts.measure(prefix, size).x

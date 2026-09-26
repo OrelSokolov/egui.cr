@@ -3085,3 +3085,174 @@ describe "floating containers are constrained to the screen" do
     tip.rect.bottom.should be <= SCREEN.bottom
   end
 end
+
+describe "text edit selection & clipboard (phase 7)" do
+  it "shift+arrows build a selection and typing replaces it" do
+    ctx = Egui::Context.new
+    buffer = "abcdef"
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focused, caret at the end
+
+    shift = Egui::Modifiers.new(shift: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Left, shift)], 0.064) # sel [5,6)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Left, shift)], 0.080) # sel [4,6)
+    # modifiers persist until a key event carries a clean mask (a real
+    # backend sends the Shift KEY_UP; synthetic input must too)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::Left, Egui::Modifiers.new),
+      Egui::Event.text_input("X")], 0.096)
+    buffer.should eq("abcdX") # selection [4,6) = "ef" replaced by X
+  end
+
+  it "ctrl+A selects all, ctrl+C copies, ctrl+X cuts, ctrl+V pastes" do
+    ctx = Egui::Context.new
+    buffer = "hello world"
+    Egui::SystemPorts::Clipboard.use(Egui::SystemPorts::Clipboard::Implementation.new)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064) # select all
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::C, ctrl)], 0.080) # copy
+    Egui::SystemPorts::Clipboard.text.should eq("hello world")
+    buffer.should eq("hello world")
+
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::X, ctrl)], 0.096) # cut
+    buffer.should eq("")
+    Egui::SystemPorts::Clipboard.text.should eq("hello world")
+
+    Egui::SystemPorts::Clipboard.text = "pasted\r\nmultiline" # paste strips breaks
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::V, ctrl)], 0.112)
+    buffer.should eq("pasted multiline")
+  end
+
+  it "double-click selects a word; typing replaces it" do
+    ctx = Egui::Context.new
+    buffer = "hello world"
+
+    rect = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(buffer) { |t| buffer = t }
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    # monospace char width 9.6, padding 6 → "world" spans 6+6*9.6 .. 6+11*9.6
+    x = rect.not_nil!.left + 6.0 + 8 * 9.6
+    pos = Egui::Pos2.new(x, rect.not_nil!.center.y)
+
+    # two clicks within the double-click window
+    draw.call([Egui::Event.pointer_moved(pos),
+      Egui::Event.pointer_pressed(pos),
+      Egui::Event.pointer_released(pos)], 0.032)
+    draw.call([Egui::Event.pointer_pressed(pos),
+      Egui::Event.pointer_released(pos)], 0.064)
+
+    draw.call([Egui::Event.text_input("!")], 0.080)
+    buffer.should eq("hello !")
+  end
+
+  it "drag-selects a range, then typing replaces it" do
+    ctx = Egui::Context.new
+    buffer = "abcdefgh"
+
+    rect = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      ui.text_edit_singleline(buffer) { |t| buffer = t }
+      ctx.end_frame
+      ctx.memory.widget_rects.values.first
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    left = rect.not_nil!.left + 6.0
+    from = Egui::Pos2.new(left + 2 * 9.6, rect.not_nil!.center.y) # caret 2
+    to = Egui::Pos2.new(left + 5 * 9.6, rect.not_nil!.center.y)   # caret 5
+
+    draw.call([Egui::Event.pointer_moved(from),
+      Egui::Event.pointer_pressed(from)], 0.032)
+    draw.call([Egui::Event.pointer_moved(to)], 0.048) # drag-select [2,5)
+    draw.call([Egui::Event.pointer_released(to)], 0.064)
+
+    draw.call([Egui::Event.text_input("X")], 0.080)
+    buffer.should eq("abXfgh")
+  end
+end
+
+describe "dropped files (phase 7)" do
+  it "delivers paths through InputState for one frame" do
+    ctx = Egui::Context.new
+    seen = [] of Array(String)
+
+    raw_frame(ctx, [Egui::Event.dropped_files(["C:\\a.txt", "C:\\b.png"])], 0.016)
+    seen << ctx.input.dropped_files.dup
+    ctx.end_frame
+    raw_frame(ctx, [] of Egui::Event, 0.032)
+    seen << ctx.input.dropped_files.dup
+    ctx.end_frame
+
+    seen.should eq([["C:\\a.txt", "C:\\b.png"], [] of String])
+  end
+end
+
+describe "on-demand repaint (phase 7)" do
+  it "input events request a repaint; quiet frames do not" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx, [] of Egui::Event, 0.016)
+    ctx.needs_repaint?.should be_false
+    ctx.end_frame
+
+    raw_frame(ctx, [Egui::Event.text_input("a")], 0.032)
+    ctx.needs_repaint?.should be_true
+    ctx.end_frame
+
+    raw_frame(ctx, [] of Egui::Event, 0.048)
+    ctx.needs_repaint?.should be_false
+    ctx.end_frame
+  end
+
+  it "animations keep requesting repaint until they settle" do
+    ctx = Egui::Context.new
+    id = Egui::Id.from("spec/anim")
+
+    raw_frame(ctx, [] of Egui::Event, 0.016)
+    ctx.animate_value_with_time(id, 1.0, 0.15).should eq(1.0)
+    ctx.needs_repaint?.should be_true
+    ctx.end_frame
+
+    raw_frame(ctx, [] of Egui::Event, 0.030) # still easing
+    ctx.animate_value_with_time(id, 1.0, 0.15)
+    ctx.needs_repaint?.should be_true
+    ctx.end_frame
+
+    raw_frame(ctx, [] of Egui::Event, 0.300) # past the duration
+    ctx.animate_value_with_time(id, 1.0, 0.15)
+    ctx.needs_repaint?.should be_true # one repaint still outstanding
+    ctx.end_frame
+    raw_frame(ctx, [] of Egui::Event, 0.316)
+    ctx.needs_repaint?.should be_false
+    ctx.end_frame
+  end
+end

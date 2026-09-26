@@ -23,6 +23,10 @@ class GalleryApp < Egui::App
   @tree_sel = ""
   @date = Time.local(2026, 9, 15)
   @enabled = true
+  # Dropped files (drag & drop) and the update-call counter that shows
+  # on-demand repaint at work: it only ticks when the UI really runs.
+  @dropped = [] of String
+  @updates = 0
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
@@ -34,7 +38,7 @@ class GalleryApp < Egui::App
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
     Egui::Sidebar::Section.new(
-      "Containers", ["Scroll", "Modal"], closable: true),
+      "Containers", ["Scroll", "Modal", "Files"], closable: true),
     Egui::Sidebar::Section.new(
       "Layout", ["Grid", "Table", "Tree", "Plot", "Enabled"], closable: true),
   ]
@@ -42,6 +46,12 @@ class GalleryApp < Egui::App
   COMBO_OPTIONS = ["First", "Second", "Third"]
 
   def update(ctx : Egui::Context) : Nil
+    @updates += 1
+    # Files dropped onto the window land here for one frame.
+    unless ctx.input.dropped_files.empty?
+      @dropped = ctx.input.dropped_files.dup
+    end
+
     # Desktop-style menu bar pinned to the top.
     ctx.menu_bar do |bar|
       bar.menu_button("File") do |menu|
@@ -98,6 +108,7 @@ class GalleryApp < Egui::App
           when {"Style", "Cursors"}          then cursors_gallery(scroll)
           when {"Containers", "Scroll"}      then scroll_gallery(scroll)
           when {"Containers", "Modal"}       then modal_gallery(scroll)
+          when {"Containers", "Files"}       then files_gallery(scroll)
           when {"Layout", "Grid"}            then grid_gallery(scroll)
           when {"Layout", "Table"}           then table_gallery(scroll)
           when {"Layout", "Tree"}            then tree_gallery(scroll)
@@ -125,6 +136,9 @@ class GalleryApp < Egui::App
         ui.label("FPS: #{"%.1f" % ctx.fps} — " \
                  "#{@sections[@section].title} / #{@sections[@section].tabs[@tab]}")
       end
+      # On-demand repaint: the counter only moves when a real update
+      # runs (input, animation, dialog) — it freezes while the UI idles.
+      ui.label("updates: #{@updates}")
     end
   end
 
@@ -200,6 +214,7 @@ class GalleryApp < Egui::App
     ui.label("Combo / text edit:")
     ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
     ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
+    ui.label("(select with Shift+arrows or double-click / drag; Ctrl+A/C/X/V)")
     ui.separator
 
     ui.label("Toggle / segmented / selectable:")
@@ -343,6 +358,28 @@ class GalleryApp < Egui::App
 
   # Aligned columns: column widths are measured frame N and applied
   # frame N+1 (persisted per grid in Memory), like upstream egui Grid.
+  # Drag & drop: whatever lands on the window shows up here with a
+  # reveal-in-explorer button (SystemPorts::RevealInFolder).
+  private def files_gallery(ui : Egui::Ui) : Nil
+    ui.label("Drop files from Explorer anywhere onto this window.")
+    ui.separator
+    if @dropped.empty?
+      ui.label("(nothing dropped yet)")
+    else
+      @dropped.each do |path|
+        ui.horizontal do |row|
+          row.label(File.basename(path))
+          if row.button("Reveal").clicked?
+            Egui::SystemPorts::RevealInFolder.show(path)
+          end
+          if row.button("Copy path").clicked?
+            Egui::SystemPorts::Clipboard.text = path
+          end
+        end
+      end
+    end
+  end
+
   private def grid_gallery(ui : Egui::Ui) : Nil
     ui.label("Grid (aligned columns):")
     ui.grid("gallery_grid") do |grid|

@@ -59,6 +59,8 @@ lib LibEguiCr
   fun sapp_set_window_title = sapp_set_window_title(title : UInt8*)
   fun sapp_set_clipboard_string = sapp_set_clipboard_string(str : UInt8*)
   fun sapp_get_clipboard_string : UInt8*
+  fun sapp_get_num_dropped_files = sapp_get_num_dropped_files : Int32
+  fun sapp_get_dropped_file_path = sapp_get_dropped_file_path(index : Int32) : UInt8*
 
   # window management (shim: X11 / Win32)
   fun set_window_size = egui_cr_set_window_size(w : Int32, h : Int32)
@@ -142,6 +144,11 @@ module Egui
       @@events = [] of Egui::Event
       @@fonts : Egui::Backend::AtlasFonts?
       @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
+      # On-demand repaint: the last painted command list (re-emitted
+      # verbatim on idle frames) and the framebuffer size it matched.
+      @@last_commands : Array(Egui::PaintCmd)?
+      @@last_fb_w = 0
+      @@last_fb_h = 0
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
       # Framebuffer pixels per UI point (retina: 2.0). UI layout and paint
@@ -233,6 +240,8 @@ module Egui
       MOUSE_UP    =  5
       MOUSE_SCROLL = 6
       MOUSE_MOVE  =  7
+      RESIZED     = 14
+      FILES_DROPPED = 23
 
       # eframe::run_native — blocks until the window closes.
       #
@@ -377,6 +386,19 @@ module Egui
           if (chr > 0 && chr < 0xD800) || (chr >= 0xE000 && chr < 0x110000)
             @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
           end
+        when FILES_DROPPED
+          # sokol_app collects the paths before the event fires; query
+          # them through the sapp drop API (valid until the next drop).
+          count = LibEguiCr.sapp_get_num_dropped_files
+          paths = Array(String).new(count) do |i|
+            ptr = LibEguiCr.sapp_get_dropped_file_path(i)
+            ptr ? String.new(ptr) : ""
+          end
+          @@events << Egui::Event.dropped_files(paths)
+        when RESIZED
+          # screen_rect is rebuilt from sapp_width/height each active
+          # frame; the event just marks the frame non-idle.
+          @@events << Egui::Event.new(:window_resized)
         end
       end
 
@@ -384,20 +406,37 @@ module Egui
         # Advance async system ports (file dialogs) — one bounded
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
-        Egui::SystemPorts::AsyncDialogs.pump
+        delivered = Egui::SystemPorts::AsyncDialogs.pump
 
         # sokol reports sizes in FRAMEBUFFER pixels (sapp_width on retina
         # with high_dpi is 2x the window points); the UI lays out in
         # points, like upstream egui with pixels_per_point.
         ppp = LibEguiCr.sapp_dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+        fb_w = LibEguiCr.sapp_width
+        fb_h = LibEguiCr.sapp_height
 
         app = @@app.not_nil!
+
+        # On-demand repaint: sokol_app's loop swaps every vsync tick
+        # regardless, but an idle frame (no events, no repaint request,
+        # nothing animating, same window size, no dialog just delivered)
+        # skips app.update + tessellation and simply re-emits the last
+        # paint commands — the visuals are identical, the CPU cost is
+        # not. Any input, resize or dialog callback switches right back
+        # to a full frame.
+        if (cache = @@last_commands) &&
+           delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
+           fb_w == @@last_fb_w && fb_h == @@last_fb_h
+          paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
+          return
+        end
+
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(
           Egui::Rect.from_min_size(Egui::Pos2.zero,
-            Egui::Vec2.new(LibEguiCr.sapp_width.to_f64 / @@pixels_per_point,
-              LibEguiCr.sapp_height.to_f64 / @@pixels_per_point)),
+            Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
+              fb_h.to_f64 / @@pixels_per_point)),
           @@events, time)
         @@events = [] of Egui::Event
 
@@ -405,24 +444,34 @@ module Egui
         app.update(app.ctx)
         commands = app.ctx.end_frame
 
+        @@last_commands = commands
+        @@last_fb_w = fb_w
+        @@last_fb_h = fb_h
+
+        paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+      end
+
+      # Emit a frame to the GPU. `touch_fonts` is false on idle frames —
+      # the cached commands reference glyphs that are already in the
+      # atlas, so no rasterization/upload work is needed.
+      private def self.paint_frame(ctx : Egui::Context, fb_w : Int32,
+                                   fb_h : Int32,
+                                   commands : Array(Egui::PaintCmd),
+                                   touch_fonts : Bool) : Nil
         # egui `PlatformOutput::cursor_icon`: apply when it changed —
         # the shim maps the CSS keyword onto the platform cursors
         # (Xcursor theme / Win32 IDC_*).
-        icon = app.ctx.cursor_icon
+        icon = ctx.cursor_icon
         if icon != @@cursor
           @@cursor = icon
           LibEguiCr.set_cursor(icon.to_css.to_unsafe)
         end
 
-        # Framebuffer pixels (native resolution on retina) and their
-        # point-space counterparts.
-        fb_w = LibEguiCr.sapp_width
-        fb_h = LibEguiCr.sapp_height
         w = fb_w.to_f64 / @@pixels_per_point
         h = fb_h.to_f64 / @@pixels_per_point
         # Backdrop follows the theme (its base surface color) so edges
         # never flash the stale palette after a theme swap.
-        bg = app.ctx.style.visuals.panel_fill
+        bg = ctx.style.visuals.panel_fill
         LibEguiCr.set_clear_color(
           bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
           bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
@@ -430,7 +479,7 @@ module Egui
         # Rasterize every glyph this frame's text needs (at the PHYSICAL
         # pixel size — see paint_text) and upload the atlas BEFORE the
         # render pass — sg_update_image is illegal inside a pass.
-        if fonts = @@fonts
+        if touch_fonts && (fonts = @@fonts)
           commands.each do |cmd|
             fonts.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
           end

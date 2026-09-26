@@ -65,6 +65,10 @@ module Egui
       @available_rect = raw.screen_rect
       @cursor_icon = CursorIcon::Default
 
+      # Any event this frame means the UI may react to it — make sure
+      # the backend runs a full update/paint pass (on-demand mode).
+      request_repaint unless raw.events.empty?
+
       # Smoothed FPS (EMA) — read by apps to show in a bottom panel.
       if @input.dt > 0.0
         instantaneous = 1.0 / @input.dt
@@ -129,7 +133,10 @@ module Egui
     # towards its new target; state keyed by widget id.
     def animate_value_with_time(id : Id, value : Float64,
                                 duration : Float64 = 0.15) : Float64
-      @memory.animations.animate(id, value, duration, @input.time)
+      result = @memory.animations.animate(id, value, duration, @input.time)
+      # Keep repainting while the easing still has ground to cover.
+      request_repaint if @memory.animations.running?(id, @input.time)
+      result
     end
 
     # egui CacheStorage-lite: memoize an expensive computation for the
@@ -151,8 +158,9 @@ module Egui
     end
 
     # egui repaint scheduling: an immediate request buys two repaints so
-    # frame-delayed responses settle. The sokol backend runs continuous
-    # vsync today and ignores this; keep the API 1:1 for on-demand mode.
+    # frame-delayed responses settle. The backend honors this — on an
+    # idle frame (no events, no request, nothing animating) it skips
+    # app.update/tessellation and re-emits the last paint commands.
     def request_repaint : Nil
       @repaint_outstanding = 2
     end

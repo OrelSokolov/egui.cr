@@ -96,20 +96,25 @@ module Egui
 
       # Give worker fibers a bounded scheduler pass and deliver every
       # completed request. Called by the backend at frame start; safe
-      # to call from specs (headless) too.
-      def self.pump : Nil
+      # to call from specs (headless) too. Returns how many requests
+      # were delivered — their callbacks touch app state, so the
+      # backend must run a full update pass this frame even if it was
+      # otherwise idle (on-demand repaint).
+      def self.pump : Int32
         unless @@pending.empty?
           select
           when timeout(1.milliseconds)
           end
         end
-        drain unless @@done.empty?
+        return 0 if @@done.empty?
+        drain
       end
 
-      private def self.drain : Nil
+      private def self.drain : Int32
         requests = @@done
         @@done = [] of Request
         requests.each &.complete
+        requests.size
       end
     end
 
