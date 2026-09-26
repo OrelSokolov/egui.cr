@@ -701,3 +701,218 @@ void egui_cr_window_restore(void) {}
 void egui_cr_screen_size(int* w, int* h) { *w = 0; *h = 0; }
 
 #endif
+
+// --- native file dialogs + window icon ---------------------------------------
+//
+// Win32 only; every other platform gets no-op stubs (the Crystal system
+// ports fall back to their subprocess backends).
+//
+// File dialogs: the Vista IFileDialog (COM) — the Explorer-native picker,
+// instant, no PowerShell/.NET startup cost. Show() blocks its thread, so
+// the whole COM dance runs on a dedicated thread with its own STA; the
+// Crystal side polls the done flag from the AsyncDialogs worker fiber
+// (sleep-poll: the fiber yields, the frame loop keeps rendering).
+//
+// GUIDs are spelled out so the final link needs no uuid.lib.
+#if defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#include <objbase.h>
+#include <shobjidl_core.h>
+#include <stdlib.h>
+#include <string.h>
+
+static const CLSID sh_CLSID_FileOpenDialog =
+    {0xDC1C5A9C,0xE88A,0x4dde,{0xA5,0xA1,0x60,0xF8,0x2A,0x20,0xAE,0xF7}};
+static const CLSID sh_CLSID_FileSaveDialog =
+    {0xC0B4E2F3,0xBA21,0x4773,{0x8D,0xBA,0x33,0x5E,0xC9,0x46,0xEB,0x8B}};
+static const IID sh_IID_IFileDialog =
+    {0x42f85136,0xdb7e,0x439c,{0x85,0xf1,0xe4,0x07,0x5d,0x13,0x5f,0xc8}};
+static const IID sh_IID_IShellItem =
+    {0x43826d1e,0xe718,0x42ee,{0xbc,0x55,0xa1,0xe2,0x61,0xc3,0x7b,0xfe}};
+
+typedef struct {
+    int save;
+    wchar_t title[512];
+    wchar_t filter[2048];  // "name\0pattern\0name\0pattern\0\0" (utf-16)
+    wchar_t directory[1024];
+    wchar_t file_name[512]; // default file name (save dialog)
+    wchar_t result[1024];   // picked path; empty on cancel/failure
+    volatile LONG done;     // 0 running, 1 finished
+    HANDLE thread;
+} sh_file_dialog_t;
+
+static void sh_run_com_dialog(sh_file_dialog_t* r) {
+    r->result[0] = 0;
+    HRESULT hr_init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr_init) && hr_init != RPC_E_CHANGED_MODE) return;
+    IFileDialog* dlg = NULL;
+    const CLSID* clsid = r->save ? &sh_CLSID_FileSaveDialog : &sh_CLSID_FileOpenDialog;
+    if (SUCCEEDED(CoCreateInstance(clsid, NULL, CLSCTX_INPROC_SERVER,
+                                   &sh_IID_IFileDialog, (void**)&dlg))) {
+        DWORD opts = 0;
+        dlg->lpVtbl->GetOptions(dlg, &opts);
+        opts |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
+        if (r->save) opts |= FOS_OVERWRITEPROMPT;
+        dlg->lpVtbl->SetOptions(dlg, opts);
+        if (r->title[0]) dlg->lpVtbl->SetTitle(dlg, r->title);
+        if (r->filter[0]) {
+            // "name\0pattern\0" pairs → COMDLG_FILTERSPEC array
+            COMDLG_FILTERSPEC specs[32];
+            int n = 0;
+            const wchar_t* p = r->filter;
+            while (*p && n < 32) {
+                specs[n].pszName = p;
+                while (*p) p++;
+                p++;
+                if (!*p) break;
+                specs[n].pszSpec = p;
+                while (*p) p++;
+                p++;
+                n++;
+            }
+            if (n) dlg->lpVtbl->SetFileTypes(dlg, (UINT)n, specs);
+        }
+        if (r->directory[0]) {
+            IShellItem* si = NULL;
+            if (SUCCEEDED(SHCreateItemFromParsingName(r->directory, NULL,
+                                                      &sh_IID_IShellItem, (void**)&si))) {
+                dlg->lpVtbl->SetDefaultFolder(dlg, si);
+                si->lpVtbl->Release(si);
+            }
+        }
+        if (r->file_name[0]) dlg->lpVtbl->SetFileName(dlg, r->file_name);
+        // Owner must live on the dialog thread for real modality — pass
+        // NULL; the frame loop keeps running anyway (see AsyncDialogs).
+        if (SUCCEEDED(dlg->lpVtbl->Show(dlg, NULL))) {
+            IShellItem* res = NULL;
+            if (SUCCEEDED(dlg->lpVtbl->GetResult(dlg, &res))) {
+                PWSTR path = NULL;
+                if (SUCCEEDED(res->lpVtbl->GetDisplayName(res, SIGDN_FILESYSPATH,
+                                                          &path)) && path) {
+                    wcsncpy(r->result, path, 1023);
+                    r->result[1023] = 0;
+                    CoTaskMemFree(path);
+                }
+                res->lpVtbl->Release(res);
+            }
+        }
+        dlg->lpVtbl->Release(dlg);
+    }
+    if (SUCCEEDED(hr_init)) CoUninitialize();
+}
+
+static DWORD WINAPI sh_dialog_thread(LPVOID param) {
+    sh_file_dialog_t* r = (sh_file_dialog_t*)param;
+    sh_run_com_dialog(r);
+    InterlockedExchange(&r->done, 1);
+    return 0;
+}
+
+static void sh_wcsncpy(wchar_t* dst, const wchar_t* src, size_t cap) {
+    if (!src) { dst[0] = 0; return; }
+    wcsncpy(dst, src, cap - 1);
+    dst[cap - 1] = 0;
+}
+
+void* egui_cr_file_dialog_start(int save, const wchar_t* title,
+                                const wchar_t* filter, const wchar_t* directory,
+                                const wchar_t* file_name) {
+    sh_file_dialog_t* r = (sh_file_dialog_t*)malloc(sizeof(sh_file_dialog_t));
+    if (!r) return NULL;
+    memset(r, 0, sizeof(*r));
+    r->save = save;
+    sh_wcsncpy(r->title, title, 512);
+    sh_wcsncpy(r->filter, filter, 2048);
+    sh_wcsncpy(r->directory, directory, 1024);
+    sh_wcsncpy(r->file_name, file_name, 512);
+    r->thread = CreateThread(NULL, 0, sh_dialog_thread, r, 0, NULL);
+    if (!r->thread) { free(r); return NULL; }
+    return r;
+}
+
+int egui_cr_file_dialog_done(void* handle) {
+    if (!handle) return 1;
+    return ((sh_file_dialog_t*)handle)->done;
+}
+
+const wchar_t* egui_cr_file_dialog_result(void* handle) {
+    if (!handle) return L"";
+    return ((sh_file_dialog_t*)handle)->result;
+}
+
+void egui_cr_file_dialog_free(void* handle) {
+    if (!handle) return;
+    sh_file_dialog_t* r = (sh_file_dialog_t*)handle;
+    if (r->thread) {
+        WaitForSingleObject(r->thread, INFINITE);
+        CloseHandle(r->thread);
+    }
+    free(r);
+}
+
+void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd || !rgba || w <= 0 || h <= 0) return;
+    BITMAPV5HEADER bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = w;
+    bi.bV5Height = -h; // top-down rows
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+    void* bits = NULL;
+    HDC dc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(dc, (BITMAPINFO*)&bi, DIB_RGB_COLORS,
+                                     &bits, NULL, 0);
+    ReleaseDC(NULL, dc);
+    if (!color) return;
+    unsigned char* dst = (unsigned char*)bits;
+    for (int i = 0; i < w * h; i++) { // RGBA → BGRA premultiplied-less
+        dst[i*4+0] = rgba[i*4+2];
+        dst[i*4+1] = rgba[i*4+1];
+        dst[i*4+2] = rgba[i*4+0];
+        dst[i*4+3] = rgba[i*4+3];
+    }
+    HBITMAP mask = CreateBitmap(w, h, 1, 1, NULL);
+    ICONINFO ii;
+    memset(&ii, 0, sizeof(ii));
+    ii.fIcon = TRUE;
+    ii.hbmColor = color;
+    ii.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&ii);
+    if (icon) {
+        static HICON prev; // WM_SETICON takes ownership — track & free
+        SendMessageW(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)icon);
+        SendMessageW(hwnd, WM_SETICON, ICON_BIG, (LPARAM)icon);
+        if (prev) DestroyIcon(prev);
+        prev = icon;
+    }
+    DeleteObject(color);
+    DeleteObject(mask);
+}
+
+#else // !defined(_WIN32)
+
+void* egui_cr_file_dialog_start(int save, const wchar_t* title,
+                                const wchar_t* filter, const wchar_t* directory,
+                                const wchar_t* file_name) {
+    (void)save; (void)title; (void)filter; (void)directory; (void)file_name;
+    return NULL; // no native backend — the ports use their subprocess path
+}
+int egui_cr_file_dialog_done(void* handle) { (void)handle; return 1; }
+const wchar_t* egui_cr_file_dialog_result(void* handle) { (void)handle; return L""; }
+void egui_cr_file_dialog_free(void* handle) { (void)handle; }
+void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
+    (void)rgba; (void)w; (void)h;
+}
+
+#endif

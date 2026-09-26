@@ -15,6 +15,9 @@ module Egui
         lib LibUser32
           # hwnd, text, caption, type → clicked button id (1=OK, 6=YES).
           fun MessageBoxW(hwnd : Void*, text : UInt16*, caption : UInt16*, u_type : UInt32) : Int32
+          # The calling thread's active window — the sokol window while
+          # an app.update runs — gives the box a proper owner.
+          fun GetActiveWindow : Void*
         end
 
         MB_ICONERROR   = 0x0000_0010_u32
@@ -24,7 +27,8 @@ module Egui
         IDYES          = 6
 
         private def self.win32_box(message : String, title : String, icon : UInt32) : Nil
-          LibUser32.MessageBoxW(nil, message.to_utf16, title.to_utf16, icon)
+          LibUser32.MessageBoxW(LibUser32.GetActiveWindow,
+            message.to_utf16, title.to_utf16, icon)
           nil
         end
       {% end %}
@@ -78,7 +82,8 @@ module Egui
       # cancel or when no dialog tool is available.
       def self.confirm(message : String, title : String = "Confirm") : Bool
         {% if flag?(:win32) %}
-          LibUser32.MessageBoxW(nil, message.to_utf16, title.to_utf16, MB_YESNO) == IDYES
+          LibUser32.MessageBoxW(LibUser32.GetActiveWindow,
+            message.to_utf16, title.to_utf16, MB_YESNO) == IDYES
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "question", true)
         {% else %}

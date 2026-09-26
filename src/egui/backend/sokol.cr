@@ -67,6 +67,17 @@ lib LibEguiCr
   fun window_maximize = egui_cr_window_maximize
   fun window_restore = egui_cr_window_restore
   fun screen_size = egui_cr_screen_size(w : Int32*, h : Int32*)
+  fun set_window_icon = egui_cr_set_window_icon(rgba : UInt8*, w : Int32, h : Int32)
+
+  # native file dialogs (shim: Win32 IFileDialog on its own thread; the
+  # start/done/result/free handle protocol is polled from a fiber)
+  fun file_dialog_start = egui_cr_file_dialog_start(save : Int32, title : UInt16*,
+                                                    filter : UInt16*,
+                                                    directory : UInt16*,
+                                                    file_name : UInt16*) : Void*
+  fun file_dialog_done = egui_cr_file_dialog_done(handle : Void*) : Int32
+  fun file_dialog_result = egui_cr_file_dialog_result(handle : Void*) : UInt16*
+  fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
 
   # sokol_gl
   fun sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
@@ -130,6 +141,7 @@ module Egui
 
       @@events = [] of Egui::Event
       @@fonts : Egui::Backend::AtlasFonts?
+      @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
       # Framebuffer pixels per UI point (retina: 2.0). UI layout and paint
@@ -179,6 +191,10 @@ module Egui
         def fullscreen? : Bool
           LibEguiCr.sapp_is_fullscreen
         end
+
+        def set_icon(rgba : Bytes, width : Int32, height : Int32) : Nil
+          LibEguiCr.set_window_icon(rgba, width, height)
+        end
       end
 
       # System port Screen → sokol dpi scale + primary monitor size (shim).
@@ -219,13 +235,25 @@ module Egui
       MOUSE_MOVE  =  7
 
       # eframe::run_native — blocks until the window closes.
+      #
+      # * *icon* — window icon as straight RGBA8 pixels (`width`×
+      #   `height`), applied right after the window exists. Win32 only
+      #   today (WM_SETICON); a no-op elsewhere.
       def self.run(app : Egui::App, title : String = "egui-cr",
-                   width : Int32 = 800, height : Int32 = 600) : Nil
+                   width : Int32 = 800, height : Int32 = 600,
+                   icon : NamedTuple(rgba: Bytes, width: Int32,
+                                     height: Int32)? = nil) : Nil
         @@app = app
+        @@icon = icon
         Egui::SystemPorts::Quit.use(QuitPort.new)
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
+        {% if flag?(:win32) %}
+          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
+            native_file_dialog(save, title, filters, dir, name)
+          end
+        {% end %}
 
         init = ->{ on_init }
         frame = ->{ on_frame }
@@ -240,9 +268,51 @@ module Egui
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe, width, height)
       end
 
+      # Win32 IFileDialog through the shim: the picker runs on its own
+      # thread (own STA); this fiber sleep-polls it, so the scheduler
+      # keeps serving the frame loop while the dialog is open — the
+      # AsyncDialogs contract. Nil when the thread failed to start or
+      # the user cancelled (empty path).
+      private def self.native_file_dialog(save : Bool, title : String,
+                                          filters : Array(String),
+                                          directory : String?,
+                                          default_name : String?) : String?
+        # "name\0pattern\0" pairs, double-NUL terminated (shim format).
+        filter = String.build do |s|
+          unless filters.empty?
+            pats = filters.join(";")
+            s << "Files (#{pats})\0#{pats}\0"
+          end
+          s << "All files\0*.*\0"
+        end
+        handle = LibEguiCr.file_dialog_start(
+          save ? 1 : 0,
+          title.to_utf16, filter.to_utf16,
+          (directory || "").to_utf16, (default_name || "").to_utf16)
+        return nil if handle.null?
+        begin
+          until LibEguiCr.file_dialog_done(handle) != 0
+            sleep 15.milliseconds
+          end
+          ptr = LibEguiCr.file_dialog_result(handle)
+          len = 0
+          while ptr[len] != 0
+            len += 1
+          end
+          len.zero? ? nil : String.from_utf16(Slice.new(ptr, len))
+        ensure
+          LibEguiCr.file_dialog_free(handle)
+        end
+      end
+
       protected def self.on_init : Nil
         LibEguiCr.gfx_init
         LibEguiCr.text_pipeline_init
+        # Window icon first thing after the window exists (taskbar and
+        # caption pick it up before the first paint).
+        if (icon = @@icon) && !icon[:rgba].empty?
+          Egui::SystemPorts::Window.set_icon(icon[:rgba], icon[:width], icon[:height])
+        end
         app = @@app.not_nil!
         # Font backend: prefer FreeType (real hinting), fall back to the
         # stb light-hint rasterizer, then to the built-in monospace stub.

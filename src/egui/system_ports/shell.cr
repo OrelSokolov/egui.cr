@@ -38,7 +38,11 @@ module Egui
       # Reveal `path` (file or directory) in the system file manager.
       def self.show(path : String) : Bool
         {% if flag?(:win32) %}
-          Shell.execute("open", File.dirname(File.expand_path(path)))
+          # `explorer /select,<path>` opens the folder AND highlights
+          # the item (parity with macOS `open -R`). Explorer exits
+          # immediately with a meaningless code — only the spawn counts.
+          return false unless Dialogs.which("explorer")
+          Dialogs.spawn("explorer", ["/select,#{File.expand_path(path)}"])
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", ["-R", File.expand_path(path)])
