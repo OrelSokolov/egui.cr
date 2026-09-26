@@ -15,6 +15,7 @@ module Egui
   # letters 65..90, digits 48..57, function keys from 256) so the
   # backend passes them through untranslated.
   enum KeyCode
+    Space      =  32
     Zero       =  48
     One        =  49
     Two        =  50
@@ -55,6 +56,7 @@ module Egui
     Enter      = 257
     Tab        = 258
     Backspace  = 259
+    Insert     = 260
     Delete     = 261
     Right      = 262
     Left       = 263
@@ -64,6 +66,18 @@ module Egui
     PageDown   = 267
     Home       = 268
     End        = 269
+    F1         = 290
+    F2         = 291
+    F3         = 292
+    F4         = 293
+    F5         = 294
+    F6         = 295
+    F7         = 296
+    F8         = 297
+    F9         = 298
+    F10        = 299
+    F11        = 300
+    F12        = 301
 
     def digit? : Bool
       value >= 48 && value <= 57

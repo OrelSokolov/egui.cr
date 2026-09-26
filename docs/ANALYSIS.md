@@ -433,3 +433,53 @@ entirely — initial widths were used raw everywhere.
   button (previously only true on the opening frame).
 - Tooltips (`Response#show_tooltip`) flip back left/up at the
   right/bottom screen edge instead of overflowing.
+
+## 12. Delta: action-driven global hotkeys (Hotkey/HotkeyAction/HotkeyMap)
+
+egui.cr's own layer (no upstream equivalent): global keyboard
+shortcuts routed through semantic actions instead of hardcoded
+"Ctrl+N" strings in menus.
+
+- `src/egui/hotkeys.cr`:
+  - `Hotkey` — modifiers + `KeyCode`, parsing/formatting "Ctrl+Shift+Z"
+    strings both ways (`parse`/`parse?` strict vs nil), `#matches?`
+    with EXACT modifier equality (Ctrl+N ≠ Ctrl+Shift+N). `KeyCode`
+    grew `Space`/`Insert`/`F1..F12` (values verified against
+    `sokol_app.h`).
+  - `HotkeyAction` — the semantic event ("app.new_tab"); apps define
+    constants and handle them in ONE place.
+  - `HotkeyMap` — the app-global bindings on `Context#hotkeys`:
+    one hotkey per action and vice versa (rebinding an action frees
+    its old hotkey; binding a taken hotkey replaces it).
+- Dispatch (`Context#begin_frame`, before `Memory#begin_frame`'s
+  focus navigation): every bound hotkey pressed this frame fires its
+  action and claims the key (`InputState#consume_key`) so widgets
+  don't double-react. Action events live exactly one frame;
+  `#consume_action` gives exactly-once handling, `#fire_action`
+  fires programmatically (the menu-click path), `#fired_actions` /
+  `#action_fired?` are read-only views.
+- `Ui#menu_item(label, action)` — the shortcut-string parameter is
+  gone; the right-aligned hint is whatever `ctx.hotkeys` binds to the
+  action, so a rebind updates every menu next frame. The row triggers
+  on click OR on the action firing while the menu is open (the menu
+  consumes it first — exactly one handler either way); a blockless
+  item re-fires the action for app-level `#consume_action` handlers.
+- `HotkeyEdit` widget (`src/egui/widgets/hotkey_edit.cr`,
+  `Ui#hotkey_edit`): shows the action's current binding (or "(not
+  bound)"); a click starts capture — the next non-modifier key press
+  with held modifiers becomes the new binding (Escape cancels,
+  Backspace/Delete clears), reported through the on_change block.
+  While capturing, `Context#hotkey_capture_active!` pauses global
+  dispatch for the next frame and the widget consumes every pressed
+  key, so the combo being recorded cannot trigger anything.
+- Gallery (`examples/widgets_gallery.cr`): app actions as constants +
+  `DEFAULT_BINDINGS` bound on the first frame; menu items reference
+  actions, one `#handle_actions` poll (at the END of `update`, after
+  the menu bar, so click re-firings land in the same frame) handles
+  everything; the Widgets → Hotkeys tab lists every action with a
+  HotkeyEdit — rebinding there re-labels the File menu live.
+- Specs (`spec/hotkeys_spec.cr`): parse/format round-trips and
+  rejects, value semantics, exact-modifier matching, map rebind
+  rules, one-frame dispatch + consume, capture pause, the HotkeyEdit
+  click→capture→bind/clear/cancel flow, and the action-driven
+  menu_item (hint display + consume).

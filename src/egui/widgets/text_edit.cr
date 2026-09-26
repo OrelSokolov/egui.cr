@@ -34,9 +34,15 @@ module Egui
       galley = fonts.layout(runs)
 
       pad = style.spacing.button_padding
+      # The border stroke is drawn INSIDE the rect (backend inset), so
+      # the layout reserves it on every side: text, selection and caret
+      # start past it (upstream expands the frame inner_margin the same
+      # way). Reserved at the focused width so focusing doesn't jitter.
+      border = 2.0
+      inset = Vec2.new(pad.x + border, pad.y + border)
       size = Vec2.new(
-        {galley.size.x, style.spacing.interact_size.x}.max + pad.x * 2.0,
-        {galley.size.y, style.spacing.interact_size.y}.max + pad.y * 2.0)
+        {galley.size.x, style.spacing.interact_size.x}.max + inset.x * 2.0,
+        {galley.size.y, style.spacing.interact_size.y}.max + inset.y * 2.0)
       rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id,
         Sense::Click | Sense::Drag | Sense::Focusable)
@@ -55,9 +61,9 @@ module Egui
         response.request_focus
         if (pos = ui.ctx.input.pointer_pos)
           if response.double_clicked?
-            cursor, anchor = word_range(@text, cursor_at(fonts, galley, rect, pad, pos.x))
+            cursor, anchor = word_range(@text, cursor_at(fonts, galley, rect, inset, pos.x))
           else
-            cursor = cursor_at(fonts, galley, rect, pad, pos.x)
+            cursor = cursor_at(fonts, galley, rect, inset, pos.x)
             anchor = cursor
           end
         end
@@ -65,10 +71,10 @@ module Egui
       # Drag-select: the anchor stays where the press put it, the caret
       # follows the pointer (a drag with no prior press anchors here).
       if response.drag_started? && (pos = ui.ctx.input.pointer_pos) && anchor == -1
-        anchor = cursor_at(fonts, galley, rect, pad, pos.x)
+        anchor = cursor_at(fonts, galley, rect, inset, pos.x)
       end
       if response.dragged? && (pos = ui.ctx.input.pointer_pos)
-        cursor = cursor_at(fonts, galley, rect, pad, pos.x)
+        cursor = cursor_at(fonts, galley, rect, inset, pos.x)
       end
 
       if response.has_focus?
@@ -82,9 +88,15 @@ module Egui
 
       visuals = style.visuals
       bg = response.has_focus? ? visuals.button_active : visuals.button_weak
-      ui.painter.rect(rect, 4.0, bg, visuals.button_stroke, 1.0)
+      # Upstream: the focused field paints its own border in the
+      # selection stroke color (upstream `visuals.selection.stroke`),
+      # not a ring outside the frame — an outside ring both escapes the
+      # widget bounds and gets scissored by the parent clip.
+      stroke_color = response.has_focus? ? visuals.selection_fill : visuals.button_stroke
+      stroke_w = response.has_focus? ? border : 1.0
+      ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
 
-      inner = rect.min + pad
+      inner = rect.min + inset
       color = if @text.empty? && @hint
                 visuals.fade_color(visuals.text_color, 0.55)
               else
@@ -108,18 +120,21 @@ module Egui
 
       ui.painter.paint_galley(inner, galley, fonts, color)
 
-      # Blinking caret (1s period) while focused.
+      # Blinking caret (1s period) while focused. An empty field with
+      # no hint lays out to a zero-height galley (no rows) — fall back
+      # to the line height so the caret stays full-size until the
+      # first character gives the galley a real row.
+      line_h = {galley.size.y, font_size * Fonts::LINE_H_FACTOR}.max
       if response.has_focus? && (ui.ctx.input.time % 1.0) < 0.6
         caret_x = inner.x + galley.x_at(0, cursor, fonts)
         top = inner.y + 1.0
-        bottom = inner.y + galley.size.y - 1.0
+        bottom = inner.y + line_h - 1.0
         ui.painter.line(Pos2.new(caret_x, top), Pos2.new(caret_x, bottom),
           1.0, visuals.text_color)
       end
 
       response.widget_text = new_text
       response.mark_changed if changed
-      response.paint_focus_ring(5.0)
       response
     end
 

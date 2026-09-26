@@ -246,9 +246,12 @@ module Egui
       add(DatePicker.new(id, value, format, &on_change))
     end
 
-    # egui_plot-style line/scatter plot; see `Plot`.
-    def plot(id : String, height : Float64 = 200.0, &block : Plot ->) : Response
-      p = Plot.new(id, height)
+    # egui_plot-style line/scatter plot; see `Plot`. `animated: true`
+    # adds live-plot behavior: double-click (or the overlay button)
+    # resets a manually panned/zoomed view back to the default.
+    def plot(id : String, height : Float64 = 200.0, animated : Bool = false,
+             &block : Plot ->) : Response
+      p = Plot.new(id, height: height, animated: animated)
       block.call(p)
       add(p)
     end

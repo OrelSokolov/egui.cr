@@ -1058,13 +1058,17 @@ describe "phase 2 widgets" do
 
   it "menu item rows span the popup and the popup hugs its content" do
     ctx = Egui::Context.new
+    new_action = Egui::HotkeyAction.new("app.new")
+    open_action = Egui::HotkeyAction.new("app.open")
+    ctx.hotkeys.bind("Ctrl+N", new_action)
+    ctx.hotkeys.bind("Ctrl+O", open_action)
 
     draw = ->(events : Array(Egui::Event), time : Float64) do
       raw_frame(ctx, events: events, time: time)
       ctx.menu_bar do |bar|
         bar.menu_button("File") do |menu|
-          menu.menu_item("New", "Ctrl+N") { }
-          menu.menu_item("Open…", "Ctrl+O") { }
+          menu.menu_item("New", new_action)
+          menu.menu_item("Open…", open_action)
         end
       end
       ctx.end_frame
@@ -2754,6 +2758,30 @@ describe "Table" do
     # striped body: some RectCmd carries a fill (the row stripe)
     rects = ctx.painter.commands.select(Egui::RectCmd)
     rects.count(&.fill).should be > 1
+  end
+
+  it "fits the available width — an auto-fit window stops growing" do
+    ctx = Egui::Context.new
+    widths = [] of Float64
+
+    4.times do |i|
+      raw_frame(ctx, time: 0.016 * (i + 1))
+      ctx.window("demo", width: 400.0) do |ui|
+        ui.table("t", ["File", "Size", "Modified"], [0.5, 0.2, 0.3]) do |rows|
+          rows.label("a.txt"); rows.label("1 KB"); rows.label("today"); rows.end_row
+          rows.label("b.txt"); rows.label("2 KB"); rows.label("yesterday"); rows.end_row
+        end
+      end
+      ctx.end_frame
+      bg = ctx.painter.commands.select(Egui::RectCmd)
+        .find { |c| c.fill == ctx.style.visuals.window_fill }.not_nil!
+      widths << bg.rect.width
+    end
+
+    # fractions + inter-column spacing must stay inside the requested
+    # width instead of pushing the window wider every frame
+    widths[2].should eq(400.0)
+    widths[3].should eq(400.0)
   end
 end
 

@@ -10,13 +10,21 @@
 #
 # Bounds live in `Memory#data` keyed by the plot id; `auto` re-fits
 # every frame until the user pans or zooms (then they stay put — no
-# reset API yet, delete the id's cells to refit).
+# reset API yet, delete the id's cells to refit). `fixed_bounds` pins
+# the view instead of auto-fitting (for live plots).
+#
+# `animated: true` turns the plot into a live one: once the user pans
+# or zooms away from the default view, a "reset view" pill (custom
+# label via `#reset_label`) appears top-center; clicking it — or
+# double-clicking the plot — snaps back to the default view.
 
 module Egui
   class Plot
     include Widget
 
     alias Point = Tuple(Float64, Float64)
+
+    @fixed : {Float64, Float64, Float64, Float64}? = nil
 
     SERIES_COLORS = ->(v : Visuals, i : Int32) do
       palette = {v.selection_fill, v.hyperlink_color,
@@ -25,10 +33,34 @@ module Egui
       palette[i % palette.size]
     end
 
-    def initialize(id : String, @height : Float64 = 200.0)
+    def initialize(id : String, @height : Float64 = 200.0,
+                   @animated : Bool = false)
       @pid = Id.from("plot/#{id}")
       @lines = [] of {String, Array(Point)}
       @dots = [] of {String, Array(Point)}
+      @reset_label = "Reset view"
+    end
+
+    # Live-plot mode: pan/zoom deviate from the default view, and a
+    # reset pill (or a double-click) returns to it.
+    def animated(flag : Bool = true) : Plot
+      @animated = flag
+      self
+    end
+
+    # Custom text for the reset pill (default "Reset view").
+    def reset_label(text : String) : Plot
+      @reset_label = text
+      self
+    end
+
+    # Pin the visible data rectangle instead of auto-fitting (used for
+    # live-scrolling plots). Ignored once the user pans or zooms —
+    # interaction takes over, exactly like with auto-fit.
+    def fixed_bounds(min_x : Float64, min_y : Float64,
+                     max_x : Float64, max_y : Float64) : Plot
+      @fixed = {min_x, min_y, max_x, max_y}
+      self
     end
 
     def line(name : String, points : Array(Point)) : Nil
@@ -57,9 +89,18 @@ module Egui
 
       # --- pan / zoom mutate the stored bounds --------------------------
       auto = mem.data.get_int(@pid.child(3), 1) == 1
+      # Animated plots: a double-click anywhere on the plot snaps the
+      # view back to the default (fixed bounds / auto-fit).
+      if @animated && !auto && response.double_clicked?
+        auto = true
+      end
       bounds : {Vec2, Vec2}? = nil
       if auto
-        bounds = compute_bounds
+        if f = @fixed
+          bounds = {Vec2.new(f[0], f[1]), Vec2.new(f[2], f[3])}
+        else
+          bounds = compute_bounds
+        end
       else
         min = mem.data.get_vec2(@pid.child(1), Vec2.zero)
         max = mem.data.get_vec2(@pid.child(2), Vec2.new(1.0, 1.0))
@@ -159,6 +200,32 @@ module Egui
           SERIES_COLORS.call(visuals, i))
         painter.text(Pos2.new(lx + 18.0, ly), name, small,
           visuals.text_color)
+      end
+
+      # Animated plots: once the view deviates from the default, show a
+      # reset pill top-center (drawn after the clip restore so it is
+      # never cut). Interacted after the plot rect, so hit-testing
+      # ranks it topmost and it wins the click.
+      if @animated && !auto
+        small = style.font_size * 0.8
+        ts = ctx.fonts.measure(@reset_label, small)
+        size = Vec2.new(ts.x + 16.0, ts.y + 8.0)
+        box = Rect.from_min_size(
+          Pos2.new(rect.center.x - size.x / 2.0, rect.min.y + 6.0), size)
+        bresp = ui.interact(box, @pid.child(4), Sense.click)
+        if bresp.clicked?
+          # Default view from next frame on (this frame already drew
+          # with the user's bounds).
+          mem.data.set_int(@pid.child(3), 1)
+        else
+          painter.rect(box, rounding: 4.0,
+            fill: visuals.button_fill(bresp.hovered?, bresp.active?),
+            stroke_color: visuals.button_stroke, stroke_width: 1.0)
+          painter.text(Pos2.new(box.left + (box.width - ts.x) / 2.0,
+            box.center.y), @reset_label, small, visuals.text_color)
+          bresp.on_hover_cursor(CursorIcon::Pointer)
+        end
+        mem.use_id(@pid.child(4))
       end
 
       response.on_hover_cursor(CursorIcon::Grab)

@@ -17,6 +17,7 @@ class GalleryApp < Egui::App
   @combo = "Second"
   @modal_open = false
   @buffer = "edit me"
+  @buffer2 = "Second edit"
   @color = Egui::Color32.rgb(0, 122, 204)
   @seg = 0
   @sel = false
@@ -27,13 +28,24 @@ class GalleryApp < Egui::App
   # on-demand repaint at work: it only ticks when the UI really runs.
   @dropped = [] of String
   @updates = 0
+  # Animated plot: emulated CPU load. A fresh value every whole second
+  # (random walk + spikes, 0..100%), smoothly interpolated in between —
+  # the view is a sliding window over the last 60 seconds, so the curve
+  # flows left → right every frame. Lazy map: second index → load %.
+  @cpu_samples = Hash(Int32, Float64).new
+  # Monotonic counter for tabs created via File → New ("tab 1", "tab 2"…).
+  @next_tab = 1
+  # Hotkeys: defaults bound once on the first frame; @last_action is
+  # the most recent action event (menu click or hotkey press).
+  @hotkeys_ready = false
+  @last_action = "(none)"
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Display", "Color"],
+      "Widgets", ["Buttons", "Inputs", "Text", "Display", "Color", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
@@ -45,34 +57,74 @@ class GalleryApp < Egui::App
 
   COMBO_OPTIONS = ["First", "Second", "Third"]
 
+  # App actions (the hotkey layer is action-driven: menus and the
+  # hotkey map reference these, never a key string). The gallery's
+  # only hardcoded combos are the DEFAULT_BINDINGS below — everything
+  # else picks up rebinds from the Hotkeys tab at runtime.
+  ACTION_NEW   = Egui::HotkeyAction.new("app.new_tab")
+  ACTION_OPEN  = Egui::HotkeyAction.new("app.open")
+  ACTION_QUIT  = Egui::HotkeyAction.new("app.quit")
+  ACTION_UNDO  = Egui::HotkeyAction.new("app.undo")
+  ACTION_REDO  = Egui::HotkeyAction.new("app.redo")
+  ACTION_MODAL = Egui::HotkeyAction.new("app.toggle_modal")
+  ACTION_THEME = Egui::HotkeyAction.new("app.toggle_theme")
+
+  # What the Hotkeys tab lists: action + description row.
+  HOTKEY_ACTIONS = {
+    ACTION_NEW   => "File → New — new tab",
+    ACTION_OPEN  => "File → Open…",
+    ACTION_QUIT  => "File → Quit",
+    ACTION_UNDO  => "Edit → Undo (unbound — try it)",
+    ACTION_REDO  => "Edit → Redo",
+    ACTION_MODAL => "View → Toggle modal",
+    ACTION_THEME => "View → toggle theme",
+  }
+
+  DEFAULT_BINDINGS = {
+    ACTION_NEW   => "Ctrl+N",
+    ACTION_OPEN  => "Ctrl+O",
+    ACTION_QUIT  => "Ctrl+Q",
+    ACTION_REDO  => "Ctrl+Shift+Z",
+    ACTION_MODAL => "Ctrl+M",
+    ACTION_THEME => "Ctrl+T",
+  }
+
   def update(ctx : Egui::Context) : Nil
     @updates += 1
+    # Default hotkey bindings — once, on the first frame (the map
+    # lives on the Context). Rebinds in the Hotkeys tab replace these.
+    unless @hotkeys_ready
+      DEFAULT_BINDINGS.each { |action, combo| ctx.hotkeys.bind(combo, action) }
+      @hotkeys_ready = true
+    end
     # Files dropped onto the window land here for one frame.
     unless ctx.input.dropped_files.empty?
       @dropped = ctx.input.dropped_files.dup
     end
 
-    # Desktop-style menu bar pinned to the top.
+    # Desktop-style menu bar pinned to the top. Items reference
+    # actions — the shortcut hint comes from ctx.hotkeys (rebind in
+    # the Widgets → Hotkeys tab and watch it update), clicks re-fire
+    # the action for #handle_actions below.
     ctx.menu_bar do |bar|
       bar.menu_button("File") do |menu|
-        menu.menu_item("New", "Ctrl+N") { }
-        menu.menu_item("Open…", "Ctrl+O") { }
-        menu.menu_item("Quit", "Ctrl+Q") { Egui::SystemPorts::Quit.quit! }
+        menu.menu_item("New", ACTION_NEW)
+        menu.menu_item("Open…", ACTION_OPEN)
+        menu.menu_item("Quit", ACTION_QUIT)
       end
       bar.menu_button("Edit") do |menu|
-        menu.menu_item("Undo", "Ctrl+Z") { }
-        menu.menu_item("Redo", "Ctrl+Shift+Z") { }
+        menu.menu_item("Undo", ACTION_UNDO)
+        menu.menu_item("Redo", ACTION_REDO)
       end
       bar.menu_button("View") do |menu|
-        menu.menu_item("Toggle modal") { @modal_open = true }
+        menu.menu_item("Toggle modal", ACTION_MODAL)
         # Introspection: the whole style tree (classes → states → keys)
         # goes to stdout — `ctx.stylesheet.dump` accepts any IO.
         menu.menu_item("Dump stylesheet (stdout)") { puts ctx.stylesheet }
         # Instant global theme swap: assigning ctx.theme restyles the
         # whole UI on the next frame.
-        menu.menu_item(ctx.theme.dark? ? "Light theme" : "Dark theme") do
-          ctx.theme = ctx.theme.dark? ? Egui::Theme.light : Egui::Theme.dark
-        end
+        menu.menu_item(ctx.theme.dark? ? "Light theme" : "Dark theme",
+          ACTION_THEME)
       end
     end
 
@@ -92,7 +144,7 @@ class GalleryApp < Egui::App
     # inner Ui (putting widgets on the outer one would overlap).
     ctx.central_panel do |ui|
       if @sections.empty?
-        ui.label("Every tab is closed — nowhere to navigate. (Restart the app to get them back.)")
+        ui.label("Every tab is closed — nowhere to navigate. (File → New adds tabs back.)")
       else
         ui.scroll_area do |scroll|
           scroll.heading(@sections[@section].tabs[@tab])
@@ -104,6 +156,7 @@ class GalleryApp < Egui::App
           when {"Widgets", "Text"}           then text_gallery(scroll)
           when {"Widgets", "Display"}        then display_gallery(scroll)
           when {"Widgets", "Color"}          then color_gallery(scroll)
+          when {"Widgets", "Hotkeys"}        then hotkeys_gallery(scroll)
           when {"Style", "Themes"}           then themes_gallery(scroll, ctx)
           when {"Style", "Cursors"}          then cursors_gallery(scroll)
           when {"Containers", "Scroll"}      then scroll_gallery(scroll)
@@ -114,6 +167,8 @@ class GalleryApp < Egui::App
           when {"Layout", "Tree"}            then tree_gallery(scroll)
           when {"Layout", "Plot"}            then plot_gallery(scroll)
           when {"Layout", "Enabled"}         then enabled_gallery(scroll)
+          else
+            scroll.label("(a user-created tab — close it with its X)")
           end
         end
       end
@@ -139,6 +194,43 @@ class GalleryApp < Egui::App
       # On-demand repaint: the counter only moves when a real update
       # runs (input, animation, dialog) — it freezes while the UI idles.
       ui.label("updates: #{@updates}")
+      ui.label("last action: #{@last_action}")
+    end
+
+    # Action dispatch: runs AFTER the menu bar so menu-click
+    # re-firings (Context#fire_action) land in the same frame, and
+    # after the widgets so an open menu's #menu_item gets first claim
+    # on hotkey firings. Every trigger has exactly one handler.
+    handle_actions(ctx)
+  end
+
+  # The single place app actions are handled — hotkey presses and
+  # menu clicks both arrive as action events here.
+  private def handle_actions(ctx : Egui::Context) : Nil
+    if ctx.consume_action(ACTION_NEW)
+      @last_action = ACTION_NEW.to_s
+      new_tab
+    end
+    if ctx.consume_action(ACTION_OPEN)
+      @last_action = ACTION_OPEN.to_s
+    end
+    if ctx.consume_action(ACTION_QUIT)
+      @last_action = ACTION_QUIT.to_s
+      Egui::SystemPorts::Quit.quit!
+    end
+    if ctx.consume_action(ACTION_UNDO)
+      @last_action = ACTION_UNDO.to_s
+    end
+    if ctx.consume_action(ACTION_REDO)
+      @last_action = ACTION_REDO.to_s
+    end
+    if ctx.consume_action(ACTION_MODAL)
+      @last_action = ACTION_MODAL.to_s
+      @modal_open = !@modal_open
+    end
+    if ctx.consume_action(ACTION_THEME)
+      @last_action = ACTION_THEME.to_s
+      ctx.theme = ctx.theme.dark? ? Egui::Theme.light : Egui::Theme.dark
     end
   end
 
@@ -162,6 +254,25 @@ class GalleryApp < Egui::App
     @section = @section.clamp(0, @sections.size - 1)
     @tab -= 1 if si == @section && ti < @tab
     @tab = @tab.clamp(0, @sections[@section].tabs.size - 1)
+  end
+
+  # File → New: append a fresh "tab <n>" to the current section and
+  # select it (a brand-new "Tabs" section when every section was closed).
+  private def new_tab : Nil
+    title = "tab #{@next_tab}"
+    @next_tab += 1
+
+    if @sections.empty?
+      @sections << Egui::Sidebar::Section.new("Tabs", [title], closable: true)
+      @section = 0
+      @tab = 0
+    else
+      section = @sections[@section]
+      tabs = section.tabs.dup << title
+      @sections[@section] = Egui::Sidebar::Section.new(section.title, tabs,
+        closable: true)
+      @tab = tabs.size - 1
+    end
   end
 
   private def buttons_gallery(ui : Egui::Ui) : Nil
@@ -214,6 +325,7 @@ class GalleryApp < Egui::App
     ui.label("Combo / text edit:")
     ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
     ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
+    ui.text_edit_singleline(@buffer2) { |t| @buffer2 = t }
     ui.label("(select with Shift+arrows or double-click / drag; Ctrl+A/C/X/V)")
     ui.separator
 
@@ -255,6 +367,24 @@ class GalleryApp < Egui::App
   private def color_gallery(ui : Egui::Ui) : Nil
     ui.label("Color picker:")
     ui.color_edit32(@color) { |c| @color = c }
+  end
+
+  # The global hotkey map: every app action with a HotkeyEdit bound
+  # to it. Rebinding here updates the menu bar's shortcut hints on
+  # the next frame — the menus reference actions, not key strings.
+  private def hotkeys_gallery(ui : Egui::Ui) : Nil
+    ui.label("Global hotkey map (ctx.hotkeys) — action-driven, no hardcoded combos:")
+    ui.label("last action fired: #{@last_action}")
+    ui.separator
+    HOTKEY_ACTIONS.each do |action, desc|
+      ui.horizontal do |row|
+        row.label(desc)
+        row.hotkey_edit(action) { |hotkey| }
+      end
+    end
+    ui.separator
+    ui.label("Click a button, then press a key combo (Esc cancels, Backspace clears).")
+    ui.label("Check the File menu — its hints follow these bindings live.")
   end
 
   private def themes_gallery(ui : Egui::Ui, ctx : Egui::Context) : Nil
@@ -432,6 +562,56 @@ class GalleryApp < Egui::App
       p.line("sin(x)", sin)
       p.points("peaks", peaks)
     end
+
+    ui.separator
+    ui.label("Animated plot — emulated CPU load, last 60 s, scrolling left → right:")
+    now = ui.ctx.input.time
+    # There is no delayed repaint, so while this tab is shown keep
+    # frames coming (spinner trick) — the window slides every frame.
+    ui.ctx.request_repaint
+    # Drop samples that fell out of the window, then build the curve:
+    # a point every 0.25 s across [now-60, now].
+    floor = now.floor.to_i
+    @cpu_samples.reject! { |sec, _| sec < floor - 65 }
+    pts = [] of {Float64, Float64}
+    x = now - 60.0
+    while x <= now
+      pts << {x, cpu_value(x)}
+      x += 0.25
+    end
+    pts << {now, cpu_value(now)}
+    ui.plot("cpu_plot", height: 220, animated: true) do |p|
+      # Fixed 0..100% y and a sliding x window — auto-fit would wobble.
+      # Pan/zoom freezes the view and shows the reset pill;
+      # the pill or a double-click returns to the live default.
+      p.fixed_bounds(now - 60.0, 0.0, now, 100.0)
+      p.reset_label("Reset CPU view")
+      p.line("CPU %", pts)
+    end
+    ui.label("current: #{"%.0f" % cpu_value(now)}%")
+  end
+
+  # The emulated load for whole second `sec`: mean-reverting random walk
+  # with occasional spikes, clamped to 0..100%.
+  private def cpu_at(sec : Int32) : Float64
+    @cpu_samples[sec] ||= begin
+      prev = @cpu_samples[sec - 1]? || 50.0
+      walk = prev + (rand - 0.5) * 20.0 + (50.0 - prev) * 0.1
+      spike = rand < 0.07 ? rand * 35.0 : 0.0
+      (walk + spike).clamp(0.0, 100.0)
+    end
+  end
+
+  # Smooth value at fractional time `x`: smoothstep ease between the two
+  # neighboring whole-second samples — this is what makes the curve glide
+  # instead of stepping once per second.
+  private def cpu_value(x : Float64) : Float64
+    sec = x.floor.to_i
+    f = x - sec
+    a = cpu_at(sec)
+    b = cpu_at(sec + 1)
+    t = f * f * (3.0 - 2.0 * f)
+    a + (b - a) * t
   end
 
   # egui `ui.enabled(flag)`: the region renders, but every Response is

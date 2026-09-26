@@ -3,8 +3,9 @@
 # A desktop-style menu: `Context#menu_bar` pins a bar to the top of the
 # window; `Ui#menu_button` opens a dropdown (the shared popup system)
 # below itself; `Ui#menu_item` is a clickable row with an optional
-# shortcut hint that closes the menu on click. While any menu is open,
-# hovering another root button switches to it (upstream MenuState).
+# action whose bound hotkey (ctx.hotkeys) shows as the shortcut hint;
+# it closes the menu on click. While any menu is open, hovering
+# another root button switches to it (upstream MenuState).
 
 module Egui
   # Context menus (egui `Response::context_menu`, containers/menu.rs):
@@ -152,13 +153,32 @@ module Egui
     # button padding, the shortcut hint is right-aligned. Only the
     # natural width (label + gap + shortcut + padding) is reported to
     # the popup's min_rect, so the frame hugs the widest item.
-    def menu_item(label : String, shortcut : String? = nil,
+    #
+    # `action` replaces the old shortcut-string parameter: the hint is
+    # whatever hotkey `ctx.hotkeys` currently binds to the action (so
+    # a HotkeyEdit rebind updates the menu next frame), and the row
+    # triggers on click OR on the action firing while the menu is
+    # open. Without a block a click re-fires the action
+    # (`Context#fire_action`) for app-level `#consume_action` handlers.
+    def menu_item(label : String, action : HotkeyAction? = nil,
                   &on_click : ->) : Nil
+      menu_item_impl(label, action) { on_click.call }
+    end
+
+    def menu_item(label : String, action : HotkeyAction? = nil) : Nil
+      menu_item_impl(label, action) do
+        ctx.fire_action(action.not_nil!) if action
+      end
+    end
+
+    private def menu_item_impl(label : String, action : HotkeyAction?,
+                               &on_trigger : ->) : Nil
       font_size = style.font_size
       pad = style.spacing.button_padding
       label_size = ctx.fonts.measure(label, font_size)
 
-      shortcut_size = shortcut ? ctx.fonts.measure(shortcut, font_size) : Vec2.zero
+      shortcut = action.try { |a| ctx.hotkeys.hotkey_for(a).try(&.to_s) }
+      shortcut_size = shortcut ? ctx.fonts.measure(shortcut.not_nil!, font_size) : Vec2.zero
       # Row height includes the menu vertical padding so the hover
       # highlight breathes around the label like a native menu row.
       height = {label_size.y + 2 * MENU_PAD_Y,
@@ -192,12 +212,15 @@ module Egui
           rect.left_center.y), shortcut, font_size, visuals.text_color)
       end
 
-      if response.clicked?
+      # Trigger on click, or on the action firing while this menu is
+      # open (a hotkey press — the menu consumes it before the app's
+      # poll, so there is exactly one handler either way).
+      if response.clicked? || (action && ctx.consume_action(action))
         if key = @menu_popup_key
           ctx.close_popup(key)
           ctx.memory.menu_open = nil
         end
-        on_click.call
+        on_trigger.call
       end
     end
   end

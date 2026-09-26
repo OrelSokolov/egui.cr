@@ -18,6 +18,10 @@ module Egui
     getter memory : Memory
     getter input : InputState
     getter painter : Painter
+    # The app-global hotkey → action bindings (see `hotkeys.cr`).
+    # Actions fired this frame (key press or `#fire_action`) live for
+    # exactly one frame and are claimed with `#consume_action`.
+    getter hotkeys : HotkeyMap
     # The active global theme. Widgets read its #style every frame, so
     # assigning a new theme (`ctx.theme = Theme.light`) restyles the
     # entire UI on the very next frame — an instant swap.
@@ -41,6 +45,8 @@ module Egui
     @prev_time : Float64?
     @repaint_outstanding : Int32
     @frame_cache : Hash(String, IdTypeMap::Cell)
+    @fired_actions : Array(HotkeyAction)
+    @hotkey_capture : Bool
 
     def initialize
       @memory = Memory.new
@@ -57,6 +63,9 @@ module Egui
       @frame_cache = {} of String => IdTypeMap::Cell
       @available_rect = Rect.zero
       @texture_cache = {} of String => UInt64
+      @hotkeys = HotkeyMap.new
+      @fired_actions = [] of HotkeyAction
+      @hotkey_capture = false
     end
 
     def begin_frame(raw : RawInput) : Nil
@@ -77,6 +86,20 @@ module Egui
 
       @repaint_outstanding -= 1 if @repaint_outstanding > 0
       @frame_cache.clear
+
+      # Global hotkey dispatch: run before Memory's focus navigation
+      # so a hotkey's key press is claimed (`consume_key`) and no
+      # widget reacts to it as well. Skipped while a HotkeyEdit is
+      # capturing (the flag is set during the previous update —
+      # #hotkey_capture_active!), so the combo being recorded cannot
+      # fire an action. The fresh list replaces the old one: an
+      # unconsumed action expires after one frame.
+      if @hotkey_capture
+        @fired_actions = [] of HotkeyAction
+        @hotkey_capture = false
+      else
+        @fired_actions = @hotkeys.dispatch(@input)
+      end
 
       @memory.begin_frame(@input)
       @painter.clear
@@ -102,6 +125,42 @@ module Egui
     def end_frame : Array(PaintCmd)
       @memory.end_frame
       @painter.commands_in_layer_order
+    end
+
+    # --- hotkey actions (see hotkeys.cr) -----------------------------------
+
+    # Actions fired this frame (hotkey presses + `#fire_action`),
+    # oldest first. Read-only view of the frame's action events.
+    def fired_actions : Array(HotkeyAction)
+      @fired_actions.dup
+    end
+
+    # Was `action` fired this frame (hotkey or menu click)? Does not
+    # claim it — use `#consume_action` for exactly-once handling.
+    def action_fired?(action : HotkeyAction) : Bool
+      @fired_actions.includes?(action)
+    end
+
+    # egui `consume_key` semantics for actions: the first caller claims
+    # the fired action; later callers this frame see false. Actions
+    # live for one frame — an unconsumed firing expires.
+    def consume_action(action : HotkeyAction) : Bool
+      @fired_actions.includes?(action) && !!@fired_actions.delete(action)
+    end
+
+    # Fire `action` programmatically this frame (what a menu-item click
+    # does): the app's `#consume_action` handler sees it, wherever the
+    # app polls actions from.
+    def fire_action(action : HotkeyAction) : Nil
+      @fired_actions << action
+      request_repaint
+    end
+
+    # A HotkeyEdit is capturing the next key press: pause global
+    # hotkey dispatch for the next frame so the combo being recorded
+    # cannot trigger an action. Called every frame while capturing.
+    def hotkey_capture_active! : Nil
+      @hotkey_capture = true
     end
 
     # egui `Context::set_cursor_icon`: a widget requests the cursor

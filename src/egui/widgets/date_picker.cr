@@ -171,6 +171,10 @@ module Egui
       a.year == b.year && a.month == b.month && a.day == b.day
     end
 
+    # Header: ‹ pinned to the row's left edge, › to its right edge, the
+    # month title centered between them — a plain #horizontal packs all
+    # three to the left, so the title and › are placed by hand via the
+    # row cursor (like the day grid's absolute cells).
     private def header(popup : Ui, year : Int32, month : Int32,
                        &shift : Int32 ->) : Nil
       title = "#{MONTHS[month - 1]} #{year}"
@@ -178,7 +182,13 @@ module Egui
         if small_button(row, @pid.child(0xE0_u64), "‹")
           shift.call(-1)
         end
+        ctx = row.ctx
+        font_size = row.style.font_size
+        tw = ctx.fonts.measure(title, font_size).x
+        row.cursor = Pos2.new(row.max_rect.center.x - tw / 2.0, row.cursor.y)
         row.label(title)
+        aw = ctx.fonts.measure("›", font_size).x + 8.0
+        row.cursor = Pos2.new(row.max_rect.right - aw, row.cursor.y)
         if small_button(row, @pid.child(0xE1_u64), "›")
           shift.call(1)
         end

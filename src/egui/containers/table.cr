@@ -22,7 +22,18 @@ module Egui
       avail = ui.available_width
       n = @headers.size
       fr = @fractions || Array.new(n) { 1.0 / n }
-      widths = fr.first(n).map { |f| (avail * f).clamp(8.0, avail) }
+      # Grid inserts item_spacing between columns, so split only the
+      # remainder: fractions of the full available width would make the
+      # table (n - 1) * spacing wider than it — and inside an auto-fit
+      # window that feeds back into available_width next frame, growing
+      # the window (and the table) every frame.
+      usable = {avail - (n - 1) * ui.style.spacing.item_spacing.x, 1.0}.max
+      widths = fr.first(n).map do |f|
+        w = usable * f
+        w = 8.0 if w < 8.0
+        w = usable if w > usable
+        w
+      end
       widths += Array.new({n - widths.size, 0}.max) { 8.0 }
 
       # Header: pinned-width grid with title-colored text and a rule
