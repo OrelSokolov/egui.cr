@@ -376,9 +376,11 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       the existing fiber-backed `SystemPorts::OpenFileDialog` /
       `SaveFileDialog` (the Rakefile example list already expected it).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
-- [ ] On-demand repaint: honor `request_repaint` in the sokol loop instead
-      of redrawing every vsync (optional perf).
-- [ ] IME (sapp text-input events), clipboard without shell-out (optional).
+- [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
+      of redrawing every vsync — idle frames replay the last paint commands
+      (`backend/sokol.cr` frame callback).
+- [ ] IME (sapp text-input events) (optional). Clipboard without shell-out
+      is done: native via sokol_app (`system_ports/clipboard.cr`).
 - [ ] `containers/scene.rs` — evaluate whether anyone needs it; defer.
 
 ## Iteration order

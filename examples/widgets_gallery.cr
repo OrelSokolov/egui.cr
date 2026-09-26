@@ -488,10 +488,11 @@ class GalleryApp < Egui::App
 
   # Aligned columns: column widths are measured frame N and applied
   # frame N+1 (persisted per grid in Memory), like upstream egui Grid.
-  # Drag & drop: whatever lands on the window shows up here with a
-  # reveal-in-explorer button (SystemPorts::RevealInFolder).
+  # Drag & drop: whatever lands on the window shows up here — file name
+  # plus full path (selectable for manual copy) and a reveal-in-explorer
+  # button (SystemPorts::RevealInFolder).
   private def files_gallery(ui : Egui::Ui) : Nil
-    ui.label("Drop files from Explorer anywhere onto this window.")
+    ui.label("Drop files from Explorer/Finder anywhere onto this window.")
     ui.separator
     if @dropped.empty?
       ui.label("(nothing dropped yet)")
@@ -506,6 +507,7 @@ class GalleryApp < Egui::App
             Egui::SystemPorts::Clipboard.text = path
           end
         end
+        ui.selectable_label(false, path)
       end
     end
   end

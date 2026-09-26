@@ -68,6 +68,9 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .high_dpi = true,
         .sample_count = 4, // MSAA: smooth circle/arc/line edges
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
+        .enable_dragndrop = true, // Event.dropped_files (drop.enabled gates the FILES_DROPPED event)
+        .max_dropped_files = 8,
+        .max_dropped_file_path_length = 8192,
         .logger.func = slog_func,
     };
     sapp_run(&desc);
