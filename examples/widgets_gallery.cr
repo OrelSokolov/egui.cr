@@ -5,6 +5,7 @@
 
 require "../src/egui"
 require "../src/egui/backend/sokol"
+require "./icon"
 
 class GalleryApp < Egui::App
   @checked = false
@@ -421,4 +422,5 @@ class GalleryApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(GalleryApp.new, title: "egui-cr — widget gallery",
-  width: 900, height: 700)
+  width: 900, height: 700,
+  icon: {rgba: ICON_64_RGBA, width: 64, height: 64})

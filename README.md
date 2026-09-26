@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" width="160" alt="egui-cr logo">
+</p>
+
 # egui-cr
 
 Immediate-mode GUI for Crystal — a 1:1 port of [egui](https://github.com/emilk/egui)'s
@@ -9,6 +13,8 @@ architecture (Rust), rendered through [sokol_gfx](https://github.com/floooh/soko
   types, widget model) that this port follows 1:1.
 - `egui-upstream/` — read-only reference clone of egui.
 - `vendor/sokol`, `vendor/fontstash` — native C dependencies.
+- `assets/icon.svg` — the project icon (see `scripts/make_icon.ps1` for
+  the generated `.ico`/embed twins).
 - `src/egui/` — the port: platform-pure core (`id`, `memory`, `input`,
   `context`, `response`, `sense`, `layout`, `ui`, `widgets/`) plus the
   sokol backend (`backend/sokol/`).
@@ -61,12 +67,15 @@ Differences from the Linux build:
   next to the exes; its VC++ v14 runtime requirement is declared in the
   runtime `deps:` section (`vc-redist` → winget
   `Microsoft.VCRedist.2015+.x64`)
-- the Windows system ports are native: file dialogs run the WinForms
-  picker through PowerShell (`-EncodedCommand`), MessageBox calls
-  `MessageBoxW` (user32), OpenUrl/reveal use `ShellExecuteW` (shell32),
+- the Windows system ports are native: file dialogs are the Explorer
+  IFileDialog (COM) on a dedicated shim thread (PowerShell+WinForms
+  stays as the headless, no-backend fallback), MessageBox calls
+  `MessageBoxW` (user32) owned by the app window, OpenUrl uses
+  `ShellExecuteW` (shell32), reveal is `explorer /select`, the window
+  icon comes from RGBA pixels (`WM_SETICON`, no-op elsewhere),
   notifications are NotifyIcon balloons, and user dirs come from
-  `%APPDATA%`/`%LOCALAPPDATA%` + `SHGetKnownFolderPath`; Linux keeps the
-  `zenity`/`kdialog`/`xdg-open` subprocess ports
+  `%APPDATA%`/`%LOCALAPPDATA%` + `SHGetKnownFolderPath`; Linux keeps
+  the `zenity`/`kdialog`/`xdg-open` subprocess ports
 
 ### macOS
 
