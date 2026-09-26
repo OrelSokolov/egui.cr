@@ -19,6 +19,8 @@ end
 class WindowRecorder < Egui::SystemPorts::Window::Implementation
   getter title = ""
   getter size = {0, 0}
+  getter icon = Bytes.new(0)
+  getter icon_size = {0, 0}
 
   def set_title(title : String) : Nil
     @title = title
@@ -26,6 +28,11 @@ class WindowRecorder < Egui::SystemPorts::Window::Implementation
 
   def set_size(width : Int32, height : Int32) : Nil
     @size = {width, height}
+  end
+
+  def set_icon(rgba : Bytes, width : Int32, height : Int32) : Nil
+    @icon = rgba
+    @icon_size = {width, height}
   end
 end
 
@@ -55,8 +62,12 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::Window.use(recorder)
     Egui::SystemPorts::Window.set_title("demo")
     Egui::SystemPorts::Window.set_size(640, 480)
+    px = Bytes[1, 2, 3, 255]
+    Egui::SystemPorts::Window.set_icon(px, 1, 1)
     recorder.title.should eq("demo")
     recorder.size.should eq({640, 480})
+    recorder.icon.should eq(px)
+    recorder.icon_size.should eq({1, 1})
   ensure
     Egui::SystemPorts::Window.use(Egui::SystemPorts::Window::Implementation.new)
   end
@@ -95,6 +106,29 @@ describe Egui::SystemPorts do
   end
 
   {% if flag?(:win32) %}
+    it "file dialogs use the installed native runner (no subprocess)" do
+      calls = [] of {Bool, String, Array(String), String?, String?}
+      Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
+        calls << {save, title, filters, dir, name}
+        save ? "C:\\saved.txt" : "C:\\opened.txt"
+      end
+      got = [] of String?
+      Egui::SystemPorts::OpenFileDialog.show(
+        title: "Pick", filters: ["*.png"], directory: "C:\\tmp") { |p| got << p }
+      Egui::SystemPorts::SaveFileDialog.show(
+        title: "Save", default_name: "out.png") { |p| got << p }
+      drain_async_dialogs
+      got.should eq(["C:\\opened.txt", "C:\\saved.txt"])
+      calls.size.should eq(2)
+      calls[0][0].should be_false
+      calls[0][2].should eq(["*.png"])
+      calls[0][3].should eq("C:\\tmp")
+      calls[1][0].should be_true
+      calls[1][4].should eq("out.png")
+    ensure
+      Egui::SystemPorts::Dialogs.use_native_dialogs
+    end
+
     it "Dialogs.which finds PATHEXT executables on PATH" do
       Egui::SystemPorts::Dialogs.which("powershell").should_not be_nil
       Egui::SystemPorts::Dialogs.which("surely-not-a-real-tool-xyz").should be_nil

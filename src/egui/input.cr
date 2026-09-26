@@ -101,6 +101,7 @@ module Egui
       KeyPressed
       KeyReleased
       TextInput
+      DroppedFiles
     end
 
     getter type : Type
@@ -110,13 +111,17 @@ module Egui
     getter key : KeyCode
     getter text : String
     getter modifiers : Modifiers
+    # Absolute paths of the files dropped onto the window this frame
+    # (Type::DroppedFiles only).
+    getter paths : Array(String)
 
     def initialize(@type : Type, @pos : Pos2? = nil,
                    @button : PointerButton = :primary,
                    @scroll : Vec2 = Vec2.zero,
                    @key : KeyCode = :escape,
                    @text : String = "",
-                   @modifiers : Modifiers = Modifiers.new)
+                   @modifiers : Modifiers = Modifiers.new,
+                   @paths : Array(String) = [] of String)
     end
 
     def self.pointer_moved(pos : Pos2) : Event
@@ -147,6 +152,10 @@ module Egui
 
     def self.text_input(text : String) : Event
       new(:text_input, text: text)
+    end
+
+    def self.dropped_files(paths : Array(String)) : Event
+      new(:dropped_files, paths: paths)
     end
   end
 
@@ -186,6 +195,8 @@ module Egui
     getter consumed_keys : Set(KeyCode)
     getter text : String
     getter modifiers : Modifiers
+    # Files dropped onto the window this frame (empty on every other).
+    getter dropped_files : Array(String)
 
     def initialize(@screen_rect : Rect, @pointer_pos : Pos2?, @pointer_down : Bool,
                    @pointer_pressed : Bool, @pointer_released : Bool, @scroll : Vec2,
@@ -198,7 +209,8 @@ module Egui
                    @text : String = "",
                    @modifiers : Modifiers = Modifiers.new,
                    @secondary_pressed : Bool = false,
-                   @secondary_pos : Pos2? = nil)
+                   @secondary_pos : Pos2? = nil,
+                   @dropped_files : Array(String) = [] of String)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -251,6 +263,7 @@ module Egui
       modifiers = prev.try(&.modifiers) || Modifiers.new
       secondary_pressed = false
       secondary_pos : Pos2? = nil
+      dropped_files = [] of String
 
       raw.events.each do |e|
         case e.type
@@ -285,6 +298,8 @@ module Egui
           keys_down.delete(e.key)
         in .text_input?
           text += e.text
+        in .dropped_files?
+          dropped_files.concat(e.paths)
         end
       end
 
@@ -301,7 +316,7 @@ module Egui
 
       new(raw.screen_rect, pos, down, pressed, released, scroll, raw.time, dt,
         delta, velocity, keys_down, keys_pressed, keys_released, text, modifiers,
-        secondary_pressed, secondary_pos)
+        secondary_pressed, secondary_pos, dropped_files)
     end
   end
 end

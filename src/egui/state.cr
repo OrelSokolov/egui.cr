@@ -245,6 +245,14 @@ module Egui
       value_at(anim, time)
     end
 
+    # True while the animation for `id` is still easing towards its
+    # target (used to keep requesting repaints until it settles).
+    def running?(id : Id, time : Float64) : Bool
+      anim = @anims[id]?
+      return false if anim.nil?
+      anim.duration > 0.0 && (time - anim.start) < anim.duration
+    end
+
     private def value_at(a : Anim, time : Float64) : Float64
       return a.target if a.duration <= 0.0
       t = ((time - a.start) / a.duration).clamp(0.0, 1.0)

@@ -59,6 +59,8 @@ lib LibEguiCr
   fun sapp_set_window_title = sapp_set_window_title(title : UInt8*)
   fun sapp_set_clipboard_string = sapp_set_clipboard_string(str : UInt8*)
   fun sapp_get_clipboard_string : UInt8*
+  fun sapp_get_num_dropped_files = sapp_get_num_dropped_files : Int32
+  fun sapp_get_dropped_file_path = sapp_get_dropped_file_path(index : Int32) : UInt8*
 
   # window management (shim: X11 / Win32)
   fun set_window_size = egui_cr_set_window_size(w : Int32, h : Int32)
@@ -67,6 +69,17 @@ lib LibEguiCr
   fun window_maximize = egui_cr_window_maximize
   fun window_restore = egui_cr_window_restore
   fun screen_size = egui_cr_screen_size(w : Int32*, h : Int32*)
+  fun set_window_icon = egui_cr_set_window_icon(rgba : UInt8*, w : Int32, h : Int32)
+
+  # native file dialogs (shim: Win32 IFileDialog on its own thread; the
+  # start/done/result/free handle protocol is polled from a fiber)
+  fun file_dialog_start = egui_cr_file_dialog_start(save : Int32, title : UInt16*,
+                                                    filter : UInt16*,
+                                                    directory : UInt16*,
+                                                    file_name : UInt16*) : Void*
+  fun file_dialog_done = egui_cr_file_dialog_done(handle : Void*) : Int32
+  fun file_dialog_result = egui_cr_file_dialog_result(handle : Void*) : UInt16*
+  fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
 
   # sokol_gl
   fun sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
@@ -130,6 +143,12 @@ module Egui
 
       @@events = [] of Egui::Event
       @@fonts : Egui::Backend::AtlasFonts?
+      @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
+      # On-demand repaint: the last painted command list (re-emitted
+      # verbatim on idle frames) and the framebuffer size it matched.
+      @@last_commands : Array(Egui::PaintCmd)?
+      @@last_fb_w = 0
+      @@last_fb_h = 0
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
       # Framebuffer pixels per UI point (retina: 2.0). UI layout and paint
@@ -179,6 +198,10 @@ module Egui
         def fullscreen? : Bool
           LibEguiCr.sapp_is_fullscreen
         end
+
+        def set_icon(rgba : Bytes, width : Int32, height : Int32) : Nil
+          LibEguiCr.set_window_icon(rgba, width, height)
+        end
       end
 
       # System port Screen → sokol dpi scale + primary monitor size (shim).
@@ -217,15 +240,29 @@ module Egui
       MOUSE_UP    =  5
       MOUSE_SCROLL = 6
       MOUSE_MOVE  =  7
+      RESIZED     = 14
+      FILES_DROPPED = 23
 
       # eframe::run_native — blocks until the window closes.
+      #
+      # * *icon* — window icon as straight RGBA8 pixels (`width`×
+      #   `height`), applied right after the window exists. Win32 only
+      #   today (WM_SETICON); a no-op elsewhere.
       def self.run(app : Egui::App, title : String = "egui-cr",
-                   width : Int32 = 800, height : Int32 = 600) : Nil
+                   width : Int32 = 800, height : Int32 = 600,
+                   icon : NamedTuple(rgba: Bytes, width: Int32,
+                                     height: Int32)? = nil) : Nil
         @@app = app
+        @@icon = icon
         Egui::SystemPorts::Quit.use(QuitPort.new)
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
+        {% if flag?(:win32) %}
+          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
+            native_file_dialog(save, title, filters, dir, name)
+          end
+        {% end %}
 
         init = ->{ on_init }
         frame = ->{ on_frame }
@@ -240,9 +277,51 @@ module Egui
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe, width, height)
       end
 
+      # Win32 IFileDialog through the shim: the picker runs on its own
+      # thread (own STA); this fiber sleep-polls it, so the scheduler
+      # keeps serving the frame loop while the dialog is open — the
+      # AsyncDialogs contract. Nil when the thread failed to start or
+      # the user cancelled (empty path).
+      private def self.native_file_dialog(save : Bool, title : String,
+                                          filters : Array(String),
+                                          directory : String?,
+                                          default_name : String?) : String?
+        # "name\0pattern\0" pairs, double-NUL terminated (shim format).
+        filter = String.build do |s|
+          unless filters.empty?
+            pats = filters.join(";")
+            s << "Files (#{pats})\0#{pats}\0"
+          end
+          s << "All files\0*.*\0"
+        end
+        handle = LibEguiCr.file_dialog_start(
+          save ? 1 : 0,
+          title.to_utf16, filter.to_utf16,
+          (directory || "").to_utf16, (default_name || "").to_utf16)
+        return nil if handle.null?
+        begin
+          until LibEguiCr.file_dialog_done(handle) != 0
+            sleep 15.milliseconds
+          end
+          ptr = LibEguiCr.file_dialog_result(handle)
+          len = 0
+          while ptr[len] != 0
+            len += 1
+          end
+          len.zero? ? nil : String.from_utf16(Slice.new(ptr, len))
+        ensure
+          LibEguiCr.file_dialog_free(handle)
+        end
+      end
+
       protected def self.on_init : Nil
         LibEguiCr.gfx_init
         LibEguiCr.text_pipeline_init
+        # Window icon first thing after the window exists (taskbar and
+        # caption pick it up before the first paint).
+        if (icon = @@icon) && !icon[:rgba].empty?
+          Egui::SystemPorts::Window.set_icon(icon[:rgba], icon[:width], icon[:height])
+        end
         app = @@app.not_nil!
         # Font backend: prefer FreeType (real hinting), fall back to the
         # stb light-hint rasterizer, then to the built-in monospace stub.
@@ -307,6 +386,19 @@ module Egui
           if (chr > 0 && chr < 0xD800) || (chr >= 0xE000 && chr < 0x110000)
             @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
           end
+        when FILES_DROPPED
+          # sokol_app collects the paths before the event fires; query
+          # them through the sapp drop API (valid until the next drop).
+          count = LibEguiCr.sapp_get_num_dropped_files
+          paths = Array(String).new(count) do |i|
+            ptr = LibEguiCr.sapp_get_dropped_file_path(i)
+            ptr ? String.new(ptr) : ""
+          end
+          @@events << Egui::Event.dropped_files(paths)
+        when RESIZED
+          # screen_rect is rebuilt from sapp_width/height each active
+          # frame; the event just marks the frame non-idle.
+          @@events << Egui::Event.new(:window_resized)
         end
       end
 
@@ -314,20 +406,37 @@ module Egui
         # Advance async system ports (file dialogs) — one bounded
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
-        Egui::SystemPorts::AsyncDialogs.pump
+        delivered = Egui::SystemPorts::AsyncDialogs.pump
 
         # sokol reports sizes in FRAMEBUFFER pixels (sapp_width on retina
         # with high_dpi is 2x the window points); the UI lays out in
         # points, like upstream egui with pixels_per_point.
         ppp = LibEguiCr.sapp_dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+        fb_w = LibEguiCr.sapp_width
+        fb_h = LibEguiCr.sapp_height
 
         app = @@app.not_nil!
+
+        # On-demand repaint: sokol_app's loop swaps every vsync tick
+        # regardless, but an idle frame (no events, no repaint request,
+        # nothing animating, same window size, no dialog just delivered)
+        # skips app.update + tessellation and simply re-emits the last
+        # paint commands — the visuals are identical, the CPU cost is
+        # not. Any input, resize or dialog callback switches right back
+        # to a full frame.
+        if (cache = @@last_commands) &&
+           delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
+           fb_w == @@last_fb_w && fb_h == @@last_fb_h
+          paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
+          return
+        end
+
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(
           Egui::Rect.from_min_size(Egui::Pos2.zero,
-            Egui::Vec2.new(LibEguiCr.sapp_width.to_f64 / @@pixels_per_point,
-              LibEguiCr.sapp_height.to_f64 / @@pixels_per_point)),
+            Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
+              fb_h.to_f64 / @@pixels_per_point)),
           @@events, time)
         @@events = [] of Egui::Event
 
@@ -335,24 +444,34 @@ module Egui
         app.update(app.ctx)
         commands = app.ctx.end_frame
 
+        @@last_commands = commands
+        @@last_fb_w = fb_w
+        @@last_fb_h = fb_h
+
+        paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+      end
+
+      # Emit a frame to the GPU. `touch_fonts` is false on idle frames —
+      # the cached commands reference glyphs that are already in the
+      # atlas, so no rasterization/upload work is needed.
+      private def self.paint_frame(ctx : Egui::Context, fb_w : Int32,
+                                   fb_h : Int32,
+                                   commands : Array(Egui::PaintCmd),
+                                   touch_fonts : Bool) : Nil
         # egui `PlatformOutput::cursor_icon`: apply when it changed —
         # the shim maps the CSS keyword onto the platform cursors
         # (Xcursor theme / Win32 IDC_*).
-        icon = app.ctx.cursor_icon
+        icon = ctx.cursor_icon
         if icon != @@cursor
           @@cursor = icon
           LibEguiCr.set_cursor(icon.to_css.to_unsafe)
         end
 
-        # Framebuffer pixels (native resolution on retina) and their
-        # point-space counterparts.
-        fb_w = LibEguiCr.sapp_width
-        fb_h = LibEguiCr.sapp_height
         w = fb_w.to_f64 / @@pixels_per_point
         h = fb_h.to_f64 / @@pixels_per_point
         # Backdrop follows the theme (its base surface color) so edges
         # never flash the stale palette after a theme swap.
-        bg = app.ctx.style.visuals.panel_fill
+        bg = ctx.style.visuals.panel_fill
         LibEguiCr.set_clear_color(
           bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
           bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
@@ -360,7 +479,7 @@ module Egui
         # Rasterize every glyph this frame's text needs (at the PHYSICAL
         # pixel size — see paint_text) and upload the atlas BEFORE the
         # render pass — sg_update_image is illegal inside a pass.
-        if fonts = @@fonts
+        if touch_fonts && (fonts = @@fonts)
           commands.each do |cmd|
             fonts.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
           end

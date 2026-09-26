@@ -191,8 +191,9 @@ package:
   maintainer: egui-cr developers
   summary: egui-cr demo — immediate-mode GUI for Crystal over sokol_gfx
   description: |-
-    egui-cr demo application: a 1:1 Crystal port of the egui (Rust)
-    immediate-mode GUI architecture, rendered through sokol_gfx with a
+    egui-cr demo application: an immediate-mode GUI for Crystal,
+    inspired by the egui (Rust) architecture and its ideas (not a port),
+    rendered through sokol_gfx with a
     Crystal-native text stack (FreeType-hinted glyphs, stb light-hint
     fallback).
     The widgets_gallery example shows every widget

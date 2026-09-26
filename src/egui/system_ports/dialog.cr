@@ -96,29 +96,54 @@ module Egui
 
       # Give worker fibers a bounded scheduler pass and deliver every
       # completed request. Called by the backend at frame start; safe
-      # to call from specs (headless) too.
-      def self.pump : Nil
+      # to call from specs (headless) too. Returns how many requests
+      # were delivered — their callbacks touch app state, so the
+      # backend must run a full update pass this frame even if it was
+      # otherwise idle (on-demand repaint).
+      def self.pump : Int32
         unless @@pending.empty?
           select
           when timeout(1.milliseconds)
           end
         end
-        drain unless @@done.empty?
+        return 0 if @@done.empty?
+        drain
       end
 
-      private def self.drain : Nil
+      private def self.drain : Int32
         requests = @@done
         @@done = [] of Request
         requests.each &.complete
+        requests.size
       end
     end
 
     # Dialog-tool plumbing shared by the dialog-based system ports:
     # zenity/kdialog on Linux/BSD, osascript (AppleScript) on macOS;
     # on Windows this module also hosts the PowerShell runner used by
-    # the dialog, message-box and notification ports.
+    # the notification port and the headless (no-backend) fallback of
+    # the file dialogs.
     module Dialogs
       @@tool : String?
+
+      # Native file-dialog runner installed by the backend when it has
+      # a platform picker (Win32 IFileDialog via the sokol shim thread
+      # — instant, Explorer-native, no PowerShell/.NET startup cost).
+      # Called inside the AsyncDialogs worker fiber: it may block that
+      # fiber alone. Installed only on win32; nil = headless build →
+      # the PowerShell fallback takes over.
+      @@native : ((Bool, String, Array(String), String?, String?) -> String?)?
+
+      def self.use_native_dialogs(&runner : Bool, String, Array(String),
+                                  String?, String? -> String?) : Nil
+        @@native = runner
+      end
+
+      # Drop an installed native runner — the subprocess fallback takes
+      # over again. Spec hygiene; apps rarely need this.
+      def self.use_native_dialogs : Nil
+        @@native = nil
+      end
 
       # First available dialog helper on PATH: "osascript" on macOS,
       # "zenity" or "kdialog" on Linux/BSD, or nil. Windows never needs
@@ -175,7 +200,11 @@ module Egui
       protected def self.open(title : String, filters : Array(String),
                               directory : String?) : String?
         {% if flag?(:win32) %}
-          ps_dialog("OpenFileDialog", title, filters, directory, nil)
+          if (runner = @@native)
+            runner.call(false, title, filters, directory, nil)
+          else
+            ps_dialog("OpenFileDialog", title, filters, directory, nil)
+          end
         {% elsif flag?(:darwin) %}
           mac_choose_file(title, filters, directory)
         {% else %}
@@ -197,7 +226,11 @@ module Egui
       protected def self.save(title : String, filters : Array(String),
                               directory : String?, default_name : String?) : String?
         {% if flag?(:win32) %}
-          ps_dialog("SaveFileDialog", title, filters, directory, default_name)
+          if (runner = @@native)
+            runner.call(true, title, filters, directory, default_name)
+          else
+            ps_dialog("SaveFileDialog", title, filters, directory, default_name)
+          end
         {% elsif flag?(:darwin) %}
           mac_choose_file_name(title, directory, default_name)
         {% else %}
@@ -232,6 +265,17 @@ module Egui
           error: IO::Memory.new).success?
       end
 
+      # Fire-and-forget process: launch without waiting and report only
+      # whether it started. For launchers whose exit code means nothing
+      # (explorer) and for work that must not block the frame.
+      def self.spawn(name : String, args : Array(String)) : Bool
+        Process.new(name, args, output: Process::Redirect::Close,
+          error: Process::Redirect::Close)
+        true
+      rescue
+        false
+      end
+
       {% if flag?(:win32) %}
         # Run `script` in powershell.exe and return its trimmed stdout;
         # nil on non-zero exit (cancel) or empty output. The script is
@@ -254,12 +298,8 @@ module Egui
         # block the frame while the balloon shows).
         def self.spawn_powershell(script : String) : Bool
           encoded = Base64.strict_encode(script.encode("UTF-16LE"))
-          Process.new("powershell",
-            ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-            output: Process::Redirect::Close, error: Process::Redirect::Close)
-          true
-        rescue
-          false
+          spawn("powershell",
+            ["-NoProfile", "-NonInteractive", "-EncodedCommand", encoded])
         end
 
         # A WinForms open/save picker: nil unless the user confirmed a
