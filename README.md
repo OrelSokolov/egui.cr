@@ -4,18 +4,20 @@
 
 # egui-cr
 
-Immediate-mode GUI for Crystal — a 1:1 port of [egui](https://github.com/emilk/egui)'s
-architecture (Rust), rendered through [sokol_gfx](https://github.com/floooh/sokol).
+Immediate-mode GUI for Crystal — inspired by [egui](https://github.com/emilk/egui)'s
+architecture (Rust) and its ideas, not a port of it; rendered through
+[sokol_gfx](https://github.com/floooh/sokol).
 
 ## Layout
 
 - `docs/ANALYSIS.md` — architecture analysis of upstream egui (crates, core
-  types, widget model) that this port follows 1:1.
+  types, widget model) used as the blueprint this project takes its
+  ideas from.
 - `egui-upstream/` — read-only reference clone of egui.
 - `vendor/sokol`, `vendor/fontstash` — native C dependencies.
 - `assets/icon.svg` — the project icon (see `scripts/make_icon.ps1` for
   the generated `.ico`/embed twins).
-- `src/egui/` — the port: platform-pure core (`id`, `memory`, `input`,
+- `src/egui/` — the library: platform-pure core (`id`, `memory`, `input`,
   `context`, `response`, `sense`, `layout`, `ui`, `widgets/`) plus the
   sokol backend (`backend/sokol/`).
 - `examples/hello.cr` — button + label + label change (Hello World).
