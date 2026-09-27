@@ -70,6 +70,9 @@ typedef struct EguiCrPty {
     int have_exit, exit_code;
 } EguiCrPty;
 
+/* spawn's error path calls it before the definition below */
+void egui_cr_pty_reap(EguiCrPty *p);
+
 static size_t ring_used(const EguiCrPty *p)
 {
     return (p->head - p->tail) & (p->cap - 1);
@@ -149,7 +152,9 @@ static wchar_t *build_env(const char *const *env)
         int n;
         wchar_t *w = utf8_to_utf16(*e, &n);
         if (!w) { free(block); return NULL; }
-        wmemcpy(cursor, w, (size_t)n + 1);
+        /* memcpy, not wmemcpy: the wchar count is known and wmemcpy is
+         * not in the old msvcrt import set Crystal links against */
+        memcpy(cursor, w, ((size_t)n + 1) * sizeof(wchar_t));
         cursor += n + 1;
         free(w);
     }
@@ -234,7 +239,11 @@ EguiCrPty *egui_cr_pty_spawn(const char *shell, const char *const *argv,
 
     EguiCrPty *p = NULL;
     if (cmdline && CreateProcessW(NULL, cmdline, NULL, NULL, FALSE,
-                                  EXTENDED_STARTUPINFO_PRESENT,
+                                  /* CREATE_UNICODE_ENVIRONMENT is mandatory:
+                                   * wenv is a UTF-16 block; without the flag
+                                   * CreateProcessW fails with 87 */
+                                  EXTENDED_STARTUPINFO_PRESENT |
+                                      CREATE_UNICODE_ENVIRONMENT,
                                   wenv, wcwd, &si.StartupInfo, &pi)) {
         p = (EguiCrPty *)calloc(1, sizeof *p);
         p->hpc = hpc;
