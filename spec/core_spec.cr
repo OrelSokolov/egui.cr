@@ -4583,9 +4583,12 @@ describe "textarea (multiline text edit)" do
     draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064)
 
     # three highlighted rows: "ab", the EMPTY middle line (a thin
-    # sliver, not nothing), "cd"
+    # sliver, not nothing), "cd" — the highlight uses the faded
+    # selection fill the widget paints
+    sel_fill = ctx.style.visuals.fade_color(
+      ctx.style.visuals.selection_fill, 0.4)
     sel = ctx.painter.commands.select(Egui::RectCmd)
-      .select { |c| c.fill == ctx.style.visuals.selection_fill }
+      .select { |c| c.fill == sel_fill }
     sel.size.should eq(3)
     sliver = sel.find { |c| c.rect.width <= 3.5 }.not_nil!
     sorted = sel.sort_by(&.rect.min.y)
@@ -4610,10 +4613,13 @@ describe "textarea (multiline text edit)" do
     draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064)
 
     # paint order: the selection fill goes in BEFORE the text — the
-    # glyphs must never be covered by the highlight
+    # glyphs must never be covered by the highlight (the highlight
+    # uses the faded selection fill the widget paints)
+    sel_fill = ctx.style.visuals.fade_color(
+      ctx.style.visuals.selection_fill, 0.4)
     cmds = ctx.painter.commands
     sel_idx = cmds.index { |c| c.is_a?(Egui::RectCmd) &&
-      c.fill == ctx.style.visuals.selection_fill }.not_nil!
+      c.fill == sel_fill }.not_nil!
     text_idx = cmds.index { |c| c.is_a?(Egui::TextCmd) &&
       c.text == "hello world" }.not_nil!
     sel_idx.should be < text_idx
