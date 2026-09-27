@@ -142,6 +142,6 @@ describe Egui::Terminal::ConfigStore do
 
   it "places the settings file inside the adapter's dir" do
     adapter = TempConfigAdapter.new("/store")
-    adapter.path.should eq "/store/settings.json"
+    adapter.path.should eq File.join("/store", "settings.json")
   end
 end
