@@ -118,8 +118,14 @@ module Egui
 
       x = @origin.x + (0...col).sum { |c| @col_widths[c]? || 0.0 } +
           col * @spacing.x
+      # Unpinned cells lay out in a semi-infinite width (like scroll
+      # contents): a finite previous-frame width would clamp the cell
+      # in `allocate_space`, collapsing size-driven widgets (Svg,
+      # Image) to a zero-width rect and freezing the column at its
+      # first measurement. Pinned layouts (Table) keep the fixed width.
+      cell_w = @widths ? (@col_widths[col]? || 0.0) : 1e6
       cell = ui.child_ui(
-        Rect.from_min_size(Pos2.new(x, @y), Vec2.new(@col_widths[col]? || 0.0, 1e6)),
+        Rect.from_min_size(Pos2.new(x, @y), Vec2.new(cell_w, 1e6)),
         id: @grid_id.child(cell_slot_id))
       response = widget.ui(cell)
 

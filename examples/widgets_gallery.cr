@@ -6,6 +6,7 @@
 require "../src/egui"
 require "../src/egui/backend/sokol"
 require "./icon"
+require "./logo_variants"
 
 class GalleryApp < Egui::App
   # Static plot data as computeds: built once on first read, not on
@@ -65,13 +66,15 @@ class GalleryApp < Egui::App
   # the most recent action event (menu click or hotkey press).
   @hotkeys_ready = false
   @last_action = "(none)"
+  # Logos tab: render size of the Egui::Svg previews.
+  @logo_size = 72.0_f64
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Display", "Color", "Hotkeys"],
+      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Display", "Color", "Logos", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
@@ -177,23 +180,24 @@ class GalleryApp < Egui::App
           scroll.separator
 
           case {@sections[@section].title, @sections[@section].tabs[@tab]}
-          when {"Widgets", "Buttons"}        then buttons_gallery(scroll)
-          when {"Widgets", "Inputs"}         then inputs_gallery(scroll)
-          when {"Widgets", "Text"}           then text_gallery(scroll)
-          when {"Widgets", "Textarea"}       then textarea_gallery(scroll)
-          when {"Widgets", "Display"}        then display_gallery(scroll)
-          when {"Widgets", "Color"}          then color_gallery(scroll)
-          when {"Widgets", "Hotkeys"}        then hotkeys_gallery(scroll)
-          when {"Style", "Themes"}           then themes_gallery(scroll, ctx)
-          when {"Style", "Cursors"}          then cursors_gallery(scroll)
-          when {"Containers", "Scroll"}      then scroll_gallery(scroll)
-          when {"Containers", "Modal"}       then modal_gallery(scroll)
-          when {"Containers", "Files"}       then files_gallery(scroll)
-          when {"Layout", "Grid"}            then grid_gallery(scroll)
-          when {"Layout", "Table"}           then table_gallery(scroll)
-          when {"Layout", "Tree"}            then tree_gallery(scroll)
-          when {"Layout", "Plot"}            then plot_gallery(scroll)
-          when {"Layout", "Enabled"}         then enabled_gallery(scroll)
+          when {"Widgets", "Buttons"}   then buttons_gallery(scroll)
+          when {"Widgets", "Inputs"}    then inputs_gallery(scroll)
+          when {"Widgets", "Text"}      then text_gallery(scroll)
+          when {"Widgets", "Textarea"}  then textarea_gallery(scroll)
+          when {"Widgets", "Display"}   then display_gallery(scroll)
+          when {"Widgets", "Color"}     then color_gallery(scroll)
+          when {"Widgets", "Logos"}     then logos_gallery(scroll)
+          when {"Widgets", "Hotkeys"}   then hotkeys_gallery(scroll)
+          when {"Style", "Themes"}      then themes_gallery(scroll, ctx)
+          when {"Style", "Cursors"}     then cursors_gallery(scroll)
+          when {"Containers", "Scroll"} then scroll_gallery(scroll)
+          when {"Containers", "Modal"}  then modal_gallery(scroll)
+          when {"Containers", "Files"}  then files_gallery(scroll)
+          when {"Layout", "Grid"}       then grid_gallery(scroll)
+          when {"Layout", "Table"}      then table_gallery(scroll)
+          when {"Layout", "Tree"}       then tree_gallery(scroll)
+          when {"Layout", "Plot"}       then plot_gallery(scroll)
+          when {"Layout", "Enabled"}    then enabled_gallery(scroll)
           else
             scroll.label("(a user-created tab — close it with its X)")
           end
@@ -410,6 +414,24 @@ class GalleryApp < Egui::App
     ui.color_edit32(@color) { |c| @color = c }
   end
 
+  # Egui::Svg: the logo.svg design (letter E) in several variants —
+  # parsed from SVG source and painted as vectors, live-rescaled.
+  private def logos_gallery(ui : Egui::Ui) : Nil
+    ui.label("SVG widget — logo.svg variants with the letter E:")
+    ui.horizontal do |row|
+      row.label("size:")
+      row.slider(@logo_size, 24.0..160.0) { |v| @logo_size = v }
+    end
+    ui.separator
+    ui.grid("logos_grid") do |grid|
+      LOGO_VARIANTS.each do |name, source|
+        grid.add(Egui::Svg.new(source, Egui::Vec2.new(@logo_size, @logo_size)))
+        grid.label(name)
+        grid.end_row
+      end
+    end
+  end
+
   # The global hotkey map: every app action with a HotkeyEdit bound
   # to it. Rebinding here updates the menu bar's shortcut hints on
   # the next frame — the menus reference actions, not key strings.
@@ -458,7 +480,7 @@ class GalleryApp < Egui::App
     ui.add(Egui::Separator.new
       .style { |s| s.separator_color = Egui::Color32.rgb(200, 60, 60) })
     ui.add(Egui::Hyperlink.new("orange link (hyperlink_color override)",
-        "https://github.com/emilk/egui")
+      "https://github.com/emilk/egui")
       .style { |s| s.hyperlink_color = Egui::Color32.rgb(230, 140, 30) })
 
     ui.separator
@@ -642,7 +664,7 @@ is no way back (no pill, no double-click reset):")
     ui.label("Same animated plot with draggable: false — the view is pinned to \
 the default, no pan/zoom and no reset pill:")
     ui.plot("cpu_plot_locked", height: 220, animated: true,
-            draggable: false) do |p|
+      draggable: false) do |p|
       p.fixed_bounds(now - 60.0, 0.0, now, 100.0)
       p.line("CPU % (read-only)", pts, color: Egui::Color32.rgb(210, 80, 80))
     end
