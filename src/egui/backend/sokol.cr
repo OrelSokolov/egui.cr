@@ -29,6 +29,7 @@ require "./freetype"
 @[Link("X11")]
 @[Link("Xi")]
 @[Link("Xcursor")]
+@[Link("Xext")]
 @[Link("dl")]
 @[Link("pthread")]
 @[Link("m")]
@@ -43,7 +44,7 @@ lib LibEguiCr
   fun sapp_run = egui_cr_sapp_run(init : InitCb, frame : FrameCb, event : EventCb,
                                   cleanup : CleanupCb, title : UInt8*,
                                   width : Int32, height : Int32,
-                                  borderless : Int32)
+                                  borderless : Int32, transparent : Int32)
   fun gfx_init = egui_cr_gfx_init
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
@@ -70,6 +71,11 @@ lib LibEguiCr
   fun window_position = egui_cr_window_position(x : Int32*, y : Int32*) : Int32
   fun window_drag_start = egui_cr_window_drag_start
   fun window_resize_start = egui_cr_window_resize_start(direction : Int32)
+  fun image_alpha_mask = egui_cr_image_alpha_mask(path : UInt8*, w : Int32*,
+                                                  h : Int32*) : UInt8*
+  fun set_window_shape = egui_cr_set_window_shape(mask : UInt8*, w : Int32,
+                                                  h : Int32)
+  fun mem_free = egui_cr_mem_free(p : Void*)
   fun window_minimize = egui_cr_window_minimize
   fun window_maximize = egui_cr_window_maximize
   fun window_restore = egui_cr_window_restore
@@ -132,6 +138,8 @@ lib LibEguiCr
   fun text_pipeline_init = egui_cr_text_pipeline_init
   fun text_pipeline_push = egui_cr_text_pipeline_push
   fun text_pipeline_pop = egui_cr_text_pipeline_pop
+  fun alpha_pipeline_push = egui_cr_alpha_pipeline_push
+  fun alpha_pipeline_pop = egui_cr_alpha_pipeline_pop
   fun atlas_create = egui_cr_atlas_create(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun atlas_update = egui_cr_atlas_update(view_id : UInt32, w : Int32, h : Int32,
                                           data : UInt8*)
@@ -156,6 +164,9 @@ module Egui
       @@last_fb_h = 0
       @@start = Time.instant
       @@cursor = Egui::CursorIcon::Default
+      # Transparent window mode (run(transparent: true)): clear to
+      # alpha 0 and blend UI quads premultiplied.
+      @@transparent = false
       # Framebuffer pixels per UI point (retina: 2.0). UI layout and paint
       # commands stay in points; text is rasterized at the physical size.
       @@pixels_per_point : Float64 = 1.0
@@ -251,6 +262,14 @@ module Egui
           Egui::Backend::Sokol.inject_event(
             Egui::Event.pointer_released(pos))
         end
+
+        # X11 XShape / Win32 SetWindowRgn, built from scanline runs of
+        # the opaque mask pixels (see the shim). macOS no-op — the
+        # window's own alpha composites natively there.
+        def set_shape(mask : Bytes, width : Int32, height : Int32) : Nil
+          return if width <= 0 || height <= 0
+          LibEguiCr.set_window_shape(mask.to_unsafe, width, height)
+        end
       end
 
       # System port Screen → sokol dpi scale + primary monitor size (shim).
@@ -300,13 +319,20 @@ module Egui
       # * *decorations* — `false` creates a borderless window (no system
       #   title bar / frame) so the app can draw its own chrome; it can
       #   still be toggled at runtime via SystemPorts::Window.
+      # * *transparent* — per-pixel window transparency: pixels left at
+      #   alpha 0 show the desktop through (splash screens, custom
+      #   chrome). The backdrop is cleared to fully transparent and UI
+      #   quads blend into a premultiplied swapchain; on Linux this also
+      #   drops MSAA (the ARGB visuals are single-sample).
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
                                      height: Int32)? = nil,
-                   decorations : Bool = true) : Nil
+                   decorations : Bool = true,
+                   transparent : Bool = false) : Nil
         @@app = app
         @@icon = icon
+        @@transparent = transparent
         Egui::SystemPorts::Quit.use(QuitPort.new)
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
@@ -328,7 +354,7 @@ module Egui
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
-          width, height, decorations ? 0 : 1)
+          width, height, decorations ? 0 : 1, transparent ? 1 : 0)
       end
 
       # Win32 IFileDialog through the shim: the picker runs on its own
@@ -380,14 +406,20 @@ module Egui
         # Font backend: prefer FreeType (real hinting), fall back to the
         # stb light-hint rasterizer, then to the built-in monospace stub.
         # Candidates come from the Fonts system port (per-platform).
-        font_paths = Egui::SystemPorts::Fonts.search_paths
-        if font = FreetypeFonts.from_system(font_paths) ||
-                   LightHintedFonts.from_system(font_paths)
-          @@fonts = font
-          app.ctx.fonts = font
+        # A font installed via select_fonts BEFORE run (e.g. an app's
+        # monospace face) wins — don't clobber it with the default.
+        if (preselected = @@fonts)
+          app.ctx.fonts = preselected
         else
-          STDERR.puts "egui-cr: no system font found (tried #{font_paths.first} …)"
-          app.ctx.fonts = Egui::MonospaceFonts.new
+          font_paths = Egui::SystemPorts::Fonts.search_paths
+          if font = FreetypeFonts.from_system(font_paths) ||
+                     LightHintedFonts.from_system(font_paths)
+            @@fonts = font
+            app.ctx.fonts = font
+          else
+            STDERR.puts "egui-cr: no system font found (tried #{font_paths.first} …)"
+            app.ctx.fonts = Egui::MonospaceFonts.new
+          end
         end
         app.ctx.textures = SokolTextureRegistry.new
       end
@@ -405,6 +437,21 @@ module Egui
       # synthesize input (see WindowPort#hand_off_release).
       def self.last_pointer_pos : Egui::Pos2
         @@app.try &.ctx.input.pointer_pos || Egui::Pos2.zero
+      end
+
+      # 8-bit alpha mask of an image file (255 = opaque pixel), the
+      # input for SystemPorts::Window.set_shape (e.g. the splash PNG).
+      # Nil when the file cannot be decoded. The C-side buffer is
+      # copied into a Crystal Bytes and freed.
+      def self.image_alpha_mask(path : String) : NamedTuple(mask: Bytes, width: Int32, height: Int32)?
+        w = uninitialized Int32
+        h = uninitialized Int32
+        ptr = LibEguiCr.image_alpha_mask(path.to_unsafe, pointerof(w), pointerof(h))
+        return nil unless ptr
+        count = (w.to_i64 * h.to_i64).to_i32
+        mask = Bytes.new(count) { |i| ptr[i] }
+        LibEguiCr.mem_free(ptr)
+        {mask: mask, width: w, height: h}
       end
 
       # Queue a synthetic input event for the next frame's RawInput
@@ -537,11 +584,17 @@ module Egui
         w = fb_w.to_f64 / @@pixels_per_point
         h = fb_h.to_f64 / @@pixels_per_point
         # Backdrop follows the theme (its base surface color) so edges
-        # never flash the stale palette after a theme swap.
-        bg = ctx.style.visuals.panel_fill
-        LibEguiCr.set_clear_color(
-          bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
-          bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
+        # never flash the stale palette after a theme swap — except in a
+        # transparent window, where the backdrop is fully transparent
+        # and the swapchain alpha becomes the window alpha.
+        if @@transparent
+          LibEguiCr.set_clear_color(0.0f32, 0.0f32, 0.0f32, 0.0f32)
+        else
+          bg = ctx.style.visuals.panel_fill
+          LibEguiCr.set_clear_color(
+            bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
+            bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
+        end
 
         # Rasterize every glyph this frame's text needs (at the PHYSICAL
         # pixel size — see paint_text) and upload the atlas BEFORE the
@@ -565,7 +618,12 @@ module Egui
         LibEguiCr.sgl_matrix_mode_modelview
         LibEguiCr.sgl_load_identity
 
+        # Transparent windows: every quad blends (rgb: src*a + dst*(1-a),
+        # a: a + dst_a*(1-a)) so the compositor receives a correctly
+        # premultiplied image; opaque quads are unaffected.
+        LibEguiCr.alpha_pipeline_push if @@transparent
         commands.each { |cmd| paint(cmd) }
+        LibEguiCr.alpha_pipeline_pop if @@transparent
 
         LibEguiCr.end_pass
       end

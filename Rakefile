@@ -5,7 +5,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -36,8 +36,10 @@ task "build:native" do
       "/Ivendor\\sokol /Ivendor\\fontstash /Ivendor /Folib\\sokol_shim.obj && " \
       "cl /nologo /O2 /MD /std:c11 /c backend\\stb_truetype_shim.c " \
       "/Ivendor\\fontstash /Folib\\stb_truetype_shim.obj && " \
+      "cl /nologo /O2 /MD /std:c11 /c backend\\pty_shim.c " \
+      "/Folib\\pty_shim.obj && " \
       "lib /nologo /OUT:#{NATIVE_LIB.tr('/', '\\')} " \
-      "lib\\sokol_shim.obj lib\\stb_truetype_shim.obj"
+      "lib\\sokol_shim.obj lib\\stb_truetype_shim.obj lib\\pty_shim.obj"
     )
   else
     # macOS: sokol_app's backend is Objective-C (Cocoa/NSOpenGL), so the
@@ -55,7 +57,11 @@ task "build:native" do
         -Ivendor/fontstash \
         -o lib/stb_truetype_shim.o
     SH
-    sh "ar rcs #{NATIVE_LIB} lib/sokol_shim.o lib/stb_truetype_shim.o"
+    sh <<-SH
+      cc -O2 -c backend/pty_shim.c \
+        -o lib/pty_shim.o
+    SH
+    sh "ar rcs #{NATIVE_LIB} lib/sokol_shim.o lib/stb_truetype_shim.o lib/pty_shim.o"
   end
 end
 

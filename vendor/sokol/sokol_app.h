@@ -12794,6 +12794,10 @@ _SOKOL_PRIVATE int _sapp_glx_attrib(GLXFBConfig fbconfig, int attrib) {
     return value;
 }
 
+/* egui-cr patch hook (defined in backend/sokol_shim.c): 1 = restrict
+   fbconfig choice to depth-32 ARGB visuals (transparent windows). */
+int egui_cr_glx_want_argb(void);
+
 _SOKOL_PRIVATE GLXFBConfig _sapp_glx_choosefbconfig(void) {
     GLXFBConfig* native_configs;
     _sapp_gl_fbconfig* usable_configs;
@@ -12829,6 +12833,23 @@ _SOKOL_PRIVATE GLXFBConfig _sapp_glx_choosefbconfig(void) {
         /* Only consider window GLXFBConfigs */
         if (0 == (_sapp_glx_attrib(n, GLX_DRAWABLE_TYPE) & GLX_WINDOW_BIT)) {
             if (trust_window_bit) {
+                continue;
+            }
+        }
+        /* egui-cr patch (backend/sokol_shim.c hook): for transparent
+           windows only accept fbconfigs backed by a depth-32 ARGB
+           visual, so the compositing manager can blend the window per
+           pixel (a depth-24 visual discards the framebuffer alpha).
+        */
+        if (egui_cr_glx_want_argb()) {
+            XVisualInfo* vi = _sapp.glx.GetVisualFromFBConfig(_sapp.x11.display, n);
+            if (vi) {
+                bool is_argb = (vi->depth == 32);
+                XFree(vi);
+                if (!is_argb) {
+                    continue;
+                }
+            } else {
                 continue;
             }
         }
@@ -13403,8 +13424,16 @@ _SOKOL_PRIVATE bool _sapp_x11_window_visible(void) {
     return wa.map_state == IsViewable;
 }
 
+/* egui-cr patch hook (defined in backend/sokol_shim.c): applied just
+   before the window is mapped, so a borderless window is never
+   decorated in the first place (stripping decorations from an
+   already-mapped window makes mutter grow the client by the old
+   title bar height). */
+void egui_cr_x11_pre_map_hook(Display* dpy, Window win);
+
 _SOKOL_PRIVATE void _sapp_x11_show_window(void) {
     if (!_sapp_x11_window_visible()) {
+        egui_cr_x11_pre_map_hook(_sapp.x11.display, _sapp.x11.window);
         XMapWindow(_sapp.x11.display, _sapp.x11.window);
         XEvent dummy;
         _sapp_x11_wait_for_event(VisibilityNotify, 0.1, &dummy);

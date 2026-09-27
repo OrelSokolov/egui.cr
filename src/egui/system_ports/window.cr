@@ -92,6 +92,19 @@ module Egui
         implementation.start_resize(edge)
       end
 
+      # Shape the window from an 8-bit alpha mask (255 = pixel belongs
+      # to the window, 0 = hole) — the splash-screen primitive: the
+      # GL swap chain loses framebuffer alpha before the compositor on
+      # several X11 stacks, so a server-side binary shape (X11 XShape,
+      # Win32 SetWindowRgn) is the deterministic cross-platform way to
+      # get a non-rectangular window. It clips input as well. macOS is
+      # a no-op — its native per-pixel alpha already composites. Call
+      # once per shape change, after the window exists. The default
+      # (headless) implementation is a no-op.
+      def self.set_shape(mask : Bytes, width : Int32, height : Int32) : Nil
+        implementation.set_shape(mask, width, height)
+      end
+
       # Platform seam; the default is a headless no-op.
       class Implementation
         def set_title(title : String) : Nil
@@ -133,6 +146,9 @@ module Egui
         end
 
         def start_resize(edge : Symbol) : Nil
+        end
+
+        def set_shape(mask : Bytes, width : Int32, height : Int32) : Nil
         end
       end
     end

@@ -43,12 +43,26 @@ static cr_event_cb  g_event;
 // before the first frame paints (custom title bar apps draw their own).
 static int g_borderless;
 
+// from egui_cr_sapp_run: make the window per-pixel transparent (the
+// swapchain alpha becomes the window alpha — splash screens, custom
+// chrome).
+static int g_transparent;
+
 // window management (defined in the section below)
 void egui_cr_set_decorations(int decorated);
 int egui_cr_window_position(int* x, int* y);
+void egui_cr_set_transparent(void);
+
+// vendor/sokol GLX patch hook: 1 = restrict fbconfigs to depth-32 ARGB
+// visuals (per-pixel window transparency).
+int egui_cr_glx_want_argb(void);
 
 static void sh_init_cb(void) {
+    // X11 borderless is applied before the window is mapped (the
+    // egui_cr_x11_pre_map_hook sokol patch); other platforms undecorate
+    // here, once the window exists.
     if (g_borderless) egui_cr_set_decorations(0);
+    if (g_transparent) egui_cr_set_transparent();
     g_init();
 }
 static void sh_frame_cb(void)  { g_frame(); }
@@ -62,9 +76,10 @@ static void sh_event_cb(const sapp_event* ev) {
 
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
-                      int width, int height, int borderless) {
+                      int width, int height, int borderless, int transparent) {
     g_init = init; g_frame = frame; g_event = event; g_cleanup = cleanup;
     g_borderless = borderless;
+    g_transparent = transparent;
     sapp_desc desc = {
         .init_cb = sh_init_cb,
         .frame_cb = sh_frame_cb,
@@ -78,7 +93,12 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         // every rasterized glyph edge goes soft — text quality is dominated
         // by this, not by the rasterizer.
         .high_dpi = true,
-        .sample_count = 4, // MSAA: smooth circle/arc/line edges
+        // MSAA: smooth circle/arc/line edges — EXCEPT in a transparent
+        // window: the depth-32 ARGB fbconfigs GLX offers are single
+        // sample, so with MSAA the chooser falls back to a 24-bit visual
+        // and the compositor cannot blend per pixel. Transparent windows
+        // trade MSAA for the 32-bit visual (Win32/macOS unaffected).
+        .sample_count = transparent ? 1 : 4,
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .enable_dragndrop = true, // Event.dropped_files (drop.enabled gates the FILES_DROPPED event)
         .max_dropped_files = 8,
@@ -136,6 +156,101 @@ void egui_cr_end_pass(void) {
     sgl_draw();
     sg_end_pass();
     sg_commit();
+}
+
+// --- per-pixel window transparency -----------------------------------------
+//
+// The transparent-window platform setup (applied in init_cb when the
+// egui_cr_sapp_run flag is set): the swapchain alpha becomes the window
+// alpha, so pixels the app leaves at a=0 show the desktop through.
+//
+//   X11: nothing to do — with sample_count 1 the GLX chooser picks an
+//     alpha-capable fbconfig backed by a depth-32 ARGB visual, and the
+//     compositing manager blends the window per pixel.
+//   Win32: DWM ignores a WGL swapchain's alpha unless blur-behind is
+//     enabled with an EMPTY region (the classic per-pixel-alpha OpenGL
+//     trick, same as winit). dwmapi is loaded dynamically so no link
+//     dependency is added.
+//   macOS: NSWindow opaque=NO + a clear background color.
+
+#if defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+#define SH_DWM_BB_ENABLE     0x1
+#define SH_DWM_BB_BLURREGION 0x2
+typedef struct {
+    DWORD dwFlags;
+    BOOL  fEnable;
+    HRGN  hRgnBlur;
+    BOOL  fTransitionOnMaximized;
+} SH_DWM_BLURBEHIND;
+
+void egui_cr_set_transparent(void) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    HMODULE dwm = LoadLibraryA("dwmapi.dll");
+    if (!dwm) return;
+    typedef HRESULT (WINAPI *PFN_DwmEnableBlurBehindWindow)(HWND, const SH_DWM_BLURBEHIND*);
+    PFN_DwmEnableBlurBehindWindow f = (PFN_DwmEnableBlurBehindWindow)
+        GetProcAddress(dwm, "DwmEnableBlurBehindWindow");
+    if (!f) return;
+    SH_DWM_BLURBEHIND bb;
+    memset(&bb, 0, sizeof(bb));
+    bb.dwFlags = SH_DWM_BB_ENABLE | SH_DWM_BB_BLURREGION;
+    bb.fEnable = TRUE;
+    bb.hRgnBlur = CreateRectRgn(0, 0, -1, -1); // empty = whole window
+    f(hwnd, &bb);
+    DeleteObject(bb.hRgnBlur);
+}
+
+#elif defined(__APPLE__)
+
+void egui_cr_set_transparent(void) {
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return;
+    win.opaque = NO;
+    win.backgroundColor = [NSColor clearColor];
+}
+
+#else
+
+// X11: handled by the visual choice alone (see above).
+void egui_cr_set_transparent(void) {}
+
+#endif
+
+// UI-quad pipeline for transparent windows: same geometry as the
+// sokol_gl default pipeline, but blending so the compositing manager
+// receives a properly PREMULTIPLIED image (rgb: src*a + dst*(1-a),
+// a: a + dst_a*(1-a)). Opaque quads are unaffected; anti-aliased edges
+// and translucent fills come out correct instead of fringing.
+static sgl_pipeline g_alpha_pip;
+
+void egui_cr_alpha_pipeline_push(void) {
+    if (!g_alpha_pip.id) {
+        g_alpha_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0] = {
+                .blend = {
+                    .enabled = true,
+                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                },
+            },
+            .label = "egui-cr-alpha-pip",
+        });
+    }
+    sgl_push_pipeline();
+    sgl_load_pipeline(g_alpha_pip);
+}
+
+void egui_cr_alpha_pipeline_pop(void) {
+    sgl_pop_pipeline();
 }
 
 // --- textures -------------------------------------------------------------
@@ -205,6 +320,12 @@ void egui_cr_text_pipeline_init(void) {
                 .enabled = true,
                 .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
                 .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                // Keep the backdrop alpha: out_a = a + dst_a*(1-a). With
+                // the GL defaults (ONE, ZERO) glyph pixels replace the
+                // destination alpha — invisible on an opaque window, but
+                // it punches holes in a transparent one.
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
             },
         },
         .label = "egui-cr-text-pipeline",
@@ -558,6 +679,43 @@ void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
 
 #if defined(_SAPP_LINUX)
 
+// vendor/sokol GLX patch hook (declared at the top, called from
+// _sapp_glx_choosefbconfig in sokol_app.h): transparent windows need a
+// depth-32 ARGB visual so the compositor can blend the window per
+// pixel — without this the chooser happily returns a depth-24 visual
+// with an alpha-capable GL framebuffer, whose alpha never reaches the
+// screen.
+int egui_cr_glx_want_argb(void) { return g_transparent; }
+
+// The _MOTIF_WM_HINTS property shared by the runtime decoration toggle
+// and the pre-map hook below.
+static void sh_x11_set_motif_hints(Display* dpy, Window win, int decorated) {
+    struct {
+        unsigned long flags;        // MWM_HINTS_DECORATIONS
+        unsigned long functions;
+        unsigned long decorations;
+        unsigned long input_mode;
+        unsigned long status;
+    } hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.flags = 2; // MWM_HINTS_DECORATIONS
+    hints.decorations = decorated ? 1 : 0;
+    Atom prop = XInternAtom(dpy, "_MOTIF_WM_HINTS", False);
+    XChangeProperty(dpy, win, prop, prop, 32, PropModeReplace,
+                    (unsigned char*)&hints, 5);
+}
+
+// vendor/sokol patch hook (called from _sapp_x11_show_window): strip
+// decorations BEFORE the window is mapped. Stripping them from a
+// mapped window makes mutter keep the old frame's bookkeeping —
+// _NET_FRAME_EXTENTS stays 37px and the client gets resized to
+// accommodate a title bar it no longer has.
+void egui_cr_x11_pre_map_hook(Display* dpy, Window win) {
+    if (!g_borderless || !dpy || !win) return;
+    sh_x11_set_motif_hints(dpy, win, 0);
+    XFlush(dpy);
+}
+
 static void sh_net_wm_state(Display* dpy, Window win, long action,
                             const char* state_a, const char* state_b) {
     XEvent ev;
@@ -737,19 +895,7 @@ void egui_cr_set_decorations(int decorated) {
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
-    struct {
-        unsigned long flags;        // MWM_HINTS_DECORATIONS
-        unsigned long functions;
-        unsigned long decorations;
-        unsigned long input_mode;
-        unsigned long status;
-    } hints;
-    memset(&hints, 0, sizeof(hints));
-    hints.flags = 2; // MWM_HINTS_DECORATIONS
-    hints.decorations = decorated ? 1 : 0;
-    Atom prop = XInternAtom(dpy, "_MOTIF_WM_HINTS", False);
-    XChangeProperty(dpy, win, prop, prop, 32, PropModeReplace,
-                    (unsigned char*)&hints, 5);
+    sh_x11_set_motif_hints(dpy, win, decorated);
     XFlush(dpy);
 }
 
@@ -960,6 +1106,153 @@ void egui_cr_window_resize_start(int direction) {
 
 void egui_cr_window_drag_start(void) {}
 void egui_cr_window_resize_start(int direction) { (void)direction; }
+
+#endif
+
+// --- window shape (XShape / SetWindowRgn) -----------------------------------
+//
+// Binary per-pixel window shape from an 8-bit alpha mask (threshold
+// 127): the cross-platform splash-screen primitive ("окно с картинкой
+// разной формы"). Per-pixel translucency cannot rely on the GL swap
+// chain — several X11 stacks (Mesa Xe + mutter among them) zero the
+// framebuffer alpha before the compositor ever sees it — while a
+// server-side shape clips output AND input deterministically, with or
+// without a compositor. macOS keeps its native per-pixel alpha (the
+// non-opaque NSWindow composites the GL alpha directly), so the shape
+// is a no-op there.
+
+unsigned char* egui_cr_image_alpha_mask(const char* path, int* w, int* h) {
+    int n;
+    unsigned char* data = stbi_load(path, w, h, &n, 4);
+    if (!data) { *w = 0; *h = 0; return NULL; }
+    size_t count = (size_t)(*w) * (size_t)(*h);
+    unsigned char* mask = (unsigned char*)malloc(count);
+    if (!mask) { stbi_image_free(data); *w = 0; *h = 0; return NULL; }
+    for (size_t i = 0; i < count; i++) {
+        mask[i] = data[i * 4 + 3] > 127 ? 255 : 0;
+    }
+    stbi_image_free(data);
+    return mask;
+}
+
+void egui_cr_mem_free(void* p) { free(p); }
+
+#if defined(_SAPP_LINUX)
+
+#include <X11/extensions/shape.h>
+
+void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win || !mask || w <= 0 || h <= 0) return;
+    // Scanline runs of opaque pixels → YXBanded rectangles.
+    int max_rects = 0;
+    for (int y = 0; y < h; y++) {
+        int x = 0;
+        while (x < w) {
+            if (mask[(size_t)y * w + x]) {
+                int x0 = x;
+                while (x < w && mask[(size_t)y * w + x]) x++;
+                max_rects++;
+                (void)x0;
+            } else {
+                x++;
+            }
+        }
+    }
+    XRectangle* rects = (XRectangle*)malloc(sizeof(XRectangle) * (size_t)(max_rects ? max_rects : 1));
+    if (!rects) return;
+    int n = 0;
+    for (int y = 0; y < h; y++) {
+        int x = 0;
+        while (x < w) {
+            if (mask[(size_t)y * w + x]) {
+                int x0 = x;
+                while (x < w && mask[(size_t)y * w + x]) x++;
+                rects[n].x = (short)x0;
+                rects[n].y = (short)y;
+                rects[n].width = (short)(x - x0);
+                rects[n].height = 1;
+                n++;
+            } else {
+                x++;
+            }
+        }
+    }
+    XShapeCombineRectangles(dpy, win, ShapeBounding, 0, 0, rects, n,
+                            ShapeSet, YXBanded);
+    XShapeCombineRectangles(dpy, win, ShapeInput, 0, 0, rects, n,
+                            ShapeSet, YXBanded);
+    XFlush(dpy);
+    free(rects);
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd || !mask || w <= 0 || h <= 0) return;
+    // count scanline runs first, then build an RGNDATA of RECTs
+    DWORD count = 0;
+    for (int y = 0; y < h; y++) {
+        int x = 0;
+        while (x < w) {
+            if (mask[(size_t)y * w + x]) {
+                while (x < w && mask[(size_t)y * w + x]) x++;
+                count++;
+            } else {
+                x++;
+            }
+        }
+    }
+    DWORD size = sizeof(RGNDATAHEADER) + count * sizeof(RECT);
+    RGNDATA* rd = (RGNDATA*)malloc(size);
+    if (!rd) return;
+    memset(rd, 0, size);
+    rd->rdh.dwSize = sizeof(RGNDATAHEADER);
+    rd->rdh.iType = RDH_RECTANGLES;
+    rd->rdh.nCount = count;
+    rd->rdh.nRgnSize = count * sizeof(RECT);
+    rd->rdh.rcBound.right = (LONG)w;
+    rd->rdh.rcBound.bottom = (LONG)h;
+    RECT* r = (RECT*)rd->Buffer;
+    DWORD n = 0;
+    for (int y = 0; y < h; y++) {
+        int x = 0;
+        while (x < w) {
+            if (mask[(size_t)y * w + x]) {
+                int x0 = x;
+                while (x < w && mask[(size_t)y * w + x]) x++;
+                r[n].left = (LONG)x0;
+                r[n].top = (LONG)y;
+                r[n].right = (LONG)x;
+                r[n].bottom = (LONG)y + 1;
+                n++;
+            } else {
+                x++;
+            }
+        }
+    }
+    HRGN rgn = ExtCreateRegion(NULL, size, rd);
+    free(rd);
+    if (rgn) {
+        // The region is owned by the window after this call.
+        SetWindowRgn(hwnd, rgn, TRUE);
+    }
+}
+
+#else
+
+// macOS (and others): the window's own per-pixel alpha composites
+// natively — no server-side shape needed.
+void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
+    (void)mask; (void)w; (void)h;
+}
 
 #endif
 
