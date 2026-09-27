@@ -68,13 +68,18 @@ class GalleryApp < Egui::App
   @last_action = "(none)"
   # Logos tab: render size of the Egui::Svg previews.
   @logo_size = 72.0_f64
+  # Context menu tab: reusable menu definitions, built lazily (see
+  # #text_menu / #input_menu / #button_menu).
+  @text_menu : Egui::ContextMenu?
+  @input_menu : Egui::ContextMenu?
+  @button_menu : Egui::ContextMenu?
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Display", "Color", "Logos", "Hotkeys"],
+      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "Cursors"], closable: true),
@@ -184,6 +189,7 @@ class GalleryApp < Egui::App
           when {"Widgets", "Inputs"}    then inputs_gallery(scroll)
           when {"Widgets", "Text"}      then text_gallery(scroll)
           when {"Widgets", "Textarea"}  then textarea_gallery(scroll)
+          when {"Widgets", "Context menu"} then context_menu_gallery(scroll)
           when {"Widgets", "Display"}   then display_gallery(scroll)
           when {"Widgets", "Color"}     then color_gallery(scroll)
           when {"Widgets", "Logos"}     then logos_gallery(scroll)
@@ -398,6 +404,76 @@ class GalleryApp < Egui::App
     ui.textarea(@ta_text, rows: 14) { |t| @ta_text = t }
     ui.separator
     ui.label("#{@ta_text.count('\n') + 1} lines, #{@ta_text.size} bytes")
+  end
+
+  # Class-based context menus: a reusable `Egui::ContextMenu` attached
+  # to a widget through `Response#context_menu` — a secondary press
+  # opens it at the pointer. Rows carry vector icons and hotkey hints
+  # (static strings, or live ones via actions — the Undo/Redo rows
+  # follow the Hotkeys tab rebinds).
+  private def context_menu_gallery(ui : Egui::Ui) : Nil
+    ui.label("Right-click each widget — it carries its own class-built context menu:")
+    ui.label("last fired: #{@last_action}")
+    ui.separator
+
+    ui.label("Textarea (clipboard actions + clear):")
+    ui.textarea(@ta_text, rows: 6) { |t| @ta_text = t }
+      .context_menu(text_menu)
+    ui.separator
+
+    ui.label("Text input (action rows with live hotkey hints):")
+    ui.text_edit_singleline(@buffer) { |t| @buffer = t }
+      .context_menu(input_menu)
+    ui.separator
+
+    ui.label("Buttons (both share one menu instance):")
+    ui.horizontal do |row|
+      row.button("Button A").context_menu(button_menu)
+      row.button("Button B").context_menu(button_menu)
+    end
+  end
+
+  # The menus are built once (lazy ivars) — handlers capture app state,
+  # so rebuilding them per frame would churn closures for nothing.
+  private def text_menu : Egui::ContextMenu
+    @text_menu ||= Egui::ContextMenu.new
+      .item("Copy all", icon: :copy, hotkey: "Ctrl+C") do
+        Egui::SystemPorts::Clipboard.text = @ta_text
+        @last_action = "context: copy textarea"
+      end
+      .item("Paste at end", icon: :paste, hotkey: "Ctrl+V") do
+        @ta_text = @ta_text.empty? ? Egui::SystemPorts::Clipboard.text.to_s :
+          "#{@ta_text}\n#{Egui::SystemPorts::Clipboard.text}"
+        @last_action = "context: paste textarea"
+      end
+      .separator
+      .item("Clear", icon: :trash) do
+        @ta_text = ""
+        @last_action = "context: clear textarea"
+      end
+  end
+
+  private def input_menu : Egui::ContextMenu
+    @input_menu ||= Egui::ContextMenu.new
+      .item("Undo", icon: :left, action: ACTION_UNDO)
+      .item("Redo", icon: :right, action: ACTION_REDO)
+      .separator
+      .item("Copy", icon: :copy, hotkey: "Ctrl+C") do
+        Egui::SystemPorts::Clipboard.text = @buffer
+        @last_action = "context: copy input"
+      end
+      .item("Paste", icon: :paste, hotkey: "Ctrl+V") do
+        @buffer = Egui::SystemPorts::Clipboard.text.to_s
+        @last_action = "context: paste input"
+      end
+  end
+
+  private def button_menu : Egui::ContextMenu
+    @button_menu ||= Egui::ContextMenu.new
+      .item("Confirm", icon: :check) { @last_action = "context: confirmed" }
+      .item("Cancel", icon: :close) { @last_action = "context: cancelled" }
+      .separator
+      .item("New tab", icon: :plus, action: ACTION_NEW)
   end
 
   private def display_gallery(ui : Egui::Ui) : Nil

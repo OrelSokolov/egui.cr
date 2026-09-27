@@ -494,6 +494,10 @@ module Egui
     # the focused widget locked them (slider/drag value). Runs against
     # the previous frame's geometry, before any widget renders.
     private def navigate_focus(input : InputState) : Nil
+      # The focused widget claimed the whole keyboard (a terminal
+      # passing Tab/arrows to its child): no focus navigation at all.
+      return if @focus.lock_keyboard?
+
       focusables = [] of Id
       @prev_widget_senses.each do |id, sense|
         focusables << id if sense.focusable? && @prev_widget_rects[id]?

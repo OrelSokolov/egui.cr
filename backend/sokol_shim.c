@@ -234,6 +234,9 @@ void egui_cr_alpha_pipeline_push(void) {
     if (!g_alpha_pip.id) {
         g_alpha_pip = sgl_make_pipeline(&(sg_pipeline_desc){
             .colors[0] = {
+                // RGBA write mask: sgl's implicit default is RGB-only,
+                // which would keep the alpha at the clear value.
+                .write_mask = SG_COLORMASK_RGBA,
                 .blend = {
                     .enabled = true,
                     .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
@@ -250,6 +253,32 @@ void egui_cr_alpha_pipeline_push(void) {
 }
 
 void egui_cr_alpha_pipeline_pop(void) {
+    sgl_pop_pipeline();
+}
+
+// Blend-OFF pipeline for replace rects (Painter#rect_replace): the quad
+// overwrites dst rgb AND alpha — how a widget punches per-pixel
+// transparency into an opaque UI (the terminal grid) without anything
+// having to blend behind it.
+static sgl_pipeline g_replace_pip;
+
+void egui_cr_replace_pipeline_push(void) {
+    if (!g_replace_pip.id) {
+        g_replace_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0] = {
+                // RGBA write mask: the whole point is overwriting the
+                // alpha — sgl's RGB-only default would mask it off.
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = { .enabled = false },
+            },
+            .label = "egui-cr-replace-pip",
+        });
+    }
+    sgl_push_pipeline();
+    sgl_load_pipeline(g_replace_pip);
+}
+
+void egui_cr_replace_pipeline_pop(void) {
     sgl_pop_pipeline();
 }
 
@@ -316,6 +345,11 @@ void egui_cr_text_pipeline_init(void) {
     if (g_text_pip.id) return;
     g_text_pip = sgl_make_pipeline(&(sg_pipeline_desc){
         .colors[0] = {
+            // sgl's implicit default write mask is RGB-only — alpha
+            // writes masked off; enable them or the framebuffer alpha
+            // stays at whatever the clear left (fatal in a
+            // per-pixel-transparent window).
+            .write_mask = SG_COLORMASK_RGBA,
             .blend = {
                 .enabled = true,
                 .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
@@ -392,6 +426,16 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
             data.mip_levels[0].ptr = rgba8;
             data.mip_levels[0].size = (size_t)w * h * 4;
             sg_update_image(g_atlases[i].img, &data);
+            // _sg_gl_update_image rebinds textures on GL unit 0 behind
+            // the state cache's back (bind-new → upload → restore-old),
+            // which can leave the cache claiming a texture is bound
+            // that GL actually swapped — the next apply_bindings then
+            // skips the rebind and samples a stale slot, so glyphs
+            // rasterized after startup never showed up. The official
+            // "we touched GL state ourselves" escape hatch is a full
+            // state-cache reset; atlas updates are rare (new glyphs
+            // only), so the cost is negligible.
+            sg_reset_state_cache();
             return;
         }
     }
@@ -934,6 +978,83 @@ void egui_cr_set_decorations(int decorated) {
 #else
 
 void egui_cr_set_decorations(int decorated) { (void)decorated; }
+
+#endif
+
+// --- whole-window opacity ----------------------------------------------------
+//
+// Uniform runtime opacity for the WHOLE window (chrome + content), the
+// terminal-emulator idiom (alacritty/Windows Terminal "window opacity").
+// The GL swapchain's framebuffer alpha never survives to the compositor
+// on several X11 stacks (see egui_cr_set_window_shape), so this goes
+// through the platform's own window-opacity channel instead:
+//
+//   X11:    _NET_WM_WINDOW_OPACITY cardinal property (EWMH — needs a
+//           running compositor, otherwise the WM ignores it).
+//   Win32:  WS_EX_LAYERED + SetLayeredWindowAttributes(LWA_ALPHA);
+//           the style bit is dropped again at full opacity.
+//   macOS:  NSWindow.alphaValue.
+
+#if defined(_SAPP_LINUX)
+
+void egui_cr_set_window_opacity(float opacity) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    // Sanitize FIRST (NaN fails both bound checks, so it lands here too
+    // instead of hitting the cast below as undefined behavior).
+    if (!(opacity >= 0.0f && opacity <= 1.0f)) opacity = 1.0f;
+    // Compute in double: 0xFFFFFFFF is NOT representable as float (it
+    // rounds up to 0x100000000), so a float multiply at opacity 1.0
+    // produced 2^32 — whose low 32 bits (what the 32-bit property
+    // carries) are ZERO, making the window fully transparent at full
+    // opacity. Double + clamp keeps 1.0 at 0xFFFFFFFF.
+    double scaled = (double)opacity * 4294967295.0 + 0.5;
+    unsigned long value =
+        (scaled < 4294967295.0) ? (unsigned long)scaled : 0xFFFFFFFFUL;
+    Atom prop = XInternAtom(dpy, "_NET_WM_WINDOW_OPACITY", False);
+    XChangeProperty(dpy, win, prop, XA_CARDINAL, 32, PropModeReplace,
+                    (unsigned char*)&value, 1);
+    XFlush(dpy);
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+void egui_cr_set_window_opacity(float opacity) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    if (!(opacity >= 0.0f && opacity <= 1.0f)) opacity = 1.0f; // NaN too
+    LONG_PTR ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+    if (opacity >= 1.0f) {
+        // Fully opaque: drop the layered style (a layered window costs
+        // the DWM an extra redirection surface).
+        if (ex & WS_EX_LAYERED)
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex & ~WS_EX_LAYERED);
+        return;
+    }
+    if (!(ex & WS_EX_LAYERED))
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+    BYTE alpha = (BYTE)(opacity * 255.0f + 0.5f);
+    SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
+}
+
+#elif defined(__APPLE__)
+
+void egui_cr_set_window_opacity(float opacity) {
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return;
+    if (!(opacity >= 0.0f && opacity <= 1.0f)) opacity = 1.0f; // NaN too
+    win.alphaValue = opacity;
+}
+
+#else
+
+void egui_cr_set_window_opacity(float opacity) { (void)opacity; }
 
 #endif
 

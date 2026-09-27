@@ -488,6 +488,32 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       allocations in vertical + horizontal regions, long-edit width
       bound, caret-follow scroll > 0, clipped TextCmds, Home snaps
       back to the start.
+- [x] Default client-side chrome (user request): `src/egui/containers/
+      window_frame.cr` (egui.cr-native) — `Egui::WindowFrame` in three
+      selectable looks (`WindowFrame::Style`) — the style changes ONLY
+      the top caption panel; the 1px #3A3A3A window outline and all
+      behavior are shared. *Windows 11 dark* — 32pt
+      #202020 caption, 46×32 buttons with pixel-aligned 10×10 1px
+      glyphs, #C42B1C close hover, solid hover/press fills; *Ubuntu (classic Ambiance, ~2017)* — 28pt
+      warm-grey gradient titlebar, centered title, round buttons at the
+      right edge with the close in Ubuntu orange #E95420; *macOS* —
+      light 28pt titlebar with a separator hairline, centered title,
+      traffic lights at the LEFT edge in Apple order (close #FF5F57
+      first, then minimize #FEBC2E, zoom #28C840). Shared: native-loop
+      drag/double-click-maximize and 8-edge resize grips; titles 14pt.
+      The sokol backend draws the frame by DEFAULT while a window is
+      borderless (`run(decorations: false)` → `chrome:` nil; opt out
+      with `chrome: false`, transparent windows opt out implicitly),
+      before the app's own panels; `chrome_style:` picks the look at
+      startup and `Sokol.chrome_style=` switches it live (the
+      borderless demo's segmented control). `Context#top_panel` gained
+      a `height:` pin for the fixed caption. Runtime
+      `Window.set_decorations` toggles the frame in step;
+      `Window#set_title` keeps the caption text in sync. Specs: caption
+      geometry/fill per style, min/close clicks through the ports
+      (macOS close = leftmost light, Ubuntu close = orange circle),
+      double-click maximize/restore, close hover fill, edge-grip resize
+      hand-off.
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
 - [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync — idle frames replay the last paint commands

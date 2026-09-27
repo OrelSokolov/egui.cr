@@ -17,7 +17,10 @@
 #
 # Styling goes through the global `StyleSheet` (CSS-like classes):
 #   tabs          — tab_spacing (gap between tab buttons),
-#                   rule_color (the baseline under the strip)
+#                   rule_color (the baseline under the strip),
+#                   fill (the strip's background; panel_fill by
+#                   default — relevant in per-pixel-transparent
+#                   windows, where the strip must stay opaque)
 #   tabs.tab      — font_size, padding.top/right/…/left, height,
 #                   text_color + :hover/:selected overlays
 #                   (fill, text_color, underline_color/underline_width)
@@ -118,6 +121,13 @@ module Egui
         offset = offset.clamp(0.0, total - view_w)
       end
       ctx.memory.data.set_f64(scroll_id, offset)
+
+      # Strip background (styled "fill" of the `tabs` class, panel_fill
+      # by default): painted before everything so the row is opaque even
+      # when the container behind it is transparent (a terminal app with
+      # a translucent grid — the strip must not show the desktop
+      # through the gaps between the tab buttons).
+      ui.painter.rect(strip, fill: root.color("fill", visuals.panel_fill))
 
       # Baseline under the strip (the container's top edge) — painted
       # first so tab fills and the selection underline stack on top.

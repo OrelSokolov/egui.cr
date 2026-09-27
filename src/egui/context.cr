@@ -139,7 +139,7 @@ module Egui
       if (central = @central_block)
         @central_block = nil
         rect = @available_rect
-        panel_ui(central[0], rect, Layout.top_down) { |ui| central[1].call(ui) }
+        panel_ui(central[0], rect, Layout.top_down, central[2]) { |ui| central[1].call(ui) }
       end
       @in_frame = false
       @memory.end_frame
@@ -552,15 +552,21 @@ module Egui
     # so it always renders into the true remainder regardless of
     # declaration order — panels can never overlap it.
 
-    # The deferred central panel: {id, block}, rendered in #end_frame.
-    @central_block : {String, Proc(Ui, Nil)}? = nil
+    # The deferred central panel: {id, block, fill}, rendered in
+    # #end_frame.
+    @central_block : {String, Proc(Ui, Nil), Color32?} | Nil = nil
 
-    def top_panel(id : String = "top_panel", &block : Ui ->) : Rect
-      line_h = style.font_size * Fonts::LINE_H_FACTOR
-      pad = style.spacing.window_padding
-      height = line_h + 2 * pad.y
+    # *height* pins the strip height (nil → one text line + window
+    # padding); the client-side window frame uses it for its caption.
+    def top_panel(id : String = "top_panel", height : Float64? = nil,
+                  &block : Ui ->) : Rect
+      h = height || begin
+        line_h = style.font_size * Fonts::LINE_H_FACTOR
+        pad = style.spacing.window_padding
+        line_h + 2 * pad.y
+      end
       rect = Rect.from_min_size(@available_rect.min,
-        Vec2.new(@available_rect.width, height))
+        Vec2.new(@available_rect.width, h))
       @available_rect = Rect.new(
         Pos2.new(rect.left, rect.bottom),
         @available_rect.max)
@@ -605,6 +611,11 @@ module Egui
 
     # egui `CentralPanel::show` — the remainder. Returns its rect.
     #
+    # *fill* overrides the panel background (nil → the style's
+    # panel_fill) — `Color32.transparent` makes the central panel paint
+    # nothing, so a widget that draws its own (possibly translucent)
+    # background shows the desktop through a transparent window.
+    #
     # DEFERRED (egui.cr fix, no upstream counterpart): the block does
     # not run here — #end_frame renders it after every other panel
     # has bitten #available_rect, so the central panel ends up with
@@ -613,21 +624,22 @@ module Egui
     # its content). The return value is the remainder at CALL time —
     # exact when the central panel is declared last (the recommended
     # style), approximate if later panels still bite.
-    def central_panel(id : String = "central_panel", &block : Ui ->) : Rect
+    def central_panel(id : String = "central_panel",
+                      fill : Color32? = nil, &block : Ui ->) : Rect
       rect = @available_rect
-      @central_block = {id, block}
+      @central_block = {id, block, fill}
       rect
     end
 
     private def panel_ui(id : String, rect : Rect, layout : Layout,
-                         &block : Ui ->) : Nil
+                         fill : Color32? = nil, &block : Ui ->) : Nil
       pad = style.spacing.window_padding
 
       @painter.layer = Order::Background
       bg_index = @painter.add_noop
       @painter.clip = rect
       @painter.set(bg_index,
-        RectCmd.new(rect, rect, 0.0, style.visuals.panel_fill,
+        RectCmd.new(rect, rect, 0.0, fill || style.visuals.panel_fill,
           style.visuals.window_stroke, 1.0))
 
       ui = Ui.new(self, Id.from("panel/#{id}"),

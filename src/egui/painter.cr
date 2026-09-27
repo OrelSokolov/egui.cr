@@ -19,10 +19,14 @@ module Egui
     getter fill2 : Color32?
     getter stroke_color : Color32?
     getter stroke_width : Float64
+    # Blend-off fill: OVERWRITE dst (rgb AND alpha) instead of blending
+    # — see Painter#rect_replace.
+    getter? replace : Bool
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @fill : Color32?, @stroke_color : Color32?,
-                   @stroke_width : Float64, @fill2 : Color32? = nil)
+                   @stroke_width : Float64, @fill2 : Color32? = nil,
+                   @replace : Bool = false)
     end
   end
 
@@ -162,6 +166,23 @@ module Egui
              fill2 : Color32? = nil) : Nil
       add(RectCmd.new(@clip, rect, rounding, fill, stroke_color,
         stroke_width, fill2))
+    end
+
+    # Replace-blend rect: instead of blending over the destination, it
+    # OVERWRITES it — rgb AND alpha — with `color` given straight
+    # (non-premultiplied); the command carries it premultiplied, ready
+    # for an alpha-composited (per-pixel-transparent) swapchain. This
+    # is the primitive for a widget that must show the desktop through
+    # an otherwise opaque UI (the terminal grid): it punches the exact
+    # alpha into the framebuffer, no blending needed behind it. In a
+    # normal opaque window it degenerates to a plain solid rect.
+    def rect_replace(rect : Rect, color : Color32) : Nil
+      a = color.a
+      pre = Color32.new(
+        (color.r.to_f64 * a / 255.0 + 0.5).floor.to_u8,
+        (color.g.to_f64 * a / 255.0 + 0.5).floor.to_u8,
+        (color.b.to_f64 * a / 255.0 + 0.5).floor.to_u8, a)
+      add(RectCmd.new(@clip, rect, 0.0, pre, nil, 0.0, replace: true))
     end
 
     # Vertical gradient fill (top `c1` → bottom `c2`).

@@ -149,6 +149,19 @@ end
 Runnable demo: `bin/counter_reactive` (fiber-driven ticking signal,
 computed run counters in the status panel).
 
+## Terminal
+
+`egui/terminal` is a cross-platform terminal emulator built on the
+same core (see `docs/TERMINAL.md` for the full picture): a pure-Crystal
+VT500 engine (parser, grid with scrollback, SGR, selection, key
+encoding), the `TermView` widget (`ui.terminal(session)`), and a
+native PTY — POSIX ptys on Linux/macOS, ConPTY on Windows — compiled
+from `backend/pty_shim.c` into the existing native library by
+`rake build:native`. `./bin/terminal` is a tabbed terminal: per-tab
+shells, OSC-driven tab titles, closable tabs, mouse selection and
+scrollback. The engine is headless-spec'd (`spec/terminal_spec.cr`,
+`spec/terminal_widget_spec.cr`).
+
 ## Status
 
 Slice 1: the core frame loop (RawInput → begin_frame → app update →

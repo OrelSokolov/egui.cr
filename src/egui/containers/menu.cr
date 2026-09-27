@@ -3,9 +3,10 @@
 # A desktop-style menu: `Context#menu_bar` pins a bar to the top of the
 # window; `Ui#menu_button` opens a dropdown (the shared popup system)
 # below itself; `Ui#menu_item` is a clickable row with an optional
-# action whose bound hotkey (ctx.hotkeys) shows as the shortcut hint;
-# it closes the menu on click. While any menu is open, hovering
-# another root button switches to it (upstream MenuState).
+# vector icon and an optional action whose bound hotkey (ctx.hotkeys)
+# shows as the shortcut hint; it closes the menu on click. While any
+# menu is open, hovering another root button switches to it (upstream
+# MenuState).
 
 module Egui
   # Context menus (egui `Response::context_menu`, containers/menu.rs):
@@ -150,41 +151,52 @@ module Egui
     # egui menu item — a row that closes its menu on click. The row
     # spans the popup frame edge-to-edge so the hover highlight covers
     # the whole menu width like a native one; the label sits left with
-    # button padding, the shortcut hint is right-aligned. Only the
-    # natural width (label + gap + shortcut + padding) is reported to
-    # the popup's min_rect, so the frame hugs the widest item.
+    # button padding (an optional vector icon column before it), the
+    # shortcut hint is right-aligned. Only the natural width (icon +
+    # label + gap + shortcut + padding) is reported to the popup's
+    # min_rect, so the frame hugs the widest item.
     #
     # `action` replaces the old shortcut-string parameter: the hint is
     # whatever hotkey `ctx.hotkeys` currently binds to the action (so
     # a HotkeyEdit rebind updates the menu next frame), and the row
     # triggers on click OR on the action firing while the menu is
-    # open. Without a block a click re-fires the action
+    # open. `hotkey` is a static hint for rows without an action.
+    # Without a block a click re-fires the action
     # (`Context#fire_action`) for app-level `#consume_action` handlers.
     def menu_item(label : String, action : HotkeyAction? = nil,
+                  icon : Symbol? = nil, hotkey : String? = nil,
                   &on_click : ->) : Nil
-      menu_item_impl(label, action) { on_click.call }
+      menu_item_impl(label, action, icon, hotkey) { on_click.call }
     end
 
-    def menu_item(label : String, action : HotkeyAction? = nil) : Nil
-      menu_item_impl(label, action) do
+    def menu_item(label : String, action : HotkeyAction? = nil,
+                  icon : Symbol? = nil, hotkey : String? = nil) : Nil
+      menu_item_impl(label, action, icon, hotkey) do
         ctx.fire_action(action.not_nil!) if action
       end
     end
 
     private def menu_item_impl(label : String, action : HotkeyAction?,
+                               icon : Symbol? = nil, hotkey : String? = nil,
                                &on_trigger : ->) : Nil
       font_size = style.font_size
       pad = style.spacing.button_padding
       label_size = ctx.fonts.measure(label, font_size)
 
-      shortcut = action.try { |a| ctx.hotkeys.hotkey_for(a).try(&.to_s) }
+      shortcut = action.try { |a| ctx.hotkeys.hotkey_for(a).try(&.to_s) } || hotkey
       shortcut_size = shortcut ? ctx.fonts.measure(shortcut.not_nil!, font_size) : Vec2.zero
+      # The icon column: a square the label height plus its gap — only
+      # for icons the set actually has (unknown names draw nothing and
+      # take no space).
+      has_icon = !icon.nil? && Icons::NAMES.includes?(icon.not_nil!)
+      icon_size = has_icon ? label_size.y + style.spacing.icon_spacing : 0.0
       # Row height includes the menu vertical padding so the hover
       # highlight breathes around the label like a native menu row.
       height = {label_size.y + 2 * MENU_PAD_Y,
         style.spacing.interact_size.y}.max
       shortcut_gap = shortcut ? 24.0 : 0.0
-      natural_w = 2 * pad.x + label_size.x + shortcut_gap + shortcut_size.x
+      natural_w = 2 * pad.x + icon_size + label_size.x +
+                  shortcut_gap + shortcut_size.x
       row_w = {available_width, natural_w}.max
 
       # Full-bleed row: the popup Ui is inset by window_padding, so the
@@ -205,7 +217,15 @@ module Egui
       if response.hovered?
         painter.rect(rect, 3.0, visuals.button_hovered)
       end
-      painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
+      content_x = rect.left + pad.x
+      if has_icon
+        icon_box = Rect.from_min_size(
+          Pos2.new(content_x, rect.center.y - label_size.y / 2.0),
+          Vec2.new(label_size.y, label_size.y))
+        Icons.draw(painter, icon.not_nil!, icon_box, visuals.text_color)
+        content_x += icon_size
+      end
+      painter.text(Pos2.new(content_x, rect.left_center.y),
         label, font_size, visuals.text_color)
       if shortcut
         painter.text(Pos2.new(rect.right - pad.x - shortcut_size.x,

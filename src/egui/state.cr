@@ -137,7 +137,11 @@ module Egui
   #
   # Arrow locks (upstream `FocusLockFilter`): a focused slider/drag
   # value claims the arrows in its own direction so navigation skips
-  # them; latched one frame like the focus id itself.
+  # them; latched one frame like the focus id itself. A focused widget
+  # can additionally claim the WHOLE keyboard (upstream `EventFilter`
+  # — a terminal passes Tab/arrows to its child process): focus
+  # navigation (Tab cycling, geometric arrows) stands down entirely
+  # while the lock is held.
   class Focus
     @id : Id?
     @id_previous_frame : Id?
@@ -147,6 +151,8 @@ module Egui
     @lock_v : Bool
     @lock_h_next : Bool
     @lock_v_next : Bool
+    @lock_kb : Bool
+    @lock_kb_next : Bool
 
     def initialize
       @id = nil
@@ -156,6 +162,8 @@ module Egui
       @lock_v = false
       @lock_h_next = false
       @lock_v_next = false
+      @lock_kb = false
+      @lock_kb_next = false
     end
 
     def begin_frame : Nil
@@ -166,6 +174,8 @@ module Egui
       @lock_v = @lock_v_next
       @lock_h_next = false
       @lock_v_next = false
+      @lock_kb = @lock_kb_next
+      @lock_kb_next = false
     end
 
     def request(id : Id) : Nil
@@ -189,6 +199,16 @@ module Egui
     def lock_arrows(horizontal : Bool = false, vertical : Bool = false) : Nil
       @lock_h_next = true if horizontal
       @lock_v_next = true if vertical
+    end
+
+    # Claim every navigation key (Tab, arrows) for the focused widget —
+    # e.g. a terminal emulator forwarding them to its child process.
+    def lock_keyboard : Nil
+      @lock_kb_next = true
+    end
+
+    def lock_keyboard? : Bool
+      @lock_kb
     end
 
     def lock_h? : Bool

@@ -68,6 +68,7 @@ lib LibEguiCr
   fun set_window_size = egui_cr_set_window_size(w : Int32, h : Int32)
   fun set_window_position = egui_cr_set_window_position(x : Int32, y : Int32)
   fun set_decorations = egui_cr_set_decorations(decorated : Int32)
+  fun set_window_opacity = egui_cr_set_window_opacity(opacity : Float32)
   fun window_position = egui_cr_window_position(x : Int32*, y : Int32*) : Int32
   fun window_drag_start = egui_cr_window_drag_start
   fun window_resize_start = egui_cr_window_resize_start(direction : Int32)
@@ -140,6 +141,8 @@ lib LibEguiCr
   fun text_pipeline_pop = egui_cr_text_pipeline_pop
   fun alpha_pipeline_push = egui_cr_alpha_pipeline_push
   fun alpha_pipeline_pop = egui_cr_alpha_pipeline_pop
+  fun replace_pipeline_push = egui_cr_replace_pipeline_push
+  fun replace_pipeline_pop = egui_cr_replace_pipeline_pop
   fun atlas_create = egui_cr_atlas_create(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun atlas_update = egui_cr_atlas_update(view_id : UInt32, w : Int32, h : Int32,
                                           data : UInt8*)
@@ -171,6 +174,45 @@ module Egui
       # commands stay in points; text is rasterized at the physical size.
       @@pixels_per_point : Float64 = 1.0
 
+      # Client-side chrome (the `chrome:` run option): while the window
+      # is borderless, Egui::WindowFrame — the Windows 11 dark-theme
+      # look — is drawn before every app frame. `chrome_enabled` is the
+      # app's standing choice; `chrome_active` is the per-frame state
+      # (follows the decorations toggle at runtime).
+      @@title = "egui-cr"
+      @@chrome_enabled = false
+      @@chrome_active = false
+      @@chrome_style : WindowFrame::Style = WindowFrame::Style::Windows
+
+      def self.title : String
+        @@title
+      end
+
+      def self.title=(title : String) : String
+        @@title = title
+      end
+
+      def self.chrome_enabled? : Bool
+        @@chrome_enabled
+      end
+
+      def self.chrome_active? : Bool
+        @@chrome_active
+      end
+
+      def self.chrome_active=(flag : Bool) : Bool
+        @@chrome_active = flag
+      end
+
+      def self.chrome_style : WindowFrame::Style
+        @@chrome_style
+      end
+
+      # Live-switch the client-side frame style (Windows/Ubuntu/Macos).
+      def self.chrome_style=(style : WindowFrame::Style) : WindowFrame::Style
+        @@chrome_style = style
+      end
+
       # System port Quit → sokol_app `sapp_quit`: closes the window on
       # every backend platform and leaves the run loop.
       class QuitPort < Egui::SystemPorts::Quit::Implementation
@@ -185,6 +227,7 @@ module Egui
         def set_title(title : String) : Nil
           title.to_unsafe # ensure a contiguous buffer
           LibEguiCr.sapp_set_window_title(title.to_unsafe)
+          Sokol.title = title # keep the client-side caption in sync
         end
 
         def set_size(width : Int32, height : Int32) : Nil
@@ -221,8 +264,12 @@ module Egui
 
         # Borderless toggle (shim): X11 _MOTIF_WM_HINTS, Win32 window
         # styles + SWP_FRAMECHANGED, macOS NSWindowStyleMaskTitled.
+        # The default client-side chrome follows the state: it shows
+        # while the window is borderless and hides when the system
+        # frame comes back.
         def set_decorations(decorated : Bool) : Nil
           LibEguiCr.set_decorations(decorated ? 1 : 0)
+          Sokol.chrome_active = !decorated && Sokol.chrome_enabled?
         end
 
         def position : Egui::Vec2?
@@ -269,6 +316,12 @@ module Egui
         def set_shape(mask : Bytes, width : Int32, height : Int32) : Nil
           return if width <= 0 || height <= 0
           LibEguiCr.set_window_shape(mask.to_unsafe, width, height)
+        end
+
+        # Whole-window opacity (shim): X11 _NET_WM_WINDOW_OPACITY,
+        # Win32 WS_EX_LAYERED + LWA_ALPHA, macOS NSWindow.alphaValue.
+        def set_opacity(alpha : Float64) : Nil
+          LibEguiCr.set_window_opacity(alpha.clamp(0.0, 1.0).to_f32)
         end
       end
 
@@ -324,15 +377,33 @@ module Egui
       #   chrome). The backdrop is cleared to fully transparent and UI
       #   quads blend into a premultiplied swapchain; on Linux this also
       #   drops MSAA (the ARGB visuals are single-sample).
+      # * *chrome* — the client-side frame for a borderless window:
+      #   `Egui::WindowFrame` drawn by the backend before every app
+      #   frame, including edge resize grips. `nil` (default) = on for
+      #   borderless opaque windows, off for transparent ones
+      #   (splash-style apps draw their own shape); `false` opts out for
+      #   fully custom chrome. A runtime `Window.set_decorations`
+      #   toggle shows/hides it in step.
+      # * *chrome_style* — which chrome look to draw: Windows 11 dark
+      #   (default), classic Ubuntu Ambiance (gradient + round orange
+      #   close) or macOS (traffic lights left, close first). Switchable
+      #   live via `Sokol.chrome_style=`.
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
                                      height: Int32)? = nil,
                    decorations : Bool = true,
-                   transparent : Bool = false) : Nil
+                   transparent : Bool = false,
+                   chrome : Bool? = nil,
+                   chrome_style : WindowFrame::Style =
+                     WindowFrame::Style::Windows) : Nil
         @@app = app
         @@icon = icon
         @@transparent = transparent
+        @@title = title
+        @@chrome_enabled = chrome.nil? ? !decorations && !transparent : chrome.not_nil!
+        @@chrome_active = @@chrome_enabled && !decorations
+        @@chrome_style = chrome_style
         Egui::SystemPorts::Quit.use(QuitPort.new)
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
@@ -475,9 +546,15 @@ module Egui
         when MOUSE_MOVE
           @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
         when MOUSE_DOWN
-          @@events << Egui::Event.pointer_pressed(Egui::Pos2.new(mx, my))
+          # sapp mouse_button: 0 = left, 1 = right, 2 = middle.
+          # Secondary presses drive context menus
+          # (Response#context_menu); middle is dropped here (no
+          # middle-click behavior yet).
+          button = btn == 1 ? PointerButton::Secondary : PointerButton::Primary
+          @@events << Egui::Event.pointer_pressed(Egui::Pos2.new(mx, my), button)
         when MOUSE_UP
-          @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my))
+          button = btn == 1 ? PointerButton::Secondary : PointerButton::Primary
+          @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my), button)
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
           # is positive = content scrolls down → negate.
@@ -555,6 +632,9 @@ module Egui
         @@events = [] of Egui::Event
 
         app.ctx.begin_frame(raw)
+        # Default client-side chrome first: the caption is a top panel,
+        # so the app's own panels land below it.
+        Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
         app.update(app.ctx)
         commands = app.ctx.end_frame
 
@@ -696,6 +776,19 @@ module Egui
       def self.paint_rect(cmd : Egui::RectCmd) : Nil
         apply_scissor(cmd.clip)
 
+        # Replace rects draw with blending OFF (the fill is already
+        # premultiplied and must overwrite dst alpha — see
+        # Painter#rect_replace); everything else blends normally.
+        if cmd.replace?
+          LibEguiCr.replace_pipeline_push
+          paint_rect_body(cmd)
+          LibEguiCr.replace_pipeline_pop
+        else
+          paint_rect_body(cmd)
+        end
+      end
+
+      def self.paint_rect_body(cmd : Egui::RectCmd) : Nil
         r = cmd.rect
         round = cmd.rounding
 

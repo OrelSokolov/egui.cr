@@ -4,7 +4,8 @@
 
 module Egui
   module Icons
-    NAMES = {:check, :close, :left, :right, :up, :down, :plus, :minus}
+    NAMES = {:check, :close, :left, :right, :up, :down, :plus, :minus,
+             :copy, :paste, :trash}
 
     # Draw `name` fitted into `rect` with `color` and stroke width.
     def self.draw(painter : Painter, name : Symbol, rect : Rect,
@@ -43,6 +44,38 @@ module Egui
       when :minus
         cy = rect.center.y
         painter.line(Pos2.new(rect.left, cy), Pos2.new(rect.right, cy), width, color)
+      when :copy
+        # Two overlapping document outlines (front sheet partly covers
+        # the back one).
+        back = Rect.from_min_size(
+          Pos2.new(rect.left + 0.05 * rect.width, rect.top + 0.20 * rect.height),
+          Vec2.new(0.60 * rect.width, 0.75 * rect.height))
+        front = Rect.from_min_size(
+          Pos2.new(rect.left + 0.35 * rect.width, rect.top + 0.05 * rect.height),
+          Vec2.new(0.60 * rect.width, 0.75 * rect.height))
+        painter.rect(back, 1.0, nil, color, width)
+        painter.rect(front, 1.0, nil, color, width)
+      when :paste
+        # A clipboard: board outline with a tab on the top edge.
+        board = Rect.from_min_size(
+          Pos2.new(rect.left + 0.15 * rect.width, rect.top + 0.15 * rect.height),
+          Vec2.new(0.70 * rect.width, 0.80 * rect.height))
+        painter.rect(board, 1.0, nil, color, width)
+        painter.rect(Rect.from_min_size(
+          Pos2.new(rect.left + 0.35 * rect.width, rect.top),
+          Vec2.new(0.30 * rect.width, 0.20 * rect.height)), 1.0, nil, color, width)
+      when :trash
+        # A trash can: lid with a handle plus the body outline.
+        lid_y = rect.top + 0.25 * rect.height
+        painter.line(Pos2.new(rect.left + 0.10 * rect.width, lid_y),
+          Pos2.new(rect.right - 0.10 * rect.width, lid_y), width, color)
+        painter.line(Pos2.new(rect.center.x - 0.15 * rect.width, rect.top + 0.05 * rect.height),
+          Pos2.new(rect.center.x + 0.15 * rect.width, rect.top + 0.05 * rect.height), width, color)
+        painter.line(Pos2.new(rect.center.x, rect.top + 0.05 * rect.height),
+          Pos2.new(rect.center.x, lid_y), width, color)
+        painter.rect(Rect.from_min_size(
+          Pos2.new(rect.left + 0.20 * rect.width, lid_y),
+          Vec2.new(0.60 * rect.width, 0.70 * rect.height)), 1.0, nil, color, width)
       end
     end
   end

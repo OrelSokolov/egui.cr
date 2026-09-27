@@ -105,6 +105,18 @@ module Egui
         implementation.set_shape(mask, width, height)
       end
 
+      # Uniform runtime opacity for the WHOLE window — chrome and
+      # content together — the terminal-emulator idiom. `alpha` is
+      # 0.0..1.0; 1.0 restores a fully opaque window. Goes through the
+      # platform's own window-opacity channel (X11
+      # _NET_WM_WINDOW_OPACITY — needs a running compositor; Win32
+      # layered windows; macOS NSWindow.alphaValue), so it works both
+      # ways at runtime, any number of times. The default (headless)
+      # implementation is a no-op.
+      def self.set_opacity(alpha : Float64) : Nil
+        implementation.set_opacity(alpha)
+      end
+
       # Platform seam; the default is a headless no-op.
       class Implementation
         def set_title(title : String) : Nil
@@ -149,6 +161,9 @@ module Egui
         end
 
         def set_shape(mask : Bytes, width : Int32, height : Int32) : Nil
+        end
+
+        def set_opacity(alpha : Float64) : Nil
         end
       end
     end

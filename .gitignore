@@ -17,3 +17,6 @@ shard.lock
 .ref/
 
 egui-upstream/
+
+# Stray local build output
+/egui

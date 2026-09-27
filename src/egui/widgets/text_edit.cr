@@ -53,23 +53,42 @@ module Egui
       ui.ctx.memory.use_id(anchor_id)
       ui.ctx.memory.use_id(scroll_id)
 
+      cursor = ui.ctx.memory.data.get_int(id, @text.size).clamp(0, @text.size)
+      anchor = ui.ctx.memory.data.get_int(anchor_id, -1)
+      new_text = @text
+      changed = false
+
+      # Keyboard BEFORE layout: an edit made this frame must size the
+      # field this frame. Sizing from a pre-edit galley leaves the rect
+      # one frame behind the text, and the caret auto-follow then scrolls
+      # against that stale view — while typing at the end the field keeps
+      # growing yet the text slides left (and snaps back once typing
+      # pauses), which reads as the field jittering. Focus is read
+      # straight from memory so the edit lands before the galley exists
+      # (a focusing click types from the next frame on).
+      if ui.ctx.memory.focus.has_focus?(id)
+        ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
+        new_text, cursor, anchor, changed =
+          handle_keyboard(ui.ctx, @text, cursor, anchor)
+        ui.ctx.request_repaint # caret blink
+      end
+
       # Password mode replaces every character with MASK_CHAR for
       # display; the masked galley has exactly one circle per
       # character, so display geometry and edit state share the same
       # CHARACTER-COUNT space (see the header comment). The lambdas
       # clamp stray indexes so they never reach the string slices as
       # out-of-bounds.
-      display = @text
-      display = String.build { |b| @text.each_char { b << MASK_CHAR } } if @password
-      n_chars = @text.size
+      display = new_text
+      display = String.build { |b| new_text.each_char { b << MASK_CHAR } } if @password
+      n_chars = new_text.size
       # Edit-state index → galley index, and cursor_at result →
       # edit-state index: identity, bounded to the text length.
       d_idx = ->(i : Int32) { i.clamp(0, n_chars) }
       r_idx = d_idx
 
-      shown = @text.empty? && (hint = @hint) ? hint : display
-      runs = [TextRun.new(shown, font_size)]
-      galley = fonts.layout(runs)
+      shown = new_text.empty? && (hint = @hint) ? hint : display
+      galley = fonts.layout([TextRun.new(shown, font_size)])
 
       pad = style.spacing.button_padding
       # The border stroke is drawn INSIDE the rect (backend inset), so
@@ -98,11 +117,6 @@ module Egui
       # Upstream: text caret cursor over the edit field.
       ui.ctx.set_cursor_icon(CursorIcon::Text) if response.hovered?
 
-      cursor = ui.ctx.memory.data.get_int(id, @text.size).clamp(0, @text.size)
-      anchor = ui.ctx.memory.data.get_int(anchor_id, -1)
-      new_text = @text
-      changed = false
-
       # Press places the caret immediately (real input); a synthetic
       # same-frame press+release arrives classified as a click and does
       # the same on release. Double-click selects a word.
@@ -110,7 +124,7 @@ module Egui
         response.request_focus
         if (pos = ui.ctx.input.pointer_pos)
           if response.double_clicked?
-            cursor, anchor = word_range(@text,
+            cursor, anchor = word_range(new_text,
               r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x)))
           else
             cursor = r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x))
@@ -127,25 +141,6 @@ module Egui
         cursor = r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x))
       end
 
-      if response.has_focus?
-        ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
-        new_text, cursor, anchor, changed =
-          handle_keyboard(ui.ctx, @text, cursor, anchor)
-        ui.ctx.request_repaint # caret blink
-      end
-
-      # Same-frame refresh after an edit: re-lay the galley from the
-      # new buffer so the typed character, selection and caret land
-      # correctly this frame (the stale galley would paint the old
-      # text and park the caret at the old end for a frame). The
-      # lambdas capture n_chars by reference, so they follow along.
-      if changed
-        display = new_text
-        display = String.build { |b| new_text.each_char { b << MASK_CHAR } } if @password
-        n_chars = new_text.size
-        shown = new_text.empty? && (hint = @hint) ? hint : display
-        galley = fonts.layout([TextRun.new(shown, font_size)])
-      end
       ui.ctx.memory.data.set_int(id, cursor)
       ui.ctx.memory.data.set_int(anchor_id, anchor)
 
