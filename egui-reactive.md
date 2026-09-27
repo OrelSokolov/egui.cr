@@ -34,23 +34,34 @@ idle-режима бэкенда — отдельно в `0percent_cpu.md`.
 
 ## API
 
+Итоговая форма (после реализации фазы 1 — обозначения пришлось
+подогнать под ограничения вывода типов Crystal):
+
 ```crystal
 class MyApp < Egui::App          # App включает Egui::Reactive
-  reactive count = 0             # Signal(Int32), запись извне кадра будит repaint
-  reactive name  = "мир"         # Signal(String)
-  reactive speed = 0.3_f64
+  reactive count = 0             # литеральный дефолт: тип выводится
+  reactive name = "мир"          # Signal(String)
+  reactive speed : Float64 = 0.3 # не-литеральный дефолт: тип явный
+  reactive items : Array(String) = [] of String
 
-  computed greeting { "Привет, #{name}!" }   # мемо по версии входов
+  # computed — форма декларации (НЕ блок): тип значения обязан быть
+  # явным, Crystal не выводит тип ivar из вызова метода
+  computed greeting : String = "Привет, #{name}!"
+  computed doubled : Int32 = count * 2
 
   def update(ctx)
     ui = ...
     ui.label(greeting)
-    ui.text_field(name)          # биндинг: показывает + пишет назад сам
-    ui.slider(speed, 0.0..1.0)   # как ui.slider(@v, r) { |v| @v = v }, но без блока
-    ui.button("Inc").clicked? -> count += 1
+    ui.text_field(name_signal)     # биндинг: сигнал через *_signal-аксессор
+    self.count += 1 if ui.button("Inc").clicked?
   end
 end
 ```
+
+Писать `count += 1` можно как обычно — сеттер сам сравнит старое
+значение, обновит сигнал, грязнит computeds и (вне кадра) запросит
+repaint; внутри кадра repaint не запрашивается (событие-инициатор уже
+купило settle-кадры).
 
 Событийная модель не меняется: `Response#clicked?` и `changed?`
 остаются главными (см. `response.cr`).
@@ -65,60 +76,61 @@ end
 
 ## Компоненты
 
-### 1. `src/egui/reactive.cr` — ядро
+### 1. `src/egui/reactive.cr` — ядро ✅ (фаза 1 готова)
 
-- `Egui::Signal(T)`: value/version, подписчики (`Computed`),
-  сеттер: `==`-сравнение → bump version → dirty подписчикам →
-  `ctx.request_repaint`.
-- `Egui::ComputedBase`: dependency-tracking через стек читателей
-  (`@@stack`), `mark_dirty` с каскадом.
-- `Egui::Computed(T)`: ленивое значение, пересчёт при dirty;
-  computeds могут зависеть от computeds.
-- `module Egui::Reactive`: макросы `reactive` / `computed`,
-  генерирующие геттер/сеттер над signal-полем (setter — чтобы
-  `count += 1` выглядело как с обычным полем).
+- `Egui::Signal(T)`: value/version, подписчики, сеттер с
+  `==`-сравнением → bump version → dirty подписчикам. Контекст НЕ
+  хранит (см. ниже).
+- `Egui::ReactiveTracking`: dependency-tracking через стек читателей.
+- `Egui::ComputedBase`/`ComputedCell`: dirty/deps/subs-механика.
+- `Egui::Computed(T)`: типизированный standalone-computed для
+  программного использования (спеки/тесты).
+- `module Egui::Reactive`: макросы `reactive` / `computed`.
 
-### 2. Интеграция с `Context`
+Особенности реализации (важно знать при развитии):
 
-- `Signal` держит `ctx : Context?`; запись зовёт `request_repaint`
-  (`context.cr:223`).
-- Guard «мы и так внутри кадра»: запись сигнала во время `update`
-  не должна покупать лишние кадры (repaint_outstanding=2 — лишний
-  тик после каждого клика). Проверять `ctx.in_frame?` (добавить
-  флаг в begin/end_frame).
+- **Дефолты ivar не могут звать методы инстанса** — поэтому
+  `request_repaint` живёт в сеттере, который генерирует макрос (там
+  `ctx` доступен как метод), а сам `Signal` контекст-независим.
+- **Вывод типа ivar из `.new` дженерика не работает** — `reactive`
+  маппит литеральные дефолты на типы в макросе; для остального —
+  форма `name : Type = default`.
+- **Вывод типа ivar из вызова метода не работает** — `computed`
+  требует явный тип (`computed x : T = expr`), зато получает
+  бесплатное сравнение старое/новое значение и подавление каскада
+  при неизменном результате.
+- Рекурсия computed (прямо или по цепочке) → `Egui::RecursionError`;
+  rescue-обёртка восстанавливает tracking-стек.
 
-### 3. Биндинг-виджеты (`ui.cr`)
+### 2. Интеграция с `Context` ✅
 
-Обёртки над существующими виджетами, пишут в signal при
-`response.changed?`:
+- `Context#in_frame?` (begin_frame…end_frame) — сеттеры `reactive`
+  пропускают `request_repaint` внутри кадра.
 
-- `ui.slider(sig : Signal(Float64), range)` → существующий
-  `ui.slider(value, range) { |v| ... }` (`widgets/slider.cr`);
-- `ui.checkbox(sig : Signal(Bool), text)` (`widgets/checkbox.cr`);
-- `ui.text_field(sig : Signal(String))` / `ui.textarea(sig)`
-  (`widgets/text_edit.cr`, `widgets/textarea.cr`);
-- `ui.dropdown(sig : Signal(String), options)` (по образцу combo из
-  галереи).
+### 3. Биндинг-виджеты (`ui.cr`) ✅
 
-Первый срез — Slider, Checkbox, TextBuffer, Dropdown; остальное по
-мере надобности тем же паттерном.
+Обёртки над существующими виджетами; пишут в сигнал при
+`response.changed?` (внутри кадра — без repaint-запроса):
+`slider(sig, range, text)`, `drag_value(sig, …)`, `checkbox(sig, text)`,
+`toggle_button(sig, text)`, `selectable(sig, text)`,
+`text_field(sig, hint, password)`, `textarea(sig, hint, rows)`,
+`combo_box(id, sig, options, width)`.
 
-### 4. Пример + спеки
+Геттер `reactive`-поля возвращает значение; сигнал для биндинга —
+через сгенерированный `*_signal`-аксессор (`ui.text_field(name_signal)`).
+Запись изнутри методов приложения — `self.count += 1` (голое
+`count += 1` создаёт локальную переменную).
 
-- `examples/counter_reactive.cr` (по образцу `hello.cr`):
-  - `count` инкрементится кнопкой;
-  - `ticker` — `spawn`-fiber пишет раз в секунду БЕЗ каких-либо
-    `request_repaint` (демонстрация, что кадр приходит сам);
-  - `computed`-строка от двух сигналов (пересчитывается только при
-    изменении входов — видно по счётчику вычислений в статус-баре).
-- `spec/reactive_spec.cr`:
-  - версия сигнала растёт только при реальном изменении;
-  - dirty-каскад: изменение входа грязнит зависимый computed, тот —
-    его зависимых; запись не-входа — не грязнит;
-  - computed пересчитывается один раз на многие чтения;
-  - сеттер сигнала зовёт `request_repaint` (мок Context) и НЕ зовёт,
-    если значение то же;
-  - рекурсия signal-в-computed → исключение с внятным сообщением.
+### 4. Пример + спеки ✅
+
+- `examples/counter_reactive.cr`: кнопка + fiber-таймер (1 тик/с,
+  БЕЗ ручного repaint), text_field/slider/checkbox-биндинги, два
+  computed со счётчиками запусков в статус-панели (видно, что
+  мемоизация работает). Smoke-запуск: 5 с без падений, кадры идут.
+- `spec/reactive_spec.cr` — 14 спеков: версии сигналов,
+  repaint-семантика in/out-of-frame, мемоизация, dirty-каскады,
+  неизменное значение не каскадит, рекурсия, устаревшие зависимости,
+  биндинги (клик по checkbox и драг слайдера реально пишут сигнал).
 
 ## Подводные камни (учесть в реализации)
 
@@ -136,13 +148,23 @@ end
 
 ## Фазы
 
-1. **Ядро**: `reactive.cr` (Signal/Computed/макросы) + спеки +
-   `in_frame?`-guard в `Context`. Приёмка: `crystal spec spec/reactive_spec.cr` зелёный.
-2. **Биндинги**: 4 обёртки в `ui.cr` + `examples/counter_reactive.cr`.
-   Приёмка: пример работает; в gallery перевести одну вкладку
-   (Inputs) на сигналы — код вкладки короче, поведение то же.
-3. **Computed в бою**: CPU-график вкладки Plot галереи на
-   `computed`; README/docs проекта — раздел «Reactive».
+1. **Ядро** ✅: `reactive.cr` + `spec/reactive_spec.cr` (12 спеков:
+   версии сигналов, repaint-семантика in/out-of-frame, мемоизация,
+   dirty-каскады, неизменное значение не каскадит, рекурсия,
+   устаревшие зависимости) + `Context#in_frame?`. Полный прогон
+   `crystal spec` — 189 примеров, зелёные.
+2. **Биндинги** ✅: 8 обёрток в `ui.cr` + `examples/counter_reactive.cr`
+   (fiber-таймер, computed-счётчики, статус-панель). Полный suite —
+   196 примеров, зелёные; галерея собирается без изменений.
+   (Перевод вкладки Inputs галереи на сигналы — опционально, при
+   следующей правке галереи.)
+3. **Computed в бою** ✅: вкладка Plot галереи — статические данные
+   графиков (`sin_points`/`peak_points`, включая computed-of-computed)
+   считаются один раз вместо каждого кадра. Анимированный CPU-график
+   осознанно НЕ переведён на computed: его окно скользит каждый кадр,
+   мемоизировать нечего (посекундный random walk и так кэшируется в
+   `@cpu_samples`). Раздел «Reactive» в README; пример добавлен в
+   `Rakefile` EXAMPLES и собирается в `bin/counter_reactive`.
 
 Миграция по желанию, поле за полем; существующий код не ломается
 (новые имена не конфликтуют: `reactive`/`computed` — только в теле

@@ -4,6 +4,8 @@
 
 module Egui
   abstract class App
+    include Reactive
+
     getter ctx : Context
 
     def initialize

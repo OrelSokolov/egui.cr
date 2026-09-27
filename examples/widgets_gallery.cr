@@ -8,6 +8,22 @@ require "../src/egui/backend/sokol"
 require "./icon"
 
 class GalleryApp < Egui::App
+  # Static plot data as computeds: built once on first read, not on
+  # every frame (they were rebuilt 60×/s while the Plot tab is open).
+  # The animated CPU curve below is deliberately NOT a computed — its
+  # x window slides every frame, so memoization has nothing to save;
+  # its memoizable part (the per-second random walk) is already cached
+  # in @cpu_samples.
+  computed sin_points : Array({Float64, Float64}) = (0..100).map { |i|
+    x = i * 0.1
+    {x, Math.sin(x)}
+  }
+
+  # computed-of-computed: peaks derive from sin_points.
+  computed peak_points : Array({Float64, Float64}) = begin
+    sin_points.select { |_, y| y > 0.95 }
+  end
+
   @checked = false
   @radio : Int32 = 1
   @section : Int32 = 0
@@ -581,21 +597,18 @@ class GalleryApp < Egui::App
   private def plot_gallery(ui : Egui::Ui) : Nil
     ui.label("Plot (drag to pan, wheel to zoom; the reset pill appears once \
 the view is panned/zoomed):")
-    sin = (0..100).map { |i|
-      x = i * 0.1
-      {x, Math.sin(x)}
-    }
-    peaks = sin.select { |_, y| y > 0.95 }
+    # sin_points/peak_points are computeds — the arrays are built on
+    # first read only, not every frame.
     ui.plot("gallery_plot", height: 220) do |p|
-      p.line("sin(x)", sin)
-      p.points("peaks", peaks)
+      p.line("sin(x)", sin_points)
+      p.points("peaks", peak_points)
     end
 
     ui.label("Same plot with reset_button: false — pan/zoom works, but there \
 is no way back (no pill, no double-click reset):")
     ui.plot("gallery_plot_noreset", height: 220, reset_button: false) do |p|
-      p.line("sin(x)", sin, color: Egui::Color32.rgb(80, 140, 220))
-      p.points("peaks", peaks)
+      p.line("sin(x)", sin_points, color: Egui::Color32.rgb(80, 140, 220))
+      p.points("peaks", peak_points)
     end
 
     ui.separator

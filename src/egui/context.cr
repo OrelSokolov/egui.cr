@@ -47,6 +47,10 @@ module Egui
     @frame_cache : Hash(String, IdTypeMap::Cell)
     @fired_actions : Array(HotkeyAction)
     @hotkey_capture : Bool
+    # True between begin_frame and end_frame — reactive `Signal` writes
+    # skip `request_repaint` inside a frame (the driving event already
+    # bought the settle repaints).
+    @in_frame : Bool
 
     def initialize
       @memory = Memory.new
@@ -66,9 +70,11 @@ module Egui
       @hotkeys = HotkeyMap.new
       @fired_actions = [] of HotkeyAction
       @hotkey_capture = false
+      @in_frame = false
     end
 
     def begin_frame(raw : RawInput) : Nil
+      @in_frame = true
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
       @available_rect = raw.screen_rect
@@ -123,6 +129,7 @@ module Egui
     end
 
     def end_frame : Array(PaintCmd)
+      @in_frame = false
       @memory.end_frame
       @painter.commands_in_layer_order
     end
@@ -226,6 +233,13 @@ module Egui
 
     def needs_repaint? : Bool
       @repaint_outstanding > 0
+    end
+
+    # True while the frame is being built (begin_frame…end_frame). The
+    # reactive layer uses it to skip pointless repaint requests for
+    # signal writes made during update.
+    def in_frame? : Bool
+      @in_frame
     end
 
     # --- containers --------------------------------------------------------

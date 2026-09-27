@@ -21,6 +21,8 @@ architecture (Rust) and its ideas, not a port of it; rendered through
   `context`, `response`, `sense`, `layout`, `ui`, `widgets/`) plus the
   sokol backend (`backend/sokol/`).
 - `examples/hello.cr` — button + label + label change (Hello World).
+- `examples/counter_reactive.cr` — reactive demo: signals, computeds,
+  fiber-driven ticking, bound widgets.
 
 ## Build & run
 
@@ -96,6 +98,56 @@ Differences from the Linux build:
 - system ports shell out to `osascript`/`open` (dialogs, message
   boxes, notifications, URL opening, user dirs) and manage the window
   through AppKit (NSWindow/NSScreen from the ObjC shim)
+
+## Reactive state
+
+On top of the immediate-mode core sits a thin reactive layer
+(`src/egui/reactive.cr`, see `egui-reactive.md` for the design):
+mutable state cells with change notification, memoized derivations
+and one-line widget bindings — no manual `request_repaint`, no
+`if changed?; @field = value` plumbing.
+
+```crystal
+class MyApp < Egui::App
+  reactive count = 0                      # literal default: type inferred
+  reactive name = "world"
+  reactive items : Array(String) = [] of String  # otherwise: explicit type
+
+  computed greeting : String = "Hello, #{name}!"  # memoized; re-runs
+  computed total : Int32 = count + items.size     # only when inputs change
+
+  def update(ctx)
+    ctx.window("demo") do |ui|
+      ui.label(greeting)
+      ui.text_field(name_signal)     # bound widgets: display + write-back
+      ui.checkbox(flag_signal, "On")
+      self.count += 1 if ui.button("+1").clicked?
+    end
+  end
+end
+```
+
+- `reactive x = default` wraps a field in a `Signal(T)`: a real write
+  (same value → no-op) bumps a version, dirties dependent computeds
+  and — outside a frame — requests a repaint, so mutations from
+  timers/fibers/dialog callbacks wake the UI by themselves.
+- `computed name : Type = expr` is lazy and memoized; reads performed
+  while it evaluates register as dependencies (a computed may read
+  other computeds). Writing an unrelated signal does not dirty it.
+- Bound widget forms on `Ui`: `slider(sig, range, text)`,
+  `drag_value(sig, …)`, `checkbox(sig, text)`, `toggle_button`,
+  `selectable`, `text_field(sig, hint)`, `textarea(sig, rows)`,
+  `combo_box(id, sig, options)`. They take the signal itself — the
+  generated `*_signal` accessor (`name_signal`) hands it out; the
+  plain getter returns the value.
+- Writes inside your own methods need an explicit receiver
+  (`self.count += 1`) — a bare `count += 1` would create a local.
+- Plain fields stay idiomatic for state only touched by input
+  handlers (input events already drive repaints); use `reactive` for
+  out-of-frame mutations and `computed` inputs.
+
+Runnable demo: `bin/counter_reactive` (fiber-driven ticking signal,
+computed run counters in the status panel).
 
 ## Status
 

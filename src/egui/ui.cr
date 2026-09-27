@@ -61,8 +61,8 @@ module Egui
     # semi-infinite `max_rect` (frames, scroll contents) are
     # unaffected by the clamp.
     def allocate_space(size : Vec2) : Rect
-      max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x}.max
-      max_y = { {@cursor.y + size.y, @max_rect.bottom}.min, @cursor.y}.max
+      max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x }.max
+      max_y = { {@cursor.y + size.y, @max_rect.bottom}.min, @cursor.y }.max
       rect = Rect.new(@cursor, Pos2.new(max_x, max_y))
       @min_rect = @min_rect.union(rect)
       @cursor = @layout.advance(@cursor, rect.size,
@@ -155,6 +155,11 @@ module Egui
       add(Spinner.new(size))
     end
 
+    # Vector SVG (mini parser → painter primitives); see `Egui::Svg`.
+    def svg(source : String, size : Vec2 = Vec2.new(128.0, 128.0)) : Response
+      add(Svg.new(source, size))
+    end
+
     # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
     # egui `ui.add_enabled`-style block helpers for value widgets:
     # the block fires with the new value when it changed this frame.
@@ -186,6 +191,74 @@ module Egui
     def combo_box(id : String, selected : String, options : Array(String),
                   width : Float64 = 160.0, &on_select : String ->) : Bool
       ComboBox.new(id, selected, options, width).show(self) { |opt| on_select.call(opt) }
+    end
+
+    # --- reactive bindings (see reactive.cr) -------------------------------
+    #
+    # The `Signal` forms of the value widgets above: display + write-back
+    # in one call, no `on_change` block, no app-field to copy into. The
+    # write lands directly in the signal — bindings run inside the frame,
+    # so no repaint request is needed (the driving event already bought
+    # the settle repaints).
+
+    def slider(sig : Signal(Float64), range : Range(Float64, Float64),
+               text : String? = nil) : Response
+      response = add(Slider.new(sig.value, range, text))
+      if response.changed? && (v = response.widget_value)
+        sig.value = v
+      end
+      response
+    end
+
+    def drag_value(sig : Signal(Float64), speed : Float64 = 1.0,
+                   prefix : String = "", suffix : String = "",
+                   format : (Float64 -> String)? = nil) : Response
+      response = add(DragValue.new(sig.value, speed, prefix, suffix, format))
+      if response.changed? && (v = response.widget_value)
+        sig.value = v
+      end
+      response
+    end
+
+    def checkbox(sig : Signal(Bool), text : String) : Response
+      response = add(Checkbox.new(sig.value, text))
+      sig.value = !sig.value if response.changed?
+      response
+    end
+
+    def toggle_button(sig : Signal(Bool), text : String? = nil) : Response
+      response = add(ToggleButton.new(sig.value, text))
+      sig.value = !sig.value if response.changed?
+      response
+    end
+
+    def selectable(sig : Signal(Bool), text : String) : Response
+      response = add(SelectableLabel.new(sig.value, text))
+      sig.value = !sig.value if response.changed?
+      response
+    end
+
+    def text_field(sig : Signal(String), hint : String? = nil,
+                   password : Bool = false) : Response
+      response = add(TextEdit.new(sig.value, hint, password))
+      if response.changed? && (text = response.widget_text)
+        sig.value = text
+      end
+      response
+    end
+
+    def textarea(sig : Signal(String), hint : String? = nil,
+                 rows : Int32 = 8) : Response
+      response = add(TextArea.new(sig.value, hint, rows))
+      if response.changed? && (text = response.widget_text)
+        sig.value = text
+      end
+      response
+    end
+
+    def combo_box(id : String, sig : Signal(String), options : Array(String),
+                  width : Float64 = 160.0) : Bool
+      ComboBox.new(id, sig.value, options, width).show(self) { |opt| sig.value = opt }
     end
 
     # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
