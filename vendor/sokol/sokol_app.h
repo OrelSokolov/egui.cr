@@ -6185,7 +6185,22 @@ _SOKOL_PRIVATE void _sapp_macos_frame(void) {
     [[_sapp.macos.view openGLContext] flushBuffer];
     #endif
     if (_sapp.quit_requested || _sapp.quit_ordered) {
-        [_sapp.macos.window performClose:nil];
+        /* egui-cr patch (borderless quit): performClose: only works when
+           the window actually has a close button. A borderless window
+           (NSWindowStyleMaskTitled cleared at runtime — the closable bit
+           alone is not enough) has none, so performClose: just plays the
+           system beep and never closes, while this branch re-fires every
+           frame: sapp_quit() hangs the app in a beep loop. Route such
+           windows through -[NSApplication terminate:] instead, which
+           runs the same cleanup path (applicationWillTerminate) and
+           exits. drawRect: (the GL frame driver) is on the main thread,
+           as terminate: requires.
+        */
+        if ([_sapp.macos.window standardWindowButton:NSWindowCloseButton] == nil) {
+            [NSApp terminate:nil];
+        } else {
+            [_sapp.macos.window performClose:nil];
+        }
     }
 }
 
