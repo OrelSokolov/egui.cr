@@ -60,11 +60,21 @@ module Egui
       # reference open this up (live-tunable: fontpreview exposes it).
       property letter_spacing : Float64 = 0.0
 
+      # Pixels per point the draw path rasterizes at (set by the backend
+      # each frame; 1.0 headless). Hinted advances are per-ppem, NOT
+      # linear in size — SF Mono advances 7.0px at 14pt but 15px at the
+      # retina draw size (28px) — so `measure` must walk the run at the
+      # same physical size the glyphs will be drawn at and fold the
+      # width back to points, or every widget lays out on advances the
+      # painter then exceeds (in a terminal grid the cursor visibly
+      # drifts off the text).
+      property scale : Float64 = 1.0
+
       # --- Egui::Fonts -------------------------------------------------------
 
       def measure(text : String, size : Float64) : Egui::Vec2
         return Egui::Vec2.zero if text.empty? || !loaded?
-        width = walk(text, size) { |_, _| }
+        width = walk(text, size * @scale) { |_, _| } / @scale
         asc, desc = metrics_at(size)
         Egui::Vec2.new(width, asc - desc)
       end

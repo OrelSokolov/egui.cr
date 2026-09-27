@@ -608,6 +608,10 @@ module Egui
         # points, like upstream egui with pixels_per_point.
         ppp = LibEguiCr.sapp_dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+        # measure() must see the draw-path ppem (see AtlasFonts#scale) —
+        # set it before begin_frame so this frame's layout agrees with
+        # what paint_text will actually emit.
+        @@fonts.try &.scale = @@pixels_per_point
         fb_w = LibEguiCr.sapp_width
         fb_h = LibEguiCr.sapp_height
 

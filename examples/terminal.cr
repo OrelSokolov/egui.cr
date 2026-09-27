@@ -325,6 +325,11 @@ def pick_monospace : Nil
       "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
       "/usr/share/fonts/ubuntu/UbuntuMono-R.ttf",
       "/System/Library/Fonts/SFMono-Regular.ttf",
+      # Stock macOS ships SF Mono as SFNSMono.ttf (SFMono-Regular.ttf
+      # only exists inside Terminal.app/Xcode bundles). Without a mono
+      # candidate the app font (proportional SF) wins and the terminal
+      # cursor drifts off the text — TermView assumes uniform advances.
+      "/System/Library/Fonts/SFNSMono.ttf",
       "/Library/Fonts/JetBrainsMono-Regular.ttf",
     ]
   {% end %}
