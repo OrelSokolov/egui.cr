@@ -31,6 +31,7 @@ class GalleryApp < Egui::App
   @tab : Int32 = 0
   @slider = 0.3_f64
   @drag = 10.0_f64
+  @spin = 42
   @combo = "Second"
   @modal_open = false
   @buffer = "edit me"
@@ -359,6 +360,13 @@ class GalleryApp < Egui::App
     ui.drag_value(@drag, speed: 0.1, suffix: " px") { |v| @drag = v }
     ui.separator
 
+    ui.label("Number input (integers only, up/down spin):")
+    ui.horizontal do |row|
+      row.number_input(@spin, 0..100, suffix: " pt") { |v| @spin = v }
+      row.number_input(@spin, 0..100, step: 5) { |v| @spin = v }
+    end
+    ui.separator
+
     ui.label("Combo / text edit:")
     ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
     ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
@@ -611,9 +619,16 @@ class GalleryApp < Egui::App
   end
 
   private def scroll_gallery(ui : Egui::Ui) : Nil
-    ui.label("Scroll area (wheel me):")
-    ui.scroll_area(max_height: 400.0) do |inner|
+    ui.label("Scroll area (wheel me) — overlay scrollbar:")
+    ui.scroll_area(max_height: 300.0) do |inner|
       25.times { |i| inner.label("scroll row #{i}") }
+    end
+    ui.separator
+    # scrollbar: :classic — a separate Win95/XP-style column with
+    # arrow buttons and a paging track, beside (not over) the content.
+    ui.label("Classic scrollbar (Win95/XP: arrows, page-on-track):")
+    ui.scroll_area(max_height: 300.0, scrollbar: :classic) do |inner|
+      25.times { |i| inner.label("classic row #{i}") }
     end
   end
 

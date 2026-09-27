@@ -404,6 +404,9 @@ module Egui
         @@chrome_enabled = chrome.nil? ? !decorations && !transparent : chrome.not_nil!
         @@chrome_active = @@chrome_enabled && !decorations
         @@chrome_style = chrome_style
+        # The native (Win32) icon above + the client-side caption's
+        # icon slot show the same pixels.
+        Egui::WindowFrame.icon = icon if icon
         Egui::SystemPorts::Quit.use(QuitPort.new)
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
@@ -756,10 +759,16 @@ module Egui
         # alone does not enable texturing: at draw time sokol_gl uses
         # cur_view/cur_smp only while texturing_enabled is set, so we
         # enable it here and disable after sgl_end — otherwise later
-        # untextored geometry would sample this texture instead of the
+        # untextured geometry would sample this texture instead of the
         # internal white fallback.
+        #
+        # The text (straight-alpha) pipeline: the sokol_gl DEFAULT
+        # pipeline has no blending, so an RGBA texture's transparent
+        # texels would overwrite the destination with black — an icon
+        # with soft/rounded edges would come out as a hard black box.
         LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!)
         LibEguiCr.sgl_enable_texture
+        LibEguiCr.text_pipeline_push
         LibEguiCr.sgl_begin_quads
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.min.y.to_f32,
           uv.min.x.to_f32, uv.min.y.to_f32, t.r, t.g, t.b, t.a)
@@ -770,6 +779,7 @@ module Egui
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.max.y.to_f32,
           uv.min.x.to_f32, uv.max.y.to_f32, t.r, t.g, t.b, t.a)
         LibEguiCr.sgl_end
+        LibEguiCr.text_pipeline_pop
         LibEguiCr.sgl_disable_texture
       end
 

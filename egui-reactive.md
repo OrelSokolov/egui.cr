@@ -114,7 +114,7 @@ repaint; внутри кадра repaint не запрашивается (соб
 `slider(sig, range, text)`, `drag_value(sig, …)`, `checkbox(sig, text)`,
 `toggle_button(sig, text)`, `selectable(sig, text)`,
 `text_field(sig, hint, password)`, `textarea(sig, hint, rows)`,
-`combo_box(id, sig, options, width)`.
+`combo_box(id, sig, options, width)`, `number_input(sig, range, step, …)`.
 
 Геттер `reactive`-поля возвращает значение; сигнал для биндинга —
 через сгенерированный `*_signal`-аксессор (`ui.text_field(name_signal)`).

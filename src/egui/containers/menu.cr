@@ -68,9 +68,13 @@ module Egui
       @painter.layer = Order::Background
       bg_index = @painter.add_noop
       @painter.clip = outer
+      # No stroke: a native menu bar is a plain strip (upstream egui's
+      # MenuBar has no frame); the old 1px window_stroke border read as
+      # two bright lines around the bar once the caption stopped
+      # overlapping its top pixel.
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 0.0, style.visuals.panel_fill,
-          style.visuals.window_stroke, 1.0))
+          nil, 0.0))
 
       ui = Ui.new(self, Id.from("menu_bar"),
         Rect.from_min_size(Pos2.new(outer.min.x + pad.x, outer.min.y),

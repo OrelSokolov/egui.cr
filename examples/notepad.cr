@@ -1,15 +1,20 @@
-# egui-cr notepad — a small tabbed text editor built on the Tabs
-# container: a File menu with hotkey hints (New / Open… / Save /
-# Save As… / Close Tab / Quit), closable tabs with dirty markers
-# ("name *"), a per-document textarea and a status bar. Each tab's
-# editor runs in a child Ui id'd per tab, so every document keeps its
-# own caret and selection across tab switches; the tab selection is a
-# reactive Signal and keyboard focus follows it — the ACTIVE tab's
-# textarea is always the active editor. Native open/save dialogs go
-# through SystemPorts (fiber-backed, never block frames).
+# egui-cr notepad — a Windows 11 Notepad-style tabbed text editor:
+# borderless window whose CAPTION carries the tab strip (TitleBarTabs
+# through the WindowFrame caption hook) next to the caption buttons —
+# active tab lighter, rounded-top cards, a dirty-dot marker that
+# becomes an X on hover, a "+" new-tab button, carousel scrolling when
+# the tabs overflow. Below the caption: a File menu with hotkey hints
+# (New / Open… / Save / Save As… / Close Tab / Quit), a per-document
+# textarea and a status bar. Each tab's editor runs in a child Ui id'd
+# per tab, so every document keeps its own caret and selection across
+# tab switches; the tab selection is a reactive Signal and keyboard
+# focus follows it — the ACTIVE tab's textarea is always the active
+# editor. Native open/save dialogs go through SystemPorts
+# (fiber-backed, never block frames).
 
 require "mime"
 
+require "./icon" # ICON_64_RGBA — the shared app icon (64x64 RGBA)
 require "../src/egui"
 require "../src/egui/backend/sokol"
 
@@ -31,11 +36,10 @@ class NotepadApp < Egui::App
                    @name : String = "untitled")
     end
 
-    # Tab title: file name (or the untitled name), "*" while unsaved
-    # edits exist.
+    # Tab title: the file name (or the untitled name) — the dirty
+    # marker is the Notepad dot, drawn by TitleBarTabs (dirty:).
     def title : String
-      base = (p = @path) ? File.basename(p) : @name
-      @dirty ? "#{base} *" : base
+      (p = @path) ? File.basename(p) : @name
     end
   end
 
@@ -66,6 +70,18 @@ class NotepadApp < Egui::App
 
   def initialize
     super
+    # Win11 Notepad chrome: the tabs live IN the caption, left of the
+    # caption buttons (WindowFrame draws the hook before app frames).
+    # A tab click writes the selection signal; close goes through the
+    # same dirty-confirmation flow as Ctrl+W; "+" is File → New.
+    Egui::WindowFrame.caption(
+      height: Egui::TitleBarTabs::CAPTION_H) do |ctx, area|
+      Egui::TitleBarTabs.show(ctx, area, @docs.map(&.title), selected,
+        dirty: @docs.map(&.dirty?),
+        on_select: ->(t : Int32) { self.selected = t; nil },
+        on_close: ->(t : Int32) { request_close(@docs[t]?) },
+        on_new: -> { new_doc })
+    end
     # Files passed on the command line open straight into tabs.
     opened = 0
     ARGV.each do |arg|
@@ -123,16 +139,9 @@ class NotepadApp < Egui::App
 
     ctx.central_panel do |ui|
       if @docs.empty?
-        ui.label("No documents open — File → New (Ctrl+N).")
+        ui.label("No documents open — File → New (Ctrl+N), or the " \
+                 "\"+\" in the title bar.")
       else
-        # The tab strip claims the top row; the cursor is left below it.
-        # A tab click WRITES the selection signal (the focus sync below
-        # reacts to its version).
-        ui.tabs(@docs.map(&.title), selected, closable: true,
-          on_close: ->(t : Int32) { request_close(@docs[t]?) }) do |t|
-          self.selected = t
-        end
-
         # Claim the rest of the panel, then run the editor in a child
         # Ui id'd per tab — each document keeps its own caret and
         # selection (TextArea state lives under the widget id).
@@ -140,7 +149,8 @@ class NotepadApp < Egui::App
         rect = ui.allocate_at_least(
           Egui::Vec2.new(ui.available_width, ui.available_height))
         editor = ui.child_ui(rect, editor_ui_id)
-        editor_resp = editor.textarea(doc.text, rows: 100) do |t|
+        editor_resp = editor.textarea(doc.text, rows: 100,
+          frame: false) do |t|
           doc.text = t
           doc.dirty = true
         end
@@ -396,4 +406,6 @@ class NotepadApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(NotepadApp.new,
-  title: "egui-cr — notepad", width: 800, height: 600)
+  title: "egui-cr — notepad", width: 800, height: 600,
+  icon: {rgba: ICON_64_RGBA, width: 64, height: 64},
+  decorations: false)

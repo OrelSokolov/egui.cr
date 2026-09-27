@@ -22,7 +22,8 @@ module Egui
     BAR_SALT    = 0xBA2_u64
     BAR_W       = 8.0
 
-    def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8)
+    def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8,
+                   @frame : Bool = true)
     end
 
     def ui(ui : Ui) : Response
@@ -42,9 +43,11 @@ module Egui
       line_h = font_size * Fonts::LINE_H_FACTOR
       pad = style.spacing.button_padding
       # The border stroke is drawn INSIDE the rect (backend inset), so
-      # layout reserves it on every side (same as TextEdit).
+      # layout reserves it on every side (same as TextEdit). A FRAMELESS
+      # textarea (frame: false) fills its rect edge to edge — no box,
+      # no inset (a full-bleed editor like Notepad's page).
       border = 2.0
-      inset = Vec2.new(pad.x + border, pad.y + border)
+      inset = @frame ? Vec2.new(pad.x + border, pad.y + border) : Vec2.zero
 
       width = ui.available_width
       height = @rows * line_h + inset.y * 2.0
@@ -163,10 +166,12 @@ module Egui
       # The box never changes with focus (HTML <textarea> semantics:
       # focus shows itself only through the blinking caret) — unlike
       # the single-line TextEdit, which paints the accent border
-      # upstream-style.
+      # upstream-style. frame: false skips the box entirely.
       visuals = style.visuals
-      ui.painter.rect(rect, 4.0, visuals.button_weak,
-        visuals.button_stroke, 1.0)
+      if @frame
+        ui.painter.rect(rect, 4.0, visuals.button_weak,
+          visuals.button_stroke, 1.0)
+      end
 
       outer_clip = ui.painter.clip
       ui.painter.clip = Rect.new(

@@ -78,5 +78,35 @@ module Egui
           Vec2.new(0.60 * rect.width, 0.70 * rect.height)), 1.0, nil, color, width)
       end
     end
+
+    # Win95/XP bevel: fill plus light top/left and dark bottom/right
+    # edges (inverted when pressed). Shared by the classic scrollbar
+    # and NumberInput's spin arrows so both render the same native
+    # arrow-button look.
+    def self.bevel(painter : Painter, rect : Rect, fill : Color32,
+                   pressed : Bool) : Nil
+      painter.rect(rect, 0.0, fill)
+      light = fill.mul_color(pressed ? 0.72 : 1.28)
+      dark = fill.mul_color(pressed ? 1.28 : 0.72)
+      painter.line(rect.min,
+        Pos2.new(rect.right - 1.0, rect.top), 1.0, light)
+      painter.line(rect.min,
+        Pos2.new(rect.left, rect.bottom - 1.0), 1.0, light)
+      painter.line(Pos2.new(rect.right - 1.0, rect.top),
+        Pos2.new(rect.right - 1.0, rect.bottom - 1.0), 1.0, dark)
+      painter.line(Pos2.new(rect.left, rect.bottom - 1.0),
+        Pos2.new(rect.right - 1.0, rect.bottom - 1.0), 1.0, dark)
+    end
+
+    # A beveled square button with a centered arrow icon (classic
+    # scrollbar arrows, NumberInput spin arrows).
+    def self.arrow_button(painter : Painter, name : Symbol, rect : Rect,
+                          fill : Color32, arrow : Color32,
+                          pressed : Bool) : Nil
+      bevel(painter, rect, fill, pressed)
+      draw(painter, name, Rect.from_min_size(
+        Pos2.new(rect.left + 4.0, rect.top + 4.0),
+        Vec2.new(rect.width - 8.0, rect.height - 8.0)), arrow, 2.0)
+    end
   end
 end

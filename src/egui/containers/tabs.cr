@@ -10,10 +10,13 @@
 # The active tab is highlighted with a background fill plus an
 # underline along its bottom edge (`fill`, `underline_color` /
 # `underline_width` of the `:selected` overlay), drawn on top of the
-# full-width baseline under the strip. When the tabs overflow the
-# strip, the strip scrolls carousel-style: the active tab always stays
-# fully inside the visible window and off-screen tabs neither paint
-# nor interact.
+# full-width baseline under the strip. Two layouts are available:
+# `:carousel` (default) keeps every tab on one row — when the tabs
+# overflow the strip it scrolls carousel-style, the active tab always
+# stays fully inside the visible window and off-screen tabs neither
+# paint nor interact; `:multiline` wraps full rows Windows-Properties-
+# style — when one line of tabs fills up, the next starts below it
+# (a baseline under every row, the strip grows downward).
 #
 # Styling goes through the global `StyleSheet` (CSS-like classes):
 #   tabs          — tab_spacing (gap between tab buttons),
@@ -44,16 +47,23 @@ module Egui
 
     getter selected : Int32
     getter? closable : Bool
+    getter layout : Symbol
     # The tab whose close button was clicked this frame — its index,
     # nil when nothing closed. The app removes the tab from its own
     # state (and fixes the selection).
     getter closed : Int32?
 
     def initialize(tabs : Array(String), selected : Int32 = 0,
-                   @closable : Bool = false)
+                   @closable : Bool = false, @layout : Symbol = :carousel)
       @tabs = tabs
       @closed = nil
       @selected = tabs.empty? ? 0 : selected.clamp(0, tabs.size - 1)
+    end
+
+    # :multiline wraps full rows instead of scrolling one row
+    # (`:carousel`) — see the class doc.
+    def multiline? : Bool
+      @layout == :multiline
     end
 
     # The selected tab's title.
@@ -83,8 +93,45 @@ module Egui
       tab_pad = tab.box("padding")
 
       text_h = ctx.fonts.measure(@tabs.first, tab_font).y
-      strip_h = {tab.f64("height", style.spacing.interact_size.y),
-                 text_h + tab_pad.vertical}.max
+      row_h = {tab.f64("height", style.spacing.interact_size.y),
+               text_h + tab_pad.vertical}.max
+
+      # Measure everything first, then lay out: the carousel needs the
+      # total width and the multiline wrap needs every tab width
+      # before the first rect is placed.
+      icon = text_h * 0.66
+      icon_gap = icon * 0.6
+      widths = @tabs.map do |title|
+        w = ctx.fonts.measure(title, tab_font).x + tab_pad.horizontal
+        closable? ? w + icon + icon_gap : w
+      end
+      total = widths.sum + tab_gap * {@tabs.size - 1, 0}.max
+      view_w = ui.available_width
+
+      # Multiline (Windows Properties style): greedily wrap the tabs
+      # into rows — one line fills up, the next starts below it. Row
+      # origins are collected here (relative to the strip's min
+      # corner) so the paint loop below stays layout-agnostic. A tab
+      # wider than the whole strip gets a row of its own (clipped to
+      # the strip for painting and hit-testing, like a carousel
+      # straddler).
+      origins = nil.as(Array(Vec2)?)
+      row_count = 1
+      if multiline?
+        origins = [] of Vec2
+        ox = 0.0
+        oy = 0.0
+        widths.each do |w|
+          if ox > 0.0 && ox + w > view_w
+            ox = 0.0
+            oy += row_h
+            row_count += 1
+          end
+          origins << Vec2.new(ox, oy)
+          ox += w + tab_gap
+        end
+      end
+      strip_h = row_count * row_h
 
       strip_left = ui.cursor.x
       strip_top = ui.cursor.y
@@ -95,32 +142,27 @@ module Egui
       # Stable id under the strip's first child slot — the carousel
       # offset persists here across frames.
       scroll_id = ui.next_widget_id.child(SCROLL_SALT)
-      ctx.memory.use_id(scroll_id)
-
-      # Measure everything first, then lay out: the carousel needs the
-      # total width before the first rect is placed.
-      icon = text_h * 0.66
-      icon_gap = icon * 0.6
-      widths = @tabs.map do |title|
-        w = ctx.fonts.measure(title, tab_font).x + tab_pad.horizontal
-        closable? ? w + icon + icon_gap : w
-      end
-      total = widths.sum + tab_gap * {@tabs.size - 1, 0}.max
-      view_w = strip.width
 
       # Carousel offset: scroll the strip just enough that the ACTIVE
       # tab stays fully inside the visible window (and clamp to the
-      # scrollable range). No overflow → pinned to 0.
+      # scrollable range). No overflow → pinned to 0. Multiline never
+      # scrolls (wrapping replaces the offset), so it leaves the
+      # persisted value untouched.
       offset = 0.0
-      if total > view_w
-        offset = ctx.memory.data.get_f64(scroll_id, 0.0)
-        sel_start = widths[0...@selected].sum + tab_gap * @selected
-        sel_end = sel_start + widths[@selected]
-        offset = sel_start if sel_start < offset
-        offset = sel_end - view_w if sel_end > offset + view_w
-        offset = offset.clamp(0.0, total - view_w)
+      overflow = false
+      unless multiline?
+        ctx.memory.use_id(scroll_id)
+        if total > strip.width
+          overflow = true
+          offset = ctx.memory.data.get_f64(scroll_id, 0.0)
+          sel_start = widths[0...@selected].sum + tab_gap * @selected
+          sel_end = sel_start + widths[@selected]
+          offset = sel_start if sel_start < offset
+          offset = sel_end - strip.width if sel_end > offset + strip.width
+          offset = offset.clamp(0.0, total - strip.width)
+        end
+        ctx.memory.data.set_f64(scroll_id, offset)
       end
-      ctx.memory.data.set_f64(scroll_id, offset)
 
       # Strip background (styled "fill" of the `tabs` class, panel_fill
       # by default): painted before everything so the row is opaque even
@@ -129,10 +171,20 @@ module Egui
       # through the gaps between the tab buttons).
       ui.painter.rect(strip, fill: root.color("fill", visuals.panel_fill))
 
-      # Baseline under the strip (the container's top edge) — painted
-      # first so tab fills and the selection underline stack on top.
-      ui.painter.line(Pos2.new(strip.min.x, strip.max.y),
-        Pos2.new(strip.max.x, strip.max.y), 1.0, rule_color)
+      # Baseline(s) under the strip (the container's top edge) —
+      # painted first so tab fills and the selection underline stack
+      # on top. Multiline draws one per row, like the Win32 property
+      # sheet; carousel draws a single full-width line.
+      if origins
+        row_count.times do |r|
+          y = strip.min.y + (r + 1) * row_h
+          ui.painter.line(Pos2.new(strip.min.x, y),
+            Pos2.new(strip.max.x, y), 1.0, rule_color)
+        end
+      else
+        ui.painter.line(Pos2.new(strip.min.x, strip.max.y),
+          Pos2.new(strip.max.x, strip.max.y), 1.0, rule_color)
+      end
 
       response : Response? = nil
       x = strip_left - offset
@@ -141,7 +193,6 @@ module Egui
       # window) — clamp the painter clip while the tabs are drawn. A
       # straddling tab's hit rect is clamped to the window too, so the
       # clipped part cannot catch clicks over neighboring content.
-      overflow = total > view_w
       clamp_to_strip = ->(r : Rect) do
         Rect.new(
           Pos2.new({r.min.x, strip.min.x}.max, {r.min.y, strip.min.y}.max),
@@ -156,8 +207,8 @@ module Egui
 
       @tabs.each_with_index do |title, ti|
         selected = ti == @selected
-        rect = Rect.from_min_size(Pos2.new(x, strip_top),
-          Vec2.new(widths[ti], strip_h))
+        origin = origins ? strip.min + origins[ti] : Pos2.new(x, strip_top)
+        rect = Rect.from_min_size(origin, Vec2.new(widths[ti], row_h))
 
         # Ids are minted unconditionally so they stay stable regardless
         # of visibility; fully hidden tabs neither paint nor interact
@@ -169,6 +220,9 @@ module Egui
         tab_resp : Response? = nil
         close_resp : Response? = nil
         unless hidden
+          # Clamping is identity for tabs inside the strip; it only
+          # bites on carousel straddlers (and a multiline tab wider
+          # than the strip itself).
           hit = overflow ? clamp_to_strip.call(rect) : rect
           tab_resp = ui.interact(hit, id, Sense.click)
 
@@ -180,7 +234,8 @@ module Egui
               Pos2.new(rect.right - tab_pad.right - icon,
                 rect.center.y - icon / 2.0),
               Vec2.new(icon, icon))
-            x_rect = clamp_to_strip.call(x_rect) if overflow
+            # Clamped for the same reason as the tab's hit rect above.
+            x_rect = clamp_to_strip.call(x_rect)
             close_resp = ui.interact(x_rect, x_id, Sense.click)
           end
         end
@@ -247,18 +302,22 @@ module Egui
   end
 
   class Ui
-    # `ui.tabs(titles, selected) { |t| … }` — shows a horizontal Tabs
-    # strip and hands back the new selection when it changed this
-    # frame. `closable` arms the per-tab close button (an X nested
-    # inside the tab — the nested widget interacts after the tab, so
-    # hit-testing hands the click to the X, not the tab; a close never
-    # selects the tab); `on_close` (optional) fires with the tab index
-    # when its X was clicked — the app removes the tab.
+    # `ui.tabs(titles, selected) { |t| … }` — shows a Tabs strip and
+    # hands back the new selection when it changed this frame.
+    # `layout:` picks the overflow behavior: `:carousel` (default) keeps
+    # one row that scrolls the active tab into view; `:multiline` wraps
+    # full rows Windows-Properties-style. `closable` arms the per-tab
+    # close button (an X nested inside the tab — the nested widget
+    # interacts after the tab, so hit-testing hands the click to the X,
+    # not the tab; a close never selects the tab); `on_close` (optional)
+    # fires with the tab index when its X was clicked — the app removes
+    # the tab.
     def tabs(titles : Array(String), selected : Int32,
              closable : Bool = false,
+             layout : Symbol = :carousel,
              on_close : (Int32 ->)? = nil,
              &on_select : Int32 ->) : Response
-      widget = Tabs.new(titles, selected, closable)
+      widget = Tabs.new(titles, selected, closable, layout)
       response = add(widget)
       if (closed = widget.closed) && on_close
         on_close.call(closed)

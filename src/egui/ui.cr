@@ -183,9 +183,27 @@ module Egui
       response
     end
 
-    # egui `ScrollArea::vertical().show(ui, …)`.
-    def scroll_area(max_height : Float64? = nil, &block : Ui ->) : Rect
-      ScrollArea.new(max_height).show(self) { |ui| yield ui }
+    # Windows-style integer spin box (`NumberInput`): digits-only field
+    # with up/down arrow buttons; the block fires with the new Int32 on
+    # every commit (arrow click, Enter, blur, wheel, arrow keys).
+    def number_input(value : Int32, range : Range(Int32, Int32)? = nil,
+                     step : Int32 = 1, prefix : String = "",
+                     suffix : String = "",
+                     &on_change : Int32 ->) : Response
+      response = add(NumberInput.new(value, range, step, prefix, suffix))
+      if response.changed? && (v = response.widget_value)
+        on_change.call(v.to_i32)
+      end
+      response
+    end
+
+    # egui `ScrollArea::vertical().show(ui, …)`. `scrollbar: :classic`
+    # switches the flavor: a separate Win95/XP-style column beside the
+    # content (arrow buttons, paging track) instead of the thin bar
+    # overlaying the right edge (see ScrollArea).
+    def scroll_area(max_height : Float64? = nil, scrollbar : Symbol = :overlay,
+                    &block : Ui ->) : Rect
+      ScrollArea.new(max_height, scrollbar).show(self) { |ui| yield ui }
     end
 
     def combo_box(id : String, selected : String, options : Array(String),
@@ -220,6 +238,16 @@ module Egui
       response
     end
 
+    def number_input(sig : Signal(Int32), range : Range(Int32, Int32)? = nil,
+                     step : Int32 = 1, prefix : String = "",
+                     suffix : String = "") : Response
+      response = add(NumberInput.new(sig.value, range, step, prefix, suffix))
+      if response.changed? && (v = response.widget_value)
+        sig.value = v.to_i32
+      end
+      response
+    end
+
     def checkbox(sig : Signal(Bool), text : String) : Response
       response = add(Checkbox.new(sig.value, text))
       sig.value = !sig.value if response.changed?
@@ -248,8 +276,8 @@ module Egui
     end
 
     def textarea(sig : Signal(String), hint : String? = nil,
-                 rows : Int32 = 8) : Response
-      response = add(TextArea.new(sig.value, hint, rows))
+                 rows : Int32 = 8, frame : Bool = true) : Response
+      response = add(TextArea.new(sig.value, hint, rows, frame))
       if response.changed? && (text = response.widget_text)
         sig.value = text
       end
@@ -277,8 +305,9 @@ module Egui
     # egui `ui.text_edit_multiline` — here an HTML-textarea-shaped
     # widget: soft wrap, `rows` lines tall, its own kinetic scroll.
     def textarea(buffer : String, hint : String? = nil, rows : Int32 = 8,
+                 frame : Bool = true,
                  &on_change : String ->) : Response
-      response = add(TextArea.new(buffer, hint, rows))
+      response = add(TextArea.new(buffer, hint, rows, frame))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end

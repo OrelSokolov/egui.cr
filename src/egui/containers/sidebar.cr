@@ -107,10 +107,17 @@ module Egui
 
         # Section title: small, faded, uppercase — not clickable, the
         # tabs below it do the navigation.
+        title_h = sec_font * Fonts::LINE_H_FACTOR
         rect = ui.allocate_at_least(
-          Vec2.new(ui.available_width, sec_font * Fonts::LINE_H_FACTOR))
-        ui.painter.text(rect.left_center, section.title.upcase, sec_font,
-          sec_color)
+          Vec2.new(ui.available_width, title_h))
+        # Overflow guard: at the panel bottom the allocated rect gets
+        # squashed (allocate_space clamps to max_rect) — painting the
+        # centered text there would poke it half-over the last visible
+        # tab, so a title that does not fit is not painted at all.
+        if rect.height + 0.5 >= title_h
+          ui.painter.text(rect.left_center, section.title.upcase, sec_font,
+            sec_color)
+        end
 
         section.tabs.each_with_index do |title, ti|
           selected = si == @selected_section && ti == @selected_tab
@@ -120,48 +127,62 @@ module Egui
             {tab.f64("height", style.spacing.interact_size.y),
              text_size.y + tab_pad.vertical}.max)
           rect = ui.allocate_at_least(size)
+          # Ids are minted unconditionally so they stay stable regardless
+          # of visibility (same trick as the Tabs carousel).
           id = ui.next_widget_id
-          tab_resp = ui.interact(rect, id, Sense.click)
+          x_id = section.closable? ? ui.next_widget_id : nil
+          # Overflow guard: a tab that no longer fits gets its rect
+          # squashed against the panel bottom (down to zero height) —
+          # painting it would poke its text and close X half-over the
+          # last visible tab (and the X would catch clicks there). A
+          # non-fitting tab neither paints nor interacts.
+          fits = rect.height + 0.5 >= size.y
 
           # Nested close button: interacts AFTER the tab so it is the
           # topmost widget under the pointer (hit-testing picks the
           # latest one) — the X eats the click, the tab never fires.
+          tab_resp : Response? = nil
           close_resp : Response? = nil
-          if section.closable?
-            icon = text_size.y * 0.66
-            x_rect = Rect.from_min_size(
-              Pos2.new(rect.right - tab_pad.right - icon,
-                rect.center.y - icon / 2.0),
-              Vec2.new(icon, icon))
-            close_resp = ui.interact(x_rect, ui.next_widget_id, Sense.click)
+          if fits
+            tab_resp = ui.interact(rect, id, Sense.click)
+            if x_id
+              icon = text_size.y * 0.66
+              x_rect = Rect.from_min_size(
+                Pos2.new(rect.right - tab_pad.right - icon,
+                  rect.center.y - icon / 2.0),
+                Vec2.new(icon, icon))
+              close_resp = ui.interact(x_rect, x_id, Sense.click)
+            end
           end
           x_hovered = close_resp.try(&.hovered?) || false
 
           # State overlay on top of the base vars: the selected tab
           # gets the accent fill, hover the weak one (the tab does not
           # count as hovered while the pointer is over its X).
-          state_vars = if selected
-            sheet.resolve(TAB_CLASS, "selected")
-          elsif tab_resp.hovered? && !x_hovered
-            sheet.resolve(TAB_CLASS, "hover")
-          else
-            tab
-          end
-          if (fill = state_vars.color?("fill"))
-            ui.painter.rect(rect, 3.0, fill)
-          end
-          text_color = state_vars.color("text_color", visuals.text_color)
-          ui.painter.text(
-            Pos2.new(rect.min.x + tab_pad.left,
-              rect.min.y + tab_pad.top + text_size.y / 2.0),
-            title, tab_font, text_color)
-
-          if (cr = close_resp)
-            x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
-            if cr.hovered?
-              ui.painter.rect(cr.rect, 3.0, visuals.button_hovered)
+          if fits
+            state_vars = if selected
+              sheet.resolve(TAB_CLASS, "selected")
+            elsif tab_resp.try(&.hovered?) && !x_hovered
+              sheet.resolve(TAB_CLASS, "hover")
+            else
+              tab
             end
-            Icons.draw(ui.painter, :close, cr.rect, x_color)
+            if (fill = state_vars.color?("fill"))
+              ui.painter.rect(rect, 3.0, fill)
+            end
+            text_color = state_vars.color("text_color", visuals.text_color)
+            ui.painter.text(
+              Pos2.new(rect.min.x + tab_pad.left,
+                rect.min.y + tab_pad.top + text_size.y / 2.0),
+              title, tab_font, text_color)
+
+            if (cr = close_resp)
+              x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
+              if cr.hovered?
+                ui.painter.rect(cr.rect, 3.0, visuals.button_hovered)
+              end
+              Icons.draw(ui.painter, :close, cr.rect, x_color)
+            end
           end
 
           # Flush tab list: drop the layout's item_spacing between the
@@ -173,17 +194,22 @@ module Egui
             @closed = {si, ti}
             response = cr
             ctx.request_repaint
-          elsif tab_resp.clicked? && !selected
+          elsif (tr = tab_resp) && tr.clicked? && !selected
             @selected_section = si
             @selected_tab = ti
-            tab_resp.mark_changed
-            response = tab_resp
+            tr.mark_changed
+            response = tr
             ctx.request_repaint
           end
         end
       end
 
-      response.not_nil!
+      # Every tab overflowed the panel — hand back a dead response
+      # instead of raising (same as the empty-sections case above).
+      response || begin
+        rect = ui.allocate_at_least(Vec2.new(ui.available_width, 0.0))
+        ui.interact(rect, ui.next_widget_id, Sense.none)
+      end
     end
   end
 

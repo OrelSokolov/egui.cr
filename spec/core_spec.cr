@@ -1799,6 +1799,75 @@ describe "scroll area (phase 5)" do
     ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y
       .should be_close(after + 120.0, 0.01)
   end
+
+  it "classic scrollbar: reserved column, arrows line-scroll, track pages" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0, scrollbar: :classic) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout — the classic column is carved out of the width,
+    # so the viewport is CLASSIC_W narrower than the region.
+    draw.call([] of Egui::Event, 0.016)
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    viewport.width.should be_close(300.0 - Egui::ScrollArea::CLASSIC_W, 0.01)
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    max_offset = content.y - viewport.height
+    max_offset.should be > 0.0
+    offset = ->{ ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y }
+
+    # click the down arrow: one line (plus a little hold-repeat while
+    # the button was down)
+    w = Egui::ScrollArea::CLASSIC_W
+    line = Egui::ScrollArea::LINE
+    down_c = Egui::Pos2.new(viewport.right + w / 2, viewport.bottom - w / 2)
+    draw.call([Egui::Event.pointer_moved(down_c),
+      Egui::Event.pointer_pressed(down_c)], 0.032)
+    draw.call([Egui::Event.pointer_released(down_c)], 0.048)
+    offset.call.should be > 0.9 * line
+    offset.call.should be < 2.5 * line
+
+    # plain click on the track below the thumb: a page down
+    page_pos = Egui::Pos2.new(viewport.right + w / 2, viewport.top + w + 40.0)
+    draw.call([Egui::Event.pointer_moved(page_pos),
+      Egui::Event.pointer_pressed(page_pos)], 0.064)
+    draw.call([Egui::Event.pointer_released(page_pos)], 0.080)
+    after_page = offset.call
+    after_page.should be > Egui::ScrollArea::PAGE * 100.0
+
+    # click the up arrow: back up by about a line
+    up_c = Egui::Pos2.new(viewport.right + w / 2, viewport.top + w / 2)
+    draw.call([Egui::Event.pointer_moved(up_c),
+      Egui::Event.pointer_pressed(up_c)], 0.096)
+    draw.call([Egui::Event.pointer_released(up_c)], 0.112)
+    offset.call.should be < after_page - 0.9 * line
+
+    # drag the thumb from the top of the track to the bottom: the
+    # offset goes to the end of the content
+    draw.call([Egui::Event.pointer_released(up_c)], 0.128)
+    # move the pointer INSIDE the viewport so the wheel is owned here
+    draw.call([Egui::Event.pointer_moved(
+      Egui::Pos2.new(viewport.left + 10.0, viewport.top + 10.0))], 0.144)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, -100_000.0))], 0.160)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, -100_000.0))], 0.176)
+    offset.call.should be_close(0.0, 0.01)
+    track_top = viewport.top + Egui::ScrollArea::CLASSIC_W
+    track_bottom = viewport.bottom - Egui::ScrollArea::CLASSIC_W
+    thumb_c = Egui::Pos2.new(viewport.right + w / 2, track_top + 8.0)
+    draw.call([Egui::Event.pointer_moved(thumb_c),
+      Egui::Event.pointer_pressed(thumb_c)], 0.192)
+    draw.call([Egui::Event.pointer_moved(
+      Egui::Pos2.new(thumb_c.x, track_bottom - 8.0))], 0.208)
+    draw.call([Egui::Event.pointer_released(
+      Egui::Pos2.new(thumb_c.x, track_bottom - 8.0))], 0.224)
+    offset.call.should be_close(max_offset, max_offset * 0.1 + 1.0)
+  end
 end
 
 describe "window resize (phase 5)" do
@@ -2494,6 +2563,33 @@ describe "Sidebar (sections + tabs)" do
     ctx.end_frame
     ctx.painter.commands.select(Egui::LineCmd).should be_empty
   end
+
+  it "drops overflowing tabs instead of poking their close X over the last visible one" do
+    ctx = Egui::Context.new
+    # A 90px-tall panel: the section header + first tab fit, the rest
+    # overflow — their rects get squashed against the bottom (down to
+    # zero height).
+    short = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+      Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(300.0, 90.0)))
+
+    raw_frame(ctx)
+    short.sidebar(
+      [Egui::Sidebar::Section.new("S", ["a", "b", "c"], closable: true)],
+      0, 0) { |s, t| }
+    ctx.end_frame
+
+    # At least one tab is visible, and every hit rect (tabs AND their
+    # nested X buttons) stays inside the panel — a squashed tab's X
+    # would otherwise be centered below the bottom edge and catch
+    # clicks over the last visible tab.
+    tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 100.0 && r.height > 5.0 }
+    tab_rects.size.should be >= 1
+    ctx.memory.widget_rects.values.each do |r|
+      r.max.y.should be <= 90.0
+    end
+    # one close X (2 line segments) per interacted tab, no strays
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(2 * tab_rects.size)
+  end
 end
 
 describe "Tabs (horizontal top tab strip)" do
@@ -2677,6 +2773,49 @@ describe "Tabs (horizontal top tab strip)" do
     draw.call([] of Egui::Event, 0.048)
     rects = ctx.memory.widget_rects.values
     rects.min_by(&.min.x).min.x.should be_close(0.0, 0.01)
+  end
+
+  it "wraps tabs onto multiple rows instead of scrolling (layout: :multiline)" do
+    ctx = Egui::Context.new
+    titles = (1..12).map { |i| "tab number #{i}" }
+    selected = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      resp = widget_ui(ctx).tabs(titles, selected,
+        layout: :multiline) { |t| selected = t }
+      ctx.end_frame
+      resp
+    end
+
+    # frame 1: every tab has a hit rect, all inside the 300 px strip,
+    # stacked on several rows (no carousel windowing)
+    draw.call([] of Egui::Event, 0.016)
+    rects = ctx.memory.widget_rects.values
+    rects.size.should eq(titles.size)
+    rects.all? { |r| r.max.x <= 300.0 + 0.01 }.should be_true
+    ys = rects.map(&.min.y).uniq
+    ys.size.should be > 1
+    # every tab text painted (nothing clipped away)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    titles.each { |t| texts.should contain(t) }
+
+    # one baseline per row (Win32 property-sheet look), all inside the
+    # strip's height
+    rules = ctx.painter.commands.select(Egui::LineCmd).select { |l|
+      l.width == 1.0
+    }
+    rules.size.should eq(ys.size)
+    strip_bottom = rects.map(&.max.y).max
+    rules.all? { |r| r.p1.y <= strip_bottom + 0.01 }.should be_true
+
+    # click the last tab (a later row) — selection reported as usual
+    last = rects.last.center
+    draw.call([Egui::Event.pointer_moved(last),
+      Egui::Event.pointer_pressed(last)], 0.032)
+    resp = draw.call([Egui::Event.pointer_released(last)], 0.048)
+    resp.changed?.should be_true
+    selected.should eq(titles.size - 1)
   end
 
   it "paints the selected tab with its own background fill" do
@@ -4351,6 +4490,27 @@ describe "textarea (multiline text edit)" do
       # reaches past it lets text spill over the widgets below)
       cmd.clip.max.y.should be <= rect.bottom
     end
+  end
+
+  it "frame: false fills the rect edge to edge — no box, no inset" do
+    ctx = Egui::Context.new
+    buffer = "hello"
+
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    rect = ui.textarea(buffer, rows: 3, frame: false) { |t| buffer = t }.rect
+    ctx.end_frame
+
+    # no frame: nothing painted with the framed box's rounding/fill
+    visuals = ctx.style.visuals
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == visuals.button_weak && c.rounding > 0.0 }
+      .should be_false
+
+    # no inset: the galley starts at the rect's left edge
+    ctx.painter.commands.select(Egui::TextCmd)
+      .find { |c| c.text.includes?("hello") }.not_nil!.pos.x
+      .should be < rect.min.x + 2.0
   end
 end
 

@@ -348,6 +348,17 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       flush layout + click selection, underline/baseline geometry,
       carousel overflow behavior, selected fill, live
       restyle, nested X hit-testing, empty list.
+      `layout: :multiline` (user request) wraps full rows Windows-
+      Properties-style instead of scrolling: one line of tabs fills
+      up, the next starts below it — the strip grows downward (a
+      baseline per row), every tab stays visible and clickable, and a
+      tab wider than the strip gets a row of its own (clipped like a
+      carousel straddler). Spec: row wrapping, per-row baselines,
+      click selection on a later row. Demo:
+      `examples/win_properties_demo.cr` (`bin/win_properties_demo`) —
+      a Win32-style property sheet: 12 tabs wrapped into several rows,
+      per-tab property Grid, OK/Cancel/Apply button row, and a
+      checkbox toggling the same strip to `:carousel` for comparison.
 - [x] Textarea fixes (user request): (1) the wrap width and viewport
       height now follow the ALLOCATED rect instead of the requested
       `rows` box — the max-size rule clamps a fill-the-panel textarea
@@ -372,11 +383,13 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       here the ordering hazard is structurally impossible. The return
       value is the call-time remainder (exact when declared last).
       Spec: bottom-after-central bites first, no overlap.
-- [x] Notepad example (user request): `examples/notepad.cr` — a small
-      tabbed text editor on the Tabs container: File menu (New /
+- [x] Notepad example (user request): `examples/notepad.cr` — a
+      Windows 11 Notepad-style tabbed text editor: borderless window
+      with the tab strip IN the caption (TitleBarTabs via the
+      WindowFrame caption hook, dirty dots instead of "*"): File menu (New /
       Open… / Save / Save As… / Close Tab / Quit) driven by the
       hotkey/action layer (Ctrl+N/O/S/Shift+S/W/Q hints in the
-      menus), closable tabs with dirty markers ("name *"), native
+      menus), native
       open/save dialogs via SystemPorts, a status bar (path, char and
       line counts), and per-tab editor state (the textarea runs in a
       child Ui id'd per tab, so each document keeps its own caret and
@@ -514,6 +527,45 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       (macOS close = leftmost light, Ubuntu close = orange circle),
       double-click maximize/restore, close hover fill, edge-grip resize
       hand-off.
+- [x] Tabs in the window caption / Win11 Notepad title bar (user
+      request): `WindowFrame.caption(height:) { |ctx, area| … }` draws
+      app content INTO the client-side caption every frame — while
+      installed, the title text is not painted (Win11 Notepad shows
+      tabs instead), `height:` overrides the caption strip, and
+      `area` is the whole bar minus the caption buttons (Windows
+      style). Caption buttons never stretch: every style pins them
+      to the TOP standard strip (the style's CAPTION_H) at the edge,
+      so a taller caption extends the bar BELOW them. App icon slot
+      (Windows style, `.icon=` — fed automatically from `run(icon:)`):
+      16×16 at the caption's left edge, vertically centered in the top
+      strip; while installed the title and the caption content (tabs)
+      start only AFTER the icon slot, Win11 order. The texture is
+      registered lazily on the context; no icon → layout unchanged. The hook runs
+      inside the backend's `WindowFrame.show`, before app panels.
+      `WindowFrame.caption!` removes it. On top of it,
+      `src/egui/containers/title_bar_tabs.cr` — `Egui::TitleBarTabs`,
+      the Win11 Notepad tab strip: rounded-top cards touching the top
+      window edge (a rounded rect squared off along the bottom —
+      Painter rounding is all-four-corners), the active card lighter
+      (#2F2F2F on #202020), a minimum card width, the X only in the
+      active tab and on hover (a dot instead while an inactive tab is
+      dirty — the X replaces it on hover, Notepad's marker), a "+"
+      new-tab button after
+      the last tab (shown even on an empty strip), and carousel
+      scrolling on overflow (active tab always in view, off-screen
+      tabs neither paint nor interact). Cards ride a Middle z=40
+      layer — above the drag strip (z=0, so tab clicks never move the
+      window; the empty caption around the strip still drags and
+      double-click-maximizes) and below the caption buttons (z=50).
+      The notepad example is the reference: borderless +
+      `WindowFrame.caption` + `TitleBarTabs.show(on_select/on_close/
+      on_new)` wired to the same reactive selection / dirty-close
+      flow as before. Specs (`spec/title_bar_tabs_spec.cr`): caption
+      height override + content area excludes the buttons, title
+      hidden while installed and restored after, active-card paint,
+      tab click selects, X closes without selecting, dirty dot ↔ X
+      swap, "+" fires on_new, tab clicks never drag while the empty
+      caption does.
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
 - [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync — idle frames replay the last paint commands

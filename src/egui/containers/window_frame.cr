@@ -18,6 +18,16 @@
 # loop (SystemPorts::Window.start_drag), double-click toggles maximize,
 # and invisible 6pt grips along the rim hand resizes to the native
 # resize loop.
+#
+# Caption content hook: `WindowFrame.caption(height:) { |ctx, area| … }`
+# draws app content INTO the caption every frame — the Windows 11
+# Notepad look, where the tab strip lives in the title bar next to the
+# caption buttons (see TitleBarTabs). While content is installed the
+# title text is not painted (Notepad shows tabs instead of a title),
+# `height:` overrides the caption strip height, and `area` is the
+# region the content may claim — the whole bar minus the caption
+# buttons (Windows) or the whole bar (other styles). `WindowFrame.caption`
+# with no block removes the content and restores the plain caption.
 
 module Egui
   class WindowFrame
@@ -58,6 +68,73 @@ module Egui
       end
     end
 
+    # --- caption content hook ------------------------------------------------
+    #
+    # App content drawn into the caption (see the class doc). Content
+    # is a class-level proc because the backend calls #show before the
+    # app's own update — the app installs it once (e.g. in initialize)
+    # and it runs every frame while the chrome is active. Removing the
+    # content (no block) also clears the height override: the taller
+    # strip exists only while the content does.
+
+    @@caption_content : (Context, Rect ->)? = nil
+    @@caption_height : Float64? = nil
+
+    # Install caption content; the optional `height` replaces the style's
+    # caption height while the content is installed. `WindowFrame.caption!`
+    # removes it and restores the plain caption.
+    def self.caption(height : Float64? = nil,
+                     &content : Context, Rect ->) : Nil
+      @@caption_content = content
+      @@caption_height = height
+    end
+
+    # Remove caption content (and the height override) — restores the
+    # plain caption with its title.
+    def self.caption! : Nil
+      @@caption_content = nil
+      @@caption_height = nil
+    end
+
+    # --- app icon slot (Windows style) ----------------------------------------
+    #
+    # The caption's left edge can carry the app icon (16×16, like the
+    # Win11 title bar): `WindowFrame.icon = {rgba:, width:, height:}`
+    # — the same tuple `Sokol.run(icon:)` takes, which feeds it here
+    # automatically. While installed, the Windows style paints it at
+    # the left edge and the title / caption content (tabs) start only
+    # AFTER the icon slot. No icon → the layout is unchanged.
+
+    @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
+    @@icon_texture : UInt64 = 0
+
+    def self.icon=(icon : NamedTuple(rgba: Bytes, width: Int32,
+                                     height: Int32)?) : Nil
+      @@icon = icon
+      @@icon_texture = 0_u64 # force re-registration on next draw
+    end
+
+    def self.icon? : NamedTuple(rgba: Bytes, width: Int32, height: Int32)?
+      @@icon
+    end
+
+    # The icon's texture id, registered lazily (once) on the context.
+    def self.icon_texture(ctx : Context) : UInt64
+      if (@@icon_texture.zero?) && (icon = @@icon)
+        @@icon_texture = ctx.textures.register_rgba(
+          icon[:width], icon[:height], icon[:rgba])
+      end
+      @@icon_texture
+    end
+
+    def self.caption_content? : (Context, Rect ->)?
+      @@caption_content
+    end
+
+    def self.caption_height? : Float64?
+      @@caption_height
+    end
+
     getter ctx : Context
     getter title : String
 
@@ -74,12 +151,35 @@ module Egui
       # widgets over the rim win hit-tests against them.
       self.class.resize_grips(@ctx, screen)
 
-      bar = @ctx.top_panel("window_frame/caption", height: caption_height) { }
+      # Caption-content hook reads go through WindowFrame-level
+      # accessors — @@vars live per-class in Crystal, and #draw runs
+      # on a STYLE SUBCLASS instance whose own copies stay nil.
+      h = WindowFrame.caption_height? || caption_height
+      bar = @ctx.top_panel("window_frame/caption", height: h) { }
       handle_drag(bar)
       paint_caption(bar)
-      paint_title(bar)
+      paint_icon(bar)
+      if (content = WindowFrame.caption_content?) && (area = content_area(bar))
+        # App caption content (e.g. TitleBarTabs) replaces the title
+        # while installed — Win11 Notepad shows tabs, not a title.
+        content.call(@ctx, area)
+      else
+        paint_title(bar)
+      end
       paint_buttons(bar)
       paint_border(screen)
+    end
+
+    # The caption region app content may claim (#caption hook): the
+    # whole bar by default; the Windows style overrides it to exclude
+    # the caption buttons.
+    def content_area(bar : Rect) : Rect?
+      bar
+    end
+
+    # The app icon at the caption's left edge (Windows idiom) — see
+    # `.icon=`. No-op by default; the Windows style paints it.
+    def paint_icon(bar : Rect) : Nil
     end
 
     # --- style hooks (overridden per style) ---------------------------------
@@ -203,10 +303,12 @@ module Egui
     class Windows < WindowFrame
       CAPTION_H = 32.0 # Win11 caption height (px @ 100%)
       BTN_W     = 46.0 # caption button width
-      BTN_H     = CAPTION_H
       GLYPH     = 10.0 # caption glyph box (Segoe Fluent icons, 1px)
       TITLE_PAD = 16.0 # title text inset from the left edge
       TITLE_PT  = 14.0 # caption font
+      ICON_SIZE = 16.0 # app icon box (Win11 title bar)
+      ICON_PAD  = 10.0 # app icon inset from the left edge
+      ICON_GAP  = 8.0  # air between the icon and title/tabs
 
       # Windows 11 dark palette. The hover/press overlays and the window
       # outline are SOLID colors (6.1%/3.8% white over #202020, what DWM
@@ -223,26 +325,73 @@ module Egui
         CAPTION_H
       end
 
+      # Caption content (e.g. TitleBarTabs) claims everything LEFT of
+      # the three caption buttons — and, with an icon installed, only
+      # AFTER the icon slot (tabs follow the icon, Win11 order).
+      def content_area(bar : Rect) : Rect?
+        left = WindowFrame.icon? ? ICON_PAD + ICON_SIZE + ICON_GAP : 0.0
+        Rect.from_min_size(
+          Pos2.new(bar.left + left, bar.top),
+          Vec2.new({bar.width - left - 3 * BTN_W, 0.0}.max, bar.height))
+      end
+
+      # The caption background: #202020 grown 1pt past the strip on
+      # the TOP and SIDES (so the window outline seam never bleeds
+      # through), but EXACT at the bottom — the old 1pt overshoot
+      # covered the menu bar's top pixel with a #202020 line that
+      # broke the active-tab/menu-bar merge (they share panel_fill).
       def paint_caption(bar : Rect) : Nil
         painter.layer = 1
-        painter.clip = bar.shrink(-1.0)
-        painter.rect(bar.shrink(-1.0), 0.0, BG, nil, 0.0)
+        grown = Rect.from_min_size(
+          Pos2.new(bar.left - 1.0, bar.top - 1.0),
+          Vec2.new(bar.width + 2.0, bar.height + 1.0))
+        painter.clip = grown
+        painter.rect(grown, 0.0, BG, nil, 0.0)
       end
 
       def paint_title(bar : Rect) : Nil
         painter.layer = 1
         painter.clip = bar.shrink(-1.0)
-        painter.text(Pos2.new(bar.left + TITLE_PAD, bar.center.y),
-          title, TITLE_PT, FG)
+        # With an icon installed the title starts after the icon slot
+        # (Win11 order: icon, then title).
+        x = bar.left + TITLE_PAD
+        x += ICON_PAD + ICON_SIZE + ICON_GAP if WindowFrame.icon?
+        painter.text(Pos2.new(x, bar.center.y), title, TITLE_PT, FG)
+      end
+
+      # The app icon (see `.icon=`): 16×16 at the left edge, centered
+      # against the TAB CARDS (TitleBarTabs geometry: below its top
+      # gap) when the caption is tall; in a plain caption — in the
+      # whole bar.
+      def paint_icon(bar : Rect) : Nil
+        return unless WindowFrame.icon?
+        texture = WindowFrame.icon_texture(@ctx)
+        return if texture.zero?
+        top = if bar.height > CAPTION_H
+                bar.top + TitleBarTabs::TAB_TOP_GAP +
+                  (bar.height - TitleBarTabs::TAB_TOP_GAP - ICON_SIZE) / 2.0
+              else
+                bar.top + (bar.height - ICON_SIZE) / 2.0
+              end
+        rect = Rect.from_min_size(
+          Pos2.new(bar.left + ICON_PAD, top), Vec2.new(ICON_SIZE, ICON_SIZE))
+        painter.layer = 1
+        painter.clip = bar.shrink(-1.0)
+        painter.image(rect, texture)
       end
 
       def paint_buttons(bar : Rect) : Nil
+        # Buttons live in the TOP standard strip (CAPTION_H tall,
+        # pinned to the top-right corner) — a taller caption (tabs in
+        # the title bar) extends the strip BELOW them, exactly like
+        # Windows extends the title bar under fixed caption buttons.
+        btn_h = CAPTION_H
         close = Rect.from_min_size(
-          Pos2.new(bar.right - BTN_W, bar.top), Vec2.new(BTN_W, BTN_H))
+          Pos2.new(bar.right - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
         max = Rect.from_min_size(
-          Pos2.new(close.left - BTN_W, bar.top), Vec2.new(BTN_W, BTN_H))
+          Pos2.new(close.left - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
         min = Rect.from_min_size(
-          Pos2.new(max.left - BTN_W, bar.top), Vec2.new(BTN_W, BTN_H))
+          Pos2.new(max.left - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
 
         button(min, "minimize")
         button(max, "maximize")
@@ -351,8 +500,10 @@ module Egui
       end
 
       # min / max / close from left to right, round, at the right edge.
+      # Centered in the TOP standard strip (a taller caption extends
+      # the bar below the buttons, they stay pinned up top).
       def paint_buttons(bar : Rect) : Nil
-        cy = bar.center.y
+        cy = bar.top + CAPTION_H / 2.0
         close_x = bar.right - INSET - BTN_D / 2.0
         max_x = close_x - BTN_D - BTN_GAP
         min_x = max_x - BTN_D - BTN_GAP
@@ -460,7 +611,10 @@ module Egui
       # hovered circle alone (real macOS reveals the group; per-button
       # is what actually reads clean at this DPI).
       def paint_buttons(bar : Rect) : Nil
-        cy = bar.center.y
+        # Lights pinned to the TOP standard strip — a taller caption
+        # (content hook) extends the bar below them, like a macOS
+        # toolbar area under the titlebar.
+        cy = bar.top + CAPTION_H / 2.0
         step = LIGHT_D + LIGHT_GAP
         defs = {
           {FIRST_CX,             "close",    CLOSE, CLOSE_RING, CLOSE_DOWN, CLOSE_GLYPH},
