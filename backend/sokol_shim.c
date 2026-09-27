@@ -273,6 +273,15 @@ void egui_cr_set_transparent(void) {
     if (!win) return;
     win.opaque = NO;
     win.backgroundColor = [NSColor clearColor];
+    // The GL surface itself defaults to "opaque": the window server then
+    // ignores the framebuffer alpha and pixels cleared to a=0 composite
+    // black instead of showing the desktop. Opting the surface out is
+    // what actually turns the swapchain alpha into the window alpha
+    // (same call SDL/winit make for transparent GL windows).
+    NSOpenGLView* view = (NSOpenGLView*)win.contentView;
+    NSOpenGLContext* ctx = view.openGLContext;
+    GLint surface_opacity = 0;
+    [ctx setValues:&surface_opacity forParameter:NSOpenGLContextParameterSurfaceOpacity];
 }
 
 #else
