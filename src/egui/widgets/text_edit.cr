@@ -133,6 +133,19 @@ module Egui
           handle_keyboard(ui.ctx, @text, cursor, anchor)
         ui.ctx.request_repaint # caret blink
       end
+
+      # Same-frame refresh after an edit: re-lay the galley from the
+      # new buffer so the typed character, selection and caret land
+      # correctly this frame (the stale galley would paint the old
+      # text and park the caret at the old end for a frame). The
+      # lambdas capture n_chars by reference, so they follow along.
+      if changed
+        display = new_text
+        display = String.build { |b| new_text.each_char { b << MASK_CHAR } } if @password
+        n_chars = new_text.size
+        shown = new_text.empty? && (hint = @hint) ? hint : display
+        galley = fonts.layout([TextRun.new(shown, font_size)])
+      end
       ui.ctx.memory.data.set_int(id, cursor)
       ui.ctx.memory.data.set_int(anchor_id, anchor)
 
@@ -164,7 +177,7 @@ module Egui
       ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
 
       inner = rect.min + inset
-      color = if @text.empty? && @hint
+      color = if new_text.empty? && @hint
                 visuals.fade_color(visuals.text_color, 0.55)
               else
                 visuals.text_color
@@ -186,7 +199,7 @@ module Egui
       # the actual text, never the hint).
       sel_min = {cursor, anchor}.min
       sel_max = {cursor, anchor}.max
-      if anchor >= 0 && anchor != cursor && !@text.empty?
+      if anchor >= 0 && anchor != cursor && !new_text.empty?
         x0 = galley.x_at(0, d_idx.call(sel_min), fonts)
         x1 = galley.x_at(0, d_idx.call(sel_max), fonts)
         top = inner.y + 1.0
@@ -336,7 +349,7 @@ module Egui
           new_anchor = cursor
         end
         changed = new_text != text
-      elsif !input.text.empty? && !input.any_modifier_down?
+      elsif !input.text.empty? && !input.shortcut_modifiers_down?
         insert_at = has_sel ? sel_min : cursor
         tail = has_sel ? text[sel_max..] : text[cursor..]
         new_text = text[0...insert_at] + input.text + tail

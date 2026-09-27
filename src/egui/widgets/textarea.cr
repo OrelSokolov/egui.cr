@@ -55,14 +55,18 @@ module Egui
 
       # Word-wrapped layout of the real buffer (never the hint — the
       # caret/selection math runs on it). The scrollbar column is
-      # always reserved, like browsers do.
-      wrap_w = {width - inset.x * 2.0 - BAR_W, 10.0}.max
+      # always reserved, like browsers do. The wrap width and viewport
+      # height follow the ALLOCATED rect, not the request — the
+      # max-size rule can clamp it to the parent (e.g. a fill-the-panel
+      # textarea with rows set high), and a viewport taller than the
+      # real rect would zero the scroll range.
+      wrap_w = {rect.width - inset.x * 2.0 - BAR_W, 10.0}.max
       galley = fonts.layout([TextRun.new(@text, font_size)],
         max_width: wrap_w)
       row_starts = row_char_starts(galley)
 
       inner = Rect.from_min_size(rect.min + inset,
-        Vec2.new(wrap_w, height - inset.y * 2.0))
+        Vec2.new(wrap_w, rect.height - inset.y * 2.0))
       view_h = inner.height
       max_offset = {galley.size.y - view_h, 0.0}.max
 
@@ -118,6 +122,20 @@ module Egui
         ui.ctx.request_repaint # caret blink
       end
 
+      # The galley was laid out from the OLD buffer before the keyboard
+      # pass — after an edit the new caret index maps onto stale rows
+      # (past a row end it lands on the phantom row below: the caret
+      # "jumped a line" for a frame). Re-lay the galley so the painted
+      # text, caret, selection and viewport all reflect the NEW buffer
+      # this frame. (Movement keys intentionally keep the old galley —
+      # indexes there are clamped by design.)
+      if changed
+        galley = fonts.layout([TextRun.new(new_text, font_size)],
+          max_width: wrap_w)
+        row_starts = row_char_starts(galley)
+        max_offset = {galley.size.y - view_h, 0.0}.max
+      end
+
       # Keep the caret's row inside the viewport — but only when the
       # caret or the text actually changed this frame (upstream
       # `scroll_to_rect` on `response.changed() || selection_changed`).
@@ -142,11 +160,13 @@ module Egui
       memory.data.set_int(anchor_id, anchor)
 
       # --- painting (clipped to the box) -----------------------------
+      # The box never changes with focus (HTML <textarea> semantics:
+      # focus shows itself only through the blinking caret) — unlike
+      # the single-line TextEdit, which paints the accent border
+      # upstream-style.
       visuals = style.visuals
-      bg = response.has_focus? ? visuals.button_active : visuals.button_weak
-      stroke_color = response.has_focus? ? visuals.selection_fill : visuals.button_stroke
-      stroke_w = response.has_focus? ? border : 1.0
-      ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
+      ui.painter.rect(rect, 4.0, visuals.button_weak,
+        visuals.button_stroke, 1.0)
 
       outer_clip = ui.painter.clip
       ui.painter.clip = Rect.new(
@@ -155,7 +175,36 @@ module Egui
         Pos2.new({outer_clip.max.x, inner.max.x}.min,
           {outer_clip.max.y, inner.max.y}.min))
 
-      color = if @text.empty? && (hint = @hint)
+      # Selection highlight, per visible row — painted UNDER the text
+      # (like the single-line TextEdit and browsers: the fill must not
+      # cover the glyphs it selects).
+      if anchor >= 0 && anchor != cursor && !new_text.empty?
+        sel_min, sel_max = {cursor, anchor}.min, {cursor, anchor}.max
+        galley.rows.each_with_index do |row, i|
+          s = row_starts[i]
+          a = {sel_min, s}.max
+          b = {sel_max, s + row.text.size}.min
+          next if b < a
+          x0 = galley.x_at(i, a - s, fonts)
+          x1 = galley.x_at(i, b - s, fonts)
+          if x1 - x0 <= 0.0
+            # Zero-width (an empty line): browsers still show a thin
+            # sliver — paint one when the selection spans the whole
+            # row INCLUDING its newline (row start of the next row).
+            row_end = row_starts[i + 1]? || s
+            next unless sel_min <= s && sel_max >= row_end
+            x0 = 0.0
+            x1 = 3.0
+          end
+          ui.painter.rect(
+            Rect.from_min_size(
+              Pos2.new(inner.min.x + x0, inner.min.y + row.y - offset),
+              Vec2.new(x1 - x0, row.height - 2.0)),
+            2.0, visuals.selection_fill)
+        end
+      end
+
+      color = if new_text.empty? && (hint = @hint)
                 visuals.fade_color(visuals.text_color, 0.55)
               else
                 visuals.text_color
@@ -163,29 +212,11 @@ module Egui
       ui.painter.paint_galley(inner.min - Vec2.new(0.0, offset), galley,
         fonts, color)
       # The hint is laid out as its own galley when the buffer is empty.
-      if @text.empty? && (hint = @hint)
+      if new_text.empty? && (hint = @hint)
         hint_galley = fonts.layout([TextRun.new(hint, font_size)],
           max_width: wrap_w)
         ui.painter.paint_galley(inner.min - Vec2.new(0.0, offset),
           hint_galley, fonts, color)
-      end
-
-      # Selection highlight, per visible row.
-      if anchor >= 0 && anchor != cursor && !@text.empty?
-        sel_min, sel_max = {cursor, anchor}.min, {cursor, anchor}.max
-        galley.rows.each_with_index do |row, i|
-          s = row_starts[i]
-          a = {sel_min, s}.max
-          b = {sel_max, s + row.text.size}.min
-          next if b <= a
-          x0 = galley.x_at(i, a - s, fonts)
-          x1 = galley.x_at(i, b - s, fonts)
-          ui.painter.rect(
-            Rect.from_min_size(
-              Pos2.new(inner.min.x + x0, inner.min.y + row.y - offset),
-              Vec2.new(x1 - x0, row.height - 2.0)),
-            2.0, visuals.selection_fill)
-        end
       end
 
       # Blinking caret (1s period) while focused.
@@ -423,7 +454,7 @@ module Egui
         new_text = text[0...insert_at] + "\n" + tail
         new_cursor = new_anchor = insert_at + 1
         changed = true
-      elsif !input.text.empty? && !input.any_modifier_down?
+      elsif !input.text.empty? && !input.shortcut_modifiers_down?
         insert = input.text.gsub(/\r\n|\r/, "\n")
         insert_at = has_sel ? sel_min : cursor
         tail = has_sel ? text[sel_max..] : text[cursor..]

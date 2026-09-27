@@ -111,6 +111,26 @@ module Egui
         "text_color" => Color32.rgba(240, 240, 240, 255),
       })
 
+      # tabs — horizontal top tab strip
+      sheet.rule("tabs", StyleVars{"tab_spacing" => 0.0})
+      sheet.rule("tabs.tab", StyleVars{
+        "padding.top"    => 6.0,
+        "padding.right"  => 12.0,
+        "padding.bottom" => 6.0,
+        "padding.left"   => 12.0,
+        "text_color"     => v.fade_color(v.text_color),
+      })
+      sheet.rule("tabs.tab:hover", StyleVars{
+        "fill"       => v.button_weak,
+        "text_color" => v.text_color,
+      })
+      sheet.rule("tabs.tab:selected", StyleVars{
+        "fill"            => v.button_hovered,
+        "text_color"      => v.text_color,
+        "underline_color" => v.selection_fill,
+        "underline_width" => 2.0,
+      })
+
       # button
       sheet.rule("button", StyleVars{
         "fill"            => v.button_weak,

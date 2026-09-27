@@ -329,6 +329,82 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       empty-state guard. Specs: X hit targets vs tab rects, close
       without selection, tab click away from the X, empty section
       list.
+- [x] Tabs container (user request): `src/egui/containers/tabs.cr`
+      (egui.cr-native, no upstream counterpart) — a horizontal tab
+      strip for the top of a tab container, same Checkbox-pattern
+      selection as the Sidebar (`Ui#tabs` block + `Response#changed?`).
+      The active tab is highlighted with a background fill plus an
+      underline (`fill`, `underline_color`/`underline_width` of the
+      `tabs.tab:selected` overlay) drawn over a full-width baseline
+      (`tabs.rule_color`); `closable:` arms the same nested X button
+      as the sidebar (the X eats the click, `Tabs#closed` /
+      `Ui#tabs(on_close:)` report the index). When the tabs overflow
+      the strip it scrolls carousel-style: the active tab always stays
+      fully inside the visible window (offset persisted in Memory,
+      minimal-scroll clamping), off-screen tabs neither paint nor
+      interact, and straddling tabs are clipped to the strip for both
+      painting and hit-testing. Styles entirely through the StyleSheet
+      (`tabs`, `tabs.tab` + `:hover`/`:selected`). Specs: horizontal
+      flush layout + click selection, underline/baseline geometry,
+      carousel overflow behavior, selected fill, live
+      restyle, nested X hit-testing, empty list.
+- [x] Textarea fixes (user request): (1) the wrap width and viewport
+      height now follow the ALLOCATED rect instead of the requested
+      `rows` box — the max-size rule clamps a fill-the-panel textarea
+      to its parent, and a virtual viewport taller than the real rect
+      zeroed the scroll range (no wheel scroll in the notepad);
+      (2) an empty line inside a selection paints a thin 3px sliver
+      (browser behavior) when the selection spans the whole row
+      including its newline — previously empty lines showed no
+      highlight at all; (3) the selection highlight paints UNDER the
+      text (like TextEdit/browsers) — it used to cover the glyphs, so
+      the selected text was invisible. Specs: clamped box scrolls by
+      wheel, empty middle line gets the sliver rect, highlight goes
+      into the paint list before the text.
+- [x] Deferred central panel (user request, architectural fix):
+      `Context#central_panel` no longer renders in place — it stores
+      its block and #end_frame renders it after every other panel has
+      bitten #available_rect. The central panel always gets the true
+      remainder regardless of declaration order, so a bottom status
+      bar declared after it (the notepad idiom) can no longer paint
+      over its content (the textarea's last line used to hide under
+      the strip). Upstream egui only documents "CentralPanel last";
+      here the ordering hazard is structurally impossible. The return
+      value is the call-time remainder (exact when declared last).
+      Spec: bottom-after-central bites first, no overlap.
+- [x] Notepad example (user request): `examples/notepad.cr` — a small
+      tabbed text editor on the Tabs container: File menu (New /
+      Open… / Save / Save As… / Close Tab / Quit) driven by the
+      hotkey/action layer (Ctrl+N/O/S/Shift+S/W/Q hints in the
+      menus), closable tabs with dirty markers ("name *"), native
+      open/save dialogs via SystemPorts, a status bar (path, char and
+      line counts), and per-tab editor state (the textarea runs in a
+      child Ui id'd per tab, so each document keeps its own caret and
+      selection). Built by `rake build:examples` (bin/notepad). Closing
+      a dirty tab asks first: a Save / Don't save / Cancel modal
+      (ctx.modal); "Save" on an untitled doc goes through the async
+      save dialog and closes in its callback (cancel keeps the tab),
+      the pending target is held by identity — not index — so the
+      document list may shift while a native dialog is open. Quit
+      (Ctrl+Q) runs the same confirmation as a cascade over every
+      dirty document before actually quitting (Cancel aborts it).
+      Command-line arguments open straight into tabs: `bin/notepad
+      a.txt b.md` — each file is MIME-checked first (content sniffing
+      via `file -b --mime-type`, stdlib MIME registry as the fallback
+      where file(1) is missing); non-text files are skipped with a
+      stderr note, and a successful open drops the welcome tab. Tab
+      navigation is action-driven too: View → Next/Previous Tab
+      (notepad.next_tab / notepad.prev_tab) bound to Ctrl+Tab /
+      Ctrl+Shift+Tab — wrap around, and the carousel scrolls the new
+      active tab into view (hotkey dispatch consumes the key in
+      begin_frame, so the focused textarea never steals it). The tab
+      selection is reactive: `reactive selected` (Signal) +
+      `computed editor_ui_id`; "active tab = active editor" holds by
+      watching the signal's version — any selection change (click,
+      Ctrl+Tab, open, close) requests keyboard focus for the new
+      tab's textarea in one place, no per-event plumbing; dialog
+      callbacks that switch tabs get their repaint via the reactive
+      setter automatically.
 - [x] Wheel scroll speed (user request): `Style#scroll_speed` —
       pixels per wheel notch (sokol reports ±1.0 per notch; the raw
       delta was being applied as pixels → 1px per notch). Default 60

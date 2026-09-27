@@ -1408,6 +1408,45 @@ describe "text edit (phase 4.5)" do
     buffer.should eq("hello")
   end
 
+  it "Shift held while typing inserts the character (capitals)" do
+    ctx = Egui::Context.new
+    buffer = ""
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).text_edit_singleline(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    # focus the (only) field by clicking it
+    draw.call([] of Egui::Event, 0.016)
+    rect = ctx.memory.widget_rects.values.first
+    click = rect.center
+    draw.call([Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click),
+      Egui::Event.pointer_released(click)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+
+    # Shift still held while the letter arrives — the key event carries
+    # the modifier into the frame; the character must be inserted.
+    shift = Egui::Modifiers.new(shift: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::P, modifiers: shift),
+      Egui::Event.text_input("П")], 0.064)
+    buffer.should eq("П")
+
+    # the rest without shift — "Привет" types completely
+    "ривет".each_char do |ch|
+      draw.call([Egui::Event.text_input(ch.to_s)], 0.080)
+    end
+    buffer.should eq("Привет")
+
+    # Ctrl held → shortcut territory, the character is dropped
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::X, modifiers: ctrl),
+      Egui::Event.text_input("x")], 0.096)
+    buffer.should eq("Привет")
+  end
+
   it "click places the cursor and typing inserts there" do
     ctx = Egui::Context.new
     buffer = "abcd"
@@ -1558,6 +1597,29 @@ describe "panels (phase 5)" do
     central.top.should eq(top.bottom)
     central.bottom.should eq(bottom.top)
     central.right.should eq(screen.right)
+  end
+
+  it "central panel is deferred: a bottom panel after it bites first, no overlap" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    # status-bar idiom: central declared BEFORE the bottom panel —
+    # previously the bottom strip painted over the central content
+    central = ctx.central_panel { |ui| ui.label("CENTER") }
+    bottom = ctx.bottom_panel { |ui| ui.label("FPS") }
+    ctx.end_frame
+
+    # the bottom panel took its bite before the central panel rendered:
+    # the big central background ends exactly at the bottom strip's top
+    # (the call-time return `central` is the pre-bite remainder)
+    fills = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == ctx.style.visuals.panel_fill }
+    central_bg = fills.max_by(&.rect.height)
+    central_bg.rect.bottom.should be_close(bottom.top, 0.01)
+    # and the central content sits strictly above the bottom strip
+    center = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("CENTER")).not_nil!
+    center.pos.y.should be < bottom.top
   end
 end
 
@@ -2429,6 +2491,212 @@ describe "Sidebar (sections + tabs)" do
     ctx = Egui::Context.new
     raw_frame(ctx)
     widget_ui(ctx).sidebar([] of Egui::Sidebar::Section, 0, 0) { |s, t| }
+    ctx.end_frame
+    ctx.painter.commands.select(Egui::LineCmd).should be_empty
+  end
+end
+
+describe "Tabs (horizontal top tab strip)" do
+  it "lays tabs out horizontally and reports the new selection on click" do
+    ctx = Egui::Context.new
+    titles = ["Main", "Extra"]
+    selected = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      resp = widget_ui(ctx).tabs(titles, selected) { |t| selected = t }
+      ctx.end_frame
+      resp
+    end
+
+    # frame 1: layout — both tab texts painted
+    draw.call([] of Egui::Event, 0.016)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    {"Main", "Extra"}.each { |t| texts.should contain(t) }
+    selected.should eq(0)
+
+    # tab interaction rects in creation order — same row, side by side
+    a_rect, b_rect = ctx.memory.widget_rects.values
+    a_rect.min.y.should be_close(b_rect.min.y, 0.01)
+    (b_rect.min.x - a_rect.max.x).should be_close(
+      ctx.stylesheet.resolve("tabs").f64("tab_spacing", 0.0), 0.01)
+
+    # click the second tab — press, then release lands the click
+    draw.call([Egui::Event.pointer_moved(b_rect.center),
+      Egui::Event.pointer_pressed(b_rect.center)], 0.032)
+    resp = draw.call([Egui::Event.pointer_released(b_rect.center)], 0.048)
+    resp.changed?.should be_true
+    selected.should eq(1)
+
+    # clicking the already-selected tab reports no change
+    draw.call([Egui::Event.pointer_moved(b_rect.center),
+      Egui::Event.pointer_pressed(b_rect.center)], 0.064)
+    resp = draw.call([Egui::Event.pointer_released(b_rect.center)], 0.080)
+    resp.changed?.should be_false
+    selected.should eq(1)
+  end
+
+  it "underlines the selected tab and draws a wider baseline under the strip" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    widget_ui(ctx).tabs(["a", "b"], 1) { |t| }
+    ctx.end_frame
+
+    a_rect, b_rect = ctx.memory.widget_rects.values
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+
+    # the selection underline sits at the bottom of the selected tab (b)
+    underline = lines.find { |l|
+      l.color == ctx.style.visuals.selection_fill
+    }.not_nil!
+    underline.width.should be >= 2.0
+    underline.p1.y.should be_close(b_rect.max.y, 0.01)
+    underline.p1.x.should be_close(b_rect.min.x, 0.01)
+    underline.p2.x.should be_close(b_rect.max.x, 0.01)
+    # it spans the selected tab (b), not its neighbor
+    (underline.p2.x - underline.p1.x).should be_close(b_rect.width, 0.01)
+
+    # the baseline spans the strip's full width (past the last tab)
+    rule = lines.find { |l| l != underline }.not_nil!
+    rule.p1.y.should be_close(b_rect.max.y, 0.01)
+    rule.p2.x.should be > b_rect.max.x
+  end
+
+  it "styles tabs from the stylesheet: flush strip, padded boxes" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    widget_ui(ctx).tabs(["a", "b"], 0) { |t| }
+    ctx.end_frame
+
+    a_rect, b_rect = ctx.memory.widget_rects.values
+    (b_rect.min.x - a_rect.max.x).should be_close(
+      ctx.stylesheet.resolve("tabs").f64("tab_spacing", 0.0), 0.01)
+    # padding grows the button: width ≥ text + padding.left + padding.right
+    pad = ctx.stylesheet.resolve("tabs.tab").box("padding")
+    text_w = ctx.fonts.measure("a", ctx.style.font_size).x
+    a_rect.width.should be >= text_w + pad.left + pad.right
+  end
+
+  it "re-reads the stylesheet after a live rule tweak" do
+    ctx = Egui::Context.new
+    sheet = ctx.stylesheet
+
+    raw_frame(ctx)
+    widget_ui(ctx).tabs(["a"], 0) { |t| }
+    ctx.end_frame
+    before = ctx.memory.widget_rects.values.first.width
+
+    # CSS-like runtime restyle: more tab padding → wider buttons
+    sheet.rule(Egui::Tabs::TAB_CLASS, Egui::StyleVars{
+      "padding.left"  => 18.0,
+      "padding.right" => 18.0,
+    })
+    raw_frame(ctx, time: 0.032)
+    widget_ui(ctx).tabs(["a"], 0) { |t| }
+    ctx.end_frame
+    after = ctx.memory.widget_rects.values.first.width
+    after.should be > before + 10.0
+  end
+
+  it "nests a close button per closable tab: the X eats the click" do
+    ctx = Egui::Context.new
+    titles = ["A", "B"]
+    selected = 0
+    closed = nil.as(Int32?)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      widget_ui(ctx).tabs(titles, selected, closable: true,
+        on_close: ->(t : Int32) { closed = t }) { |t| selected = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # one X (2 line segments) per closable tab, plus baseline + underline
+    ctx.painter.commands.select(Egui::LineCmd).size.should eq(6)
+    # hit targets: wide rects are tabs, small ones the nested X buttons
+    tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 30.0 }
+    close_rects = ctx.memory.widget_rects.values.select { |r| r.width <= 30.0 }
+    tab_rects.size.should eq(2)
+    close_rects.size.should eq(2)
+
+    # click the second tab's X: reported closed, tab NOT selected
+    x = close_rects[1].center
+    draw.call([Egui::Event.pointer_moved(x),
+      Egui::Event.pointer_pressed(x)], 0.032)
+    draw.call([Egui::Event.pointer_released(x)], 0.048)
+    closed.should eq(1)
+    selected.should eq(0)
+
+    # the tab body (away from the X) still selects normally
+    body = Egui::Pos2.new(tab_rects[1].min.x + 15.0, tab_rects[1].center.y)
+    draw.call([Egui::Event.pointer_moved(body),
+      Egui::Event.pointer_pressed(body)], 0.064)
+    draw.call([Egui::Event.pointer_released(body)], 0.080)
+    selected.should eq(1)
+    closed.should eq(1) # no new close
+  end
+
+  it "keeps the active tab on screen when the strip overflows (carousel)" do
+    ctx = Egui::Context.new
+    titles = (1..12).map { |i| "tab number #{i}" }
+    selected = 0
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      resp = widget_ui(ctx).tabs(titles, selected) { |t| selected = t }
+      ctx.end_frame
+      resp
+    end
+
+    # frame 1: first tab selected — the strip (300 px) overflows, the
+    # view is pinned to the left, off-screen tabs have no hit rects
+    draw.call([] of Egui::Event, 0.016)
+    rects = ctx.memory.widget_rects.values
+    rects.size.should be < titles.size
+    rects.all? { |r| r.max.x <= 300.0 + 0.01 }.should be_true
+
+    # select the LAST tab app-side (File-menu style, not a click)
+    selected = titles.size - 1
+    draw.call([] of Egui::Event, 0.032)
+    rects = ctx.memory.widget_rects.values
+    # every hit rect stays inside the 300 px strip…
+    rects.all? { |r| r.max.x <= 300.0 + 0.01 }.should be_true
+    rects.all? { |r| r.min.x >= -0.01 }.should be_true
+    # …and the active (last) tab is fully visible at the right edge
+    active = rects.max_by(&.min.x)
+    active.max.x.should be_close(300.0, 0.5)
+    # its text is painted (not clipped away)
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("tab number 12")
+
+    # back to the first tab — the view scrolls home
+    selected = 0
+    draw.call([] of Egui::Event, 0.048)
+    rects = ctx.memory.widget_rects.values
+    rects.min_by(&.min.x).min.x.should be_close(0.0, 0.01)
+  end
+
+  it "paints the selected tab with its own background fill" do
+    ctx = Egui::Context.new
+
+    raw_frame(ctx)
+    widget_ui(ctx).tabs(["a", "b"], 0) { |t| }
+    ctx.end_frame
+
+    a_rect, _b_rect = ctx.memory.widget_rects.values
+    fill = ctx.painter.commands.select(Egui::RectCmd).find { |c|
+      c.fill == ctx.style.visuals.button_hovered
+    }.not_nil!
+    fill.rect.min.y.should be_close(a_rect.min.y, 0.01)
+  end
+
+  it "survives an empty tab list" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    widget_ui(ctx).tabs([] of String, 0) { |t| }
     ctx.end_frame
     ctx.painter.commands.select(Egui::LineCmd).should be_empty
   end
@@ -3901,6 +4169,117 @@ describe "textarea (multiline text edit)" do
     draw.call([Egui::Event.key_pressed(Egui::KeyCode::Down)], 0.208)
     draw.call([Egui::Event.text_input("!")], 0.224)
     buffer.should eq("abXcd!")
+  end
+
+  it "reflects an edit in the same frame — no phantom-row caret jump" do
+    ctx = Egui::Context.new
+    buffer = "hello"
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).textarea(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    # focus via Tab (the only focusable widget)
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+
+    # type "X" at the end — same frame: the new char is painted and
+    # the caret stays on row 0 (the stale galley mapped the caret past
+    # the row end onto the phantom row below → a one-line caret jump)
+    draw.call([Egui::Event.text_input("X")], 0.064)
+    buffer.should eq("helloX")
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("helloX")
+
+    caret = ctx.painter.commands.select(Egui::LineCmd)
+      .find { |l| l.p1.x == l.p2.x }.not_nil!
+    rect = ctx.memory.widget_rects.values.first
+    pad = ctx.style.spacing.button_padding
+    inner_top = rect.min.y + pad.y + 2.0
+    caret.p1.y.should be_close(inner_top + 1.0, 0.01)
+    caret.p1.y.should be < inner_top +
+      Egui::Fonts::LINE_H_FACTOR * ctx.style.font_size
+  end
+
+  it "scrolls when the requested height is clamped to the parent" do
+    ctx = Egui::Context.new
+    buffer = (1..40).map { |i| "line #{i}" }.join('\n')
+    wid = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      wid = widget_ui(ctx).textarea(buffer, rows: 100) { |t| buffer = t }.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    # the box fills the 300 px parent (the max-size rule clamps the
+    # 100-row request) and the content overflows the REAL rect
+    rect = ctx.memory.widget_rects[wid.not_nil!]
+    rect.height.should be <= 300.0
+    inside = Egui::Pos2.new(rect.left + 20.0, rect.top + 10.0)
+    scroll_id = wid.not_nil!.child(0x5C40_u64)
+    draw.call([Egui::Event.pointer_moved(inside)], 0.032)
+    draw.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 1.0))], 0.048)
+    draw.call([] of Egui::Event, 0.064)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should be > 0.0
+  end
+
+  it "paints a thin sliver on empty lines inside the selection" do
+    ctx = Egui::Context.new
+    buffer = "ab\n\ncd"
+    wid = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      wid = widget_ui(ctx).textarea(buffer) { |t| buffer = t }.id
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064)
+
+    # three highlighted rows: "ab", the EMPTY middle line (a thin
+    # sliver, not nothing), "cd"
+    sel = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == ctx.style.visuals.selection_fill }
+    sel.size.should eq(3)
+    sliver = sel.find { |c| c.rect.width <= 3.5 }.not_nil!
+    sorted = sel.sort_by(&.rect.min.y)
+    sliver.rect.min.y.should be_close(sorted[1].rect.min.y, 0.01)
+    sliver.rect.height.should be > 2.0
+  end
+
+  it "paints the selection under the text (glyphs stay visible)" do
+    ctx = Egui::Context.new
+    buffer = "hello world"
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).textarea(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048)
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::A, ctrl)], 0.064)
+
+    # paint order: the selection fill goes in BEFORE the text — the
+    # glyphs must never be covered by the highlight
+    cmds = ctx.painter.commands
+    sel_idx = cmds.index { |c| c.is_a?(Egui::RectCmd) &&
+      c.fill == ctx.style.visuals.selection_fill }.not_nil!
+    text_idx = cmds.index { |c| c.is_a?(Egui::TextCmd) &&
+      c.text == "hello world" }.not_nil!
+    sel_idx.should be < text_idx
   end
 
   it "paste keeps line breaks and wheel scrolls the viewport" do

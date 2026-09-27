@@ -252,6 +252,15 @@ module Egui
       @modifiers.ctrl || @modifiers.shift || @modifiers.alt || @modifiers.super_key
     end
 
+    # Text-input filter (upstream `filters_out_shortcuts`): only real
+    # shortcut modifiers — Ctrl / Cmd — drop typed characters. Shift is
+    # how capitals are typed and must pass through (Shift held while
+    # the letter arrives must NOT eat it), and Ctrl+Alt together is
+    # Windows' AltGr, which also produces real characters.
+    def shortcut_modifiers_down? : Bool
+      (@modifiers.ctrl && !@modifiers.alt) || @modifiers.super_key
+    end
+
     # egui `InputState::aim_radius` — how coarse the pointer aims (in
     # points); sliders pass ± this around the pointer position to
     # smart_aim. Upstream uses the physical pixel size; we use 2 points.

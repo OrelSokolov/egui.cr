@@ -129,6 +129,18 @@ module Egui
     end
 
     def end_frame : Array(PaintCmd)
+      # The central panel is DEFERRED: it renders here, after update
+      # has declared every other panel, so it always gets the true
+      # remainder of #available_rect — a bottom panel declared after
+      # it (status bar idiom) can no longer paint over its content.
+      # Rendered before Memory#end_frame so its widget ids survive
+      # pruning, and while @in_frame is still set (reactive setters
+      # inside it keep their in-frame semantics).
+      if (central = @central_block)
+        @central_block = nil
+        rect = @available_rect
+        panel_ui(central[0], rect, Layout.top_down) { |ui| central[1].call(ui) }
+      end
       @in_frame = false
       @memory.end_frame
       @painter.commands_in_layer_order
@@ -534,9 +546,14 @@ module Egui
     #
     # egui `TopBottomPanel`/`SidePanel`/`CentralPanel`: each panel takes
     # a bite out of #available_rect in the order it is added; the
-    # central panel takes what's left. Panels MUST be added before
-    # #central_panel (upstream ordering rule) — this replaces the old
-    # "contents drawn before bottom_panel don't shift" simplification.
+    # central panel takes what's left. Upstream requires CentralPanel
+    # to be added LAST (a later panel would eat into its rect); here
+    # the central panel is DEFERRED to the end of the frame instead,
+    # so it always renders into the true remainder regardless of
+    # declaration order — panels can never overlap it.
+
+    # The deferred central panel: {id, block}, rendered in #end_frame.
+    @central_block : {String, Proc(Ui, Nil)}? = nil
 
     def top_panel(id : String = "top_panel", &block : Ui ->) : Rect
       line_h = style.font_size * Fonts::LINE_H_FACTOR
@@ -587,9 +604,18 @@ module Egui
     end
 
     # egui `CentralPanel::show` — the remainder. Returns its rect.
+    #
+    # DEFERRED (egui.cr fix, no upstream counterpart): the block does
+    # not run here — #end_frame renders it after every other panel
+    # has bitten #available_rect, so the central panel ends up with
+    # the true remainder whatever order the app declared panels in
+    # (a bottom status bar after the central panel used to paint OVER
+    # its content). The return value is the remainder at CALL time —
+    # exact when the central panel is declared last (the recommended
+    # style), approximate if later panels still bite.
     def central_panel(id : String = "central_panel", &block : Ui ->) : Rect
       rect = @available_rect
-      panel_ui(id, rect, Layout.top_down) { |ui| yield ui }
+      @central_block = {id, block}
       rect
     end
 

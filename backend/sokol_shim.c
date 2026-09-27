@@ -39,7 +39,18 @@ static cr_frame_cb  g_frame;
 static cr_cleanup_cb g_cleanup;
 static cr_event_cb  g_event;
 
-static void sh_init_cb(void)   { g_init(); }
+// from egui_cr_sapp_run: strip the system window chrome in init_cb,
+// before the first frame paints (custom title bar apps draw their own).
+static int g_borderless;
+
+// window management (defined in the section below)
+void egui_cr_set_decorations(int decorated);
+int egui_cr_window_position(int* x, int* y);
+
+static void sh_init_cb(void) {
+    if (g_borderless) egui_cr_set_decorations(0);
+    g_init();
+}
 static void sh_frame_cb(void)  { g_frame(); }
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
@@ -51,8 +62,9 @@ static void sh_event_cb(const sapp_event* ev) {
 
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
-                      int width, int height) {
+                      int width, int height, int borderless) {
     g_init = init; g_frame = frame; g_event = event; g_cleanup = cleanup;
+    g_borderless = borderless;
     sapp_desc desc = {
         .init_cb = sh_init_cb,
         .frame_cb = sh_frame_cb,
@@ -702,6 +714,252 @@ void egui_cr_window_minimize(void) {}
 void egui_cr_window_maximize(void) {}
 void egui_cr_window_restore(void) {}
 void egui_cr_screen_size(int* w, int* h) { *w = 0; *h = 0; }
+
+#endif
+
+// --- decorations / borderless ----------------------------------------------
+//
+// Custom chrome support (eframe `decorations: false`): strip the system
+// title bar and borders — either at window creation (the borderless
+// flag of egui_cr_sapp_run, applied in init_cb) or at runtime through
+// SystemPorts::Window. The app then draws its own title bar and drives
+// close/minimize/move/resize through the other window-management ports
+// above.
+//
+//   X11: _MOTIF_WM_HINTS decorations=0 (honoured by all EWMH WMs).
+//   Win32: clear WS_CAPTION|WS_THICKFRAME|... + SWP_FRAMECHANGED.
+//   macOS: clear the NSWindowStyleMaskTitled bit (the resizable bit
+//     stays on, so edge resizing keeps working).
+
+#if defined(_SAPP_LINUX)
+
+void egui_cr_set_decorations(int decorated) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    struct {
+        unsigned long flags;        // MWM_HINTS_DECORATIONS
+        unsigned long functions;
+        unsigned long decorations;
+        unsigned long input_mode;
+        unsigned long status;
+    } hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.flags = 2; // MWM_HINTS_DECORATIONS
+    hints.decorations = decorated ? 1 : 0;
+    Atom prop = XInternAtom(dpy, "_MOTIF_WM_HINTS", False);
+    XChangeProperty(dpy, win, prop, prop, 32, PropModeReplace,
+                    (unsigned char*)&hints, 5);
+    XFlush(dpy);
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+void egui_cr_set_decorations(int decorated) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    const LONG_PTR chrome = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
+                            WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+    LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+    style = decorated ? (style | chrome) : (style & ~chrome);
+    SetWindowLongPtrW(hwnd, GWL_STYLE, style);
+    // SWP_FRAMECHANGED re-evaluates the non-client area; keep pos/size.
+    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+}
+
+#elif defined(__APPLE__)
+
+void egui_cr_set_decorations(int decorated) {
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return;
+    if (decorated) {
+        win.styleMask = win.styleMask | NSWindowStyleMaskTitled;
+    } else {
+        win.styleMask = win.styleMask & ~NSWindowStyleMaskTitled;
+    }
+}
+
+#else
+
+void egui_cr_set_decorations(int decorated) { (void)decorated; }
+
+#endif
+
+// Top-left corner of the window in screen coordinates, physical pixels
+// (matches what egui_cr_set_window_position expects). Returns 1 on
+// success, 0 when the platform or window is unavailable.
+#if defined(_SAPP_LINUX)
+
+int egui_cr_window_position(int* x, int* y) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    *x = 0; *y = 0;
+    if (!dpy || !win) return 0;
+    Window root = DefaultRootWindow(dpy), child;
+    int rx, ry;
+    unsigned int mask;
+    if (!XTranslateCoordinates(dpy, win, root, 0, 0, &rx, &ry, &child))
+        return 0;
+    *x = rx; *y = ry;
+    return 1;
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+int egui_cr_window_position(int* x, int* y) {
+    *x = 0; *y = 0;
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return 0;
+    RECT r;
+    if (!GetWindowRect(hwnd, &r)) return 0;
+    *x = r.left; *y = r.top;
+    return 1;
+}
+
+#elif defined(__APPLE__)
+
+int egui_cr_window_position(int* x, int* y) {
+    *x = 0; *y = 0;
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return 0;
+    NSScreen* scr = [win screen];
+    if (!scr) scr = [NSScreen mainScreen];
+    if (!scr) return 0;
+    NSRect f = [win frame];
+    // AppKit y is bottom-up; the port speaks top-left (see
+    // egui_cr_set_window_position).
+    *x = (int)f.origin.x;
+    *y = (int)(scr.frame.size.height - (f.origin.y + f.size.height));
+    return 1;
+}
+
+#else
+
+int egui_cr_window_position(int* x, int* y) { (void)x; (void)y; return 0; }
+
+#endif
+
+// --- native move/resize drag --------------------------------------------------
+//
+// Hand a title-bar/edge drag to the platform's own window-move loop.
+// The compositor tracks the pointer, so the window follows exactly; a
+// client-side move loop instead oscillates: it measures the pointer in
+// window-local coordinates, and every XMoveWindow/SetWindowPos shifts
+// those coordinates, feeding the next frame's delta with the window's
+// own movement (async, a frame late) — visible as jitter. The eframe/
+// winit `ViewportCommand::StartDrag` equivalent; GTK CSD headerbars
+// use the same X11 path.
+//
+//   X11: _NET_WM_MOVERESIZE ClientMessage after ungrabbing the pointer
+//     (the implicit grab from the press would block the WM's grab).
+//     Direction: 8 = move, 0..7 = top-left/top/top-right/right/
+//     bottom-right/bottom/bottom-left/left resizes.
+//   Win32: ReleaseCapture + WM_NCLBUTTONDOWN with HTCAPTION / the HT*
+//     edge constant — the native modal move/resize loop.
+//   macOS: NSWindow perform[WindowDrag|WindowResize]WithEvent: with the
+//     current NSEvent (called from the frame callback, i.e. on the main
+//     thread, during a mouse-down — as AppKit requires).
+
+#if defined(_SAPP_LINUX)
+
+static void sh_net_wm_moveresize(Display* dpy, Window win, long direction) {
+    Window root = DefaultRootWindow(dpy), child;
+    int rx, ry, wx, wy;
+    unsigned int mask;
+    if (!XQueryPointer(dpy, win, &root, &child, &rx, &ry, &wx, &wy, &mask))
+        return;
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xclient.type = ClientMessage;
+    ev.xclient.window = win;
+    ev.xclient.message_type = XInternAtom(dpy, "_NET_WM_MOVERESIZE", False);
+    ev.xclient.format = 32;
+    ev.xclient.data.l[0] = rx;
+    ev.xclient.data.l[1] = ry;
+    ev.xclient.data.l[2] = direction;
+    ev.xclient.data.l[3] = 1; // button 1
+    ev.xclient.data.l[4] = 1; // source: application
+    XUngrabPointer(dpy, CurrentTime);
+    XSendEvent(dpy, root, False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(dpy);
+}
+
+void egui_cr_window_drag_start(void) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    sh_net_wm_moveresize(dpy, win, 8); // _NET_WM_MOVERESIZE_MOVE
+}
+
+void egui_cr_window_resize_start(int direction) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win || direction < 0 || direction > 7) return;
+    sh_net_wm_moveresize(dpy, win, direction);
+}
+
+#elif defined(_WIN32)
+
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+
+// X11 _NET_WM_MOVERESIZE direction codes -> Win32 HT* hit-test constants.
+static const WPARAM sh_win_ht[8] = {
+    HTTOPLEFT, HTTOP, HTTOPRIGHT, HTRIGHT,
+    HTBOTTOMRIGHT, HTBOTTOM, HTBOTTOMLEFT, HTLEFT,
+};
+
+void egui_cr_window_drag_start(void) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    ReleaseCapture();
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
+}
+
+void egui_cr_window_resize_start(int direction) {
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd || direction < 0 || direction > 7) return;
+    ReleaseCapture();
+    SendMessageW(hwnd, WM_NCLBUTTONDOWN, sh_win_ht[direction], 0);
+}
+
+#elif defined(__APPLE__)
+
+void egui_cr_window_drag_start(void) {
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return;
+    NSEvent* ev = [NSApp currentEvent];
+    if (ev) [win performWindowDragWithEvent:ev];
+}
+
+void egui_cr_window_resize_start(int direction) {
+    // The edge comes from the tracked event, not a direction code; the
+    // borderless window keeps its resizable style bit.
+    (void)direction;
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    if (!win) return;
+    NSEvent* ev = [NSApp currentEvent];
+    if (ev) [win performWindowResizeWithEvent:ev];
+}
+
+#else
+
+void egui_cr_window_drag_start(void) {}
+void egui_cr_window_resize_start(int direction) { (void)direction; }
 
 #endif
 

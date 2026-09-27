@@ -42,7 +42,8 @@ lib LibEguiCr
   # shim
   fun sapp_run = egui_cr_sapp_run(init : InitCb, frame : FrameCb, event : EventCb,
                                   cleanup : CleanupCb, title : UInt8*,
-                                  width : Int32, height : Int32)
+                                  width : Int32, height : Int32,
+                                  borderless : Int32)
   fun gfx_init = egui_cr_gfx_init
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
@@ -65,6 +66,10 @@ lib LibEguiCr
   # window management (shim: X11 / Win32)
   fun set_window_size = egui_cr_set_window_size(w : Int32, h : Int32)
   fun set_window_position = egui_cr_set_window_position(x : Int32, y : Int32)
+  fun set_decorations = egui_cr_set_decorations(decorated : Int32)
+  fun window_position = egui_cr_window_position(x : Int32*, y : Int32*) : Int32
+  fun window_drag_start = egui_cr_window_drag_start
+  fun window_resize_start = egui_cr_window_resize_start(direction : Int32)
   fun window_minimize = egui_cr_window_minimize
   fun window_maximize = egui_cr_window_maximize
   fun window_restore = egui_cr_window_restore
@@ -202,6 +207,50 @@ module Egui
         def set_icon(rgba : Bytes, width : Int32, height : Int32) : Nil
           LibEguiCr.set_window_icon(rgba, width, height)
         end
+
+        # Borderless toggle (shim): X11 _MOTIF_WM_HINTS, Win32 window
+        # styles + SWP_FRAMECHANGED, macOS NSWindowStyleMaskTitled.
+        def set_decorations(decorated : Bool) : Nil
+          LibEguiCr.set_decorations(decorated ? 1 : 0)
+        end
+
+        def position : Egui::Vec2?
+          x = uninitialized Int32
+          y = uninitialized Int32
+          return nil if LibEguiCr.window_position(pointerof(x), pointerof(y)) == 0
+          Egui::Vec2.new(x.to_f64, y.to_f64)
+        end
+
+        # Native move/resize: X11 _NET_WM_MOVERESIZE, Win32
+        # WM_NCLBUTTONDOWN, macOS performWindowDrag/ResizeWithEvent:.
+        # Direction codes are the X11 convention (0..7), shared by the
+        # shim's Win32 HT* mapping.
+        RESIZE_EDGES = {:top_left => 0, :top => 1, :top_right => 2,
+                        :right => 3, :bottom_right => 4, :bottom => 5,
+                        :bottom_left => 6, :left => 7}
+
+        def start_drag : Nil
+          LibEguiCr.window_drag_start
+          hand_off_release
+        end
+
+        def start_resize(edge : Symbol) : Nil
+          code = RESIZE_EDGES[edge]?
+          if code
+            LibEguiCr.window_resize_start(code)
+            hand_off_release
+          end
+        end
+
+        # The native move/resize loop consumes the button release (its
+        # own pointer grab), so egui would keep the button "pressed"
+        # until the next real click — inject a synthetic release into
+        # the next frame's input to close the interaction cleanly.
+        private def hand_off_release : Nil
+          pos = Egui::Backend::Sokol.last_pointer_pos
+          Egui::Backend::Sokol.inject_event(
+            Egui::Event.pointer_released(pos))
+        end
       end
 
       # System port Screen → sokol dpi scale + primary monitor size (shim).
@@ -248,10 +297,14 @@ module Egui
       # * *icon* — window icon as straight RGBA8 pixels (`width`×
       #   `height`), applied right after the window exists. Win32 only
       #   today (WM_SETICON); a no-op elsewhere.
+      # * *decorations* — `false` creates a borderless window (no system
+      #   title bar / frame) so the app can draw its own chrome; it can
+      #   still be toggled at runtime via SystemPorts::Window.
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
-                                     height: Int32)? = nil) : Nil
+                                     height: Int32)? = nil,
+                   decorations : Bool = true) : Nil
         @@app = app
         @@icon = icon
         Egui::SystemPorts::Quit.use(QuitPort.new)
@@ -274,7 +327,8 @@ module Egui
 
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
-        LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe, width, height)
+        LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
+          width, height, decorations ? 0 : 1)
       end
 
       # Win32 IFileDialog through the shim: the picker runs on its own
@@ -346,11 +400,24 @@ module Egui
         @@app.try &.ctx.fonts = font
       end
 
+      # Last pointer position reported to egui (window-local points);
+      # zero before any pointer event. Ports use it when they need to
+      # synthesize input (see WindowPort#hand_off_release).
+      def self.last_pointer_pos : Egui::Pos2
+        @@app.try &.ctx.input.pointer_pos || Egui::Pos2.zero
+      end
+
+      # Queue a synthetic input event for the next frame's RawInput
+      # (ports that take over the event stream — native window drags —
+      # use it to close interactions the platform no longer reports).
+      def self.inject_event(event : Egui::Event) : Nil
+        @@events << event
+      end
+
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,
                                   sx : Float32, sy : Float32, mods : UInt32,
                                   btn : UInt32, key : UInt32,
-                                  chr : UInt32) : Nil
-        # sokol reports pointer positions in framebuffer pixels (macOS
+                                  chr : UInt32) : Nil        # sokol reports pointer positions in framebuffer pixels (macOS
         # multiplies by the backing scale); the UI works in points
         # (sapp_width), like upstream egui's pixels_per_point conversion.
         if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
