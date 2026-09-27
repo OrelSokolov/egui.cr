@@ -382,7 +382,8 @@ describe "system state" do
 
     # layout: both branches open
     draw.call(0.016, [] of Egui::Event)
-    src_rect = ctx.memory.widget_rects[src_id]?.should be_truthy
+    ctx.memory.widget_rects[src_id]?.should be_truthy
+    src_rect = ctx.memory.widget_rects[src_id].not_nil!
     ctx.memory.widget_rects[inner_id]?.should be_truthy
 
     # click the "src" row: press + release, then a settle frame

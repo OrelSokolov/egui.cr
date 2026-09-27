@@ -1267,6 +1267,12 @@ void egui_cr_window_resize_start(int direction) {
 
 #elif defined(__APPLE__)
 
+// performWindowResizeWithEvent: exists at runtime but is not in the public
+// AppKit headers; declare the signature so -Wobjc-method-access stays quiet.
+@interface NSWindow (EguiCrPrivateResize)
+- (void)performWindowResizeWithEvent:(NSEvent *)event;
+@end
+
 void egui_cr_window_drag_start(void) {
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
     if (!win) return;
