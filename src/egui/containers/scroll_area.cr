@@ -194,12 +194,17 @@ module Egui
 
       thumb = Rect.from_min_size(
         Pos2.new(track.left + 1.0, thumb_y.call(offset.y) + 1.0),
-        Vec2.new(BAR_W - 2.0, {thumb_h - 2.0, 4.0}.max))
-      thumb_color = visuals.button_hovered
-      if response.pressed? || response.dragged? || response.hovered?
-        thumb_color = visuals.selection_fill
-      end
-      ui.painter.rect(thumb, 3.0, thumb_color)
+        Vec2.new(BAR_W - 2.0, {thumb_h - 2.0, 4.0}.max)
+      )
+      # Classic thumb: face-colored with a stroke border — the border is
+      # what keeps it visible when the face matches the track (light
+      # system themes set weak = track = face, e.g. XP #ECE9D8). The
+      # interaction states use the button states, never the selection
+      # accent — no OS tints its scrollbar thumb accent-blue.
+      thumb_color = visuals.button_hovered if response.hovered?
+      thumb_color = visuals.button_active if response.pressed? || response.dragged?
+      thumb_color ||= visuals.button_weak
+      ui.painter.rect(thumb, 3.0, thumb_color, visuals.button_stroke, 1.0)
       direct
     end
 

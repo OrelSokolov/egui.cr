@@ -142,7 +142,7 @@ module Egui
             ui.painter.rect(Rect.from_min_size(
               Pos2.new(rect.left + x0, rect.top + row.y + 1.0),
               Vec2.new(x1 - x0, row.height - 2.0)),
-              2.0, visuals.selection_fill)
+              0.0, visuals.selection_fill)
           end
         end
       end

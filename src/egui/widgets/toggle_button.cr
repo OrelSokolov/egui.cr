@@ -30,7 +30,10 @@ module Egui
       track = Rect.from_min_size(
         Pos2.new(rect.left, rect.center.y - track_h / 2.0),
         Vec2.new(track_w, track_h))
-      track_fill = @checked ? visuals.selection_fill : visuals.button_weak
+      # Unchecked track: button_stroke, not button_weak — light themes
+      # set weak ≈ the panel fill (macOS #FFF on #FFF) and the track
+      # has no border of its own to fall back on (cf. Slider's rail).
+      track_fill = @checked ? visuals.selection_fill : visuals.button_stroke
       track_fill = visuals.button_active if response.active? && @checked
       ui.painter.rect(track, track_h / 2.0, track_fill)
 

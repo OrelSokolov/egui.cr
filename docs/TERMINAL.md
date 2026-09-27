@@ -132,9 +132,10 @@ opacity, background color and the cursor-blink switch:
 }
 ```
 
-WHERE the file lives is a config port, `Terminal::ConfigStore`, with
-one adapter per platform (the SystemPorts pattern, self-contained in
-the terminal module):
+WHERE the file lives is the framework's config port,
+`SystemPorts::AppConfig` (see `system_ports/app_config.cr`), namespaced
+as `egui-terminal` — the same platform mapping every app shares
+(`Terminal::ConfigStore` is the terminal-module face of it):
 
 |            | path                                                  |
 |------------|-------------------------------------------------------|
@@ -142,11 +143,11 @@ the terminal module):
 | macOS      | `~/Library/Application Support/egui-terminal/settings.json` |
 | Windows    | `%APPDATA%\egui-terminal\settings.json` (roaming)    |
 
-`ConfigStore.use(adapter)` swaps the adapter — the specs inject a temp
-dir. `Config.load` defaults on a missing or corrupt file (a bad
-settings file never keeps the terminal from booting); `Config#save` is
-best effort. `active_profile` falls back to any surviving profile when
-the saved name is stale.
+`SystemPorts::AppConfig.use(dir)` redirects the base directory — the
+specs inject a temp dir. `Config.load` defaults on a missing or corrupt
+file (a bad settings file never keeps the terminal from booting);
+`Config#save` is best effort. `active_profile` falls back to any
+surviving profile when the saved name is stale.
 
 Opacity is per-pixel and TERMINAL-ONLY (alacritty's
 `background_opacity`, the gnome-terminal behavior): the window runs in

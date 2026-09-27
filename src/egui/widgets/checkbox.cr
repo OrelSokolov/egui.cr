@@ -11,10 +11,20 @@ module Egui
     def initialize(@checked : Bool, @text : String)
     end
 
+    # Styled through the `checkbox` class: `box_fill`, `box_stroke`,
+    # `rounding`, `check_color` keys (unset keys keep the Visuals
+    # defaults — the classic look registers nothing, a Win95 preset
+    # paints a white sunken box with a black check).
+    def style_class : String?
+      "checkbox"
+    end
+
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       sp = style.spacing
       font_size = style.font_size
+      visuals = style.visuals
+      class_vars = ui.ctx.stylesheet.resolve("checkbox")
       text_size = ui.ctx.fonts.measure(@text, font_size)
 
       icon = sp.icon_width
@@ -24,13 +34,14 @@ module Egui
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
-      visuals = style.visuals
       icon_rect = Rect.from_min_size(
         Pos2.new(rect.left, rect.center.y - icon / 2.0),
         Vec2.new(icon, icon))
-      ui.painter.rect(icon_rect, 3.0,
-        visuals.button_fill(response.hovered?, response.active?),
-        visuals.button_stroke, 1.0)
+      ui.painter.rect(icon_rect,
+        class_vars.f64("rounding", 3.0),
+        class_vars.color("box_fill",
+          visuals.button_fill(response.hovered?, response.active?)),
+        class_vars.color("box_stroke", visuals.button_stroke), 1.0)
 
       if @checked
         # A two-segment checkmark (upstream draws a font glyph; we use
@@ -41,8 +52,9 @@ module Egui
         corner = Pos2.new(c.x + 0.26 * w, c.y + 0.52 * h)
         elbow = Pos2.new(c.x + 0.45 * w, c.y + 0.72 * h)
         tip = Pos2.new(c.x + 0.78 * w, c.y + 0.26 * h)
-        ui.painter.line(corner, elbow, 2.0, visuals.text_color)
-        ui.painter.line(elbow, tip, 2.0, visuals.text_color)
+        check_color = class_vars.color("check_color", visuals.text_color)
+        ui.painter.line(corner, elbow, 2.0, check_color)
+        ui.painter.line(elbow, tip, 2.0, check_color)
       end
 
       text_pos = Pos2.new(icon_rect.right + sp.icon_spacing, rect.center.y)

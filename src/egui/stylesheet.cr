@@ -62,6 +62,21 @@ module Egui
     end
   end
 
+  # A resolved CSS `box-shadow`: `color` plus geometry. Built from flat
+  # `shadow.*` style keys by `StyleVars#shadow?` (see there).
+  struct BoxShadowSpec
+    getter color : Color32
+    getter blur : Float64
+    getter spread : Float64
+    getter offset : Vec2
+    getter? inset : Bool
+
+    def initialize(@color : Color32, @blur : Float64 = 0.0,
+                   @spread : Float64 = 0.0, @offset : Vec2 = Vec2.new(0.0, 0.0),
+                   @inset : Bool = false)
+    end
+  end
+
   # A mergeable bag of style variables: `Hash(String, StyleValue)` with
   # typed getters (untyped keys simply stay invisible to a getter, so
   # typos degrade to "unset", never to a crash). Bags produced by
@@ -108,6 +123,21 @@ module Egui
                        has_key?("#{prefix}.top") || has_key?("#{prefix}.right") ||
                        has_key?("#{prefix}.bottom") || has_key?("#{prefix}.left")
       box(prefix)
+    end
+
+    # The CSS `box-shadow` under `prefix` ("shadow" by default):
+    # requires `shadow.color` (a shadow without a color is nothing),
+    # everything else defaults — blur/spread/offset 0, outset. Flat
+    # scalar keys like #box?, so the mergeable-bag cascade works per
+    # key: a `button:active` rule may flip only `shadow.inset` and the
+    # class defaults fill in the rest.
+    def shadow?(prefix : String = "shadow") : BoxShadowSpec?
+      return nil unless (color = color?("#{prefix}.color"))
+      BoxShadowSpec.new(color,
+        f64("#{prefix}.blur", 0.0),
+        f64("#{prefix}.spread", 0.0),
+        Vec2.new(f64("#{prefix}.x", 0.0), f64("#{prefix}.y", 0.0)),
+        bool("#{prefix}.inset", false))
     end
 
     def bool?(key : String) : Bool?

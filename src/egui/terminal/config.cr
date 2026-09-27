@@ -1,8 +1,8 @@
-# egui-terminal config: user profiles persisted as JSON, cross-platform
-# through a config PORT (the SystemPorts pattern, kept inside the
-# terminal module so the emulator core stays self-contained).
-#
-# WHERE the file lives is the port — one adapter per platform:
+# egui-terminal config: user profiles persisted as JSON through the
+# framework's config PORT (SystemPorts::AppConfig — see
+# system_ports/app_config.cr), so the emulator core stays self-contained
+# and shares the one platform mapping instead of carrying its own
+# adapters:
 #
 #   Linux/BSD  $XDG_CONFIG_HOME/egui-terminal/settings.json
 #              (default ~/.config/egui-terminal/…)
@@ -70,68 +70,14 @@ module Egui
       end
     end
 
-    # The config-location port: WHICH directory the settings file lives
-    # in, per platform. `use` swaps the adapter (specs inject a temp
-    # dir); `path` is the default file the app loads/saves.
+    # The config-location port: the framework AppConfig system port,
+    # namespaced as "egui-terminal" (ConfigStore is kept as the
+    # terminal-module face of it). Specs redirect the underlying
+    # directory through `SystemPorts::AppConfig.use`.
     module ConfigStore
-      abstract class Adapter
-        # The directory holding the settings file (existing or not).
-        abstract def config_dir : String
-
-        # The settings file path inside #config_dir.
-        def path : String
-          File.join(config_dir, "settings.json")
-        end
-      end
-
-      # Linux/BSD: the XDG base directory spec, straight from the
-      # environment ($XDG_CONFIG_HOME, default ~/.config).
-      class LinuxAdapter < Adapter
-        def config_dir : String
-          base = ENV["XDG_CONFIG_HOME"]?
-          base = File.join(ENV["HOME"]? || Dir.current, ".config") if base.nil? || base.empty?
-          File.join(base, "egui-terminal")
-        end
-      end
-
-      # macOS: the Application Support layout.
-      class MacAdapter < Adapter
-        def config_dir : String
-          File.join(ENV["HOME"]? || Dir.current,
-            "Library/Application Support/egui-terminal")
-        end
-      end
-
-      # Windows: %APPDATA% (roaming — settings follow the user), with
-      # %USERPROFILE% as a fallback.
-      class WindowsAdapter < Adapter
-        def config_dir : String
-          base = ENV["APPDATA"]? || ENV["USERPROFILE"]? || Dir.current
-          File.join(base, "egui-terminal")
-        end
-      end
-
-      @@adapter : Adapter = {% if flag?(:win32) %}
-                              WindowsAdapter.new
-                            {% elsif flag?(:darwin) %}
-                              MacAdapter.new
-                            {% else %}
-                              LinuxAdapter.new
-                            {% end %}
-
-      # The active adapter (the platform one unless #use replaced it).
-      def self.adapter : Adapter
-        @@adapter
-      end
-
-      # Install a custom adapter (specs point it at a temp dir).
-      def self.use(adapter : Adapter) : Nil
-        @@adapter = adapter
-      end
-
-      # The settings file path through the active adapter.
+      # The default settings file the app loads/saves.
       def self.path : String
-        @@adapter.path
+        SystemPorts::AppConfig.path("egui-terminal")
       end
     end
 

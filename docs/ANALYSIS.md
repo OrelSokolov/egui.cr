@@ -511,9 +511,16 @@ No single upstream file maps onto these two; they combine the emath
   `Galley::Row#newline_before` (a wrap break consumes no byte, a
   newline one; blank lines now emit empty rows in `Fonts#layout`),
   per-row selection highlight, row-wise Up/Down + line-wise Home/End,
-  Enter inserts `\n`, paste keeps line breaks, UTF-8-aware caret
+  Ctrl+Home/Ctrl+End document-wise jumps (Shift selects), Enter inserts
+  `\n`, paste keeps line breaks, UTF-8-aware caret
   stepping, caret auto-scroll, own scrollbar.
   API: `ui.textarea(buffer, hint:, rows:, &on_change)`.
+  Big buffers (over `TextArea::BIG_TEXT_BYTES`) go virtual: the text
+  is line-indexed once and only a window of rows around the viewport
+  is laid out (no soft wrap, like `less`) — wrapping a multi-megabyte
+  file at open would freeze the frame for seconds. `Fonts#layout`
+  memoizes single-run galleys, `Painter#paint_galley` culls rows
+  outside the clip, and `Galley` memoizes row text and row starts.
 - Specs: history velocity/flush, KineticScroller glide/decay/edges,
   ScrollArea fling-after-wheel + settle-without-overshoot, textarea
   typing/navigation/paste/wheel (core_spec.cr).

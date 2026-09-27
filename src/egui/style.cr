@@ -52,6 +52,12 @@ module Egui
   class Visuals
     property window_fill : Color32
     property window_stroke : Color32
+    # Title bar fill (`Context#window`'s drag strip) — defaults to
+    # window_fill (a flat window); classic presets like Win95 paint a
+    # navy bar with a white title.
+    property title_bar_fill : Color32
+    # Corner rounding of a floating window's frame.
+    property window_rounding : Float64
     property panel_fill : Color32
     property text_color : Color32
     property title_color : Color32
@@ -84,6 +90,8 @@ module Egui
       @dark = true
       @window_fill = Color32.rgba(27, 27, 30, 235)
       @window_stroke = Color32.rgba(80, 80, 80, 255)
+      @title_bar_fill = @window_fill
+      @window_rounding = 6.0
       @panel_fill = Color32.rgba(22, 22, 24, 255)
       @text_color = Color32.rgba(235, 235, 235, 255)
       @title_color = Color32.rgba(250, 250, 250, 255)
@@ -95,7 +103,7 @@ module Egui
       @selection_fill = Color32.rgba(0, 122, 204, 255)
       @hyperlink_color = Color32.rgba(102, 170, 255, 255)
       @separator_color = Color32.rgba(90, 90, 90, 255)
-      @modal_dim = Color32.rgba(0, 0, 0, 140)
+      @modal_dim = Color32.rgba(0, 0, 0, 100)
     end
 
     # egui `Visuals::widget_visuals(interaction)` — pick by state.
@@ -128,6 +136,8 @@ module Egui
       other.interact_cursor = interact_cursor
       other.window_fill = window_fill
       other.window_stroke = window_stroke
+      other.title_bar_fill = title_bar_fill
+      other.window_rounding = window_rounding
       other.panel_fill = panel_fill
       other.text_color = text_color
       other.title_color = title_color

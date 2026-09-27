@@ -14,9 +14,56 @@ module Egui
 
     abstract def measure(text : String, size : Float64) : Vec2
 
+    # Memoized layouts (upstream caches galleys in Fonts too): a
+    # widget re-layouts its text every frame, which is fine for labels
+    # but pins a textarea with a multi-megabyte buffer to a full
+    # re-wrap (measure per word) at every frame. Keys compare by
+    # String identity first (`==` short-circuits on the same object),
+    # so an unchanged buffer hits in O(1). Small MRU ring — enough for
+    # the handful of texts on screen at one size and wrap width.
+    LAYOUT_CACHE_MAX = 8
+
+    private class LayoutCacheEntry
+      getter text : String
+      getter size : Float64
+      getter max_width : Float64?
+      getter galley : Galley
+
+      def initialize(@text, @size, @max_width, @galley)
+      end
+    end
+
+    @layout_cache = [] of LayoutCacheEntry
+
     # Lay styled runs out into rows. `max_width` nil = never wrap.
     def layout(runs : Array(TextRun),
                max_width : Float64? = nil) : Galley
+      if runs.size == 1
+        run = runs.first
+        @layout_cache.each do |e|
+          if e.size == run.size && e.max_width == max_width &&
+             e.text == run.text
+            hit = e.galley
+            @layout_cache.delete(e)
+            @layout_cache.push(e) # MRU last
+            return hit
+          end
+        end
+        galley = build_galley(runs, max_width)
+        {% if env("EGUI_LAYOUT_DEBUG") %}
+          STDERR.puts "layout MISS bytes=#{run.text.bytesize} size=#{run.size} mw=#{max_width}"
+        {% end %}
+        @layout_cache.shift if @layout_cache.size >= LAYOUT_CACHE_MAX
+        @layout_cache << LayoutCacheEntry.new(
+          run.text, run.size, max_width, galley)
+        galley
+      else
+        build_galley(runs, max_width)
+      end
+    end
+
+    private def build_galley(runs : Array(TextRun),
+                             max_width : Float64?) : Galley
       state = WrapState.new(self, max_width)
 
       tokenize(runs).each do |text, size, color, underline, kind|
@@ -32,9 +79,12 @@ module Egui
     end
 
     # Greedy word-wrap accumulator: collects (text, size, color,
-    # underline) tokens into rows, merging same-style neighbours.
+    # underline, width) tokens into rows, merging same-style
+    # neighbours. Each token carries the width it was measured at —
+    # build_row just sums them instead of re-measuring every token
+    # (measure is the expensive call; wrap already paid for it once).
     private class WrapState
-      alias Token = Tuple(String, Float64, Color32?, Bool)
+      alias Token = Tuple(String, Float64, Color32?, Bool, Float64)
 
       getter rows = [] of Galley::Row
       property tokens = [] of Token
@@ -73,8 +123,9 @@ module Egui
 
       def add_space(text : String, size : Float64, color : Color32?,
                     underline : Bool) : Nil
-        @tokens << {text, size, color, underline}
-        @width += @fonts.measure(text, size).x
+        w = @fonts.measure(text, size).x
+        @tokens << {text, size, color, underline, w}
+        @width += w
         @height = {@height, size}.max
       end
 
@@ -92,11 +143,11 @@ module Egui
             if @width + cw > mw && !@tokens.empty?
               flush
             end
-            @tokens << {ch.to_s, size, color, underline}
+            @tokens << {ch.to_s, size, color, underline, cw}
             @width += cw
           end
         else
-          @tokens << {word, size, color, underline}
+          @tokens << {word, size, color, underline, w}
           @width += w
         end
       end
@@ -105,7 +156,7 @@ module Egui
                             height : Float64, newline : Bool) : Galley::Row
         runs = [] of Galley::RowRun
         x = 0.0
-        tokens.each do |text, size, color, underline|
+        tokens.each do |text, size, color, underline, width|
           last = runs.last?
           if last && last.size == size && last.color == color &&
              last.underline? == underline
@@ -114,34 +165,48 @@ module Egui
           else
             runs << Galley::RowRun.new(text, x, size, color, underline)
           end
-          x += @fonts.measure(text, size).x
+          x += width
         end
         Galley::Row.new(runs, x, height, y, newline)
       end
     end
 
+    # Byte-wise tokenizer: word = maximal run of non-space non-newline
+    # bytes, spaces = one merged run, '\n' = a break each. Cutting on
+    # byte offsets is UTF-8-safe (space/newline are ASCII, multibyte
+    # sequences never contain them) and avoids the per-character string
+    # building the old loop did — that was quadratic in word length and
+    # re-ran over the whole buffer on every layout.
     private def tokenize(runs : Array(TextRun)) : Array(Tuple(String, Float64, Color32?, Bool, Symbol))
       tokens = [] of Tuple(String, Float64, Color32?, Bool, Symbol)
       runs.each do |run|
-        buffer = ""
-        emit_word = ->(buf : String) do
-          tokens << {buf, run.size, run.color, run.underline?, :word}
-        end
-        run.text.each_char do |ch|
-          case ch
-          when '\n'
-            emit_word.call(buffer) unless buffer.empty?
-            buffer = ""
+        text = run.text
+        bytes = text.to_unsafe
+        size = text.bytesize
+        i = 0
+        while i < size
+          case bytes[i]
+          when 0x0A # '\n'
             tokens << {"\n", run.size, run.color, run.underline?, :break}
-          when ' '
-            emit_word.call(buffer) unless buffer.empty?
-            buffer = ""
-            tokens << {" ", run.size, run.color, run.underline?, :space}
+            i += 1
+          when 0x20 # ' '
+            j = i + 1
+            while j < size && bytes[j] == 0x20
+              j += 1
+            end
+            tokens << {text.byte_slice(i, j - i), run.size, run.color,
+                       run.underline?, :space}
+            i = j
           else
-            buffer += ch
+            j = i + 1
+            while j < size && bytes[j] != 0x20 && bytes[j] != 0x0A
+              j += 1
+            end
+            tokens << {text.byte_slice(i, j - i), run.size, run.color,
+                       run.underline?, :word}
+            i = j
           end
         end
-        emit_word.call(buffer) unless buffer.empty?
       end
       tokens
     end
@@ -154,8 +219,21 @@ module Egui
     LINE_H = LINE_H_FACTOR
 
     def measure(text : String, size : Float64) : Vec2
-      lines = text.count('\n') + 1
-      widest = text.split('\n').map(&.size).max? || 0
+      # Allocation-free scan (the old split-per-call added up on big
+      # layouts): count lines and the widest line's characters.
+      lines = 1
+      widest = 0
+      current = 0
+      text.each_char do |ch|
+        if ch == '\n'
+          lines += 1
+          widest = current if current > widest
+          current = 0
+        else
+          current += 1
+        end
+      end
+      widest = current if current > widest
       Vec2.new(widest * size * CHAR_W, lines * size * LINE_H)
     end
   end

@@ -10,8 +10,10 @@
 # tab switches; the tab selection is a reactive Signal and keyboard
 # focus follows it — the ACTIVE tab's textarea is always the active
 # editor. Native open/save dialogs go through SystemPorts
-# (fiber-backed, never block frames).
+# (fiber-backed, never block frames). The theme choice on the settings
+# page persists as JSON through the AppConfig system port.
 
+require "json"
 require "mime"
 
 require "./icon" # ICON_64_RGBA — the shared app icon (64x64 RGBA)
@@ -19,6 +21,21 @@ require "../src/egui"
 require "../src/egui/backend/sokol"
 
 class NotepadApp < Egui::App
+  # Persisted settings (the AppConfig system port): stored as JSON in
+  # the user config dir (~/.config/notepad/settings.json et al.) and
+  # reloaded on start. A missing or corrupt file yields the defaults.
+  class Settings
+    include JSON::Serializable
+
+    property theme : String = "Dark"
+
+    def initialize(@theme : String = "Dark")
+    end
+  end
+
+  # The theme dropdown options, in display order.
+  THEMES = ["Dark", "Light"]
+
   # MIME types that count as "text" beyond the text/* family (config
   # and data formats people edit in a notepad).
   TEXT_MIME_EXTRAS = {"application/json", "application/xml",
@@ -31,6 +48,13 @@ class NotepadApp < Egui::App
     property path : String?
     property? dirty : Bool = false
     getter name : String
+    # Status-bar stats (chars, lines), cached per buffer identity —
+    # counting newlines scans the whole buffer, and the status bar
+    # used to do it EVERY FRAME (a multi-megabyte tab pinned a core).
+    # Edits assign a new String, so identity says when to recompute.
+    @stats_text : String? = nil
+    @stats_chars : Int32 = 0
+    @stats_lines : Int32 = 1
 
     def initialize(@text : String = "", @path : String? = nil,
                    @name : String = "untitled")
@@ -40,6 +64,15 @@ class NotepadApp < Egui::App
     # marker is the Notepad dot, drawn by TitleBarTabs (dirty:).
     def title : String
       (p = @path) ? File.basename(p) : @name
+    end
+
+    def stats : {Int32, Int32}
+      unless @stats_text.same?(@text)
+        @stats_text = @text
+        @stats_chars = @text.size
+        @stats_lines = @text.count('\n') + 1
+      end
+      {@stats_chars, @stats_lines}
     end
   end
 
@@ -56,6 +89,10 @@ class NotepadApp < Egui::App
   # The active editor's child-Ui id, derived from the selection
   # (memoized — recomputed only when `selected` actually changes).
   computed editor_ui_id : Egui::Id = Egui::Id.from("notepad/doc/#{selected}")
+  # In-app ROUTE (Win11 Notepad idiom): the settings page is a
+  # full-window Page, not a modal. The app owns the routing — the
+  # page widget only renders what this signal says.
+  reactive settings_open = false
   @status = "Ready."
   @hotkeys_ready = false
   @next_untitled = 1
@@ -67,6 +104,9 @@ class NotepadApp < Egui::App
   @pending_close : Doc? = nil
   # Quit is running: confirm every dirty document, then really quit.
   @quitting = false
+  # Saved settings — theme choice, persisted through AppConfig.
+  @settings : Settings = Egui::SystemPorts::AppConfig.load(
+    "notepad", Settings.new)
 
   def initialize
     super
@@ -76,11 +116,15 @@ class NotepadApp < Egui::App
     # same dirty-confirmation flow as Ctrl+W; "+" is File → New.
     Egui::WindowFrame.caption(
       height: Egui::TitleBarTabs::CAPTION_H) do |ctx, area|
-      Egui::TitleBarTabs.show(ctx, area, @docs.map(&.title), selected,
-        dirty: @docs.map(&.dirty?),
-        on_select: ->(t : Int32) { self.selected = t; nil },
-        on_close: ->(t : Int32) { request_close(@docs[t]?) },
-        on_new: -> { new_doc })
+      # No tabs on the settings page (Win11 Notepad hides them there) —
+      # the caption keeps only its drag strip and control buttons.
+      unless settings_open
+        Egui::TitleBarTabs.show(ctx, area, @docs.map(&.title), selected,
+          dirty: @docs.map(&.dirty?),
+          on_select: ->(t : Int32) { self.selected = t; nil },
+          on_close: ->(t : Int32) { request_close(@docs[t]?) },
+          on_new: -> { new_doc })
+      end
     end
     # Files passed on the command line open straight into tabs.
     opened = 0
@@ -103,6 +147,7 @@ class NotepadApp < Egui::App
   ACTION_QUIT     = Egui::HotkeyAction.new("notepad.quit")
   ACTION_NEXT_TAB = Egui::HotkeyAction.new("notepad.next_tab")
   ACTION_PREV_TAB = Egui::HotkeyAction.new("notepad.prev_tab")
+  ACTION_SETTINGS = Egui::HotkeyAction.new("notepad.settings")
 
   DEFAULT_BINDINGS = {
     ACTION_NEW      => "Ctrl+N",
@@ -113,13 +158,42 @@ class NotepadApp < Egui::App
     ACTION_QUIT     => "Ctrl+Q",
     ACTION_NEXT_TAB => "Ctrl+Tab",
     ACTION_PREV_TAB => "Ctrl+Shift+Tab",
+    ACTION_SETTINGS => "Ctrl+Comma",
   }
 
   def update(ctx : Egui::Context) : Nil
+    # The saved theme choice → the live theme (cheap, every frame, so
+    # the swap from the settings dropdown shows immediately).
+    ctx.theme = @settings.theme == "Light" ? Egui::Theme.light : Egui::Theme.dark
+
     # Default hotkey bindings — once, on the first frame.
     unless @hotkeys_ready
       DEFAULT_BINDINGS.each { |action, combo| ctx.hotkeys.bind(combo, action) }
       @hotkeys_ready = true
+    end
+
+    # ROUTE: the settings page replaces the whole editor UI (menu,
+    # tabs live only in the caption, editor, status bar) — a page,
+    # not a modal. Back returns to the editor.
+    if settings_open
+      ctx.page("settings", title: "Settings",
+        on_back: -> { self.settings_open = false; nil }) do |ui|
+        ui.heading("Settings")
+        ui.label("Theme:")
+        # Theme dropdown: swaps the palette next frame and persists the
+        # choice to the user config dir.
+        ui.combo_box("theme", @settings.theme, THEMES) do |name|
+          @settings.theme = name
+          save_settings
+        end
+        ui.separator
+        ui.label("Editor font size: 14")
+        ui.label("Tab width: 4")
+        ui.label("This page is a routing demo — a full-window Page, " \
+                 "switched by a reactive Signal.")
+      end
+      handle_actions(ctx)
+      return
     end
 
     ctx.menu_bar do |bar|
@@ -129,6 +203,7 @@ class NotepadApp < Egui::App
         menu.menu_item("Save", ACTION_SAVE)
         menu.menu_item("Save As…", ACTION_SAVE_AS)
         menu.menu_item("Close Tab", ACTION_CLOSE)
+        menu.menu_item("Settings", ACTION_SETTINGS)
         menu.menu_item("Quit", ACTION_QUIT)
       end
       bar.menu_button("View") do |menu|
@@ -171,31 +246,29 @@ class NotepadApp < Egui::App
     # cascade) — the modal blocks everything below until one of the
     # three is picked.
     if (doc = @pending_close)
-      ctx.modal("confirm_close") do |ui|
-        ui.heading(@quitting ? "Save changes before quitting?" : "Save changes?")
+      clicked = ctx.modal("confirm_close",
+        title: @quitting ? "Save changes before quitting?" : "Save changes?",
+        buttons: ["Save", "Don't save", "Cancel"]) do |ui|
         ui.label("\"#{doc.title}\" has unsaved changes.")
-        ui.horizontal do |row|
-          if row.button("Save").clicked?
-            @pending_close = nil
-            save_and_close(doc)
-          end
-          if row.button("Don't save").clicked?
-            @pending_close = nil
-            do_close(doc)
-            continue_quit
-          end
-          if row.button("Cancel").clicked?
-            @pending_close = nil
-            @quitting = false
-          end
-        end
+      end
+      case clicked
+      when "Save"
+        @pending_close = nil
+        save_and_close(doc)
+      when "Don't save"
+        @pending_close = nil
+        do_close(doc)
+        continue_quit
+      when "Cancel"
+        @pending_close = nil
+        @quitting = false
       end
     end
 
     ctx.bottom_panel("status") do |ui|
       if (doc = @docs[selected]?)
-        ui.label("#{doc.path || doc.title} — #{doc.text.size} chars, " \
-                 "#{doc.text.count('\n') + 1} lines" \
+        chars, lines = doc.stats
+        ui.label("#{doc.path || doc.title} — #{chars} chars, #{lines} lines" \
                  "#{doc.dirty? ? " — modified" : ""}")
       end
       ui.label(@status)
@@ -206,8 +279,14 @@ class NotepadApp < Egui::App
     handle_actions(ctx)
   end
 
-  private def handle_actions(ctx : Egui::Context) : Nil
-    new_doc if ctx.consume_action(ACTION_NEW)
+  # Persist the settings to the user config dir (best effort — the
+  # in-memory choice applies regardless).
+  private def save_settings : Nil
+    Egui::SystemPorts::AppConfig.save("notepad", @settings)
+    @status = "Settings saved: #{Egui::SystemPorts::AppConfig.path("notepad")}"
+  end
+
+  private def handle_actions(ctx : Egui::Context) : Nil    new_doc if ctx.consume_action(ACTION_NEW)
     open_doc if ctx.consume_action(ACTION_OPEN)
     save_doc if ctx.consume_action(ACTION_SAVE)
     save_doc_as if ctx.consume_action(ACTION_SAVE_AS)
@@ -215,6 +294,7 @@ class NotepadApp < Egui::App
     quit_flow if ctx.consume_action(ACTION_QUIT)
     next_tab if ctx.consume_action(ACTION_NEXT_TAB)
     previous_tab if ctx.consume_action(ACTION_PREV_TAB)
+    self.settings_open = true if ctx.consume_action(ACTION_SETTINGS)
   end
 
   # Tab cycling (Ctrl+Tab / Ctrl+Shift+Tab): wrap around the open

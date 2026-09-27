@@ -6,6 +6,9 @@
 #
 #   * Windows 11 dark — #202020 caption, square caption buttons,
 #     #C42B1C close hover, hairline window outline;
+#   * Windows XP (Luna) — blue gradient titlebar, glossy rounded
+#     caption buttons with a red close, and a thick 4pt blue frame
+#     around the client area;
 #   * Ubuntu (classic Ambiance) — gradient titlebar, centered title,
 #     round buttons at the right edge, close in Ubuntu orange;
 #   * macOS — light titlebar with a separator hairline, traffic lights
@@ -23,9 +26,10 @@ require "../src/egui/backend/sokol"
 
 class BorderlessApp < Egui::App
   STYLES = {Egui::WindowFrame::Style::Windows,
+            Egui::WindowFrame::Style::WindowsXp,
             Egui::WindowFrame::Style::Ubuntu,
             Egui::WindowFrame::Style::Macos}
-  STYLE_LABELS = ["Windows 11", "Ubuntu", "macOS"]
+  STYLE_LABELS = ["Windows 11", "Windows XP", "Ubuntu", "macOS"]
 
   @decorated = false
   @style_index = 0

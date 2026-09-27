@@ -202,7 +202,7 @@ module Egui
         ui.painter.rect(
           Rect.from_min_size(Pos2.new(inner.x + x0 - scroll, top),
             Vec2.new(x1 - x0, height)),
-          2.0, visuals.selection_fill)
+          0.0, visuals.selection_fill)
       end
 
       ui.painter.paint_galley(

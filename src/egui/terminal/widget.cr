@@ -57,7 +57,13 @@ module Egui
             Vec2.new(BAR_W, rect.height))
         end
         @bar_rect = bar_rect
-        interact_rect = bar_rect ? Rect.new(rect.min, bar_rect.min) : rect
+        # Carve the bar strip out of the interact rect: the terminal is
+        # clickable up to the bar's LEFT edge (Rect.new takes two
+        # CORNERS — using bar_rect.min as the max corner would collapse
+        # the height to zero, since the bar starts at rect.min.y).
+        interact_rect = bar_rect ?
+                          Rect.new(rect.min, Pos2.new(bar_rect.min.x, rect.max.y)) :
+                          rect
         response = ui.interact(interact_rect, ui.next_widget_id,
           Sense::Click | Sense::Drag | Sense::Focusable)
 

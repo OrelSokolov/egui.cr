@@ -104,10 +104,35 @@ module Egui
     end
   end
 
+  # CSS `box-shadow` (no upstream egui counterpart — upstream
+  # `epaint::Shadow` has no inset and lives in the tessellator's
+  # feathering instead): a blurred band around (outset) or inside
+  # (inset) a rounded rect. `blur`/`spread` in points; `offset`
+  # shifts the caster rect (outset) or pushes the band towards the
+  # opposite edge, CSS-style (`inset 0 1px 0` — y+1 down — paints a
+  # band along the TOP edge). The backend approximates the gaussian
+  # falloff with per-vertex gradient bands (Gouraud) — the same
+  # machinery as `fill2` gradients.
+  struct ShadowCmd
+    getter clip : Rect
+    getter rect : Rect
+    getter rounding : Float64
+    getter blur : Float64
+    getter spread : Float64
+    getter offset : Vec2
+    getter color : Color32
+    getter? inset : Bool
+
+    def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
+                   @blur : Float64, @spread : Float64, @offset : Vec2,
+                   @color : Color32, @inset : Bool)
+    end
+  end
+
   struct NoopCmd
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | ImageCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | ImageCmd | ShadowCmd | NoopCmd
 
   class Painter
     getter commands : Array(PaintCmd)
@@ -185,6 +210,19 @@ module Egui
       add(RectCmd.new(@clip, rect, 0.0, pre, nil, 0.0, replace: true))
     end
 
+    # CSS `box-shadow` — see `ShadowCmd`. Paint order is the caller's
+    # business, mirroring CSS: an outset shadow goes UNDER the widget
+    # (call before the fill rect), an inset one over it (after).
+    def box_shadow(rect : Rect, color : Color32, blur : Float64 = 4.0,
+                   rounding : Float64 = 0.0, spread : Float64 = 0.0,
+                   offset : Vec2 = Vec2.new(0.0, 0.0),
+                   inset : Bool = false) : Nil
+      return if blur <= 0.0 && spread <= 0.0 &&
+                offset.x.abs < 0.5 && offset.y.abs < 0.5
+      add(ShadowCmd.new(@clip, rect, rounding, blur, spread, offset,
+        color, inset))
+    end
+
     # Vertical gradient fill (top `c1` → bottom `c2`).
     def rect_gradient(rect : Rect, rounding : Float64, c1 : Color32,
                       c2 : Color32) : Nil
@@ -203,8 +241,17 @@ module Egui
     # that's where per-run colors come from — plus underline lines.
     def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
                      default_color : Color32) : Nil
+      # Cull rows outside the clip rect: a scrolled textarea with a
+      # multi-megabyte galley must not tessellate (and rasterize) every
+      # row of the buffer each frame — only the visible window. Rows
+      # are laid out top-to-bottom, so the scan can stop at the bottom.
+      clip_top = @clip.min.y
+      clip_bottom = @clip.max.y
       galley.rows.each do |row|
-        row_center_y = pos.y + row.y + row.height / 2.0
+        row_top = pos.y + row.y
+        next if row_top + row.height < clip_top
+        break if row_top > clip_bottom
+        row_center_y = row_top + row.height / 2.0
         row.runs.each do |run|
           run_pos = Pos2.new(pos.x + run.x, row_center_y)
           color = run.color || default_color

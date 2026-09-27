@@ -74,6 +74,10 @@ class GalleryApp < Egui::App
   @text_menu : Egui::ContextMenu?
   @input_menu : Egui::ContextMenu?
   @button_menu : Egui::ContextMenu?
+  # System-style presets (Ubuntu / Windows XP / Windows 11 / macOS),
+  # built lazily once — themes are swapped by reference, so the Theme
+  # instances are reused across clicks (see #system_themes).
+  @system_themes : Array(Egui::Theme)?
 
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
@@ -83,7 +87,7 @@ class GalleryApp < Egui::App
       "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
-      "Style", ["Themes", "Cursors"], closable: true),
+      "Style", ["Themes", "System styles", "Cursors"], closable: true),
     Egui::Sidebar::Section.new(
       "Containers", ["Scroll", "Modal", "Files"], closable: true),
     Egui::Sidebar::Section.new(
@@ -196,6 +200,7 @@ class GalleryApp < Egui::App
           when {"Widgets", "Logos"}     then logos_gallery(scroll)
           when {"Widgets", "Hotkeys"}   then hotkeys_gallery(scroll)
           when {"Style", "Themes"}      then themes_gallery(scroll, ctx)
+          when {"Style", "System styles"} then system_styles_gallery(scroll, ctx)
           when {"Style", "Cursors"}     then cursors_gallery(scroll)
           when {"Containers", "Scroll"} then scroll_gallery(scroll)
           when {"Containers", "Modal"}  then modal_gallery(scroll)
@@ -213,13 +218,11 @@ class GalleryApp < Egui::App
     end
 
     if @modal_open
-      ctx.modal("demo") do |ui|
-        ui.heading("Modal dialog")
+      clicked = ctx.modal("demo", title: "Modal dialog",
+        buttons: ["Close"]) do |ui|
         ui.label("Everything below is blocked while this is open.")
-        if ui.button("Close").clicked?
-          @modal_open = false
-        end
       end
+      @modal_open = false if clicked == "Close"
     end
 
     ctx.bottom_panel("fps") do |ui|
@@ -603,6 +606,213 @@ class GalleryApp < Egui::App
       end
     end
     ui.label("tab padding.top #{"%.1f" % pad.top}, section margin.top #{"%.1f" % margin.top}")
+  end
+
+  # System-style presets: whole themes derived from the defaults via
+  # `DefaultTheme.build` with a custom palette — the block runs before
+  # the element rules, so the button/sidebar classes adopt the preset
+  # colors too. A click assigns `ctx.theme`; the whole app (menu bar,
+  # sidebar, window title strip included) repaints on the next frame.
+  private def system_styles_gallery(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    ui.label("System-style themes — pick one to restyle the whole app:")
+    system_themes.each do |theme|
+      ui.horizontal do |row|
+        if row.radio(ctx.theme.same?(theme), theme.name).changed?
+          ctx.theme = theme
+        end
+        row.label(theme.dark? ? "dark" : "light")
+      end
+    end
+    ui.separator
+
+    # Live preview strip: everything below follows the active theme
+    # with no per-widget setup — swap presets above and watch it flip.
+    ui.label("Preview (follows the active theme):")
+    ui.horizontal do |row|
+      row.button("Button")
+      cb = row.add(Egui::Checkbox.new(@checked, "Check"))
+      @checked = !@checked if cb.changed?
+      row.slider(@slider, 0.0..1.0) { |v| @slider = v }
+    end
+    ui.horizontal do |row|
+      row.label("Progress:")
+      row.progress_bar(@slider.clamp(0.0, 1.0))
+      row.hyperlink_to("a link", "https://github.com/emilk/egui")
+    end
+    ui.separator
+    ui.label("active: #{ctx.theme}")
+  end
+
+  # The preset list, built once: the two built-in presets plus the four
+  # system styles below. Theme instances are stateful (the Themes tab
+  # can tweak their sheet live), so they are cached, not rebuilt.
+  private def system_themes : Array(Egui::Theme)
+    @system_themes ||= [
+      Egui::Theme.dark,
+      Egui::Theme.light,
+      ubuntu_theme,
+      windows_xp_theme,
+      windows_11_theme,
+      macos_theme,
+    ]
+  end
+
+  # Preset colors are 1:1 from the platforms' own theme sources (values
+  # in brackets). Alpha-blended tokens (WinUI's 70% white fills, macOS's
+  # 85% black label) are pre-composited over their theme background —
+  # Visuals has no per-color alpha compositing over arbitrary surfaces.
+
+  # Ubuntu — Yaru light, from the yaru repo sass
+  # (gtk/src/default/gtk-3.0/{_palette,_colors}.scss): bg #FAFAFA, fg
+  # $inkstone #3D3D3D, base #FFFFFF, borders darken(bg,20%) #C7C7C7,
+  # headerbar lighten(bg,5%) #FFFFFF, accent $orange #E95420 (selected
+  # bg + accent fg white). Buttons are Adwaita's: bg-colored, hover
+  # darken(bg,4%), active darken(bg,8%). Window corner radius follows
+  # libadwaita (12px).
+  private def ubuntu_theme : Egui::Theme
+    Egui::DefaultTheme.build("Ubuntu", dark: false) do |v|
+      v.window_fill = Egui::Color32.rgb(0xFA, 0xFA, 0xFA) # $bg_color
+      v.window_stroke = Egui::Color32.rgb(0xC7, 0xC7, 0xC7) # $borders_color
+      v.title_bar_fill = Egui::Color32.rgb(0xFF, 0xFF, 0xFF) # $headerbar_color
+      v.title_color = Egui::Color32.rgb(0x3D, 0x3D, 0x3D)   # $inkstone
+      v.window_rounding = 12.0
+      v.panel_fill = Egui::Color32.rgb(0xFF, 0xFF, 0xFF) # $base_color
+      v.text_color = Egui::Color32.rgb(0x3D, 0x3D, 0x3D)  # $fg_color
+      v.button_weak = Egui::Color32.rgb(0xFA, 0xFA, 0xFA)
+      v.button_hovered = Egui::Color32.rgb(0xF0, 0xF0, 0xF0) # darken(bg, 4%)
+      v.button_active = Egui::Color32.rgb(0xE6, 0xE6, 0xE6)  # darken(bg, 8%)
+      v.button_stroke = Egui::Color32.rgb(0xC7, 0xC7, 0xC7)  # $borders_color
+      v.selection_fill = Egui::Color32.rgb(0xE9, 0x54, 0x20) # $accent_bg_color
+      # Yaru derives links from the accent (optimize-contrast over bg)
+      v.hyperlink_color = Egui::Color32.rgb(0xE9, 0x54, 0x20)
+      v.separator_color = Egui::Color32.rgb(0xC7, 0xC7, 0xC7)
+    end
+  end
+
+  # Windows XP — Luna Blue, from XP.css v0.2.6 (a 1:1 msstyles
+  # extraction) plus the documented registry scheme: face #ECE9D8,
+  # title bar gradient (0997ff→0053ee→0050ee→06f→003dd7) flattened to
+  # its dominant stop #0050EE, window frame #003BDA, Hilight #316AC5,
+  # WindowText #000000, ButtonShadow #ACA899. Luna buttons are
+  # border-drawn (grey/white outset), so the stroke carries the look;
+  # hover/active fills are flat stand-ins for the amber hover glow.
+  private def windows_xp_theme : Egui::Theme
+    theme = Egui::DefaultTheme.build("Windows XP", dark: false) do |v|
+      v.window_fill = Egui::Color32.rgb(0xEC, 0xE9, 0xD8) # button/dialog face
+      v.window_stroke = Egui::Color32.rgb(0x00, 0x3B, 0xDA)
+      v.title_bar_fill = Egui::Color32.rgb(0x00, 0x50, 0xEE)
+      v.title_color = Egui::Color32.rgb(0xFF, 0xFF, 0xFF)
+      v.window_rounding = 0.0
+      v.panel_fill = Egui::Color32.rgb(0xEF, 0xEB, 0xD4) # page background
+      v.text_color = Egui::Color32.rgb(0x00, 0x00, 0x00) # WindowText
+      v.button_weak = Egui::Color32.rgb(0xEC, 0xE9, 0xD8)
+      v.button_hovered = Egui::Color32.rgb(0xF1, 0xEE, 0xE0)
+      v.button_active = Egui::Color32.rgb(0xDE, 0xDA, 0xC9)
+      v.button_stroke = Egui::Color32.rgb(0xAC, 0xA8, 0x99) # ButtonShadow
+      v.selection_fill = Egui::Color32.rgb(0x31, 0x6A, 0xC5) # Hilight
+      v.hyperlink_color = Egui::Color32.rgb(0x00, 0x00, 0xFF)
+      v.separator_color = Egui::Color32.rgb(0xAC, 0xA8, 0x99)
+    end
+
+    # Classic Win32 tab sheets: the ACTIVE tab takes the PAGE color and
+    # merges with it — no accent underline, the baseline skips its span
+    # (merge_selected), and it is framed by the registry bevel pair
+    # ButtonHilight #FFF / ButtonShadow #ACA899. Inactive tabs keep the
+    # dialog face — one step darker, they read as sitting behind.
+    face = Egui::Color32.rgb(0xEC, 0xE9, 0xD8)
+    page = Egui::Color32.rgb(0xEF, 0xEB, 0xD4)
+    shadow = Egui::Color32.rgb(0xAC, 0xA8, 0x99)
+    sheet = theme.sheet
+    sheet.rule("tabs", Egui::StyleVars{
+      "merge_selected" => 1.0,
+      "rule_color"     => shadow,
+    })
+    sheet.rule("tabs.tab", Egui::StyleVars{
+      "fill"        => face,
+      "bevel_light" => Egui::Color32.rgb(0xFF, 0xFF, 0xFF),
+      "bevel_dark"  => shadow,
+    })
+    sheet.rule("tabs.tab:selected", Egui::StyleVars{
+      "fill"            => page,
+      "underline_width" => 0.0,
+    })
+    # Sidebar nav follows the same metaphor: the selected tab merges
+    # into the page background (black text — the default rule's white
+    # would be unreadable on the cream); hover keeps the warm wash.
+    sheet.rule("sidebar.tab:selected", Egui::StyleVars{
+      "fill"       => page,
+      "text_color" => Egui::Color32.rgb(0x00, 0x00, 0x00),
+    })
+    # Checkbox/radio mark AREA takes the dialog face (XP.css keeps the
+    # checkbox interior face-colored while pressed/disabled) with the
+    # registry ButtonShadow border and square corners — the mark itself
+    # stays WindowText black; a face-colored mark would vanish into the
+    # face-colored box. Pinning box_fill also drops the idle→hover
+    # lighten (XP boxes do not shift on hover).
+    sheet.rule("checkbox", Egui::StyleVars{
+      "box_fill"    => face,
+      "box_stroke"  => shadow,
+      "check_color" => Egui::Color32.rgb(0x00, 0x00, 0x00),
+      "rounding"    => 0.0,
+    })
+    theme
+  end
+
+  # Windows 11 — light, from the WinUI theme tokens (verbatim in
+  # FluentAvalonia's Fluentv2Colors.axaml): mica base #F3F3F3
+  # (SolidBackgroundFillColorBase), content #F9F9F9 (…Tertiary),
+  # ControlFillColorDefault 70% white → #FDFDFD, Secondary (hover)
+  # 50% #F9F9F9 → #F9F9F9, Tertiary (pressed) over base → #F5F5F5,
+  # border ControlStrokeColorSecondary 16% black → #D6D6D6, divider
+  # 6% black → #EAEAEA, modal SmokeFillColorDefault 30% black.
+  # Accent = AccentFillColorDefault light #005FB8; text =
+  # TextFillColorPrimary 89% black → #1A1A1A.
+  private def windows_11_theme : Egui::Theme
+    Egui::DefaultTheme.build("Windows 11", dark: false) do |v|
+      v.window_fill = Egui::Color32.rgb(0xF3, 0xF3, 0xF3)
+      v.window_stroke = Egui::Color32.rgb(0xEB, 0xEB, 0xEB) # CardStroke…Solid
+      v.title_bar_fill = v.window_fill
+      v.title_color = Egui::Color32.rgb(0x1A, 0x1A, 0x1A)
+      v.window_rounding = 8.0
+      v.panel_fill = Egui::Color32.rgb(0xF9, 0xF9, 0xF9)
+      v.text_color = Egui::Color32.rgb(0x1A, 0x1A, 0x1A)
+      v.button_weak = Egui::Color32.rgb(0xFD, 0xFD, 0xFD)
+      v.button_hovered = Egui::Color32.rgb(0xF9, 0xF9, 0xF9)
+      v.button_active = Egui::Color32.rgb(0xF5, 0xF5, 0xF5)
+      v.button_stroke = Egui::Color32.rgb(0xD6, 0xD6, 0xD6)
+      v.selection_fill = Egui::Color32.rgb(0x00, 0x5F, 0xB8)
+      v.hyperlink_color = Egui::Color32.rgb(0x00, 0x5F, 0xB8)
+      v.separator_color = Egui::Color32.rgb(0xEA, 0xEA, 0xEA)
+      v.modal_dim = Egui::Color32.rgba(0, 0, 0, 0x4D)
+    end
+  end
+
+  # macOS — light, from the NSColor export (swiftuicolors.com):
+  # window chrome #ECECEC, content controlBackgroundColor #FFFFFF,
+  # controlColor (button surface) #FFFFFF, hover tertiarySystemFill 5%
+  # black → #F2F2F2, pressed secondarySystemFill 8% → #EBEBEB, label
+  # rgba(0,0,0,0.85) → #262626, windowFrameText 85% over chrome →
+  # #232323, controlAccentColor #007AFF, linkColor #0068DA,
+  # gridColor #E6E6E6, control border tertiaryLabel rgba(60,60,67,.26)
+  # → #CCCCCC, window edge quaternaryLabel .18 → #DCDCDD.
+  # Window corner radius 10 (Big Sur+).
+  private def macos_theme : Egui::Theme
+    Egui::DefaultTheme.build("macOS", dark: false) do |v|
+      v.window_fill = Egui::Color32.rgb(0xEC, 0xEC, 0xEC)
+      v.window_stroke = Egui::Color32.rgb(0xDC, 0xDC, 0xDD)
+      v.title_bar_fill = v.window_fill # merged titlebar
+      v.title_color = Egui::Color32.rgb(0x23, 0x23, 0x23)
+      v.window_rounding = 10.0
+      v.panel_fill = Egui::Color32.rgb(0xFF, 0xFF, 0xFF)
+      v.text_color = Egui::Color32.rgb(0x26, 0x26, 0x26)
+      v.button_weak = Egui::Color32.rgb(0xFF, 0xFF, 0xFF)
+      v.button_hovered = Egui::Color32.rgb(0xF2, 0xF2, 0xF2)
+      v.button_active = Egui::Color32.rgb(0xEB, 0xEB, 0xEB)
+      v.button_stroke = Egui::Color32.rgb(0xCC, 0xCC, 0xCC)
+      v.selection_fill = Egui::Color32.rgb(0x00, 0x7A, 0xFF)
+      v.hyperlink_color = Egui::Color32.rgb(0x00, 0x68, 0xDA)
+      v.separator_color = Egui::Color32.rgb(0xE6, 0xE6, 0xE6)
+    end
   end
 
   private def cursors_gallery(ui : Egui::Ui) : Nil

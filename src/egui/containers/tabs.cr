@@ -21,12 +21,17 @@
 # Styling goes through the global `StyleSheet` (CSS-like classes):
 #   tabs          — tab_spacing (gap between tab buttons),
 #                   rule_color (the baseline under the strip),
+#                   merge_selected (1.0: the baseline skips the active
+#                   tab — Win95-style merging into the page below),
 #                   fill (the strip's background; panel_fill by
 #                   default — relevant in per-pixel-transparent
 #                   windows, where the strip must stay opaque)
 #   tabs.tab      — font_size, padding.top/right/…/left, height,
-#                   text_color + :hover/:selected overlays
-#                   (fill, text_color, underline_color/underline_width)
+#                   text_color, bevel_light/bevel_dark (raised 3D
+#                   border — classic skins) + :hover/:selected
+#                   overlays (fill, text_color, bevel_*,
+#                   underline_color/underline_width; underline_width
+#                   <= 0 disables the underline)
 # The theme presets ship the defaults (`default_theme.cr`);
 # every key is introspectable via `ctx.stylesheet.dump`.
 
@@ -89,6 +94,10 @@ module Egui
 
       tab_gap = root.f64("tab_spacing", 0.0)
       rule_color = root.color("rule_color", visuals.separator_color)
+      # Win95-style tab merging: the baseline skips the ACTIVE tab's
+      # span, so the tab visually connects to the page below it (the
+      # strip's own background shows through the gap).
+      merge = root.f64("merge_selected", 0.0) > 0.0
       tab_font = tab.f64("font_size", style.font_size)
       tab_pad = tab.box("padding")
 
@@ -171,19 +180,49 @@ module Egui
       # through the gaps between the tab buttons).
       ui.painter.rect(strip, fill: root.color("fill", visuals.panel_fill))
 
+      # The active tab's x-span on its row (for the merge gap) —
+      # computed from the layout data, before any rect is painted.
+      sel_span = nil.as({Float64, Float64}?)
+      sel_row = 0
+      if merge
+        if (o = origins.try(&.[@selected]?))
+          sel_span = {strip.min.x + o.x, strip.min.x + o.x + widths[@selected]}
+          sel_row = (o.y / row_h).round.to_i
+        else
+          sx = strip_left - offset + widths[0...@selected].sum +
+               tab_gap * @selected
+          sel_span = {sx, sx + widths[@selected]}
+        end
+      end
+
       # Baseline(s) under the strip (the container's top edge) —
       # painted first so tab fills and the selection underline stack
       # on top. Multiline draws one per row, like the Win32 property
-      # sheet; carousel draws a single full-width line.
-      if origins
-        row_count.times do |r|
-          y = strip.min.y + (r + 1) * row_h
+      # sheet; carousel draws a single full-width line. With
+      # `merge_selected` the selected tab's row skips its span.
+      paint_rule = ->(y : Float64, row : Int32) do
+        if (span = sel_span) && row == sel_row
+          a = {span[0], strip.min.x}.max
+          b = {span[1], strip.max.x}.min
+          if a > strip.min.x + 0.5
+            ui.painter.line(Pos2.new(strip.min.x, y),
+              Pos2.new(a, y), 1.0, rule_color)
+          end
+          if b < strip.max.x - 0.5
+            ui.painter.line(Pos2.new(b, y),
+              Pos2.new(strip.max.x, y), 1.0, rule_color)
+          end
+        else
           ui.painter.line(Pos2.new(strip.min.x, y),
             Pos2.new(strip.max.x, y), 1.0, rule_color)
         end
+      end
+      if origins
+        row_count.times do |r|
+          paint_rule.call(strip.min.y + (r + 1) * row_h, r)
+        end
       else
-        ui.painter.line(Pos2.new(strip.min.x, strip.max.y),
-          Pos2.new(strip.max.x, strip.max.y), 1.0, rule_color)
+        paint_rule.call(strip.max.y, 0)
       end
 
       response : Response? = nil
@@ -255,18 +294,36 @@ module Egui
           if (fill = state_vars.color?("fill"))
             ui.painter.rect(rect, 3.0, fill)
           end
+          # 3D bevel (Win95-style raised tab): light top/left, dark
+          # right — the bottom edge is the row baseline (skipped under
+          # the active tab by merge_selected, connecting it to the
+          # page). Read from the state overlay, so :hover/:selected
+          # rules can restyle or drop it.
+          if (bl = state_vars.color?("bevel_light")) &&
+             (bd = state_vars.color?("bevel_dark"))
+            ui.painter.line(rect.min + Vec2.new(0.0, 0.5),
+              Pos2.new(rect.max.x, rect.min.y + 0.5), 1.0, bl)
+            ui.painter.line(rect.min + Vec2.new(0.5, 0.0),
+              Pos2.new(rect.min.x + 0.5, rect.max.y), 1.0, bl)
+            ui.painter.line(Pos2.new(rect.max.x - 0.5, rect.min.y),
+              Pos2.new(rect.max.x - 0.5, rect.max.y), 1.0, bd)
+          end
           text_color = state_vars.color("text_color", visuals.text_color)
           ui.painter.text(Pos2.new(rect.min.x + tab_pad.left, rect.center.y),
             title, tab_font, text_color)
 
-          # The active tab's bottom border, on top of the baseline.
+          # The active tab's bottom border, on top of the baseline —
+          # skipped when the overlay sets underline_width to 0 or less
+          # (Win95 tabs merge with the page instead).
           if selected
             underline_width = state_vars.f64("underline_width", 2.0)
-            underline_color = state_vars.color("underline_color",
-              visuals.selection_fill)
-            ui.painter.line(Pos2.new(rect.min.x, rect.max.y),
-              Pos2.new(rect.max.x, rect.max.y), underline_width,
-              underline_color)
+            if underline_width > 0.0
+              underline_color = state_vars.color("underline_color",
+                visuals.selection_fill)
+              ui.painter.line(Pos2.new(rect.min.x, rect.max.y),
+                Pos2.new(rect.max.x, rect.max.y), underline_width,
+                underline_color)
+            end
           end
 
           if (cr = close_resp)

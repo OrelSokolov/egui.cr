@@ -3,10 +3,15 @@
 # default borderless look of `Egui::Backend::Sokol.run(decorations:
 # false)` (see the `chrome:`/`chrome_style:` options there).
 #
-# Three styles (WindowFrame::Style) — they change ONLY the top caption
-# panel; the 1px window outline and all behavior are shared:
-#   * Windows — Windows 11 dark: 32pt #202020 caption, 46×32 caption
-#     buttons, #C42B1C close hover.
+# Four styles (WindowFrame::Style):
+#   * Windows — Windows 11: 32pt caption, 46×32 caption buttons, #C42B1C
+#     close hover; the dark/light palette follows the app theme
+#     (`ctx.theme`), like Win11's own dark/light mode.
+#   * WindowsXp — the classic XP Luna look: blue gradient titlebar
+#     with glossy rounded caption buttons (red close), app icon slot,
+#     and a THICK 6pt blue frame around the client area (the only
+#     style that reserves border space — the others share a 1px
+#     window outline).
 #   * Ubuntu  — the classic Ambiance look (~2017): 28pt titlebar with a
 #     vertical warm-grey gradient, centered title, round buttons at the
 #     right edge (min, max, close — close in Ubuntu orange #E95420).
@@ -33,6 +38,7 @@ module Egui
   class WindowFrame
     enum Style
       Windows
+      WindowsXp
       Ubuntu
       Macos
     end
@@ -42,9 +48,10 @@ module Egui
     def self.show(ctx : Context, title : String,
                   style : Style = Style::Windows) : Nil
       frame = case style
-              in Style::Windows then Windows.new(ctx, title)
-              in Style::Ubuntu  then Ubuntu.new(ctx, title)
-              in Style::Macos   then Macos.new(ctx, title)
+              in Style::Windows   then Windows.new(ctx, title)
+              in Style::WindowsXp then WindowsXp.new(ctx, title)
+              in Style::Ubuntu    then Ubuntu.new(ctx, title)
+              in Style::Macos     then Macos.new(ctx, title)
               end
       frame.draw
     end
@@ -156,6 +163,7 @@ module Egui
       # on a STYLE SUBCLASS instance whose own copies stay nil.
       h = WindowFrame.caption_height? || caption_height
       bar = @ctx.top_panel("window_frame/caption", height: h) { }
+      reserve_border(bar)
       handle_drag(bar)
       paint_caption(bar)
       paint_icon(bar)
@@ -178,8 +186,14 @@ module Egui
     end
 
     # The app icon at the caption's left edge (Windows idiom) — see
-    # `.icon=`. No-op by default; the Windows style paints it.
+    # `.icon=`. No-op by default; the Windows styles paint it.
     def paint_icon(bar : Rect) : Nil
+    end
+
+    # Reserve non-caption frame space (side/bottom borders) as panels
+    # so app content lays out INSIDE the frame. No-op by default; the
+    # WindowsXp style reserves its thick blue border here.
+    def reserve_border(bar : Rect) : Nil
     end
 
     # --- style hooks (overridden per style) ---------------------------------
@@ -203,27 +217,34 @@ module Egui
     def paint_buttons(bar : Rect) : Nil
     end
 
-    # The window outline — SHARED by every style (only the caption
-    # differs between looks): four pixel-aligned 1px solid bars,
-    # painted above every panel (z just under the popup layer) so the
-    # central panel's fill cannot cover them.
-    BORDER = Color32.new(58, 58, 58, 255) # 1px window outline
+    # The window outline — shared by every style except WindowsXp
+    # (which overrides this with its thick blue border): four
+    # pixel-aligned 1px solid bars, painted above every panel (z just
+    # under the popup layer) so the central panel's fill cannot cover
+    # them. The color follows the app theme (dark / light rim).
+    BORDER_DARK  = Color32.new(58, 58, 58, 255)    # 1px outline, dark theme
+    BORDER_LIGHT = Color32.new(190, 190, 190, 255) # 1px outline, light theme
+
+    def border_color : Color32
+      @ctx.theme.dark? ? BORDER_DARK : BORDER_LIGHT
+    end
 
     def paint_border(screen : Rect) : Nil
       painter.layer = POPUP_LAYER_Z - 1
       painter.clip = screen
+      border = border_color
       w = screen.width
       h = screen.height
       painter.rect(Rect.from_min_size(screen.min, Vec2.new(w, 1.0)),
-        0.0, BORDER, nil, 0.0)
+        0.0, border, nil, 0.0)
       painter.rect(Rect.from_min_size(
         Pos2.new(screen.left, screen.bottom - 1.0), Vec2.new(w, 1.0)),
-        0.0, BORDER, nil, 0.0)
+        0.0, border, nil, 0.0)
       painter.rect(Rect.from_min_size(screen.min, Vec2.new(1.0, h)),
-        0.0, BORDER, nil, 0.0)
+        0.0, border, nil, 0.0)
       painter.rect(Rect.from_min_size(
         Pos2.new(screen.right - 1.0, screen.top), Vec2.new(1.0, h)),
-        0.0, BORDER, nil, 0.0)
+        0.0, border, nil, 0.0)
     end
 
     # --- shared pieces --------------------------------------------------------
@@ -298,7 +319,7 @@ module Egui
     end
 
     # ==========================================================================
-    # Windows 11 (dark)
+    # Windows 11 (dark & light, follows ctx.theme)
     # ==========================================================================
     class Windows < WindowFrame
       CAPTION_H = 32.0 # Win11 caption height (px @ 100%)
@@ -320,6 +341,35 @@ module Egui
       PRESSED_FILL  = Color32.new(40, 40, 40, 255)      # 4% white on #202020
       CLOSE_HOVER   = Color32.new(196, 43, 28, 255)     # #C42B1C
       CLOSE_PRESSED = Color32.new(179, 39, 30, 255)     # #B3271E
+
+      # Windows 11 light palette (same overlays, black on #D6D6D6). The
+      # caption sits DARKER than the theme's panel_fill (#F3F3F3) so
+      # the tab cards and the menu bar below read against it — the
+      # Win11 Notepad light hierarchy: gray titlebar, lighter content.
+      BG_LIGHT           = Color32.new(214, 214, 214, 255) # #D6D6D6 caption
+      FG_LIGHT           = Color32.new(32, 32, 32, 255)    # #202020 title + glyphs
+      HOVER_FILL_LIGHT   = Color32.new(202, 202, 202, 255) # #CACACA hover on #D6D6D6
+      PRESSED_FILL_LIGHT = Color32.new(208, 208, 208, 255) # #D0D0D0 press on #D6D6D6
+      # The close hover/press red is shared by both palettes; its glyph
+      # stays WHITE over the red (what Win11 does in light mode too).
+      GLYPH_ON_RED = Color32.new(255, 255, 255, 255)
+
+      # The theme-picked palette: dark or light, following ctx.theme.
+      def bg : Color32
+        @ctx.theme.dark? ? BG : BG_LIGHT
+      end
+
+      def fg : Color32
+        @ctx.theme.dark? ? FG : FG_LIGHT
+      end
+
+      private def hover_fill : Color32
+        @ctx.theme.dark? ? HOVER_FILL : HOVER_FILL_LIGHT
+      end
+
+      private def pressed_fill : Color32
+        @ctx.theme.dark? ? PRESSED_FILL : PRESSED_FILL_LIGHT
+      end
 
       def caption_height : Float64
         CAPTION_H
@@ -346,7 +396,7 @@ module Egui
           Pos2.new(bar.left - 1.0, bar.top - 1.0),
           Vec2.new(bar.width + 2.0, bar.height + 1.0))
         painter.clip = grown
-        painter.rect(grown, 0.0, BG, nil, 0.0)
+        painter.rect(grown, 0.0, bg, nil, 0.0)
       end
 
       def paint_title(bar : Rect) : Nil
@@ -356,7 +406,7 @@ module Egui
         # (Win11 order: icon, then title).
         x = bar.left + TITLE_PAD
         x += ICON_PAD + ICON_SIZE + ICON_GAP if WindowFrame.icon?
-        painter.text(Pos2.new(x, bar.center.y), title, TITLE_PT, FG)
+        painter.text(Pos2.new(x, bar.center.y), title, TITLE_PT, fg)
       end
 
       # The app icon (see `.icon=`): 16×16 at the left edge, centered
@@ -393,13 +443,16 @@ module Egui
         min = Rect.from_min_size(
           Pos2.new(max.left - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
 
-        button(min, "minimize")
-        button(max, "maximize")
-        button(close, "close")
+        min_resp = button(min, "minimize")
+        max_resp = button(max, "maximize")
+        close_resp = button(close, "close")
 
-        glyph("minimize", min, FG)
-        glyph("maximize", max, FG)
-        glyph("close", close, FG)
+        glyph("minimize", min, fg)
+        glyph("maximize", max, fg)
+        # The close glyph goes white over the red hover/press fill in
+        # BOTH palettes (Win11 keeps it white in light mode too).
+        glyph("close", close,
+          close_resp.hovered? ? GLYPH_ON_RED : fg)
       end
 
       # A square caption button: hover/press fill (Win11 overlay colors)
@@ -409,9 +462,9 @@ module Egui
         painter.layer = Order::Middle
         painter.clip = rect
         fill = if resp.active? && resp.hovered?
-          name == "close" ? CLOSE_PRESSED : PRESSED_FILL
+          name == "close" ? CLOSE_PRESSED : pressed_fill
         elsif resp.hovered?
-          name == "close" ? CLOSE_HOVER : HOVER_FILL
+          name == "close" ? CLOSE_HOVER : hover_fill
         end
         painter.rect(rect, 0.0, fill, nil, 0.0)
         resp
@@ -453,6 +506,243 @@ module Egui
           painter.line(Pos2.new(c.x + g, c.y - g), Pos2.new(c.x - g, c.y + g),
             1.0, color)
         end
+      end
+    end
+
+    # ==========================================================================
+    # Windows XP — the classic Luna theme (~2002): blue gradient
+    # titlebar with glossy rounded caption buttons (red close), the app
+    # icon slot, and a THICK 6pt blue frame around the client area —
+    # the only style that reserves border space (#reserve_border).
+    # ==========================================================================
+    class WindowsXp < WindowFrame
+      CAPTION_H = 28.0 # Luna titlebar height
+      BORDER_W  = 4.0  # thick blue frame thickness (XP default, 4px)
+      BTN       = 21.0 # glossy caption button box
+      BTN_GAP   = 2.0  # gap between buttons
+      BTN_INSET = 4.0  # button inset from the right window edge
+      TITLE_PAD = 8.0  # title text inset from the left edge
+      TITLE_PT  = 12.0 # Tahoma-ish caption font
+      ICON_SIZE = 16.0 # app icon box (same slot as the Win11 style)
+      ICON_PAD  = 6.0
+      ICON_GAP  = 4.0
+
+      # Luna blue titlebar: a bright band at the top fading into the
+      # deep blue body (approximated with two stacked gradients).
+      CAP_LIGHT     = Color32.new(9, 151, 255, 255)   # #0997FF top band
+      CAP_MID       = Color32.new(0, 83, 238, 255)    # #0053EE
+      CAP_DEEP      = Color32.new(0, 61, 215, 255)    # #003DD7
+      FG            = Color32.new(255, 255, 255, 255) # title + glyphs
+      TITLE_SHADOW  = Color32.new(0, 40, 130, 255)    # soft drop shadow
+
+      # The thick frame: solid Luna blue with a navy outer line and a
+      # light hairline where it meets the client area.
+      FRAME       = Color32.new(0, 85, 234, 255)     # #0055EA
+      FRAME_OUTER = Color32.new(8, 49, 217, 255)     # #0831D9
+      FRAME_INNER = Color32.new(140, 188, 250, 255)  # #8CBCFA
+
+      # Glossy caption buttons: blue min/max, red close — gradient
+      # stops plus a darker ring and hover/press variants.
+      BTN_TOP      = Color32.new(94, 158, 245, 255)
+      BTN_BOTTOM   = Color32.new(33, 82, 204, 255)
+      BTN_RING     = Color32.new(23, 51, 143, 255)
+      BTN_HOT_TOP  = Color32.new(130, 185, 255, 255)
+      BTN_HOT_BOT  = Color32.new(58, 110, 228, 255)
+      BTN_DOWN_TOP = Color32.new(52, 104, 196, 255)
+      BTN_DOWN_BOT = Color32.new(18, 52, 158, 255)
+
+      CLOSE_TOP      = Color32.new(245, 130, 92, 255)
+      CLOSE_BOTTOM   = Color32.new(202, 44, 10, 255)
+      CLOSE_RING     = Color32.new(127, 29, 6, 255)
+      CLOSE_HOT_TOP  = Color32.new(255, 160, 120, 255)
+      CLOSE_HOT_BOT  = Color32.new(222, 66, 24, 255)
+      CLOSE_DOWN_TOP = Color32.new(190, 60, 24, 255)
+      CLOSE_DOWN_BOT = Color32.new(150, 26, 6, 255)
+
+      @border_top = 0.0 # where the blue frame starts (caption bottom)
+
+      def caption_height : Float64
+        CAPTION_H
+      end
+
+      # The thick blue frame: side/bottom panels bite the rim so app
+      # content lays out INSIDE the frame — a real XP client area, not
+      # content overdrawn by the border.
+      def reserve_border(bar : Rect) : Nil
+        @border_top = bar.bottom
+        @ctx.side_panel(:left, "window_frame/border/left",
+          width: BORDER_W) { }
+        @ctx.side_panel(:right, "window_frame/border/right",
+          width: BORDER_W) { }
+        @ctx.bottom_panel("window_frame/border/bottom",
+          height: BORDER_W) { }
+      end
+
+      def paint_caption(bar : Rect) : Nil
+        painter.layer = 1
+        painter.clip = bar.shrink(-1.0)
+        grown = bar.shrink(-1.0)
+        painter.rect_gradient(grown, 0.0, CAP_MID, CAP_DEEP)
+        # the bright Luna band over the upper third of the titlebar
+        band_h = {bar.height * 0.35, 2.0}.max
+        painter.rect_gradient(Rect.from_min_size(
+          Pos2.new(grown.left, grown.top),
+          Vec2.new(grown.width, band_h)), 0.0, CAP_LIGHT, CAP_MID)
+      end
+
+      def paint_title(bar : Rect) : Nil
+        painter.layer = 1
+        painter.clip = bar.shrink(-1.0)
+        x = WindowFrame.icon? ? ICON_PAD + ICON_SIZE + ICON_GAP : TITLE_PAD
+        pos = Pos2.new(bar.left + x, bar.center.y)
+        painter.text(Pos2.new(pos.x + 1.0, pos.y + 1.0), title, TITLE_PT,
+          TITLE_SHADOW)
+        painter.text(pos, title, TITLE_PT, FG)
+      end
+
+      def paint_icon(bar : Rect) : Nil
+        return unless WindowFrame.icon?
+        texture = WindowFrame.icon_texture(@ctx)
+        return if texture.zero?
+        rect = Rect.from_min_size(
+          Pos2.new(bar.left + ICON_PAD,
+            bar.top + (bar.height - ICON_SIZE) / 2.0),
+          Vec2.new(ICON_SIZE, ICON_SIZE))
+        painter.layer = 1
+        painter.clip = bar.shrink(-1.0)
+        painter.image(rect, texture)
+      end
+
+      # Caption content (the #caption hook) claims everything left of
+      # the caption buttons — and, with an icon installed, only after
+      # the icon slot.
+      def content_area(bar : Rect) : Rect?
+        left = WindowFrame.icon? ? ICON_PAD + ICON_SIZE + ICON_GAP : 0.0
+        Rect.from_min_size(
+          Pos2.new(bar.left + left, bar.top),
+          Vec2.new(
+            {bar.width - left - 3 * BTN - 2 * BTN_GAP - BTN_INSET, 0.0}.max,
+            bar.height))
+      end
+
+      def paint_buttons(bar : Rect) : Nil
+        # Buttons pinned to the TOP standard strip — a taller caption
+        # (content hook) extends the bar below them.
+        y = bar.top + (CAPTION_H - BTN) / 2.0
+        close = Rect.from_min_size(
+          Pos2.new(bar.right - BTN_INSET - BTN, y), Vec2.new(BTN, BTN))
+        max_r = Rect.from_min_size(
+          Pos2.new(close.left - BTN_GAP - BTN, y), Vec2.new(BTN, BTN))
+        min_r = Rect.from_min_size(
+          Pos2.new(max_r.left - BTN_GAP - BTN, y), Vec2.new(BTN, BTN))
+
+        glossy_button(min_r, "minimize",
+          {BTN_TOP, BTN_BOTTOM}, {BTN_HOT_TOP, BTN_HOT_BOT},
+          {BTN_DOWN_TOP, BTN_DOWN_BOT}, BTN_RING)
+        glossy_button(max_r, "maximize",
+          {BTN_TOP, BTN_BOTTOM}, {BTN_HOT_TOP, BTN_HOT_BOT},
+          {BTN_DOWN_TOP, BTN_DOWN_BOT}, BTN_RING)
+        glossy_button(close, "close",
+          {CLOSE_TOP, CLOSE_BOTTOM}, {CLOSE_HOT_TOP, CLOSE_HOT_BOT},
+          {CLOSE_DOWN_TOP, CLOSE_DOWN_BOT}, CLOSE_RING)
+      end
+
+      # A glossy Luna caption button: rounded gradient fill with a
+      # darker ring, brighter on hover, deeper on press.
+      private def glossy_button(rect : Rect, name : String,
+                                fill : {Color32, Color32},
+                                hover : {Color32, Color32},
+                                down : {Color32, Color32},
+                                ring : Color32) : Response
+        resp = click_action(rect, name)
+        painter.layer = Order::Middle
+        painter.clip = rect
+        top, bottom = if resp.active? && resp.hovered?
+          down
+        elsif resp.hovered?
+          hover
+        else
+          fill
+        end
+        painter.rect(rect, 3.0, top, ring, 1.0, bottom)
+        glyph(name, rect, FG)
+        resp
+      end
+
+      # The Luna glyphs: white, a touch bolder than the Win11 ones.
+      private def glyph(name : String, rect : Rect, color : Color32) : Nil
+        painter.layer = Order::Middle
+        painter.clip = rect
+        c = rect.center
+        case name
+        when "minimize"
+          # a 2px bar near the bottom of the button box
+          painter.rect(Rect.from_min_size(
+            Pos2.new(c.x - 4.5, c.y + 3.0), Vec2.new(9.0, 2.0)),
+            0.0, color, nil, 0.0)
+        when "maximize"
+          if WindowFrame.maximized?
+            # restore: two overlapping square outlines, back sheet
+            # offset up-right of the front one
+            back = Rect.from_min_size(
+              Pos2.new(c.x - 3.0, c.y - 6.0), Vec2.new(9.0, 9.0))
+            painter.rect(back, 1.0, nil, color, 1.5)
+            painter.line(Pos2.new(c.x - 4.5, c.y - 3.0),
+              Pos2.new(c.x - 4.5, c.y + 4.5), 1.5, color)
+            painter.line(Pos2.new(c.x - 4.5, c.y + 4.5),
+              Pos2.new(c.x + 2.0, c.y + 4.5), 1.5, color)
+          else
+            box = Rect.from_min_size(
+              Pos2.new(c.x - 4.5, c.y - 4.5), Vec2.new(9.0, 9.0))
+            painter.rect(box, 1.0, nil, color, 1.5)
+          end
+        when "close"
+          painter.line(Pos2.new(c.x - 4.5, c.y - 4.5),
+            Pos2.new(c.x + 4.5, c.y + 4.5), 1.5, color)
+          painter.line(Pos2.new(c.x + 4.5, c.y - 4.5),
+            Pos2.new(c.x - 4.5, c.y + 4.5), 1.5, color)
+        end
+      end
+
+      # The THICK blue Luna frame (space reserved by #reserve_border):
+      # the rim strips filled solid blue, a navy outline around the
+      # window and a light hairline where the frame meets the client
+      # area.
+      def paint_border(screen : Rect) : Nil
+        painter.layer = POPUP_LAYER_Z - 1
+        painter.clip = screen
+        left = Rect.from_min_size(
+          Pos2.new(screen.left, @border_top),
+          Vec2.new(BORDER_W, screen.bottom - @border_top))
+        right = Rect.from_min_size(
+          Pos2.new(screen.right - BORDER_W, @border_top),
+          Vec2.new(BORDER_W, screen.bottom - @border_top))
+        bottom = Rect.from_min_size(
+          Pos2.new(screen.left, screen.bottom - BORDER_W),
+          Vec2.new(screen.width, BORDER_W))
+        painter.rect(left, 0.0, FRAME, nil, 0.0)
+        painter.rect(right, 0.0, FRAME, nil, 0.0)
+        painter.rect(bottom, 0.0, FRAME, nil, 0.0)
+
+        # navy outline around the window + inner hairline around the
+        # client opening (the same four-bar shape as the 1px outline)
+        w = screen.width
+        h = screen.height
+        painter.rect(Rect.from_min_size(screen.min, Vec2.new(w, 1.0)),
+          0.0, FRAME_OUTER, nil, 0.0)
+        painter.rect(Rect.from_min_size(
+          Pos2.new(screen.left, screen.bottom - 1.0), Vec2.new(w, 1.0)),
+          0.0, FRAME_OUTER, nil, 0.0)
+        painter.rect(Rect.from_min_size(screen.min, Vec2.new(1.0, h)),
+          0.0, FRAME_OUTER, nil, 0.0)
+        painter.rect(Rect.from_min_size(
+          Pos2.new(screen.right - 1.0, screen.top), Vec2.new(1.0, h)),
+          0.0, FRAME_OUTER, nil, 0.0)
+
+        client = Rect.new(
+          Pos2.new(screen.left + BORDER_W, @border_top),
+          Pos2.new(screen.right - BORDER_W, screen.bottom - BORDER_W))
+        painter.rect(client, 0.0, nil, FRAME_INNER, 1.0)
       end
     end
 

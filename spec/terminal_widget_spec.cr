@@ -272,6 +272,34 @@ describe Egui::Terminal::TermView do
     term.selection.should be_nil
   end
 
+  it "drag-selects while the scrollbar is visible (scrollback)" do
+    backend = FakeBackend.with_screen("$ ")
+    ctx = Egui::Context.new
+    term_frame(ctx, backend)
+    term_frame(ctx, backend)
+
+    # Push content into history: the scrollbar appears and carves a
+    # strip out of the terminal's interact rect — the grid must stay
+    # clickable (regression: Rect.new(rect.min, bar_rect.min) collapsed
+    # the interact height to zero, killing hover/click/selection).
+    rows = backend.term.rows
+    (rows * 2).times { backend.term.feed("\e[#{rows};1H\n") }
+    term_frame(ctx, backend)
+    term_frame(ctx, backend)
+    backend.term.grid.scrollback_used.should be > 0
+
+    term_frame(ctx, backend,
+      [Egui::Event.pointer_pressed(Egui::Pos2.new(60.0, 20.0))], time: 0.10)
+    term_frame(ctx, backend,
+      [Egui::Event.pointer_moved(Egui::Pos2.new(200.0, 20.0))], time: 0.12)
+    term_frame(ctx, backend,
+      [Egui::Event.pointer_released(Egui::Pos2.new(200.0, 20.0))], time: 0.14)
+
+    sel = backend.term.selection.should_not be_nil
+    a, b = sel.not_nil!
+    b.col.should be > a.col
+  end
+
   it "double-click selects a word, triple-click the line" do
     backend = FakeBackend.with_screen("word word word")
     ctx = Egui::Context.new

@@ -160,6 +160,72 @@ describe Egui::SystemPorts do
   end
 end
 
+# A minimal JSON::Serializable config type for the AppConfig specs.
+class SpecSettings
+  include JSON::Serializable
+  property theme : String = "dark"
+
+  def initialize(@theme : String = "dark")
+  end
+end
+
+def with_temp_base(&) : Nil
+  dir = File.join(Dir.tempdir, "egui-appconfig-spec-#{rand(UInt64::MAX).to_s(16)}")
+  Egui::SystemPorts::AppConfig.use(dir)
+  begin
+    yield dir
+  ensure
+    Egui::SystemPorts::AppConfig.use(nil)
+    FileUtils.rm_rf(dir)
+  end
+end
+
+describe Egui::SystemPorts::AppConfig do
+  it "namespaces configs by app, key → .json" do
+    with_temp_base do |dir|
+      Egui::SystemPorts::AppConfig.path("notepad")
+        .should eq File.join(dir, "notepad", "settings.json")
+      Egui::SystemPorts::AppConfig.path("notepad", "profiles")
+        .should eq File.join(dir, "notepad", "profiles.json")
+      Egui::SystemPorts::AppConfig.path("notepad", "keep.json")
+        .should eq File.join(dir, "notepad", "keep.json")
+    end
+  end
+
+  it "places configs in the platform user config dir by default" do
+    Egui::SystemPorts::AppConfig.path("notepad")
+      .should eq File.join(Egui::SystemPorts::UserDirs.config,
+        "notepad", "settings.json")
+  end
+
+  it "load yields the default for a missing file" do
+    with_temp_base do |dir|
+      Egui::SystemPorts::AppConfig.load("notepad",
+        SpecSettings.new).theme.should eq "dark"
+    end
+  end
+
+  it "load yields the default for corrupt JSON" do
+    with_temp_base do |dir|
+      path = Egui::SystemPorts::AppConfig.path("notepad")
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "{ not json")
+      Egui::SystemPorts::AppConfig.load("notepad",
+        SpecSettings.new).theme.should eq "dark"
+    end
+  end
+
+  it "save → load round-trips through the user dir" do
+    with_temp_base do |dir|
+      settings = SpecSettings.new("light")
+      Egui::SystemPorts::AppConfig.save("notepad", settings)
+      File.exists?(Egui::SystemPorts::AppConfig.path("notepad")).should be_true
+      Egui::SystemPorts::AppConfig.load("notepad",
+        SpecSettings.new).theme.should eq "light"
+    end
+  end
+end
+
 # Drain any leftover async-dialog requests so worker fibers can't
 # leak across tests.
 def drain_async_dialogs : Nil

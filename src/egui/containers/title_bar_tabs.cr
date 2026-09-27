@@ -10,15 +10,20 @@
 #       on_new: -> { … })                 # the "+" button was clicked
 #   end
 #
-# Look (Win11 Notepad dark): tab cards aligned to the BOTTOM edge of
+# Look (Win11 Notepad; the card palette is dark or light, following
+# the app theme): tab cards aligned to the BOTTOM edge of
 # the caption (a drag strip of caption air stays above them), the
 # active card a notch lighter with rounded top corners, a minimum
 # card width so short titles don't squeeze, an X in the active tab
 # and on hover (a dot instead while an inactive tab is dirty — the X
 # replaces it on hover, exactly Notepad's marker swap), and a "+"
-# new-tab button after the last tab. When the tabs overflow the strip
-# it scrolls carousel-style — the active tab always stays fully in
-# view; off-screen tabs neither paint nor interact.
+# new-tab button after the last tab. The strip's width is BOUNDED by
+# the area it is given: the "+" button's room (NEW_GAP + NEW_BOX) is
+# always reserved at the right edge and the cards carousel inside what
+# remains, so the cards never run into the caption buttons; once the
+# tabs overflow, the "+" is pinned to that right edge — it never
+# scrolls off or hides. The active tab always stays fully in view;
+# off-screen tabs neither paint nor interact.
 #
 # Layering: the cards ride a Middle layer ABOVE the frame's drag strip
 # (z=0), so clicks land on the tabs, never on the window drag — the
@@ -53,6 +58,26 @@ module Egui
     X_HOVER     = Color32.new(80, 80, 80, 255)    # X hover circle
     NEW_HOVER   = Color32.new(47, 47, 47, 255)    # "+" hover fill
 
+    # The light counterparts: cards sit on the #D6D6D6 caption (darker
+    # than the theme's panel_fill, so the active card — panel_fill —
+    # reads against the strip).
+    HOVER_LIGHT       = Color32.new(202, 202, 202, 255) # #CACACA inactive hover
+    TEXT_ACTIVE_LIGHT = Color32.new(32, 32, 32, 255)    # #202020
+    TEXT_IDLE_LIGHT   = Color32.new(96, 96, 96, 255)    # #606060
+    X_HOVER_LIGHT     = Color32.new(196, 196, 196, 255) # #C4C4C4
+    NEW_HOVER_LIGHT   = Color32.new(202, 202, 202, 255) # #CACACA
+
+    # The card palette, dark or light, picked from the app theme — the
+    # strip follows `ctx.theme` like the frame it lives in.
+    def self.palette(ctx : Context)
+      ctx.theme.dark? ?
+        {hover: HOVER, active: TEXT_ACTIVE, idle: TEXT_IDLE,
+         x_hover: X_HOVER, new_hover: NEW_HOVER} :
+        {hover: HOVER_LIGHT, active: TEXT_ACTIVE_LIGHT,
+         idle: TEXT_IDLE_LIGHT, x_hover: X_HOVER_LIGHT,
+         new_hover: NEW_HOVER_LIGHT}
+    end
+
     # Cards above the drag strip (z=0), below the caption buttons
     # (z=50) — see the class doc.
     LAYER = LayerId.new(Order::Middle, Id.from("title_bar_tabs"), 40)
@@ -84,19 +109,30 @@ module Egui
         {ctx.fonts.measure(title, FONT).x + 2 * PAD_X + ICON + ICON_GAP,
          MIN_W}.max
       end
-      total = widths.sum + NEW_GAP + NEW_BOX
+      # The strip's visible window for the CARDS: the right edge of the
+      # area always reserves the "+" button's room (NEW_GAP + NEW_BOX),
+      # so the cards carousel inside what remains — the strip's width is
+      # bounded by the area (it can never run into the caption buttons)
+      # and the "+" can never be pushed out, however many tabs there
+      # are.
+      view_w = {area.width - NEW_GAP - NEW_BOX, 0.0}.max
+      view = Rect.from_min_size(area.min, Vec2.new(view_w, area.height))
+
+      total = widths.sum
+      overflow = FIRST_INSET + total > view_w
 
       # Carousel offset (same scheme as Tabs): scroll just enough that
-      # the ACTIVE tab stays fully inside the strip. No overflow → 0.
+      # the ACTIVE tab stays fully inside the visible window. No
+      # overflow → 0.
       offset = 0.0
       ctx.memory.use_id(SCROLL_ID)
-      if total > area.width
+      if overflow
         offset = ctx.memory.data.get_f64(SCROLL_ID, 0.0)
-        sel_start = widths[0...sel].sum
+        sel_start = FIRST_INSET + widths[0...sel].sum
         sel_end = sel_start + widths[sel]
         offset = sel_start if sel_start < offset
-        offset = sel_end - area.width if sel_end > offset + area.width
-        offset = offset.clamp(0.0, {total - area.width, 0.0}.max)
+        offset = sel_end - view_w if sel_end > offset + view_w
+        offset = offset.clamp(0.0, FIRST_INSET + total - view_w)
       end
       ctx.memory.data.set_f64(SCROLL_ID, offset)
 
@@ -104,9 +140,9 @@ module Egui
       titles.each_with_index do |title, i|
         rect = Rect.from_min_size(Pos2.new(x.round, card_top),
           Vec2.new(widths[i], card_h))
-        hidden = rect.max.x <= area.left || rect.min.x >= area.right
+        hidden = rect.max.x <= view.left || rect.min.x >= view.right
         unless hidden
-          hit = clamp(rect, area)
+          hit = clamp(rect, view)
           tab_resp = ctx.interact(Id.from("title_bar_tabs/tab/#{i}"),
             hit, Sense.click, LAYER, hit)
           # The X interacts AFTER its tab so hit-testing routes a click
@@ -115,12 +151,12 @@ module Egui
             Pos2.new(rect.right - PAD_X - ICON,
               rect.center.y - ICON / 2.0),
             Vec2.new(ICON, ICON))
-          x_rect = clamp(x_rect, area)
+          x_rect = clamp(x_rect, view)
           x_resp = ctx.interact(Id.from("title_bar_tabs/close/#{i}"),
             x_rect, Sense.click, LAYER, x_rect)
 
           paint_tab(ctx, rect, title, i == sel, tab_resp.hovered?,
-            x_resp.hovered?, dirty[i]? || false, area)
+            x_resp.hovered?, dirty[i]? || false, view)
 
           if x_resp.clicked?
             on_close.try(&.call(i))
@@ -133,11 +169,15 @@ module Egui
         x = rect.max.x
       end
 
-      # The "+" new-tab button after the last tab (always shown — an
-      # empty strip offers the first tab, like Notepad's empty state),
-      # pinned to the caption's BOTTOM edge, flush with the cards.
+      # The "+" new-tab button: right after the last tab while the strip
+      # has room, PINNED to the strip's right edge once the tabs overflow
+      # (the reservation above always leaves it room, so it can neither
+      # scroll off nor hide). Always shown — an empty strip offers the
+      # first tab, like Notepad's empty state — pinned to the caption's
+      # BOTTOM edge, flush with the cards.
+      plus_x = overflow ? area.right - NEW_BOX : x.round + NEW_GAP
       new_rect = Rect.from_min_size(
-        Pos2.new(x.round + NEW_GAP, area.bottom - NEW_BOX),
+        Pos2.new(plus_x, area.bottom - NEW_BOX),
         Vec2.new(NEW_BOX, NEW_BOX))
       if new_rect.max.x <= area.right
         new_hit = clamp(new_rect, area)
@@ -147,9 +187,10 @@ module Egui
         painter.layer = LAYER.z
         outer_clip = painter.clip
         painter.clip = area
-        fill = new_resp.hovered? ? NEW_HOVER : nil
+        pal = palette(ctx)
+        fill = new_resp.hovered? ? pal[:new_hover] : nil
         painter.rect(new_rect, 4.0, fill, nil, 0.0)
-        color = new_resp.hovered? ? TEXT_ACTIVE : TEXT_IDLE
+        color = new_resp.hovered? ? pal[:active] : pal[:idle]
         Icons.draw(painter, :plus, new_rect.shrink(9.0), color, 1.5)
         painter.clip = outer_clip
 
@@ -168,6 +209,7 @@ module Egui
                                x_hovered : Bool, dirty : Bool,
                                area : Rect) : Nil
       painter = ctx.painter
+      pal = palette(ctx)
       painter.layer = LAYER.z
       # The card's own box grown a little (the rounding band), but
       # never past the strip's visible window — carousel straddlers
@@ -175,7 +217,7 @@ module Egui
       painter.clip = clip_of(rect.expand(2.0), area)
 
       fill = selected ? ctx.style.visuals.panel_fill :
-        (tab_hovered && !x_hovered ? HOVER : nil)
+        (tab_hovered && !x_hovered ? pal[:hover] : nil)
       if fill
         painter.rect(rect, ROUNDING, fill, nil, 0.0)
         # Square off the card's bottom corners: fill the rounding band.
@@ -184,7 +226,7 @@ module Egui
           Vec2.new(rect.width, ROUNDING)), 0.0, fill, nil, 0.0)
       end
 
-      text_color = selected || tab_hovered ? TEXT_ACTIVE : TEXT_IDLE
+      text_color = selected || tab_hovered ? pal[:active] : pal[:idle]
       text_pos = Pos2.new(rect.left + PAD_X, rect.center.y)
       painter.text(text_pos, title, FONT, text_color)
 
@@ -197,7 +239,7 @@ module Egui
       show_x = selected || tab_hovered || x_hovered
       if !show_x && dirty
         painter.circle_filled(
-          Pos2.new(marker_rect.center.x, rect.center.y), 2.5, TEXT_IDLE)
+          Pos2.new(marker_rect.center.x, rect.center.y), 2.5, pal[:idle])
       elsif show_x
         if x_hovered
           # The X as a hover BUTTON: a rounded square behind the glyph
@@ -207,7 +249,7 @@ module Egui
               Pos2.new(marker_rect.center.x - X_BOX / 2.0,
                 marker_rect.center.y - X_BOX / 2.0),
               Vec2.new(X_BOX, X_BOX)),
-            X_ROUND, X_HOVER, nil, 0.0)
+            X_ROUND, pal[:x_hover], nil, 0.0)
         end
         Icons.draw(painter, :close, marker_rect, text_color, 1.5)
       end

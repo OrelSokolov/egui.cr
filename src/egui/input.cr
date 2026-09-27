@@ -26,6 +26,7 @@ module Egui
     Seven      =  55
     Eight      =  56
     Nine       =  57
+    Comma      =  44 # SAPP_KEYCODE_COMMA (Win11-style "Ctrl+," bindings)
     A          =  65
     B          =  66
     C          =  67

@@ -385,7 +385,8 @@ module Egui
       #   fully custom chrome. A runtime `Window.set_decorations`
       #   toggle shows/hides it in step.
       # * *chrome_style* — which chrome look to draw: Windows 11 dark
-      #   (default), classic Ubuntu Ambiance (gradient + round orange
+      #   (default), Windows XP Luna (blue gradient titlebar + thick
+      #   blue frame), classic Ubuntu Ambiance (gradient + round orange
       #   close) or macOS (traffic lights left, close first). Switchable
       #   live via `Sokol.chrome_style=`.
       def self.run(app : Egui::App, title : String = "egui-cr",
@@ -701,12 +702,16 @@ module Egui
         LibEguiCr.sgl_matrix_mode_modelview
         LibEguiCr.sgl_load_identity
 
-        # Transparent windows: every quad blends (rgb: src*a + dst*(1-a),
-        # a: a + dst_a*(1-a)) so the compositor receives a correctly
-        # premultiplied image; opaque quads are unaffected.
-        LibEguiCr.alpha_pipeline_push if @@transparent
+        # Every UI quad blends (rgb: src*a + dst*(1-a),
+        # a: a + dst_a*(1-a)): translucent fills (the modal scrim,
+        # shadows) composite over what's below, and transparent windows
+        # receive a correctly premultiplied image; opaque quads are
+        # unaffected. Without this the sokol_gl default pipeline (no
+        # blending) makes any alpha<255 fill overwrite dst — the modal
+        # scrim rendered as solid black.
+        LibEguiCr.alpha_pipeline_push
         commands.each { |cmd| paint(cmd) }
-        LibEguiCr.alpha_pipeline_pop if @@transparent
+        LibEguiCr.alpha_pipeline_pop
 
         LibEguiCr.end_pass
       end
@@ -723,6 +728,8 @@ module Egui
           paint_line(cmd)
         when Egui::ArcCmd
           paint_arc(cmd)
+        when Egui::ShadowCmd
+          paint_shadow(cmd)
         when Egui::ImageCmd
           paint_image(cmd)
         end
@@ -1105,6 +1112,183 @@ module Egui
             color)
         end
         LibEguiCr.sgl_end
+      end
+
+      # --- box-shadow (CSS) --------------------------------------------------
+      #
+      # A blurred band around (outset) or inside (inset) a rounded rect,
+      # built from gradient bands: each band is a quad strip between two
+      # offsets of the rect's rounded perimeter, per-vertex alpha from a
+      # gaussian-ish falloff table — Gouraud interpolation does the
+      # smoothing, the same machinery as the fill2 vertical gradients.
+      # Upstream egui blurs shadows the same way conceptually (tessellator
+      # `feathering` widened to `blur_width`), but has no inset at all.
+
+      # One point of a rounded-rect perimeter: position, INWARD unit
+      # normal (edge normals axis-aligned, corner normals aimed at the
+      # corner center) and the (one or two) sides the point belongs to —
+      # inset band depths differ per side, corner points blend the two.
+      alias PerimPt = {Egui::Pos2, Egui::Vec2, Symbol, Symbol}
+
+      # Walk the rounded perimeter clockwise: top edge → TR arc → right
+      # edge → BR arc → bottom edge → BL arc → left edge → TL arc.
+      # Straight edges carry only their endpoints — alpha never varies
+      # along an edge, so one quad per band spans it.
+      def self.rounded_perimeter(r : Egui::Rect, radius : Float64) : Array(PerimPt)
+        radius = {radius, r.width / 2.0, r.height / 2.0}.min
+        pts = [] of PerimPt
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64,
+                    s1 : Symbol, s2 : Symbol) do
+          6.times do |i|
+            a = a0 + (Math::PI / 2.0) * i / 5.0
+            dir = Egui::Vec2.new(Math.cos(a), Math.sin(a))
+            pts << {Egui::Pos2.new(cx + radius * dir.x, cy + radius * dir.y),
+              dir * -1.0, s1, s2}
+          end
+        end
+        pts << {Egui::Pos2.new(r.min.x + radius, r.min.y),
+          Egui::Vec2.new(0.0, 1.0), :top, :top}
+        corner.call(r.max.x - radius, r.min.y + radius, Math::PI * 1.5, :top, :right)
+        pts << {Egui::Pos2.new(r.max.x, r.min.y + radius),
+          Egui::Vec2.new(-1.0, 0.0), :right, :right}
+        corner.call(r.max.x - radius, r.max.y - radius, 0.0, :right, :bottom)
+        pts << {Egui::Pos2.new(r.max.x - radius, r.max.y),
+          Egui::Vec2.new(0.0, -1.0), :bottom, :bottom}
+        corner.call(r.min.x + radius, r.max.y - radius, Math::PI / 2.0, :bottom, :left)
+        pts << {Egui::Pos2.new(r.min.x, r.max.y - radius),
+          Egui::Vec2.new(1.0, 0.0), :left, :left}
+        corner.call(r.min.x + radius, r.min.y + radius, Math::PI, :left, :top)
+        pts
+      end
+
+      # Gaussian-ish falloff for one band stop: full alpha at the caster
+      # edge (t=0), ~0.14 at the band rim (t=1) — a CSS blur of `b`
+      # reads as a gaussian with σ ≈ b/2, i.e. exp(-2t²) over the band.
+      def self.shadow_stop(color : Egui::Color32, t : Float64) : Egui::Color32
+        a = (color.a.to_f64 * Math.exp(-2.0 * t * t) + 0.5).floor.to_u8
+        Egui::Color32.new(color.r, color.g, color.b, a)
+      end
+
+      # Emit the band quads between perimeter offset `t0 * depth` and
+      # `t1 * depth` (depth is per-point — sides can differ for inset
+      # shadows); outward when `sign` is -1, inward when +1.
+      def self.shadow_band(pts : Array(PerimPt),
+                           depths : Array(Float64), t0 : Float64, t1 : Float64,
+                           color : Egui::Color32, sign : Float64) : Nil
+        c0 = shadow_stop(color, t0)
+        c1 = shadow_stop(color, t1)
+        pts.each_with_index do |(p, n, _, _), i|
+          q = pts[(i + 1) % pts.size]
+          qn = q[1]
+          p0 = p + n * (sign * depths[i] * t0)
+          p1 = q[0] + qn * (sign * depths[i + 1 == pts.size ? 0 : i + 1] * t0)
+          p0b = p + n * (sign * depths[i] * t1)
+          p1b = q[0] + qn * (sign * depths[i + 1 == pts.size ? 0 : i + 1] * t1)
+          sgl_quad_colors(p0, p1, p1b, p0b, c0, c1)
+        end
+      end
+
+      def self.sgl_quad_colors(p0 : Egui::Pos2, p1 : Egui::Pos2,
+                               p2 : Egui::Pos2, p3 : Egui::Pos2,
+                               c_edge : Egui::Color32,
+                               c_inner : Egui::Color32) : Nil
+        LibEguiCr.sgl_v2f_c4b(p0.x.to_f32, p0.y.to_f32,
+          c_edge.r, c_edge.g, c_edge.b, c_edge.a)
+        LibEguiCr.sgl_v2f_c4b(p1.x.to_f32, p1.y.to_f32,
+          c_edge.r, c_edge.g, c_edge.b, c_edge.a)
+        LibEguiCr.sgl_v2f_c4b(p2.x.to_f32, p2.y.to_f32,
+          c_inner.r, c_inner.g, c_inner.b, c_inner.a)
+        LibEguiCr.sgl_v2f_c4b(p3.x.to_f32, p3.y.to_f32,
+          c_inner.r, c_inner.g, c_inner.b, c_inner.a)
+      end
+
+      def self.paint_shadow(cmd : Egui::ShadowCmd) : Nil
+        return if cmd.color.a.zero?
+        apply_scissor(cmd.clip)
+
+        if cmd.inset?
+          paint_shadow_inset(cmd)
+        else
+          paint_shadow_outset(cmd)
+        end
+      end
+
+      # Outset: the caster is the rect translated by `offset` and
+      # expanded by `spread` (corner radius grows with both, like
+      # upstream `Shadow::as_shape`); `blur` fades outward from there.
+      # A ~zero blur leaves the plain offset/spread silhouette.
+      def self.paint_shadow_outset(cmd : Egui::ShadowCmd) : Nil
+        base = cmd.rect.translate(cmd.offset).expand(cmd.spread)
+        radius = cmd.rounding + cmd.spread
+        blur = cmd.blur
+
+        if blur <= 0.5
+          if cmd.spread > 0.5 || cmd.offset.x.abs >= 0.5 || cmd.offset.y.abs >= 0.5
+            rounded_rect_fill(base, radius, cmd.color)
+          end
+          return
+        end
+
+        pts = rounded_perimeter(base, radius)
+        # Bands cover the blur width; alpha stops follow exp(-2t²).
+        bands = {blur.ceil.to_i, 1}.max.clamp(1..4)
+        depths = Array.new(pts.size, blur)
+        LibEguiCr.sgl_begin_quads
+        bands.times do |k|
+          shadow_band(pts, depths, k.to_f64 / bands,
+            (k + 1).to_f64 / bands, cmd.color, -1.0)
+        end
+        LibEguiCr.sgl_end
+      end
+
+      # Inset: the band lives INSIDE the rect, per-side depth = half the
+      # blur plus the offset's push towards that side (CSS `inset 0 1px`
+      # — y+1 is down — deepens the TOP band, thins the bottom one to
+      # nothing), plus `spread` everywhere. Corner depths are the mean
+      # of their two sides, clamped so the inner corner radius stays
+      # non-negative; every depth also clamps to half the rect's small
+      # side so opposing bands never cross the center.
+      def self.paint_shadow_inset(cmd : Egui::ShadowCmd) : Nil
+        r = cmd.rect
+        b = cmd.blur * 0.5 + cmd.spread
+        d_top = {b + cmd.offset.y, 0.0}.max
+        d_bottom = {b - cmd.offset.y, 0.0}.max
+        d_left = {b + cmd.offset.x, 0.0}.max
+        d_right = {b - cmd.offset.x, 0.0}.max
+        return if d_top <= 0.0 && d_bottom <= 0.0 &&
+                  d_left <= 0.0 && d_right <= 0.0
+
+        pts = rounded_perimeter(r, cmd.rounding)
+        radius = {cmd.rounding, r.width / 2.0, r.height / 2.0}.min
+        side = {r.width, r.height}.min / 2.0
+        depths = pts.map do |(_, _, s1, s2)|
+          d = (side_depth(s1, d_top, d_bottom, d_left, d_right) +
+               side_depth(s2, d_top, d_bottom, d_left, d_right)) / 2.0
+          # radius - 0.25 keeps the inner corner non-inverted; the
+          # max(0) collapses bands at near-sharp corners instead of
+          # flipping them outward.
+          {d, {radius - 0.25, 0.0}.max, side}.min
+        end
+        max_depth = depths.max
+        return if max_depth <= 0.0
+
+        bands = {max_depth.ceil.to_i, 1}.max.clamp(1..4)
+        LibEguiCr.sgl_begin_quads
+        bands.times do |k|
+          shadow_band(pts, depths, k.to_f64 / bands,
+            (k + 1).to_f64 / bands, cmd.color, 1.0)
+        end
+        LibEguiCr.sgl_end
+      end
+
+      def self.side_depth(side : Symbol, d_top : Float64, d_bottom : Float64,
+                          d_left : Float64, d_right : Float64) : Float64
+        case side
+        when :top    then d_top
+        when :bottom then d_bottom
+        when :left   then d_left
+        else              d_right
+        end
       end
 
       def self.bar(r : Egui::Rect, c : Egui::Color32) : Nil

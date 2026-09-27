@@ -10,9 +10,10 @@
 # into it) and a monospace font, selected per-platform below.
 #
 # User profiles (opacity / background color / cursor blink) persist as
-# JSON through Terminal::ConfigStore — the config port with one adapter
-# per platform (XDG on Linux, Application Support on macOS, APPDATA on
-# Windows). Settings live in the right side panel (File → Settings…).
+# JSON through Terminal::ConfigStore — the terminal face of the
+# framework's AppConfig system port (XDG on Linux, Application Support
+# on macOS, APPDATA on Windows). Settings live in the right side panel
+# (File → Settings…).
 
 require "../src/egui"
 require "../src/egui/backend/sokol"

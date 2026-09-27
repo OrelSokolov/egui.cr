@@ -4,7 +4,7 @@
 #
 # Like the rest of the core, ports stay headless-testable: a port either
 # shells out through the Crystal stdlib (dialogs, message box, shell,
-# notifications, user dirs) or delegates to an installable implementation
+# notifications, user dirs, app config) or delegates to an installable implementation
 # that the backend wires to native calls (quit, window, screen,
 # clipboard — see backend/sokol.cr).
 
@@ -17,4 +17,5 @@ require "./screen"
 require "./shell"
 require "./notification"
 require "./user_dirs"
+require "./app_config"
 require "./fonts"

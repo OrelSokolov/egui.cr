@@ -209,6 +209,11 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       paste keeps line breaks, UTF-8-aware caret stepping, caret
       auto-scroll. `ui.textarea(buffer, rows:, &on_change)`. Blank
       lines preserved in layout (`Galley::Row#newline_before`).
+      Buffers over `BIG_TEXT_BYTES` (512 KiB) switch to a virtual
+      `less`-style mode: a one-pass line index, only a window of rows
+      around the viewport ever laid out, no soft wrap. Document-wise
+      jumps: Ctrl+Home / Ctrl+End (caret to buffer start/end, Shift
+      extends the selection).
 - [x] Specs: type "ab" → buffer "ab"; backspace; cursor placement on click;
       textarea: Enter/newlines, Up/Down/Home/End, paste, wheel scroll,
       blank-line layout.
@@ -359,6 +364,18 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       a Win32-style property sheet: 12 tabs wrapped into several rows,
       per-tab property Grid, OK/Cancel/Apply button row, and a
       checkbox toggling the same strip to `:carousel` for comparison.
+      The demo also skins the WHOLE app Win95 (silver/navy/teal
+      palette) through the classic-skin engine keys added alongside:
+      `tabs.tab`/`button` `bevel_light`/`bevel_dark` (raised 3D
+      borders, read per state — `button:active` swapping the colors
+      sinks the box), `button`/`checkbox` `rounding`, `tabs`
+      `merge_selected` (the baseline skips the active tab, connecting
+      it to the page), `underline_width <= 0` disables the selection
+      underline, `checkbox` `box_fill`/`box_stroke`/`check_color`, and
+      `Visuals#title_bar_fill` + `Visuals#window_rounding` (navy
+      square title bar in `Context#window`, flat window by default).
+      Specs: tab bevel geometry + baseline gap around the active tab,
+      button bevel + rounding + sunken :active, themed title bar.
 - [x] Textarea fixes (user request): (1) the wrap width and viewport
       height now follow the ALLOCATED rect instead of the requested
       `rows` box — the max-size rule clamps a fill-the-panel textarea
@@ -502,12 +519,18 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       bound, caret-follow scroll > 0, clipped TextCmds, Home snaps
       back to the start.
 - [x] Default client-side chrome (user request): `src/egui/containers/
-      window_frame.cr` (egui.cr-native) — `Egui::WindowFrame` in three
-      selectable looks (`WindowFrame::Style`) — the style changes ONLY
-      the top caption panel; the 1px #3A3A3A window outline and all
-      behavior are shared. *Windows 11 dark* — 32pt
+      window_frame.cr` (egui.cr-native) — `Egui::WindowFrame` in four
+      selectable looks (`WindowFrame::Style`) — a style changes the
+      top caption panel; the 1px #3A3A3A window outline and all
+      behavior are shared, except *Windows XP* which also reserves a
+      thick 4pt blue frame around the client area (side/bottom panels,
+      so app content lays out inside it). *Windows 11 dark* — 32pt
       #202020 caption, 46×32 buttons with pixel-aligned 10×10 1px
-      glyphs, #C42B1C close hover, solid hover/press fills; *Ubuntu (classic Ambiance, ~2017)* — 28pt
+      glyphs, #C42B1C close hover, solid hover/press fills; *Windows XP
+      (Luna)* — 28pt blue gradient titlebar (bright top band over a
+      deep-blue body), glossy rounded caption buttons with a red close,
+      title drop shadow, app icon slot, thick #0055EA frame with a
+      navy outer outline; *Ubuntu (classic Ambiance, ~2017)* — 28pt
       warm-grey gradient titlebar, centered title, round buttons at the
       right edge with the close in Ubuntu orange #E95420; *macOS* —
       light 28pt titlebar with a separator hairline, centered title,
@@ -520,7 +543,8 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       before the app's own panels; `chrome_style:` picks the look at
       startup and `Sokol.chrome_style=` switches it live (the
       borderless demo's segmented control). `Context#top_panel` gained
-      a `height:` pin for the fixed caption. Runtime
+      a `height:` pin for the fixed caption (and `#bottom_panel` for
+      the XP frame strip). Runtime
       `Window.set_decorations` toggles the frame in step;
       `Window#set_title` keeps the caption text in sync. Specs: caption
       geometry/fill per style, min/close clicks through the ports
@@ -566,6 +590,29 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       tab click selects, X closes without selecting, dirty dot ↔ X
       swap, "+" fires on_new, tab clicks never drag while the empty
       caption does.
+- [x] Page container / in-app routing (user request): `src/egui/
+      containers/page.cr` — `ctx.page(id, title:, on_back:, fill:) { |ui| … }`,
+      the Win11 Notepad settings-page idiom: a full-window PAGE that
+      claims the whole remainder below the window caption (the
+      backend's WindowFrame has already bitten its strip, so the page
+      is "everything except the drag strip and control buttons") and
+      covers the normal UI — menu bar, tabs, panels — for the frames
+      it is shown in; unlike central_panel it is NOT deferred (a page
+      is an alternative UI, not another panel). Look: an opaque
+      stroke-free panel_fill surface, a 44pt header with a round 32×32
+      back button (left-arrow glyph, hover fill) and an 18pt title;
+      the content block runs in a child Ui below the header. Routing
+      is deliberately NOT managed: the app owns the current route
+      (e.g. a reactive Signal) and draws whichever page it wants —
+      `on_back` is just a click callback. The notepad demonstrates it:
+      File → Settings (Ctrl+Comma — KeyCode gained `Comma = 44`,
+      SAPP_KEYCODE_COMMA) opens a settings Page reactively
+      (`reactive settings_open`), the caption hook hides the tabs
+      while it is open, and the back button returns to the editor.
+      Specs (`spec/page_spec.cr`): full-remainder claim with and
+      without chrome, opaque stroke-free surface + remainder bitten,
+      back button fires once per click, content below the header (and
+      no header without title/on_back).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
 - [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync — idle frames replay the last paint commands

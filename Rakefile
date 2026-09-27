@@ -5,7 +5,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -80,7 +80,9 @@ task "build:examples" => ["build:native"] do
                "-framework OpenGL -framework QuartzCore"
   end
   EXAMPLES.each do |name|
-    sh "crystal build examples/#{name}.cr -o bin/#{name} --link-flags \"#{lib_flag}\""
+    # --release: these are the shipped demo binaries; a debug build is
+    # 10-100x slower (the notepad-on-big-files lesson).
+    sh "crystal build examples/#{name}.cr -o bin/#{name} --release --link-flags \"#{lib_flag}\""
   end
 end
 

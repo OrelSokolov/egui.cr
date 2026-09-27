@@ -8,9 +8,17 @@
 # Crystal String#[]/.size count characters, not bytes); the galley
 # maps them to rows via `Row#newline_before` — a wrap break consumes
 # no character, a newline break consumes one. Keyboard is the full
-# TextEdit set plus Enter (newline), line-wise Home/End and row-wise
-# Up/Down; paste keeps line breaks (the single-line field flattens
+# TextEdit set plus Enter (newline), line-wise Home/End, row-wise
+# Up/Down and page-wise PageUp/PageDown (a viewport page, column
+# kept); paste keeps line breaks (the single-line field flattens
 # them).
+#
+# BIG buffers (over BIG_TEXT_BYTES) switch to a virtual, `less`-style
+# mode: the text is indexed once (line-start character offsets) and
+# only a window of rows around the viewport is ever laid out — one row
+# per source line, no soft wrap (long lines clip at the right edge,
+# like less). Wrapping a multi-megabyte file at open would freeze the
+# frame for seconds; the window rebuilds on scroll for pocket change.
 
 module Egui
   class TextArea
@@ -21,9 +29,134 @@ module Egui
     VEL_SALT    = 0x7E1_u64
     BAR_SALT    = 0xBA2_u64
     BAR_W       = 8.0
+    # Above this size (bytes) the textarea goes virtual — see the file
+    # header. 512 KiB still full-wraps in ~100 ms once; past it, the
+    # open-time wrap and the per-edit re-wrap stop being pocket change.
+    BIG_TEXT_BYTES = 1 << 19
 
     def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8,
                    @frame : Bool = true)
+    end
+
+    # Cross-frame state for the virtual big-text mode: TextArea widgets
+    # are recreated every frame, so the line index and the last built
+    # row window live here, keyed by widget id (bounded — the handful
+    # of open documents). Entries are dropped wholesale when their text
+    # object changes (edits produce a new String; identity, not an
+    # O(n) compare, decides).
+    class VirtualState
+      property text : String
+      property starts : Array(Int32)
+      property galley : Galley? = nil
+      property row_starts : Array(Int32) = [0]
+      property k0 : Int32 = 0
+      property k1 : Int32 = 0
+
+      def initialize(@text : String, @starts : Array(Int32))
+      end
+    end
+
+    @@virtual_cache = {} of Id => VirtualState
+    VIRTUAL_CACHE_MAX = 16
+
+    def self.virtual_state(id : Id, text : String) : VirtualState
+      st = @@virtual_cache[id]?
+      if st.nil? || !st.text.same?(text)
+        st = VirtualState.new(text, line_char_starts(text))
+        while @@virtual_cache.size >= VIRTUAL_CACHE_MAX
+          @@virtual_cache.shift
+        end
+        @@virtual_cache[id] = st
+      end
+      st
+    end
+
+    # Character offset of every line start (size = line count + 1: the
+    # last entry is the phantom line after a trailing newline). One
+    # byte scan: UTF-8 lead bytes count a character, 0x0A closes a
+    # line. O(bytesize), once per buffer identity.
+    def self.line_char_starts(text : String) : Array(Int32)
+      starts = [0]
+      bytes = text.to_unsafe
+      n = text.bytesize
+      chars = 0
+      i = 0
+      while i < n
+        b = bytes[i]
+        if b == 0x0A
+          chars += 1
+          starts << chars
+        elsif b & 0xC0 != 0x80
+          chars += 1
+        end
+        i += 1
+      end
+      starts
+    end
+
+    # Line index containing a character offset (binary search; rows are
+    # lines in virtual mode, so unlike the wrapped galley there is no
+    # boundary ambiguity — a line start belongs to its own line).
+    def self.line_of(starts : Array(Int32), char : Int32) : Int32
+      lo = 0
+      hi = starts.size - 1
+      ans = 0
+      while lo <= hi
+        mid = (lo + hi) // 2
+        if starts[mid] <= char
+          ans = mid
+          lo = mid + 1
+        else
+          hi = mid - 1
+        end
+      end
+      ans
+    end
+
+    # Build (or reuse) the window of laid-out rows around the viewport.
+    # The window spans one screen of margin rows on each side, so
+    # caret moves, page steps and smooth scrolling resolve against
+    # built rows; it rebuilds only when the viewport leaves it. Rows
+    # carry GLOBAL y (line index * line_h) — painting, culling and the
+    # scroll math all keep their absolute-offset meaning, and
+    # row_starts stays a slice of the global line starts so caret and
+    # selection indexes need no translation.
+    def self.virtual_window(st : VirtualState, offset : Float64,
+                            view_h : Float64, line_h : Float64,
+                            fonts : Fonts, font_size : Float64)
+      lines = st.starts.size
+      vis = {(view_h / line_h).ceil.to_i, 1}.max
+      lv0 = (offset / line_h).floor.to_i.clamp(0, {lines - 1, 0}.max)
+      lv1 = ((offset + view_h) / line_h).ceil.to_i.clamp(0, lines)
+      if (g = st.galley) && lv0 >= st.k0 + vis && lv1 <= st.k1 - vis
+        return {g, st.row_starts}
+      end
+      k0 = {lv0 - vis, 0}.max
+      k1 = {lv1 + vis, lines}.min
+      k1 = {k1, {lv0 + 1, lines}.min}.max # degenerate: zero-height view
+      text = st.text
+      rows = [] of Galley::Row
+      (k0...k1).each do |li|
+        s = st.starts[li]
+        e = li + 1 < st.starts.size ? st.starts[li + 1] - 1 : text.size
+        line_text = text[s, e - s]
+        w = fonts.measure(line_text, font_size).x
+        rows << Galley::Row.new(
+          [Galley::RowRun.new(line_text, 0.0, font_size, nil, false)],
+          w, line_h, li.to_f64 * line_h, li > 0)
+      end
+      galley = Galley.new(rows)
+      # Starts aligned to the window's rows, padded to rows+1 entries
+      # (the extra entry is the start past the window / buffer end).
+      rs = st.starts[k0...{k1 + 1, st.starts.size}.min].dup
+      while rs.size < rows.size + 1
+        rs << text.size
+      end
+      st.galley = galley
+      st.row_starts = rs
+      st.k0 = k0
+      st.k1 = k1
+      {galley, rs}
     end
 
     def ui(ui : Ui) : Response
@@ -64,14 +197,28 @@ module Egui
       # textarea with rows set high), and a viewport taller than the
       # real rect would zero the scroll range.
       wrap_w = {rect.width - inset.x * 2.0 - BAR_W, 10.0}.max
-      galley = fonts.layout([TextRun.new(@text, font_size)],
-        max_width: wrap_w)
-      row_starts = row_char_starts(galley)
+      # BIG buffers go virtual (see the class comment): the file is
+      # never wrapped whole — a window of rows around the viewport is
+      # laid out instead, after the offset is known. Small buffers
+      # take the full word-wrap, cached in Fonts across frames.
+      virtual = @text.bytesize > BIG_TEXT_BYTES
+      vstate = virtual ? self.class.virtual_state(id, @text) : nil
 
       inner = Rect.from_min_size(rect.min + inset,
         Vec2.new(wrap_w, rect.height - inset.y * 2.0))
       view_h = inner.height
-      max_offset = {galley.size.y - view_h, 0.0}.max
+      # The scroll range comes from the content height: the wrapped
+      # galley's own height, or lines × line height in virtual mode.
+      content_h : Float64
+      if vstate
+        content_h = vstate.starts.size.to_f64 * line_h
+      else
+        galley = fonts.layout([TextRun.new(@text, font_size)],
+          max_width: wrap_w)
+        row_starts = galley.row_char_starts
+        content_h = galley.size.y
+      end
+      max_offset = {content_h - view_h, 0.0}.max
 
       # --- scrolling: kinetic, the same scheme as ScrollArea ---------
       memory.register_scroll_area(scroll_id, rect, ui.layer)
@@ -86,16 +233,23 @@ module Egui
         kin.glide(input.dt, max_offset, ui.ctx)
       end
       offset = kin.offset
+      # The virtual window is laid out around the (now known) offset;
+      # the wrapped galley was laid out above. Both leave `galley`/
+      # `row_starts` bound for everything below.
+      if vstate
+        galley, row_starts = self.class.virtual_window(vstate, offset,
+          view_h, line_h, fonts, font_size)
+      else
+        galley = galley.not_nil!
+        row_starts = row_starts.not_nil!
+      end
 
-      cursor = memory.data.get_int(id, @text.size).clamp(0, @text.size)
+      cursor = memory.data.get_int(id, virtual ? 0 : @text.size)
+        .clamp(0, @text.size)
       cursor_prev = cursor
       anchor = memory.data.get_int(anchor_id, -1)
       new_text = @text
       changed = false
-
-      caret = ->(pos : Pos2) do
-        caret_at(galley, row_starts, fonts, inner, offset, pos)
-      end
 
       # Press places the caret, double-click selects a word, dragging
       # extends the selection (anchor latched at the press).
@@ -103,25 +257,44 @@ module Egui
         response.request_focus
         if (pos = input.pointer_pos)
           if response.double_clicked?
-            cursor, anchor = word_range(@text, caret.call(pos))
+            cursor, anchor = word_range(@text,
+              caret_at(galley, row_starts, fonts, inner, offset, pos))
           else
-            cursor = caret.call(pos)
+            cursor = caret_at(galley, row_starts, fonts, inner, offset, pos)
             anchor = cursor
           end
         end
       end
       if response.drag_started? && (pos = input.pointer_pos) && anchor == -1
-        anchor = caret.call(pos)
+        anchor = caret_at(galley, row_starts, fonts, inner, offset, pos)
       end
       if response.dragged? && (pos = input.pointer_pos)
-        cursor = caret.call(pos)
+        cursor = caret_at(galley, row_starts, fonts, inner, offset, pos)
+      end
+
+      # Virtual mode: the keyboard pass maps the caret through the
+      # built row window — if a NAVIGATION key is pressed while the
+      # caret sits outside the window (scrollbar jump, select-all, a
+      # scroll away from the caret), recenter the window on it first
+      # so Up/Down/PageUp/End resolve against the right rows. Gated on
+      # nav keys on purpose: on every focused frame it would fight the
+      # scrollbar and the wheel, snapping the viewport back to the
+      # caret right after the user scrolled away.
+      if vstate && response.has_focus? && nav_key?(input)
+        li = self.class.line_of(vstate.starts, cursor)
+        if li < vstate.k0 || li >= vstate.k1
+          kin.takeover
+          offset = (li.to_f64 * line_h - view_h / 2.0).clamp(0.0, max_offset)
+          galley, row_starts = self.class.virtual_window(vstate, offset,
+            view_h, line_h, fonts, font_size)
+        end
       end
 
       if response.has_focus?
         ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
         new_text, cursor, anchor, changed =
           handle_keyboard(ui.ctx, @text, cursor, anchor,
-            galley, row_starts, fonts)
+            galley, row_starts, fonts, view_h)
         ui.ctx.request_repaint # caret blink
       end
 
@@ -133,10 +306,21 @@ module Egui
       # this frame. (Movement keys intentionally keep the old galley —
       # indexes there are clamped by design.)
       if changed
-        galley = fonts.layout([TextRun.new(new_text, font_size)],
-          max_width: wrap_w)
-        row_starts = row_char_starts(galley)
-        max_offset = {galley.size.y - view_h, 0.0}.max
+        if vstate
+          # New buffer identity: rebuild the line index (one byte scan)
+          # and the row window against it.
+          vstate = self.class.virtual_state(id, new_text)
+          content_h = vstate.starts.size.to_f64 * line_h
+          max_offset = {content_h - view_h, 0.0}.max
+          galley, row_starts = self.class.virtual_window(vstate, offset,
+            view_h, line_h, fonts, font_size)
+        else
+          galley = fonts.layout([TextRun.new(new_text, font_size)],
+            max_width: wrap_w)
+          row_starts = galley.row_char_starts
+          content_h = galley.size.y
+          max_offset = {content_h - view_h, 0.0}.max
+        end
       end
 
       # Keep the caret's row inside the viewport — but only when the
@@ -145,10 +329,15 @@ module Egui
       # Every frame would pin the viewport to the caret and make wheel
       # scrolling away from it impossible.
       if response.has_focus? && (changed || cursor != cursor_prev)
-        row_index, col = caret_row_col(galley, row_starts, cursor)
-        row = galley.rows[row_index]?
-        top = row ? row.y : galley.size.y
-        bottom = top + (row ? row.height : line_h)
+        if vstate
+          top = self.class.line_of(vstate.starts, cursor).to_f64 * line_h
+          bottom = top + line_h
+        else
+          row_index, col = caret_row_col(galley, row_starts, cursor)
+          row = galley.rows[row_index]?
+          top = row ? row.y : galley.size.y
+          bottom = top + (row ? row.height : line_h)
+        end
         if top < offset
           kin.takeover
           offset = top
@@ -182,10 +371,14 @@ module Egui
 
       # Selection highlight, per visible row — painted UNDER the text
       # (like the single-line TextEdit and browsers: the fill must not
-      # cover the glyphs it selects).
+      # cover the glyphs it selects). Only rows intersecting the
+      # viewport are painted — a selection spanning a huge buffer must
+      # not walk (and measure) every row each frame.
       if anchor >= 0 && anchor != cursor && !new_text.empty?
         sel_min, sel_max = {cursor, anchor}.min, {cursor, anchor}.max
         galley.rows.each_with_index do |row, i|
+          next if row.y + row.height < offset
+          break if row.y > offset + view_h
           s = row_starts[i]
           a = {sel_min, s}.max
           b = {sel_max, s + row.text.size}.min
@@ -201,11 +394,16 @@ module Egui
             x0 = 0.0
             x1 = 3.0
           end
+          # Full row pitch (rows stack at exactly y += height): a
+          # shrunk rect would leave unhighlighted stripes between
+          # consecutive selected lines. The fill is a faded selection
+          # color (same treatment as hover hints elsewhere) so the
+          # highlight reads pale against the text.
           ui.painter.rect(
             Rect.from_min_size(
               Pos2.new(inner.min.x + x0, inner.min.y + row.y - offset),
-              Vec2.new(x1 - x0, row.height - 2.0)),
-            2.0, visuals.selection_fill)
+              Vec2.new(x1 - x0, row.height)),
+            0.0, visuals.fade_color(visuals.selection_fill, 0.4))
         end
       end
 
@@ -224,29 +422,33 @@ module Egui
           hint_galley, fonts, color)
       end
 
-      # Blinking caret (1s period) while focused.
+      # Blinking caret (1s period) while focused. In virtual mode a
+      # caret outside the built window has no row to sit on — skip it
+      # (the window recenters on the caret before the next frame).
       if response.has_focus? && (input.time % 1.0) < 0.6
         row_index, col = caret_row_col(galley, row_starts, cursor)
         row = galley.rows[row_index]?
-        caret_x = inner.min.x + (row ? galley.x_at(row_index, col, fonts) : 0.0)
-        top = inner.min.y + (row ? row.y : galley.size.y) - offset
-        bottom = top + (row ? row.height : line_h)
-        ui.painter.line(Pos2.new(caret_x, top + 1.0),
-          Pos2.new(caret_x, bottom - 1.0), 1.0, visuals.text_color)
+        if row || !vstate
+          caret_x = inner.min.x + (row ? galley.x_at(row_index, col, fonts) : 0.0)
+          top = inner.min.y + (row ? row.y : galley.size.y) - offset
+          bottom = top + (row ? row.height : line_h)
+          ui.painter.line(Pos2.new(caret_x, top + 1.0),
+            Pos2.new(caret_x, bottom - 1.0), 1.0, visuals.text_color)
+        end
       end
 
       ui.painter.clip = outer_clip
 
       # --- scrollbar (direct control, no inertia) --------------------
       kin_velocity = kin.velocity
-      if galley.size.y > view_h && view_h > 0.0
+      if content_h > view_h && view_h > 0.0
         track = Rect.from_min_size(
           Pos2.new(rect.right - BAR_W - border, rect.top + border),
           Vec2.new(BAR_W, rect.height - border * 2.0))
         bar_id = id.child(BAR_SALT)
         bar_resp = ui.interact(track, bar_id, Sense.click_and_drag)
 
-        thumb_h = (view_h * view_h / galley.size.y).clamp(12.0, view_h)
+        thumb_h = (view_h * view_h / content_h).clamp(12.0, view_h)
         scrollable = view_h - thumb_h
         thumb_y = ->(off : Float64) : Float64 do
           max_offset > 0.0 ? track.top + scrollable * off / max_offset
@@ -278,11 +480,12 @@ module Egui
         thumb = Rect.from_min_size(
           Pos2.new(track.left + 1.0, thumb_y.call(offset) + 1.0),
           Vec2.new(BAR_W - 2.0, {thumb_h - 2.0, 4.0}.max))
-        thumb_color = visuals.button_hovered
-        if bar_resp.pressed? || bar_resp.dragged? || bar_resp.hovered?
-          thumb_color = visuals.selection_fill
-        end
-        ui.painter.rect(thumb, 3.0, thumb_color)
+        # Same classic scheme as ScrollArea's overlay bar: face + stroke
+        # border, button states for interaction (never the accent).
+        thumb_color = visuals.button_hovered if bar_resp.hovered?
+        thumb_color = visuals.button_active if bar_resp.pressed? || bar_resp.dragged?
+        thumb_color ||= visuals.button_weak
+        ui.painter.rect(thumb, 3.0, thumb_color, visuals.button_stroke, 1.0)
       end
 
       memory.data.set_vec2(scroll_id, Vec2.new(0.0, offset))
@@ -293,26 +496,48 @@ module Egui
       response
     end
 
-    # Character offset of each row start (size rows+1: the extra entry is
-    # the phantom row after a trailing newline). A wrap break consumes
-    # no character; a newline break consumes one.
-    private def row_char_starts(galley : Galley) : Array(Int32)
-      starts = [0]
-      galley.rows.each_with_index do |row, i|
-        consumed = row.text.size
-        consumed += 1 if galley.rows[i + 1]?.try(&.newline_before?) || false
-        starts << starts[i] + consumed
+    # Character offset of each row start is Galley's job now (memoized
+    # there — recomputing it here scanned and re-joined every row on
+    # every frame, which is what pinned big buffers to O(n) per frame).
+
+    # A caret-movement key that maps the caret through the galley
+    # (rows the window must cover for the virtual-mode recenter).
+    private def nav_key?(input : InputState) : Bool
+      input.keys_pressed.any? do |k|
+        KeyCode::Up == k || KeyCode::Down == k ||
+          KeyCode::PageUp == k || KeyCode::PageDown == k ||
+          KeyCode::Home == k || KeyCode::End == k
       end
-      starts
     end
 
     # (row index, column in characters) of a caret character offset.
+    # Row starts are strictly ascending and each row ends where the
+    # next starts (minus its newline, if any) — a binary search finds
+    # the row whose [start, end] contains the offset without scanning
+    # the whole galley (this runs every frame for the caret blink).
     private def caret_row_col(galley : Galley, row_starts : Array(Int32),
                               char : Int32) : {Int32, Int32}
-      galley.rows.each_with_index do |row, i|
-        s = row_starts[i]
-        if char >= s && char <= s + row.text.size
-          return {i, char - s}
+      starts = row_starts
+      lo = 0
+      hi = starts.size - 2 # last real row (the extra entry is phantom)
+      while lo <= hi
+        mid = (lo + hi) // 2
+        s = starts[mid]
+        row_end = s + galley.rows[mid].text.size
+        if char < s
+          hi = mid - 1
+        elsif char > row_end
+          lo = mid + 1
+        else
+          # A caret exactly on a wrap boundary belongs to the END of
+          # the earlier row (what the linear scan this replaced
+          # returned first) — its x is the row's full width, not 0.
+          if char == s && mid > 0 && !galley.rows[mid].newline_before? &&
+             starts[mid - 1] + galley.rows[mid - 1].text.size == char
+            prev = mid - 1
+            return {prev, galley.rows[prev].text.size}
+          end
+          return {mid, char - s}
         end
       end
       {galley.rows.size, 0} # phantom row past the end (empty buffer)
@@ -334,6 +559,15 @@ module Egui
       return row_starts[galley.rows.size]? || 0 unless row_index
       char_at(galley, row_starts, row_index.not_nil!, x, fonts)
     end
+
+    # Row index whose vertical band contains a galley y (for page-wise
+    # caret movement); y past the bottom clamps to the last row.
+    private def row_at_y(galley : Galley, y : Float64) : Int32
+  galley.rows.each_with_index do |r, i|
+    return i if y < r.y + r.height
+  end
+  {galley.rows.size - 1, 0}.max
+end
 
     # Nearest caret character offset for an x position on a row.
     private def char_at(galley : Galley, row_starts : Array(Int32),
@@ -388,7 +622,8 @@ module Egui
     # Returns {text, cursor, anchor, changed}.
     private def handle_keyboard(ctx : Context, text : String, cursor : Int32,
                                 anchor : Int32, galley : Galley,
-                                row_starts : Array(Int32), fonts : Fonts)
+                                row_starts : Array(Int32), fonts : Fonts,
+                                view_h : Float64)
       input = ctx.input
       new_text = text
       new_cursor = cursor
@@ -404,8 +639,21 @@ module Egui
       end
 
       # Clipboard through the system port; paste keeps line breaks.
+      # Ctrl+Home / Ctrl+End live here too (document-wise jumps — the
+      # ctrl block returns early below, before the plain movement keys).
       if input.modifiers.ctrl
-        if input.consume_key(KeyCode::C)
+        if input.consume_key(KeyCode::Home)
+          # Caret (or, with Shift kept, the selection edge) to the very
+          # top of the buffer; follow-caret turns it into the instant
+          # jump to the start a big-buffer editor needs.
+          new_anchor = new_cursor if new_anchor == -1 && input.modifiers.shift
+          new_cursor = 0
+          new_anchor = new_cursor unless input.modifiers.shift
+        elsif input.consume_key(KeyCode::End)
+          new_anchor = new_cursor if new_anchor == -1 && input.modifiers.shift
+          new_cursor = text.size
+          new_anchor = new_cursor unless input.modifiers.shift
+        elsif input.consume_key(KeyCode::C)
           if has_sel
             Egui::SystemPorts::Clipboard.text = text[sel_min...sel_max]
           end
@@ -510,6 +758,36 @@ module Egui
         else
           x = galley.x_at(row_index, col, fonts)
           new_cursor = char_at(galley, row_starts, row_index + 1, x, fonts)
+        end
+        new_anchor = new_cursor unless input.modifiers.shift
+      elsif input.consume_key(KeyCode::PageUp)
+        row_index, col = caret_row_col(galley, row_starts, new_cursor)
+        new_anchor = new_cursor if new_anchor == -1 && input.modifiers.shift
+        if row_index <= 0
+          new_cursor = row_starts[0]? || 0
+        else
+          # A page is the viewport minus one row of context (browsers
+          # keep the current line visible); the caret keeps its column,
+          # exactly like repeated Up.
+          row = galley.rows[row_index]
+          page = {view_h - row.height, row.height}.max
+          target = {row_at_y(galley, row.y - page), row_index - 1}.min
+          x = galley.x_at(row_index, col, fonts)
+          new_cursor = char_at(galley, row_starts, target, x, fonts)
+        end
+        new_anchor = new_cursor unless input.modifiers.shift
+      elsif input.consume_key(KeyCode::PageDown)
+        row_index, col = caret_row_col(galley, row_starts, new_cursor)
+        new_anchor = new_cursor if new_anchor == -1 && input.modifiers.shift
+        if row_index >= galley.rows.size - 1
+          new_cursor = text.size
+        else
+          row = galley.rows[row_index]
+          page = {view_h - row.height, row.height}.max
+          target = {row_at_y(galley, row.y + page), row_index + 1}.max
+          target = {target, galley.rows.size - 1}.min
+          x = galley.x_at(row_index, col, fonts)
+          new_cursor = char_at(galley, row_starts, target, x, fonts)
         end
         new_anchor = new_cursor unless input.modifiers.shift
       elsif input.consume_key(KeyCode::Home)

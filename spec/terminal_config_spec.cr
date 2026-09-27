@@ -1,30 +1,18 @@
 # Terminal config specs: profile JSON round-trips, defaults for a
 # missing/corrupt file, active-profile fallback, and the ConfigStore
-# adapters (platform selection + XDG override), all against a temp dir.
+# path through the AppConfig system port, all against a temp dir.
 
 require "spec"
 require "../src/egui"
 
-class TempConfigAdapter < Egui::Terminal::ConfigStore::Adapter
-  getter dir : String
-
-  def initialize(@dir : String)
-  end
-
-  def config_dir : String
-    @dir
-  end
-end
-
 def with_temp_store(&) : Nil
   dir = File.join(Dir.tempdir, "egui-terminal-spec-#{rand(UInt64::MAX).to_s(16)}")
   Dir.mkdir_p(dir)
-  previous = Egui::Terminal::ConfigStore.adapter
-  Egui::Terminal::ConfigStore.use(TempConfigAdapter.new(dir))
+  Egui::SystemPorts::AppConfig.use(dir)
   begin
     yield dir
   ensure
-    Egui::Terminal::ConfigStore.use(previous)
+    Egui::SystemPorts::AppConfig.use(nil)
     FileUtils.rm_rf(dir)
   end
 end
@@ -67,7 +55,9 @@ describe Egui::Terminal::Config do
 
   it "defaults when the file is corrupt JSON" do
     with_temp_store do |dir|
-      File.write(Egui::Terminal::ConfigStore.path, "{ not json")
+      path = Egui::Terminal::ConfigStore.path
+      FileUtils.mkdir_p(File.dirname(path))
+      File.write(path, "{ not json")
       Egui::Terminal::Config.load.profiles.keys.should eq ["default"]
     end
   end
@@ -101,47 +91,16 @@ describe Egui::Terminal::Config do
 end
 
 describe Egui::Terminal::ConfigStore do
-  it "selects the adapter for this platform" do
-    {% if flag?(:win32) %}
-      Egui::Terminal::ConfigStore.adapter.should be_a Egui::Terminal::ConfigStore::WindowsAdapter
-    {% elsif flag?(:darwin) %}
-      Egui::Terminal::ConfigStore.adapter.should be_a Egui::Terminal::ConfigStore::MacAdapter
-    {% else %}
-      Egui::Terminal::ConfigStore.adapter.should be_a Egui::Terminal::ConfigStore::LinuxAdapter
-    {% end %}
+  it "routes the settings file through the AppConfig port" do
+    with_temp_store do |dir|
+      Egui::Terminal::ConfigStore.path
+        .should eq File.join(dir, "egui-terminal", "settings.json")
+    end
   end
 
-  {% unless flag?(:win32) || flag?(:darwin) %}
-    it "honors XDG_CONFIG_HOME (Linux adapter)" do
-      old = ENV["XDG_CONFIG_HOME"]?
-      ENV["XDG_CONFIG_HOME"] = "/tmp/xdg-spec"
-      begin
-        path = Egui::Terminal::ConfigStore::LinuxAdapter.new.path
-        path.should eq "/tmp/xdg-spec/egui-terminal/settings.json"
-      ensure
-        if old
-          ENV["XDG_CONFIG_HOME"] = old
-        else
-          ENV.delete("XDG_CONFIG_HOME")
-        end
-      end
-    end
-
-    it "defaults to ~/.config (Linux adapter)" do
-      old = ENV["XDG_CONFIG_HOME"]?
-      ENV.delete("XDG_CONFIG_HOME")
-      begin
-        home = ENV["HOME"]? || Dir.current
-        Egui::Terminal::ConfigStore::LinuxAdapter.new.config_dir
-          .should eq File.join(home, ".config/egui-terminal")
-      ensure
-        ENV["XDG_CONFIG_HOME"] = old if old
-      end
-    end
-  {% end %}
-
-  it "places the settings file inside the adapter's dir" do
-    adapter = TempConfigAdapter.new("/store")
-    adapter.path.should eq "/store/settings.json"
+  it "falls back to the platform user config dir when no override is set" do
+    Egui::Terminal::ConfigStore.path
+      .should eq File.join(Egui::SystemPorts::UserDirs.config,
+        "egui-terminal", "settings.json")
   end
 end

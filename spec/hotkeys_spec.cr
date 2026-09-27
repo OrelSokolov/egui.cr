@@ -27,6 +27,7 @@ describe Egui::Hotkey do
     Egui::Hotkey.parse("Super+Q").to_s.should eq "Super+Q"
     Egui::Hotkey.parse("Esc").to_s.should eq "Escape"
     Egui::Hotkey.parse("Ctrl+Ins").to_s.should eq "Ctrl+Insert"
+    Egui::Hotkey.parse("Ctrl+Comma").to_s.should eq "Ctrl+Comma"
   end
 
   it "rejects garbage" do

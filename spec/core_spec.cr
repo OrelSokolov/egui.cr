@@ -1158,6 +1158,56 @@ describe "phase 2 widgets" do
     modal_hover.should be_true
   end
 
+  it "modal is a two-zone Win11 content dialog with a button footer" do
+    ctx = Egui::Context.new
+    clicked = nil
+    center = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      clicked = ctx.modal("m", title: "Hello",
+        buttons: ["OK", "Cancel"]) { |ui| ui.label("Body text") }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # the h1 title (24pt) and the body text are both painted
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    texts.find(&.text.==("Hello")).not_nil!.size.should eq(24.0)
+    texts.map(&.text).should contain("Body text")
+
+    # two zones: only the footer band (plus its squaring patch) differs
+    # from the window_fill shell — h1+content are one plain block
+    shell_fill = ctx.style.visuals.window_fill
+    fills = ctx.painter.commands.select(Egui::RectCmd)
+      .map(&.fill).compact
+    fills.should contain(shell_fill)
+    fills.count { |c| c != shell_fill &&
+      (c.r.to_i - shell_fill.r.to_i).abs < 20 }.should eq(2)
+
+    # the footer buttons: stretched row at the bottom, equal widths,
+    # and the footer zone never exceeds 25% of the dialog height
+    btns = ctx.memory.widget_rects.values.last(2)
+    btns.each { |b| b.height.should be >= 40.0 }
+    (btns[0].width - btns[1].width).abs.should be < 1.0
+    (btns[0].top - btns[1].top).abs.should be < 0.5
+    shell = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == shell_fill }.not_nil!.rect
+    # the footer zone (button row + its 12pt padding) never exceeds 25%
+    # of the dialog height, and sits flush at the dialog bottom
+    (btns[0].height + 2 * 12.0).should be <= shell.height * 0.25 + 0.5
+    (shell.bottom - (btns[0].bottom + 12.0)).abs.should be < 0.5
+
+    # clicking a footer button reports its label
+    center = btns[1].center
+    draw.call([Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)], 0.032)
+    clicked.should be_nil
+    draw.call([Egui::Event.pointer_released(center)], 0.048)
+    clicked.should eq("Cancel")
+  end
+
   it "gradient rect carries fill2 and button icon emits line commands" do
     ctx = Egui::Context.new
     raw_frame(ctx)
@@ -2818,6 +2868,48 @@ describe "Tabs (horizontal top tab strip)" do
     selected.should eq(titles.size - 1)
   end
 
+  it "bevels tabs and merges the selected tab into the page (Win95 keys)" do
+    ctx = Egui::Context.new
+    light = Egui::Color32.rgb(255, 255, 255)
+    dark = Egui::Color32.rgb(128, 128, 128)
+
+    ctx.stylesheet.rule(Egui::Tabs::ROOT_CLASS, Egui::StyleVars{
+      "rule_color"     => dark,
+      "merge_selected" => 1.0,
+    })
+    ctx.stylesheet.rule(Egui::Tabs::TAB_CLASS, Egui::StyleVars{
+      "bevel_light" => light,
+      "bevel_dark"  => dark,
+    })
+    ctx.stylesheet.rule("#{Egui::Tabs::TAB_CLASS}:selected", Egui::StyleVars{
+      "underline_width" => 0.0,
+    })
+
+    raw_frame(ctx)
+    widget_ui(ctx).tabs(["a", "b", "c"], 1) { |t| }
+    ctx.end_frame
+
+    b_rect = ctx.memory.widget_rects.values[1]
+
+    # No selection underline (underline_width = 0 disables it).
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    lines.select { |l| l.width >= 2.0 }.should be_empty
+
+    # Raised bevel on every tab: light top + left edge per tab.
+    lines.count { |l| l.color == light }.should eq(6)
+
+    # merge_selected: the baseline skips the active tab's span — two
+    # dark segments around it instead of one full-width line.
+    rules = lines.select { |l| l.color == dark && l.width == 1.0 }
+    segs = rules.select { |l| (l.p2.x - l.p1.x).abs > 5.0 }
+    segs.size.should eq(2)
+    left, right = segs.sort_by(&.p1.x)
+    left.p2.x.should be_close(b_rect.min.x, 0.5)
+    right.p1.x.should be_close(b_rect.max.x, 0.5)
+    left.p1.y.should be_close(b_rect.max.y, 0.5)
+    right.p1.y.should be_close(b_rect.max.y, 0.5)
+  end
+
   it "paints the selected tab with its own background fill" do
     ctx = Egui::Context.new
 
@@ -3006,6 +3098,72 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
     draw2.call([Egui::Event.pointer_moved(Egui::Pos2.new(700.0, 500.0))], 0.064)
     ctx.painter.commands.select(Egui::RectCmd)
       .find(&.fill.==(red)).should_not be_nil
+  end
+end
+
+describe "classic skin keys (bevels, title bar)" do
+  it "paints beveled buttons with class rounding, sunken when active" do
+    ctx = Egui::Context.new
+    light = Egui::Color32.rgb(255, 255, 255)
+    dark = Egui::Color32.rgb(128, 128, 128)
+
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "rounding"    => 0.0,
+      "bevel_light" => light,
+      "bevel_dark"  => dark,
+    })
+    ctx.stylesheet.rule("button:active", Egui::StyleVars{
+      "bevel_light" => dark,
+      "bevel_dark"  => light,
+    })
+
+    # rest: a plain frame paints the raised bevel (2 light + 2 dark
+    # edges) and a square fill (rounding 0, no stroke).
+    raw_frame(ctx)
+    rect = nil
+    ctx.window("demo") do |ui|
+      rect = ui.button("OK").rect
+    end
+    ctx.end_frame
+
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    lines.count { |l| l.color == light }.should eq(2)
+    lines.count { |l| l.color == dark }.should eq(2)
+    r = ctx.painter.commands.select(Egui::RectCmd).find { |c|
+      c.rect.height < 30.0 && c.stroke_color.nil? && c.fill2.nil?
+    }.not_nil!
+    r.rounding.should be_close(0.0, 0.01)
+
+    # press: pointer down → the bevel swaps to sunken (dark top edge)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(rect.not_nil!.center),
+      Egui::Event.pointer_pressed(rect.not_nil!.center)], time: 0.032)
+    ctx.window("demo") do |ui|
+      ui.button("OK")
+    end
+    ctx.end_frame
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    top_edge = lines.find { |l| l.color == dark &&
+      (l.p1.y - rect.not_nil!.min.y).abs < 0.5 }.not_nil!
+    top_edge.p1.x.should be_close(rect.not_nil!.min.x, 0.5)
+  end
+
+  it "paints a themed title bar fill" do
+    ctx = Egui::Context.new
+    navy = Egui::Color32.rgb(0, 0, 128)
+    ctx.style.visuals.title_bar_fill = navy
+
+    raw_frame(ctx)
+    ctx.window("demo") do |ui|
+      ui.label("body")
+    end
+    ctx.end_frame
+
+    bar = ctx.painter.commands.select(Egui::RectCmd).find { |c|
+      c.fill == navy
+    }.not_nil!
+    # the bar spans the window's full width at the very top
+    bar.rect.min.y.should be_close(24.0, 0.5)
+    bar.rect.height.should be > 15.0
   end
 end
 
@@ -4308,6 +4466,46 @@ describe "textarea (multiline text edit)" do
     draw.call([Egui::Event.key_pressed(Egui::KeyCode::Down)], 0.208)
     draw.call([Egui::Event.text_input("!")], 0.224)
     buffer.should eq("abXcd!")
+  end
+
+  it "Ctrl+Home/Ctrl+End jump document-wise; Ctrl+Shift+End selects to the end" do
+    ctx = Egui::Context.new
+    buffer = "ab\ncd\nef"
+    ctrl = Egui::Modifiers.new(ctrl: true)
+    ctrl_shift = Egui::Modifiers.new(ctrl: true, shift: true)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).textarea(buffer) { |t| buffer = t }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab)], 0.032)
+    draw.call([] of Egui::Event, 0.048) # focused, caret at the end
+
+    # Ctrl+Home: caret to the very top (typing lands before "ab"). The
+    # released event also clears the ctrl modifier state for the next
+    # frame (the OS sends fresh masks per event; specs must too).
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Home, ctrl)], 0.064)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::Home)], 0.072)
+    draw.call([Egui::Event.text_input("X")], 0.080)
+    buffer.should eq("Xab\ncd\nef")
+
+    # Ctrl+Shift+End: select from the caret (after "X") to the end;
+    # typing replaces the selection — only the "X" survives.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End, ctrl_shift)], 0.096)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::End)], 0.104)
+    draw.call([Egui::Event.text_input("Y")], 0.112)
+    buffer.should eq("XY")
+
+    # Plain End is still line-wise: caret to the (single) line's end.
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::End)], 0.128)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::End)], 0.136)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Down)], 0.144)
+    draw.call([Egui::Event.key_released(Egui::KeyCode::Down)], 0.152)
+    draw.call([Egui::Event.text_input("!")], 0.160)
+    buffer.should eq("XY!")
   end
 
   it "reflects an edit in the same frame — no phantom-row caret jump" do

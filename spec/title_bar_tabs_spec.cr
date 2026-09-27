@@ -165,6 +165,32 @@ describe Egui::TitleBarTabs do
     card.not_nil!.rect.bottom.should eq(Egui::TitleBarTabs::CAPTION_H)
   end
 
+  it "follows the app theme: light theme paints the light caption and tab text" do
+    harness = TabsHarness.new
+    ctx = Egui::Context.new
+    ctx.theme = Egui::Theme.light
+    tabs_frame(ctx, [] of Egui::Event, 0.016)
+
+    win = Egui::WindowFrame::Windows
+    cap_h = Egui::TitleBarTabs::CAPTION_H
+    # the caption fills with the LIGHT palette, never the dark #202020
+    # (the caption-sized fill, not glyph rects: the light glyph color
+    # happens to equal the dark BG by value)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == Egui::WindowFrame::Windows::BG_LIGHT &&
+                   c.rect.width > 100.0 }.should be_true
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == Egui::WindowFrame::Windows::BG &&
+                   c.rect.width > 100.0 }.should be_false
+    # tab titles: active dark-on-light, idle the light grey
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+      .select { |c| c.clip.top < cap_h && harness.titles.includes?(c.text) }
+    texts.size.should eq(harness.titles.size)
+    texts.find { |c| c.text == harness.titles.first }.not_nil!
+      .color.should eq(Egui::TitleBarTabs::TEXT_ACTIVE_LIGHT)
+    texts.find { |c| c.text == harness.titles[1] }.not_nil!
+      .color.should eq(Egui::TitleBarTabs::TEXT_IDLE_LIGHT)  end
+
   it "clicks select a tab; the X closes it without selecting" do
     harness = TabsHarness.new
     ctx = Egui::Context.new
@@ -237,6 +263,40 @@ describe Egui::TitleBarTabs do
     plus = Egui::Pos2.new(
       Egui::TitleBarTabs::FIRST_INSET + total + Egui::TitleBarTabs::NEW_GAP +
         Egui::TitleBarTabs::NEW_BOX / 2.0,
+      Egui::TitleBarTabs::CAPTION_H - Egui::TitleBarTabs::NEW_BOX / 2.0)
+    tabs_frame(ctx, [Egui::Event.pointer_pressed(plus)], 0.032)
+    tabs_frame(ctx, [Egui::Event.pointer_released(plus)], 0.048)
+    harness.new_count.should eq(1)
+  end
+
+  it "overflowing tabs keep the + pinned at the strip's right edge; cards never leave the area" do
+    harness = TabsHarness.new
+    harness.titles = (1..12).map { |i| "tab #{i}" }
+    harness.selected = 11 # the LAST tab — carousel scrolled all the way
+    ctx = Egui::Context.new
+    tabs_frame(ctx, [] of Egui::Event, 0.016)
+
+    area = harness.areas.last
+    view_right = area.right - Egui::TitleBarTabs::NEW_GAP -
+                 Egui::TitleBarTabs::NEW_BOX
+
+    # the ACTIVE card stays fully inside the visible window — the strip
+    # reserves the "+" room at the right edge, so a card can never run
+    # under the caption buttons
+    card = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == ctx.style.visuals.panel_fill &&
+                  c.rect.top == Egui::TitleBarTabs::TAB_TOP_GAP }
+    card.should_not be_nil
+    card.not_nil!.clip.max.x.should be <= view_right
+
+    # no tab text paints past the visible window either
+    ctx.painter.commands.select(Egui::TextCmd)
+      .select { |c| c.clip.top < Egui::TitleBarTabs::CAPTION_H }
+      .each { |c| c.clip.max.x.should be <= view_right }
+
+    # the + is PINNED at the strip's right edge and still fires after
+    # the carousel scrolled to the last tab (it used to vanish there)
+    plus = Egui::Pos2.new(area.right - Egui::TitleBarTabs::NEW_BOX / 2.0,
       Egui::TitleBarTabs::CAPTION_H - Egui::TitleBarTabs::NEW_BOX / 2.0)
     tabs_frame(ctx, [Egui::Event.pointer_pressed(plus)], 0.032)
     tabs_frame(ctx, [Egui::Event.pointer_released(plus)], 0.048)

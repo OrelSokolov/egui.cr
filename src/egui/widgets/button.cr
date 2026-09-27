@@ -24,6 +24,15 @@ module Egui
     def initialize(@text : String)
     end
 
+    # egui `Button::min_size` — the button never shrinks below this
+    # (text stays centered inside); the hook behind `Ui#big_button`.
+    def min_size(size : Vec2) : self
+      @min_size = size
+      self
+    end
+
+    @min_size : Vec2?
+
     def style_class : String?
       "button"
     end
@@ -76,6 +85,9 @@ module Egui
       text_size = ui.ctx.fonts.measure(@text, font_size)
       size = Vec2.new(text_size.x + pad.horizontal,
         text_size.y + pad.vertical)
+      if (ms = @min_size)
+        size = Vec2.new({size.x, ms.x}.max, {size.y, ms.y}.max)
+      end
       if (name = @icon) && Icons::NAMES.includes?(name)
         size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
       end
@@ -95,12 +107,45 @@ module Egui
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
       paint_style = state ? effective_style(ui, class_vars, state) : style
       fill = paint_style.visuals.button_fill(response.hovered?, response.active?)
+      # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
+      # keys, read from the SAME state overlay as the fill — a
+      # `button:active` rule swapping the two colors sinks the box.
+      # The class `rounding` key replaces the hardcoded 4 px default.
+      # The `shadow.*` keys (a CSS box-shadow, `StyleVars#shadow?`) draw
+      # through the state overlay too: outset UNDER the fill, inset over
+      # it — `button:active { shadow.inset }` is the bootstrap pressed
+      # look.
+      rounding = class_vars.f64("rounding", 4.0)
+      state_vars = sheet.resolve("button", state)
+      shadow = state_vars.shadow?
+      if shadow && !shadow.inset?
+        ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
+          rounding: rounding, spread: shadow.spread, offset: shadow.offset)
+      end
+      bevel_light = state_vars.color?("bevel_light")
+      bevel_dark = state_vars.color?("bevel_dark")
       if (grad = @gradient) && !response.active?
-        ui.painter.rect(rect, rounding: 4.0, fill: grad[0], fill2: grad[1],
+        ui.painter.rect(rect, rounding: rounding, fill: grad[0], fill2: grad[1],
           stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+      elsif bevel_light && bevel_dark
+        ui.painter.rect(rect, rounding: rounding, fill: fill)
+        # Raised bevel: light on the top/left, dark on the bottom/right.
+        ui.painter.line(rect.min + Vec2.new(0.0, 0.5),
+          Pos2.new(rect.max.x, rect.min.y + 0.5), 1.0, bevel_light)
+        ui.painter.line(rect.min + Vec2.new(0.5, 0.0),
+          Pos2.new(rect.min.x + 0.5, rect.max.y), 1.0, bevel_light)
+        ui.painter.line(Pos2.new(rect.max.x - 0.5, rect.min.y),
+          Pos2.new(rect.max.x - 0.5, rect.max.y), 1.0, bevel_dark)
+        ui.painter.line(Pos2.new(rect.min.x, rect.max.y - 0.5),
+          Pos2.new(rect.max.x, rect.max.y - 0.5), 1.0, bevel_dark)
       else
-        ui.painter.rect(rect, rounding: 4.0, fill: fill,
+        ui.painter.rect(rect, rounding: rounding, fill: fill,
           stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+      end
+      if shadow && shadow.inset?
+        ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
+          rounding: rounding, spread: shadow.spread, offset: shadow.offset,
+          inset: true)
       end
 
       # Content: optional icon + centered text.

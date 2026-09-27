@@ -1,9 +1,9 @@
 # WindowFrame specs: the default client-side chrome — caption
 # geometry, caption buttons wired to the Window/Quit ports,
 # double-click maximize, hover fills and the edge resize grips — for
-# all three styles (Windows 11 dark, Ubuntu Ambiance, macOS traffic
-# lights). Driven headless: Egui::WindowFrame.show is exactly what the
-# sokol backend calls before app frames.
+# all four styles (Windows 11 dark, Windows XP Luna, Ubuntu Ambiance,
+# macOS traffic lights). Driven headless: Egui::WindowFrame.show is
+# exactly what the sokol backend calls before app frames.
 
 require "spec"
 require "../src/egui"
@@ -72,6 +72,22 @@ describe Egui::WindowFrame do
 
     texts = ctx.painter.commands.select(Egui::TextCmd)
     title = texts.find { |c| c.text == "egui-cr — borderless" }.should_not be_nil
+  end
+
+  it "windows: light theme paints the light caption, glyphs and outline" do
+    ctx = Egui::Context.new
+    ctx.theme = Egui::Theme.light
+    frame_draw(ctx, Egui::WindowFrame::Style::Windows, [] of Egui::Event, 0.016)
+
+    caption = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::Windows::BG_LIGHT }
+    caption.should_not be_nil
+    outline = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::BORDER_LIGHT }
+    outline.should_not be_nil
+    title = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |c| c.text == "egui-cr — borderless" }
+    title.not_nil!.color.should eq(Egui::WindowFrame::Windows::FG_LIGHT)
   end
 
   it "windows: buttons minimize / quit, double-click maximizes then restores" do
@@ -222,6 +238,58 @@ describe Egui::WindowFrame do
     frame_draw(ctx, style, [Egui::Event.pointer_pressed(close_pos)], 0.032)
     frame_draw(ctx, style, [Egui::Event.pointer_released(close_pos)], 0.048)
     quit.count.should eq(1)
+  end
+
+  it "windows xp: thick blue frame reserves the rim, gradient caption, close quits" do
+    quit = FrameQuitRecorder.new
+    win = FrameWindowRecorder.new
+    Egui::SystemPorts::Quit.use(quit)
+    Egui::SystemPorts::Window.use(win)
+
+    ctx = Egui::Context.new
+    style = Egui::WindowFrame::Style::WindowsXp
+    remainder = frame_draw(ctx, style, [] of Egui::Event, 0.016)
+    # the client area sits INSIDE the thick frame: caption on top,
+    # BORDER_W strips on left/right/bottom
+
+    remainder.top.should eq(Egui::WindowFrame::WindowsXp::CAPTION_H)
+    remainder.left.should eq(Egui::WindowFrame::WindowsXp::BORDER_W)
+    remainder.width.should eq(800.0 - 2 * Egui::WindowFrame::WindowsXp::BORDER_W)
+    remainder.bottom.should eq(600.0 - Egui::WindowFrame::WindowsXp::BORDER_W)
+
+    # Luna titlebar: deep-blue body gradient + the bright top band
+    gradient = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::WindowsXp::CAP_MID && c.fill2 == Egui::WindowFrame::WindowsXp::CAP_DEEP }
+    gradient.should_not be_nil
+    band = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::WindowsXp::CAP_LIGHT && c.fill2 == Egui::WindowFrame::WindowsXp::CAP_MID }
+    band.should_not be_nil
+
+    # the thick blue frame is painted (6pt strips in Luna blue)
+    frame_fill = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == Egui::WindowFrame::WindowsXp::FRAME }
+    frame_fill.size.should eq(3) # left + right + bottom strips
+
+    # glossy caption buttons: the red close gradient is painted
+    close = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::WindowsXp::CLOSE_TOP && c.fill2 == Egui::WindowFrame::WindowsXp::CLOSE_BOTTOM }
+    close.should_not be_nil
+
+    # clicking the red close button (rightmost, BTN_INSET from the
+    # edge) quits; the blue minimize next to it minimizes
+    close_pos = Egui::Pos2.new(
+      800.0 - Egui::WindowFrame::WindowsXp::BTN_INSET - Egui::WindowFrame::WindowsXp::BTN / 2.0,
+      Egui::WindowFrame::WindowsXp::CAPTION_H / 2.0)
+    frame_draw(ctx, style, [Egui::Event.pointer_pressed(close_pos)], 0.032)
+    frame_draw(ctx, style, [Egui::Event.pointer_released(close_pos)], 0.048)
+    quit.count.should eq(1)
+
+    min_pos = Egui::Pos2.new(
+      800.0 - Egui::WindowFrame::WindowsXp::BTN_INSET - 2.5 * Egui::WindowFrame::WindowsXp::BTN - 2 * Egui::WindowFrame::WindowsXp::BTN_GAP,
+      Egui::WindowFrame::WindowsXp::CAPTION_H / 2.0)
+    frame_draw(ctx, style, [Egui::Event.pointer_pressed(min_pos)], 0.064)
+    frame_draw(ctx, style, [Egui::Event.pointer_released(min_pos)], 0.080)
+    win.minimized.should eq(1)
   end
 
   it "an edge press hands the resize to the native loop" do

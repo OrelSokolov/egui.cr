@@ -132,12 +132,71 @@ FONScontext* egui_cr_sfons_create(int width, int height) {
 // (egui_cr_set_clear_color), so a theme swap also swaps the backdrop.
 static float g_clear[4] = { 0.075f, 0.075f, 0.08f, 1.0f };
 
+#if defined(_SAPP_LINUX)
+// forward: called from egui_cr_set_clear_color, defined below.
+static void sh_x11_sync_window_background(float r, float g, float b);
+#endif
+
 void egui_cr_set_clear_color(float r, float g, float b, float a) {
     g_clear[0] = r;
     g_clear[1] = g;
     g_clear[2] = b;
     g_clear[3] = a;
+#if defined(_SAPP_LINUX)
+    sh_x11_sync_window_background(r, g, b);
+#endif
 }
+
+#if defined(_SAPP_LINUX)
+// Resize-exposure backdrop: XCreateWindow passes no CWBackPixel, so the
+// window background is None — when the WM grows the window ahead of the
+// next glXSwapBuffers (X11 has no resize sync without the app-side
+// _NET_WM_SYNC_REQUEST counter), the newly exposed strip is undefined
+// content, which the compositor paints black. Keep the background pixel
+// in sync with the clear color so the gap shows the theme's panel fill
+// instead. The visual never changes, so its channel masks are cached
+// after the first query; XSetWindowBackground itself is fire-and-forget.
+static int sh_bg_cached = 0;
+static int sh_bg_depth;
+static unsigned long sh_bg_red_mask, sh_bg_green_mask, sh_bg_blue_mask;
+static int sh_bg_set = 0;
+static unsigned long sh_bg_pixel;
+
+static unsigned long sh_x11_pack(unsigned long mask, int v8) {
+    if (!mask) return 0;
+    unsigned long m = mask;
+    int shift = 0;
+    while (!(m & 1)) { m >>= 1; shift++; }
+    return (((unsigned long)v8 * m + 127) / 255) << shift; // m == 2^n - 1
+}
+
+static void sh_x11_sync_window_background(float r, float g, float b) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    if (!sh_bg_cached) {
+        XWindowAttributes wa;
+        if (!XGetWindowAttributes(dpy, win, &wa) || !wa.visual) return;
+        sh_bg_red_mask = wa.visual->red_mask;
+        sh_bg_green_mask = wa.visual->green_mask;
+        sh_bg_blue_mask = wa.visual->blue_mask;
+        sh_bg_depth = wa.depth;
+        sh_bg_cached = 1;
+    }
+    // Masks cover RGB only; on a depth-32 ARGB visual (transparent
+    // windows) the alpha bits stay 0, so the exposed strip is fully
+    // transparent — exactly what the transparent clear color wants.
+    unsigned long px =
+        sh_x11_pack(sh_bg_red_mask,   (int)(r * 255.0f + 0.5f)) |
+        sh_x11_pack(sh_bg_green_mask, (int)(g * 255.0f + 0.5f)) |
+        sh_x11_pack(sh_bg_blue_mask,  (int)(b * 255.0f + 0.5f));
+    if (!sh_bg_set || px != sh_bg_pixel) {
+        XSetWindowBackground(dpy, win, px);
+        sh_bg_pixel = px;
+        sh_bg_set = 1;
+    }
+}
+#endif
 
 void egui_cr_begin_pass(int w, int h) {
     (void)w; (void)h;
@@ -223,11 +282,13 @@ void egui_cr_set_transparent(void) {}
 
 #endif
 
-// UI-quad pipeline for transparent windows: same geometry as the
-// sokol_gl default pipeline, but blending so the compositing manager
-// receives a properly PREMULTIPLIED image (rgb: src*a + dst*(1-a),
-// a: a + dst_a*(1-a)). Opaque quads are unaffected; anti-aliased edges
-// and translucent fills come out correct instead of fringing.
+// UI-quad pipeline with blending: same geometry as the sokol_gl default
+// pipeline, but blending so translucent fills (modal scrim, shadows)
+// composite over what's below and the compositing manager of a
+// transparent window receives a properly PREMULTIPLIED image
+// (rgb: src*a + dst*(1-a), a: a + dst_a*(1-a)). Opaque quads are
+// unaffected; anti-aliased edges and translucent fills come out correct
+// instead of fringing.
 static sgl_pipeline g_alpha_pip;
 
 void egui_cr_alpha_pipeline_push(void) {

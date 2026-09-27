@@ -26,8 +26,12 @@ module Egui
 
       visuals = style.visuals
       center = Pos2.new(rect.left + icon / 2.0, rect.center.y)
+      # Upstream draws the idle ring with `bg_stroke`, NOT the button
+      # fill — fills track the panel background in light themes, which
+      # made the unselected ring invisible there (see checkbox's
+      # box_stroke for the same arrangement).
       ui.painter.circle_stroke(center, icon / 2.0,
-        visuals.button_fill(response.hovered?, response.active?), 1.0)
+        visuals.button_stroke, 1.0)
 
       if @selected
         ui.painter.circle_filled(center, sp.icon_width_inner / 2.0,

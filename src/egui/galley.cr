@@ -44,18 +44,42 @@ module Egui
                      @newline_before : Bool = false)
       end
 
+      # Joined row text, computed once — callers ask for it several
+      # times a frame (row starts, caret geometry), and re-joining per
+      # call allocates the whole buffer again on big galleys.
+      @text_cache : String?
+
       def text : String
-        @runs.map(&.text).join
+        @text_cache ||= @runs.map(&.text).join
       end
     end
 
     getter rows : Array(Row)
     getter size : Vec2
+    # Character offset of each row start (see row_char_starts), lazily
+    # built — mapping caret indexes is O(rows) and ran every frame
+    # before, which pinned big galleys to a per-frame full scan.
+    @row_starts : Array(Int32)?
 
     def initialize(@rows : Array(Row))
       width = @rows.map(&.width).max? || 0.0
       height = @rows.empty? ? 0.0 : @rows.last.y + @rows.last.height
       @size = Vec2.new(width, height)
+    end
+
+    # Character offset of each row start (size rows+1: the extra entry
+    # is the phantom row after a trailing newline). A wrap break
+    # consumes no character, a newline break consumes one.
+    def row_char_starts : Array(Int32)
+      @row_starts ||= begin
+        starts = [0]
+        @rows.each_with_index do |row, i|
+          consumed = row.text.size
+          consumed += 1 if @rows[i + 1]?.try(&.newline_before?) || false
+          starts << starts[i] + consumed
+        end
+        starts
+      end
     end
 
     # Character x-offset inside a row (caret geometry for TextEdit):

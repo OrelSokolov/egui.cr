@@ -366,8 +366,15 @@ module Egui
 
       @painter.clip = outer
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, 6.0, style.visuals.window_fill,
+        RectCmd.new(outer, outer, style.visuals.window_rounding,
+          style.visuals.window_fill,
           style.visuals.window_stroke, 1.0))
+      # Title bar: by default the window fill itself (a flat bar); a
+      # themed fill (classic navy Win95 bar) paints over it, still
+      # under the title text.
+      @painter.rect(Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
+        rounding: style.visuals.window_rounding,
+        fill: style.visuals.title_bar_fill)
       @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
         title, title_size, style.visuals.title_color)
       # Grip: two small diagonal marks.
@@ -496,18 +503,39 @@ module Egui
     end
 
     # egui modal (containers/modal.rs): dims the screen and blocks all
-    # interaction below the Foreground layer (Memory#mark_modal). The
-    # dialog is centered using its last-frame size (stored per id) —
-    # the first frame it appears at an approximate position, then
-    # snaps. Closing is the caller's business (a Close button calling
-    # nothing — just stop calling #modal).
-    def modal(id : String = "modal", width : Float64 = 340.0,
-              &block : Ui ->) : Nil
+    # interaction below the Foreground layer (Memory#mark_modal).
+    #
+    # Windows 11 CONTENT-dialog look (no caption bar, no close button —
+    # like the Settings/Explorer dialogs), TWO zones: the h1 title and
+    # the caller's content as ONE block on the plain window fill, and a
+    # raised footer band at most a quarter of the dialog tall carrying
+    # the buttons as an equal-width stretched row. Returns the label of
+    # the footer button clicked this frame (nil otherwise); `title:`
+    # nil skips the h1, an empty `buttons` array skips the footer.
+    def modal(id : String = "modal", width : Float64 = 480.0,
+              title : String? = nil, buttons : Array(String) = [] of String,
+              &block : Ui ->) : String?
       @memory.mark_modal
       modal_id = Id.from("modal/#{id}")
       layer = LayerId.new(Order::Foreground, modal_id)
       screen = @input.screen_rect
+      v = style.visuals
       pad = style.spacing.window_padding
+      h1_pt = 24.0    # h1 title size
+      h1_line = 32.0  # h1 line box
+      min_h = 220.0
+      btn_h = 40.0    # footer button height
+      btn_pad = 12.0  # footer vertical padding
+      footer_h = buttons.empty? ? 0.0 : btn_h + 2 * btn_pad
+
+      # The footer band fill: window_fill raised toward the text color
+      # — the second zone's background, the visual split of the dialog.
+      wf, t = v.window_fill, v.text_color
+      f = 0.06
+      footer_fill = Color32.rgba(
+        (wf.r.to_i + (t.r.to_i - wf.r.to_i) * f).round.to_i,
+        (wf.g.to_i + (t.g.to_i - wf.g.to_i) * f).round.to_i,
+        (wf.b.to_i + (t.b.to_i - wf.b.to_i) * f).round.to_i, wf.a)
 
       # Never wider than the screen (upstream `Area` constrain).
       width = {width, screen.width}.min if screen.width > 0.0
@@ -515,31 +543,78 @@ module Egui
       # Dim everything below (theme-driven scrim — `Visuals#modal_dim`).
       @painter.layer = Order::Foreground
       @painter.clip = screen
-      @painter.rect(screen, 0.0, style.visuals.modal_dim)
+      @painter.rect(screen, 0.0, v.modal_dim)
 
       # Center using last frame's size.
-      prev_size = @memory.layer_sizes[modal_id]? || Vec2.new(width, 120.0)
+      prev_size = @memory.layer_sizes[modal_id]? ||
+        Vec2.new(width, {min_h, footer_h * 4.0}.max)
       pos = Pos2.new(screen.center.x - prev_size.x / 2.0,
         screen.center.y - prev_size.y / 2.0)
 
+      # The dialog shell is back-painted at the end (bg_index below);
+      # the stroke is window_stroke at low alpha — a full-strength
+      # outline reads too harsh against the dialog fill.
       bg_index = @painter.add_noop
       @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
-      content_min = pos + Vec2.new(pad.x, pad.y)
+
+      # --- zone 1: h1 + the caller's content, one block ----------------
+      @painter.text(Pos2.new(pos.x + pad.x, pos.y + pad.y + h1_line / 2.0),
+        title, h1_pt, v.title_color) if title
+      content_min = pos + Vec2.new(pad.x,
+        pad.y + (title ? h1_line + 12.0 : 0.0))
       ui = Ui.new(self, modal_id,
         Rect.from_min_size(content_min, Vec2.new(width - 2 * pad.x, 1e6)))
       ui.layer = layer
+      @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
       yield ui
 
+      # --- zone 2: the raised footer band with the buttons ------------
+      clicked = nil
+      outer_h = {ui.min_rect.bottom + pad.y - pos.y + footer_h,
+        min_h, footer_h * 4.0}.max # footer never exceeds 25% of the dialog
       outer = Rect.new(pos,
         Pos2.new({ui.min_rect.right + pad.x, pos.x + width}.max,
-          ui.min_rect.bottom + pad.y))
+          pos.y + outer_h))
+      if footer_h > 0.0
+        footer_top = outer.bottom - footer_h
+        # bottom corners rounded like the shell, top edge squared: the
+        # rounded band is drawn 8pt past the seam, a square patch then
+        # fills its top rounding back to a straight edge
+        @painter.clip = outer
+        @painter.rect(Rect.from_min_size(
+          Pos2.new(pos.x, footer_top - 8.0),
+          Vec2.new(width, footer_h + 8.0)), 8.0, footer_fill, nil, 0.0)
+        @painter.rect(Rect.from_min_size(
+          Pos2.new(pos.x, footer_top - 1.0), Vec2.new(width, 2.0)),
+          0.0, footer_fill, nil, 0.0)
+
+        # buttons as an equal-width stretched row (block, not inline)
+        n = buttons.size
+        gap = style.spacing.item_spacing.x
+        bw = (width - 2 * pad.x - (n - 1) * gap) / n
+        row = Ui.new(self, Id.from("modal/#{id}/footer"),
+          Rect.from_min_size(
+            Pos2.new(pos.x + pad.x, footer_top + btn_pad),
+            Vec2.new(width - 2 * pad.x, btn_h)),
+          layout: Layout.left_to_right)
+        row.layer = layer
+        buttons.each do |label|
+          resp = row.add(Button.new(label)
+            .min_size(Vec2.new(bw, btn_h)))
+          clicked = label if resp.clicked?
+        end
+      end
+
       @memory.layer_sizes[modal_id] = outer.size
       @painter.clip = outer
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, 8.0, style.visuals.window_fill,
-          style.visuals.window_stroke, 1.0))
+        RectCmd.new(outer, outer, 8.0, v.window_fill,
+          Color32.rgba(v.window_stroke.r, v.window_stroke.g,
+            v.window_stroke.b, 90),
+          1.0))
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      clicked
     end
 
     # --- panels (egui containers/panel.rs) --------------------------------
@@ -574,10 +649,13 @@ module Egui
       rect
     end
 
-    def bottom_panel(id : String = "bottom_panel", &block : Ui ->) : Rect
-      line_h = style.font_size * Fonts::LINE_H_FACTOR
-      pad = style.spacing.window_padding
-      height = line_h + 2 * pad.y
+    def bottom_panel(id : String = "bottom_panel",
+                     height : Float64? = nil, &block : Ui ->) : Rect
+      height ||= begin
+        line_h = style.font_size * Fonts::LINE_H_FACTOR
+        pad = style.spacing.window_padding
+        line_h + 2 * pad.y
+      end
       rect = Rect.from_min_size(
         Pos2.new(@available_rect.min.x, @available_rect.max.y - height),
         Vec2.new(@available_rect.width, height))

@@ -40,7 +40,11 @@ module Egui
       rail = Rect.from_min_size(
         Pos2.new(rect.left, rail_y - sp.slider_rail_width / 2.0),
         Vec2.new(rect.width, sp.slider_rail_width))
-      ui.painter.rect(rail, rail.height / 2.0, visuals.button_weak)
+      # The rail is a groove, not a button: upstream fills it with the
+      # noninteractive background, but light themes set button_weak ≈
+      # panel_fill (macOS #FFF on #FFF) — the stroke color keeps the
+      # rail visible in every preset.
+      ui.painter.rect(rail, rail.height / 2.0, visuals.button_stroke)
 
       handle_r = 6.0
       t = normalized(new_value)

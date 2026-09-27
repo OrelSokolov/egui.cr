@@ -40,6 +40,23 @@ module Egui
       theme
     end
 
+    # Same, but with a custom palette: the block runs on the fresh
+    # theme's Visuals BETWEEN the base palette and the element rules,
+    # so the class rules (button/sidebar/tabs) are derived from the
+    # custom colors too — the way to build whole presets:
+    #
+    #   DefaultTheme.build("winxp", dark: false) do |v|
+    #     v.window_fill = Color32.rgb(236, 233, 216)
+    #     v.selection_fill = Color32.rgb(49, 106, 197)
+    #   end
+    def self.build(name : String, *, dark : Bool, &palette : Visuals -> Nil) : Theme
+      theme = Theme.new(name, dark)
+      base_style(theme, dark)
+      yield theme.style.visuals
+      element_rules(theme)
+      theme
+    end
+
     # --- base palette (what un-classed widgets read via `ctx.style`) ---
 
     private def self.base_style(theme : Theme, dark : Bool) : Nil
@@ -50,6 +67,7 @@ module Egui
       if dark
         v.window_fill = Color32.rgba(27, 27, 30, 235)
         v.window_stroke = Color32.rgba(80, 80, 80, 255)
+        v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(22, 22, 24, 255)
         v.text_color = Color32.rgba(235, 235, 235, 255)
         v.title_color = Color32.rgba(250, 250, 250, 255)
@@ -60,10 +78,11 @@ module Egui
         v.selection_fill = Color32.rgba(0, 122, 204, 255)
         v.hyperlink_color = Color32.rgba(102, 170, 255, 255)
         v.separator_color = Color32.rgba(90, 90, 90, 255)
-        v.modal_dim = Color32.rgba(0, 0, 0, 140)
+        v.modal_dim = Color32.rgba(0, 0, 0, 100)
       else
         v.window_fill = Color32.rgba(252, 252, 252, 245)
         v.window_stroke = Color32.rgba(190, 190, 190, 255)
+        v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(243, 243, 243, 255)
         v.text_color = Color32.rgba(35, 35, 35, 255)
         v.title_color = Color32.rgba(15, 15, 15, 255)
