@@ -8,16 +8,25 @@ module Egui
   class Hyperlink
     include Widget
 
-    def initialize(@label : String, @url : String)
+    def initialize(@label : String, @url : String, id : String? = nil)
+      @id_name = id
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [StyleProp.new("hyperlink_color", :color)]
+    end
+
+    def inspector_label : String?
+      @label
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       font_size = style.font_size
       text_size = ui.ctx.fonts.measure(@label, font_size)
 
       rect = ui.allocate_at_least(text_size)
-      id = ui.next_widget_id
       # Upstream: Link is Sense::click only — NOT focusable. There is no
       # keyboard activation in this framework (no Enter/Space on focused
       # widgets), so focus on a link would be an unactionable decoration.

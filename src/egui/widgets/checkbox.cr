@@ -8,7 +8,8 @@ module Egui
   class Checkbox
     include Widget
 
-    def initialize(@checked : Bool, @text : String)
+    def initialize(@checked : Bool, @text : String, id : String? = nil)
+      @id_name = id
     end
 
     # Styled through the `checkbox` class: `box_fill`, `box_stroke`,
@@ -19,19 +20,32 @@ module Egui
       "checkbox"
     end
 
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("box_fill", :color, states: true),
+        StyleProp.new("box_stroke", :color),
+        StyleProp.new("check_color", :color),
+        StyleProp.new("rounding", :number),
+      ]
+    end
+
+    def inspector_label : String?
+      @text
+    end
+
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       sp = style.spacing
       font_size = style.font_size
       visuals = style.visuals
-      class_vars = ui.ctx.stylesheet.resolve("checkbox")
+      class_vars = style_vars(ui, id, "checkbox")
       text_size = ui.ctx.fonts.measure(@text, font_size)
 
       icon = sp.icon_width
       height = {icon, text_size.y}.max
       total_width = icon + sp.icon_spacing + text_size.x
       rect = ui.allocate_at_least(Vec2.new(total_width, height))
-      id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       icon_rect = Rect.from_min_size(

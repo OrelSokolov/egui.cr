@@ -393,6 +393,9 @@ module Egui
       #   blue frame), classic Ubuntu Ambiance (gradient + round orange
       #   close) or macOS (traffic lights left, close first). Switchable
       #   live via `Sokol.chrome_style=`.
+      # * *inspector* — `:on` enables the runtime widget inspector
+      # (right-click any widget → «Inspect»; F12 toggles the bottom
+      # panel — see `egui/inspector.cr`). Debug mode, off by default.
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
@@ -401,7 +404,8 @@ module Egui
                    transparent : Bool = false,
                    chrome : Bool? = nil,
                    chrome_style : WindowFrame::Style =
-                     WindowFrame::Style::Windows) : Nil
+                     WindowFrame::Style::Windows,
+                   inspector : Symbol = :off) : Nil
         @@app = app
         @@icon = icon
         @@transparent = transparent
@@ -409,6 +413,7 @@ module Egui
         @@chrome_enabled = chrome.nil? ? !decorations && !transparent : chrome.not_nil!
         @@chrome_active = @@chrome_enabled && !decorations
         @@chrome_style = chrome_style
+        app.ctx.inspector_enabled = (inspector == :on)
         # The native (Win32) icon above + the client-side caption's
         # icon slot show the same pixels.
         Egui::WindowFrame.icon = icon if icon
@@ -644,10 +649,16 @@ module Egui
         @@events = [] of Egui::Event
 
         app.ctx.begin_frame(raw)
+        # The inspector panel bites the bottom edge FIRST (before the
+        # chrome bar and the app's panels) so it sits under everything.
+        app.ctx.inspector.before_update if app.ctx.inspector_enabled?
         # Default client-side chrome first: the caption is a top panel,
         # so the app's own panels land below it.
         Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
         app.update(app.ctx)
+        # Inspector overlays (pick menu, color popup, selection frame)
+        # paint above the app, after its popups had their say.
+        app.ctx.inspector.after_update if app.ctx.inspector_enabled?
         commands = app.ctx.end_frame
 
         @@last_commands = commands

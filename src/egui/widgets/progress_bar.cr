@@ -9,16 +9,28 @@ module Egui
     include Widget
 
     def initialize(@fraction : Float64, @text : String? = nil,
-                   @animate : Bool = false)
+                   @animate : Bool = false, id : String? = nil)
+      @id_name = id
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("selection_fill", :color, label: "fill"),
+        StyleProp.new("stroke", :color, label: "track stroke"),
+      ]
+    end
+
+    def inspector_label : String?
+      @text
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       height = {style.spacing.interact_size.y * 1.25,
                 style.font_size * 1.5}.max
       size = Vec2.new(ui.available_width, height)
       rect = ui.allocate_at_least(size)
-      id = ui.next_widget_id
 
       fraction = @fraction.clamp(0.0, 1.0)
       fraction = ui.ctx.animate_value_with_time(id, fraction, 0.3) if @animate

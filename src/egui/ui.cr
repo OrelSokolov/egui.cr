@@ -90,9 +90,18 @@ module Egui
       child
     end
 
-    # egui `Ui::add(widget)` — the generic Widget entry point.
+    # egui `Ui::add(widget)` — the generic Widget entry point. While
+    # the widget runs, it is the Context's `current_widget` — the
+    # inspector records kind/class/properties per id from it (nil for
+    # interact calls not coming from an `Ui#add`).
     def add(widget : Widget) : Response
-      widget.ui(self)
+      parent = @ctx.current_widget
+      @ctx.current_widget = widget
+      begin
+        widget.ui(self)
+      ensure
+        @ctx.current_widget = parent
+      end
     end
 
     # egui `ui.label` — selectable text by default (`userselect: false`
@@ -112,8 +121,8 @@ module Egui
       rich(RichText.new(text).heading(style.font_size))
     end
 
-    def button(text : String) : Response
-      add(Button.new(text))
+    def button(text : String, id : String? = nil) : Response
+      add(Button.new(text, id: id))
     end
 
     # A block-level button filling the region's width — the Windows
@@ -126,14 +135,15 @@ module Egui
     # egui `ui.checkbox(&mut bool, text)` — Crystal keeps the value in
     # app state; the block fires with the new value on toggle, and
     # `Response#changed?` reports the same on the returned Response.
-    def checkbox(checked : Bool, text : String, &on_change : Bool ->) : Response
-      response = add(Checkbox.new(checked, text))
+    def checkbox(checked : Bool, text : String, id : String? = nil,
+                 &on_change : Bool ->) : Response
+      response = add(Checkbox.new(checked, text, id: id))
       on_change.call(!checked) if response.changed?
       response
     end
 
-    def checkbox(checked : Bool, text : String) : Response
-      add(Checkbox.new(checked, text))
+    def checkbox(checked : Bool, text : String, id : String? = nil) : Response
+      add(Checkbox.new(checked, text, id: id))
     end
 
     # egui `ui.radio(selected, text)`.
@@ -171,8 +181,9 @@ module Egui
     # egui `ui.add_enabled`-style block helpers for value widgets:
     # the block fires with the new value when it changed this frame.
     def slider(value : Float64, range : Range(Float64, Float64),
-               text : String? = nil, &on_change : Float64 ->) : Response
-      response = add(Slider.new(value, range, text))
+               text : String? = nil, id : String? = nil,
+               &on_change : Float64 ->) : Response
+      response = add(Slider.new(value, range, text, id: id))
       if response.changed? && (v = response.widget_value)
         on_change.call(v)
       end
@@ -345,29 +356,39 @@ module Egui
       add(Hyperlink.new(url, url))
     end
 
-    def hyperlink_to(label : String, url : String) : Response
-      add(Hyperlink.new(label, url))
+    def hyperlink_to(label : String, url : String, id : String? = nil) : Response
+      add(Hyperlink.new(label, url, id: id))
     end
 
     # egui `ui.selectable_label(selected, text)` (upstream 0.36:
     # `Button::selectable`). The block form hands the new state back
     # when the row is clicked, like `#checkbox`.
-    def selectable_label(selected : Bool, text : String) : Response
-      add(SelectableLabel.new(selected, text))
+    def selectable_label(selected : Bool, text : String, id : String? = nil) : Response
+      add(SelectableLabel.new(selected, text, id: id))
     end
 
-    def selectable(selected : Bool, text : String, &on_change : Bool ->) : Response
-      response = add(SelectableLabel.new(selected, text))
+    def selectable(selected : Bool, text : String, id : String? = nil,
+                   &on_change : Bool ->) : Response
+      response = add(SelectableLabel.new(selected, text, id: id))
       on_change.call(!selected) if response.changed?
       response
     end
 
+    def selectable(selected : Bool, text : String, id : String? = nil) : Response
+      add(SelectableLabel.new(selected, text, id: id))
+    end
+
     # Switch-style toggle; block form like `#checkbox`.
     def toggle_button(checked : Bool, text : String? = nil,
-                      &on_change : Bool ->) : Response
-      response = add(ToggleButton.new(checked, text))
+                      id : String? = nil, &on_change : Bool ->) : Response
+      response = add(ToggleButton.new(checked, text, id: id))
       on_change.call(!checked) if response.changed?
       response
+    end
+
+    def toggle_button(checked : Bool, text : String? = nil,
+                      id : String? = nil) : Response
+      add(ToggleButton.new(checked, text, id: id))
     end
 
     # One-of-many segmented selector; the block fires with the newly

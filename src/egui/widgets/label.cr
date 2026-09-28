@@ -21,27 +21,37 @@ module Egui
     getter? userselect : Bool
 
     def initialize(text : String, size : Float64? = nil, wrap : Bool = false,
-                   userselect : Bool = true)
+                   userselect : Bool = true, id : String? = nil)
       @rich = RichText.new(text)
       @rich.size(size) if size
       @wrap = wrap
       @userselect = userselect
+      @id_name = id
     end
 
     def initialize(@rich : RichText, wrap : Bool = false,
-                   userselect : Bool = true)
+                   userselect : Bool = true, id : String? = nil)
       @wrap = wrap
       @userselect = userselect
+      @id_name = id
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike
+    end
+
+    def inspector_label : String?
+      @rich.text
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       runs = @rich.runs(style.font_size, style.visuals.text_color)
       max_width = @wrap ? ui.available_width : nil
       galley = ui.ctx.fonts.layout(runs, max_width)
 
       rect = ui.allocate_at_least(galley.size)
-      id = ui.next_widget_id
       response = ui.interact(rect, id,
         @userselect ? Sense.click_and_drag : Sense.none)
 

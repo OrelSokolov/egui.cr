@@ -21,7 +21,8 @@ module Egui
     @image_texture : UInt64?
     @cursor : CursorIcon?
 
-    def initialize(@text : String)
+    def initialize(@text : String, id : String? = nil)
+      @id_name = id
     end
 
     # egui `Button::min_size` — the button never shrinks below this
@@ -35,6 +36,27 @@ module Egui
 
     def style_class : String?
       "button"
+    end
+
+    # Every key #ui reads: the common button set plus the box-model
+    # and 3D-bevel/shadow extras (see `default_theme.cr` for the
+    # defaults). Declared here — the inspector renders what it's told.
+    def style_properties : Array(StyleProp)
+      StyleProps.buttonlike + [
+        StyleProp.new("padding", :box),
+        StyleProp.new("rounding", :number),
+        StyleProp.new("bevel_light", :color, states: true),
+        StyleProp.new("bevel_dark", :color, states: true),
+        StyleProp.new("shadow.color", :color, states: true),
+        StyleProp.new("shadow.blur", :number),
+        StyleProp.new("shadow.x", :number),
+        StyleProp.new("shadow.y", :number),
+        StyleProp.new("shadow.inset", :bool, states: true),
+      ]
+    end
+
+    def inspector_label : String?
+      @text
     end
 
     # CSS `cursor` style for this button — the icon the mouse shows
@@ -66,14 +88,15 @@ module Egui
 
     def ui(ui : Ui) : Response
       sense = Sense.click | Sense::Focusable
+      id = resolve_id(ui)
 
       # Full cascade (theme → button class → :hover/:active overlay →
-      # per-widget `#style`): see `default_theme.cr` for the class
-      # defaults. Sizing uses the state-less style; the state only
-      # picks colors, re-resolved after the interaction verdict.
-      sheet = ui.ctx.stylesheet
-      class_vars = sheet.resolve("button")
-      style = effective_style(ui, class_vars)
+      # per-widget `#style` → inspector per-element override): see
+      # `default_theme.cr` for the class defaults. Sizing uses the
+      # state-less style; the state only picks colors, re-resolved
+      # after the interaction verdict.
+      class_vars = style_vars(ui, id, "button")
+      style = effective_style(ui, id, class_vars)
 
       # Per-side padding box; falls back to Spacing#button_padding
       # (symmetric) when the class leaves it unset.
@@ -96,7 +119,6 @@ module Egui
       end
 
       rect = ui.allocate_at_least(size)
-      id = ui.next_widget_id
       response = ui.interact(rect, id, sense)
       if response.hovered? && (cursor = @cursor)
         ui.ctx.set_cursor_icon(cursor)
@@ -105,7 +127,7 @@ module Egui
       # The state overlay slots UNDER any `#style` overrides, so an
       # inline fill still wins over `button:hover`.
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      paint_style = state ? effective_style(ui, class_vars, state) : style
+      paint_style = state ? effective_style(ui, id, class_vars, state) : style
       fill = paint_style.visuals.button_fill(response.hovered?, response.active?)
       # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
       # keys, read from the SAME state overlay as the fill — a
@@ -116,7 +138,7 @@ module Egui
       # it — `button:active { shadow.inset }` is the bootstrap pressed
       # look.
       rounding = class_vars.f64("rounding", 4.0)
-      state_vars = sheet.resolve("button", state)
+      state_vars = style_vars(ui, id, "button", state)
       shadow = state_vars.shadow?
       if shadow && !shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,

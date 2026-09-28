@@ -7,13 +7,17 @@ module Egui
   class Spinner
     include Widget
 
-    def initialize(@size : Float64? = nil)
+    def initialize(@size : Float64? = nil, id : String? = nil)
+      @id_name = id
     end
+
+    # Reads no style keys — the inspector's Element tab shows it as
+    # non-stylable (the honest default; `style_properties` stays []).
 
     def ui(ui : Ui) : Response
       size = @size || ui.style.spacing.interact_size.y
       rect = ui.allocate_at_least(Vec2.new(size, size))
-      id = ui.next_widget_id
+      id = resolve_id(ui)
 
       ui.ctx.request_repaint
 

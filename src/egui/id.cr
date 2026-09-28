@@ -31,6 +31,22 @@ module Egui
       io << "Id(0x" << @value.to_s(16) << ")"
     end
 
+    # A random-looking 6-char [A-Za-z] name for display and debug
+    # (inspector): deterministic per id value, so the same widget shows
+    # the same name frame after frame. Collisions are possible in this
+    # encoding (52^6 < 2^64) and harmless — identity stays the full
+    # value; this is only a label.
+    def short_label : String
+      chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+      v = @value
+      String.build(6) do |io|
+        6.times do
+          io << chars[(v % 52_u64).to_i32]
+          v = v // 52_u64
+        end
+      end
+    end
+
     FNV_OFFSET = 0xcbf29ce484222325_u64
     FNV_PRIME  = 0x100000001b3_u64
   end

@@ -10,11 +10,24 @@ module Egui
     include Widget
 
     def initialize(@value : Float64, @range : Range(Float64, Float64),
-                   @text : String? = nil)
+                   @text : String? = nil, id : String? = nil)
+      @id_name = id
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("selection_fill", :color, label: "fill (handle)"),
+        StyleProp.new("stroke", :color, label: "rail stroke"),
+      ]
+    end
+
+    def inspector_label : String?
+      @text
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       sp = style.spacing
       thickness = sp.interact_size.y
 
@@ -26,7 +39,6 @@ module Egui
       width = {sp.slider_width, ui.available_width - label_w}.max
       outer = ui.allocate_at_least(Vec2.new(width + label_w, thickness))
       rect = Rect.from_min_size(outer.min, Vec2.new(width, thickness))
-      id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
 
       new_value = @value

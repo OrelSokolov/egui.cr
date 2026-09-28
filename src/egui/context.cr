@@ -14,6 +14,12 @@
 # closes on outside click; #bottom_panel pins to the screen bottom.
 
 module Egui
+  # A widget was created with an explicit id (`Button.new("OK", id:
+  # "save")`) that another widget already claimed this frame — explicit
+  # ids are the developer's addressing tool and must be unique.
+  class DuplicateWidgetIdError < Exception
+  end
+
   class Context
     getter memory : Memory
     getter input : InputState
@@ -51,6 +57,23 @@ module Egui
     # skip `request_repaint` inside a frame (the driving event already
     # bought the settle repaints).
     @in_frame : Bool
+    # Explicit widget ids claimed this frame (duplicate → raise); see
+    # `Widget#with_id` / `#claim_widget_id`.
+    @claimed_ids : Set(Id)
+    # Per-element style overrides set by the inspector (the top layer
+    # of the style cascade — see `Widget#effective_style`). Runtime
+    # debug state: never persisted, cleared from the inspector.
+    @id_style_overrides : Hash(Id, StyleVars)
+    # The widget currently being run through `Ui#add` — recorded by
+    # `Inspector#record_meta` in #interact when the inspector is on.
+    @current_widget : Widget?
+    # The inspector (nil-ish until first enabled — lazily built).
+    @inspector : Inspector?
+    @inspector_enabled : Bool
+    # Any popup opened this frame (app's own context menu etc.) — the
+    # inspector yields to app menus when picking (see
+    # `Inspector#after_update`).
+    @popup_opened_this_frame : Bool
 
     def initialize
       @memory = Memory.new
@@ -71,6 +94,12 @@ module Egui
       @fired_actions = [] of HotkeyAction
       @hotkey_capture = false
       @in_frame = false
+      @claimed_ids = Set(Id).new
+      @id_style_overrides = {} of Id => StyleVars
+      @current_widget = nil
+      @inspector = nil
+      @inspector_enabled = false
+      @popup_opened_this_frame = false
     end
 
     def begin_frame(raw : RawInput) : Nil
@@ -109,6 +138,9 @@ module Egui
 
       @memory.begin_frame(@input)
       @painter.clear
+      @claimed_ids.clear
+      @popup_opened_this_frame = false
+      @inspector.try &.begin_frame
     end
 
     # Instant theme swap (see #theme) — takes effect next frame.
@@ -192,6 +224,9 @@ module Egui
     def interact(id : Id, rect : Rect, sense : Sense,
                  layer : LayerId = LayerId.background,
                  clip : Rect = Rect.infinite) : Response
+      if (insp = @inspector) && @inspector_enabled
+        insp.record_meta(id, @current_widget)
+      end
       v = @memory.interact(id, rect, sense, layer, clip)
       response = Response.new(self, id, rect, sense, v.hovered?, v.clicked?,
         v.click_count, v.pressed?, v.active?, v.dragged?, v.drag_started?,
@@ -252,6 +287,90 @@ module Egui
     # signal writes made during update.
     def in_frame? : Bool
       @in_frame
+    end
+
+    # --- inspector / explicit widget ids -----------------------------------
+
+    # Claim `id` for a widget created with the explicit name `name`
+    # (kind is the widget class, for the error message). Ids are
+    # claimed once per frame; a second claim of the same id raises —
+    # explicit ids are the developer's addressing tool and must be
+    # unique. Auto ids skip this (their collisions stay on the silent
+    # `Memory` duplicate accounting).
+    def claim_widget_id(id : Id, name : String, kind : String) : Nil
+      if @claimed_ids.includes?(id)
+        raise DuplicateWidgetIdError.new(
+          "Duplicate widget id \"#{name}\" (#{kind}) — explicit ids must be unique")
+      end
+      @claimed_ids.add(id)
+    end
+
+    # Runtime per-element style overrides (the inspector's Element
+    # tab). The top layer of the cascade — see `Widget#effective_style`.
+    def id_style_overrides : Hash(Id, StyleVars)
+      @id_style_overrides
+    end
+
+    # Set one per-element style key (inspector Element tab). Applies on
+    # the next frame — immediate mode needs no apply step.
+    def set_id_style(id : Id, key : String, value : StyleValue) : Nil
+      (@id_style_overrides[id] ||= StyleVars.new)[key] = value
+      request_repaint
+    end
+
+    # Remove one key (nil = wipe every key) from a per-element
+    # override; the slot goes back to inheriting the cascade. An empty
+    # bag is dropped entirely.
+    def clear_id_style(id : Id, key : String? = nil) : Nil
+      if key
+        bag = @id_style_overrides[id]?
+        if bag
+          bag.delete(key)
+          @id_style_overrides.delete(id) if bag.empty?
+        end
+      else
+        @id_style_overrides.delete(id)
+      end
+      request_repaint
+    end
+
+    # The inspector state (built on first enable — zero cost while
+    # off). The backend drives its frame hooks; see `inspector.cr`.
+    def inspector : Inspector
+      @inspector ||= Inspector.new(self)
+    end
+
+    def inspector? : Inspector?
+      @inspector
+    end
+
+    def inspector_enabled? : Bool
+      @inspector_enabled
+    end
+
+    # Enable/disable the inspector at runtime (`Sokol.run(…,
+    # inspector: :on)` flips this on before the first frame).
+    def inspector_enabled=(flag : Bool) : Bool
+      inspector # build the state object
+      @inspector_enabled = flag
+      request_repaint
+      flag
+    end
+
+    # The widget currently running through `Ui#add` (set there, read
+    # by #interact for inspector meta recording). Internal.
+    def current_widget : Widget?
+      @current_widget
+    end
+
+    def current_widget=(widget : Widget?) : Widget?
+      @current_widget = widget
+    end
+
+    # Did the app open a popup this frame (its own context menu)? The
+    # inspector pick menu yields to app menus. Internal.
+    def popup_opened_this_frame? : Bool
+      @popup_opened_this_frame
     end
 
     # --- containers --------------------------------------------------------
@@ -493,6 +612,7 @@ module Egui
     end
 
     def open_popup(id : String) : Nil
+      @popup_opened_this_frame = true
       @memory.open_popup(Id.from("popup/#{id}"))
       request_repaint
     end

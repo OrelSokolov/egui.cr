@@ -77,6 +77,46 @@ module Egui
     end
   end
 
+  # A stylable property declaration: the `StyleVars` key a widget
+  # actually reads, plus how to edit it. Widgets declare their own
+  # lists (`Widget#style_properties`) — the inspector is generic and
+  # builds its editors purely from these declarations.
+  struct StyleProp
+    getter key : String
+    # :color | :number | :box | :bool — picks the inspector editor.
+    getter kind : Symbol
+    getter label : String
+    # True when the key also makes sense as a `:hover`/`:active` state
+    # overlay (button fills, bevels, shadows) — the inspector then
+    # offers the base/hover/active switch for it.
+    getter? states : Bool
+
+    def initialize(@key : String, @kind : Symbol, label : String? = nil,
+                   @states : Bool = false)
+      @label = label || @key
+    end
+  end
+
+  # Ready-made declaration sets shared by several widgets (widgets
+  # return their OWN array — treat the results as read-only).
+  module StyleProps
+    # Text-carrying widgets: color + size.
+    def self.textlike : Array(StyleProp)
+      [StyleProp.new("text_color", :color),
+       StyleProp.new("font_size", :number)]
+    end
+
+    # Widgets painted as a filled box (buttons & friends).
+    def self.buttonlike : Array(StyleProp)
+      textlike + [
+        StyleProp.new("fill", :color, states: true),
+        StyleProp.new("fill_hovered", :color),
+        StyleProp.new("fill_active", :color),
+        StyleProp.new("stroke", :color, states: true),
+      ]
+    end
+  end
+
   # A mergeable bag of style variables: `Hash(String, StyleValue)` with
   # typed getters (untyped keys simply stay invisible to a getter, so
   # typos degrade to "unset", never to a crash). Bags produced by
@@ -283,6 +323,22 @@ module Egui
     # layer but under widget `#style` overrides.
     def state_vars(path : String, state : String) : StyleVars?
       @classes[path]?.try &.states[state]?
+    end
+
+    # Remove one key from a class/state rule (the inspector's "reset"):
+    # the slot goes back to inheriting the theme. Unset keys and
+    # unknown selectors are no-ops.
+    def unset(selector : String, key : String) : self
+      path, state = split_selector(selector)
+      if (cls = @classes[path]?)
+        if state
+          cls.states[state]?.try &.delete(key)
+        else
+          cls.vars.delete(key)
+        end
+        @resolved.clear
+      end
+      self
     end
 
     # Drop the cached merges manually (after mutating a StyleClass

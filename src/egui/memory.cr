@@ -562,6 +562,12 @@ module Egui
     # under it, even though the popup registers earlier in the frame);
     # within the same z the last registration (paint order) is on top.
     # Hit-tests resolve against the previous frame's geometry.
+    # The topmost registered widget (any sense) at `pos`, against the
+    # previous frame's geometry — the inspector's pick hit-test.
+    def widget_at(pos : Pos2?) : Id?
+      topmost_at(pos) { |_sense| true }
+    end
+
     private def topmost_at(pos : Pos2?, &sense_filter : Sense -> Bool) : Id?
       return nil unless pos
       hit = nil

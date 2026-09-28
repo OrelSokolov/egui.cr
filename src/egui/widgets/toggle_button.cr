@@ -9,11 +9,24 @@ module Egui
   class ToggleButton
     include Widget
 
-    def initialize(@checked : Bool, @text : String? = nil)
+    def initialize(@checked : Bool, @text : String? = nil, id : String? = nil)
+      @id_name = id
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("selection_fill", :color, label: "fill (on)"),
+        StyleProp.new("stroke", :color, label: "track stroke"),
+      ]
+    end
+
+    def inspector_label : String?
+      @text
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = resolve_id(ui)
+      style = effective_style(ui, id)
       visuals = style.visuals
       font_size = style.font_size
       text_size = @text ? ui.ctx.fonts.measure(@text.not_nil!, font_size) : Vec2.zero
@@ -24,7 +37,6 @@ module Egui
       height = {track_h, text_size.y, style.spacing.interact_size.y * 0.7}.max
       total_w = track_w + (@text ? style.spacing.icon_spacing + text_size.x : 0.0)
       rect = ui.allocate_at_least(Vec2.new(total_w, height))
-      id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       track = Rect.from_min_size(
