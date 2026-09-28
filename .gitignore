@@ -18,5 +18,11 @@ shard.lock
 
 egui-upstream/
 
+# Local profiling output
+perf.data*
+
+# Local test media for the video player example
+*.webm
+
 # Stray local build output
 /egui

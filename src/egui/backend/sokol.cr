@@ -108,6 +108,10 @@ lib LibEguiCr
 
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
+  fun make_stream_texture = egui_cr_make_stream_texture(w : Int32, h : Int32) : UInt32
+  fun update_texture = egui_cr_update_texture(view_id : UInt32, w : Int32,
+                                              h : Int32, data : UInt8*)
+  fun destroy_texture = egui_cr_destroy_texture(view_id : UInt32)
   fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
   fun sgl_disable_texture = egui_cr_sgl_disable_texture
@@ -1311,6 +1315,22 @@ module Egui
 
         def load(path : String) : UInt64
           LibEguiCr.load_image(path.to_unsafe).to_u64
+        end
+
+        def create_stream(width : Int32, height : Int32) : UInt64
+          LibEguiCr.make_stream_texture(width, height).to_u64
+        end
+
+        def update(id : UInt64, width : Int32, height : Int32,
+                   data : Bytes) : Nil
+          return if id.zero?
+          LibEguiCr.update_texture(id.to_u32!, width, height,
+            data.to_unsafe)
+        end
+
+        def destroy(id : UInt64) : Nil
+          return if id.zero?
+          LibEguiCr.destroy_texture(id.to_u32!)
         end
       end
 

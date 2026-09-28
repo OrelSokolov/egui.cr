@@ -18,7 +18,10 @@ module Egui
 
       rect = ui.allocate_at_least(text_size)
       id = ui.next_widget_id
-      response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+      # Upstream: Link is Sense::click only — NOT focusable. There is no
+      # keyboard activation in this framework (no Enter/Space on focused
+      # widgets), so focus on a link would be an unactionable decoration.
+      response = ui.interact(rect, id, Sense.click)
       # Upstream: a pointing hand over links, independent of the
       # interact_cursor style.
       ui.ctx.set_cursor_icon(CursorIcon::Pointer) if response.hovered?
@@ -33,7 +36,6 @@ module Egui
       galley = ui.ctx.fonts.layout(runs)
       ui.painter.paint_galley(rect.min, galley, ui.ctx.fonts, color)
 
-      response.paint_focus_ring(2.0)
       Hyperlink.open_url(@url) if response.clicked?
       response
     end

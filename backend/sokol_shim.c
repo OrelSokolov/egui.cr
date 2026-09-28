@@ -356,6 +356,26 @@ void egui_cr_replace_pipeline_pop(void) {
 
 static sg_sampler g_linear_sampler;
 
+// view-id → image registry for textures that outlive their upload:
+// immutable (make_texture) so they can be destroyed, and stream
+// (make_stream_texture) so they can be updated in place. Fixed-size is
+// fine — apps hold a handful of textures (a video surface, a photo),
+// not thousands.
+#define EGUI_CR_MAX_TEXTURES 256
+static struct {
+    uint32_t view_id;
+    sg_image img;
+    bool stream;
+} g_textures[EGUI_CR_MAX_TEXTURES];
+static int g_texture_count = 0;
+
+static int sh_texture_slot(uint32_t view_id) {
+    for (int i = 0; i < g_texture_count; i++) {
+        if (g_textures[i].view_id == view_id) return i;
+    }
+    return -1;
+}
+
 // Upload immutable RGBA8 data as a 2D texture; returns the sg_view id
 // (0 on failure). The sampler is created once and shared.
 uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
@@ -376,7 +396,69 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
     sg_view view = sg_make_view(&(sg_view_desc){
         .texture = {.image = img},
     });
+    if (view.id == 0) return 0;
+    if (g_texture_count < EGUI_CR_MAX_TEXTURES) {
+        g_textures[g_texture_count].view_id = (uint32_t)view.id;
+        g_textures[g_texture_count].img = img;
+        g_textures[g_texture_count].stream = false;
+        g_texture_count++;
+    }
     return view.id;
+}
+
+// Create an EMPTY updatable RGBA8 texture (SG_USAGE_STREAM) for pixels
+// that change every frame — decoded video, camera frames. Stream images
+// cannot be created with initial data (sokol validation:
+// WRITABLE_NO_DATA), so create empty and upload via update_texture.
+uint32_t egui_cr_make_stream_texture(int w, int h) {
+    if (w <= 0 || h <= 0 || g_texture_count >= EGUI_CR_MAX_TEXTURES) return 0;
+    sg_image img = sg_make_image(&(sg_image_desc){
+        .type = SG_IMAGETYPE_2D,
+        .width = w,
+        .height = h,
+        .pixel_format = SG_PIXELFORMAT_RGBA8,
+        .usage = {.dynamic_update = true},
+        .label = "egui-cr-stream-texture",
+    });
+    if (img.id == 0) return 0;
+    sg_view view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = img},
+        .label = "egui-cr-stream-texture-view",
+    });
+    if (view.id == 0) return 0;
+    g_textures[g_texture_count].view_id = (uint32_t)view.id;
+    g_textures[g_texture_count].img = img;
+    g_textures[g_texture_count].stream = true;
+    g_texture_count++;
+    return (uint32_t)view.id;
+}
+
+// Push fresh RGBA8 pixels into a stream texture (same size as created).
+void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
+    int slot = sh_texture_slot(view_id);
+    if (slot < 0 || !g_textures[slot].stream) return;
+    sg_image_data data;
+    memset(&data, 0, sizeof(data));
+    data.mip_levels[0].ptr = rgba8;
+    data.mip_levels[0].size = (size_t)w * h * 4;
+    sg_update_image(g_textures[slot].img, &data);
+    // Same GL state-cache caveat as the glyph-atlas update path: the
+    // sokol GL backend rebinds textures behind the cache's back while
+    // uploading, so reset it or the next draw samples a stale slot.
+    // Unlike atlases this runs every video frame, but sg_reset_state_cache
+    // only clears the cache (the next apply_bindings re-sets GL state),
+    // which is cheap next to a full-frame upload.
+    sg_reset_state_cache();
+}
+
+// Destroy a texture created by make_texture or make_stream_texture.
+void egui_cr_destroy_texture(uint32_t view_id) {
+    int slot = sh_texture_slot(view_id);
+    if (slot < 0) return;
+    sg_destroy_view((sg_view){.id = view_id});
+    sg_destroy_image(g_textures[slot].img);
+    g_textures[slot] = g_textures[g_texture_count - 1];
+    g_texture_count--;
 }
 
 // Bind a texture for the following begin/end block (must be called
