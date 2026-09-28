@@ -581,8 +581,12 @@ module Egui
             @@events << Egui::Event.key_released(code, modifiers)
           end
         when CHAR
-          # sapp char_code is a Unicode codepoint; skip surrogates.
-          if (chr > 0 && chr < 0xD800) || (chr >= 0xE000 && chr < 0x110000)
+          # sapp char_code is a Unicode codepoint; skip surrogates and
+          # control characters — Enter/Tab/Backspace arrive as key
+          # events, and on macOS Return also fires CHAR(13), which must
+          # not become text input or the terminal sends Enter twice.
+          if (chr >= 32 && chr != 127 && chr < 0xD800) ||
+             (chr >= 0xE000 && chr < 0x110000)
             @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
           end
         when FILES_DROPPED
