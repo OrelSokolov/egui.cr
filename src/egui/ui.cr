@@ -205,12 +205,16 @@ module Egui
     end
 
     # egui `ScrollArea::vertical().show(ui, …)`. `scrollbar: :classic`
-    # switches the flavor: a separate Win95/XP-style column beside the
+    # switches the flavor: a separate Win95/XP-style strip beside the
     # content (arrow buttons, paging track) instead of the thin bar
-    # overlaying the right edge (see ScrollArea).
+    # overlaying the edge. Bar placement per axis: `vbar: :left` moves
+    # the vertical bar to the left edge; `hbar: :bottom`/`:top` turns
+    # on horizontal scrolling with the bar on that edge (see ScrollArea).
     def scroll_area(max_height : Float64? = nil, scrollbar : Symbol = :overlay,
+                    vbar : Symbol = :right, hbar : Symbol? = nil,
                     &block : Ui ->) : Rect
-      ScrollArea.new(max_height, scrollbar).show(self) { |ui| yield ui }
+      ScrollArea.new(max_height, scrollbar, vbar, hbar)
+        .show(self) { |ui| yield ui }
     end
 
     def combo_box(id : String, selected : String, options : Array(String),

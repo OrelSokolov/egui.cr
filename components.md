@@ -224,6 +224,13 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       `ScrollState {offset, content_size}` in IdTypeMap; outer Ui sizes the
       viewport, inner child Ui is offset; clipping via existing
       `painter.clip=`; scrollbars painted as rects when content overflows.
+- [x] Bar placement + horizontal axis: `vbar: :left/:right` pins the
+      vertical bar to either edge; `hbar: :bottom/:top` turns on
+      horizontal scrolling (own kinetic scroller; Shift+wheel routes
+      the wheel to it, upstream convention). Both flavors, overlay and
+      classic — a classic strip is reserved on the chosen side (the
+      Sidebar rides `vbar: :left` so the bar stays clear of the tabs'
+      close buttons).
 - [x] Scroll arbitration: top-most scrollable containing the pointer
       consumes `input.scroll` (port of upstream scroll-target logic,
       simplified into Memory).

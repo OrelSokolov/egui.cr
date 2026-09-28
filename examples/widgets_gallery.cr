@@ -840,6 +840,25 @@ class GalleryApp < Egui::App
     ui.scroll_area(max_height: 300.0, scrollbar: :classic) do |inner|
       25.times { |i| inner.label("classic row #{i}") }
     end
+    ui.separator
+    # vbar: :left — same overlay bar, pinned to the left edge (the
+    # Sidebar uses this: away from the tabs' close buttons).
+    ui.label("Overlay scrollbar on the left (sidebar-style):")
+    ui.scroll_area(max_height: 150.0, vbar: :left) do |inner|
+      12.times { |i| inner.label("left-bar row #{i}") }
+    end
+    ui.separator
+    # hbar: :bottom / :top — horizontal scrolling. Shift+wheel drives
+    # the horizontal axis; the thumb is draggable too.
+    ui.label("Horizontal bar at the bottom (Shift+wheel):")
+    ui.scroll_area(max_height: 80.0, hbar: :bottom) do |inner|
+      inner.label("left end → " + ("walk " * 200) + "← right end")
+    end
+    ui.separator
+    ui.label("Horizontal classic bar at the top:")
+    ui.scroll_area(max_height: 80.0, scrollbar: :classic, hbar: :top) do |inner|
+      inner.label("left end → " + ("walk " * 200) + "← right end")
+    end
   end
 
   private def modal_gallery(ui : Egui::Ui) : Nil

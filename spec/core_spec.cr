@@ -1918,6 +1918,96 @@ describe "scroll area (phase 5)" do
       Egui::Pos2.new(thumb_c.x, track_bottom - 8.0))], 0.224)
     offset.call.should be_close(max_offset, max_offset * 0.1 + 1.0)
   end
+
+  it "vbar: :left pins the overlay bar to the left edge, content unshifted" do
+    ctx = Egui::Context.new
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0, vbar: :left) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    viewport = ctx.memory.scroll_rects[Egui::Id.from("spec").child(1)].not_nil![0]
+    # overlay = nothing reserved: the viewport spans the full width
+    viewport.width.should be_close(300.0, 0.01)
+    # the track: an 8px strip on the viewport's LEFT edge
+    track = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.rect.width <= Egui::ScrollArea::BAR_W && c.rect.height > 50.0 }
+    track.should_not be_nil
+    track.not_nil!.rect.left.should be <= viewport.left + 1.0
+  end
+
+  it "hbar: :bottom — horizontal wheel scrolling, thumb bar, clamp" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+    shift = Egui::Modifiers.new(shift: true)
+    plain = Egui::Modifiers.new
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 60.0, hbar: :bottom) do |s|
+        s.label("x" * 400)
+      end
+      ctx.end_frame
+    end
+
+    # frame 1: layout — the single long row is wider than the viewport,
+    # the horizontal track rides the bottom edge
+    draw.call([] of Egui::Event, 0.016)
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    content.x.should be > viewport.width
+    track = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.rect.height <= Egui::ScrollArea::BAR_W && c.rect.width > 100.0 }
+    track.should_not be_nil
+    track.not_nil!.rect.bottom.should be_close(viewport.bottom, 0.01)
+
+    # frame 2/3: pointer inside + Shift+wheel → the horizontal axis
+    # consumes the delta, the vertical one stays put
+    inside = Egui::Pos2.new(50.0, 30.0)
+    draw.call([Egui::Event.pointer_moved(inside)], 0.032)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab, shift),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 3.0))], 0.048)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    offset.x.should be > 0.0
+    offset.y.should eq(0.0)
+
+    # frame 4: massive scroll clamps to content - viewport
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab, shift),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 100_000.0))], 0.064)
+    content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
+    offset = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    (offset.x - (content.x - viewport.width)).abs.should be < 1.0
+
+    # frame 5: plain wheel goes back to the vertical axis (nothing to
+    # scroll there — the offset must not change)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Tab, plain),
+      Egui::Event.scroll(Egui::Vec2.new(0.0, 5.0))], 0.080)
+    after = ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero)
+    after.x.should be_close(offset.x, 0.01)
+    after.y.should eq(0.0)
+  end
+
+  it "classic hbar: :top reserves a row above the viewport" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    raw_frame(ctx)
+    widget_ui(ctx).scroll_area(max_height: 100.0, scrollbar: :classic,
+      hbar: :top) do |s|
+      s.label("x" * 400)
+    end
+    ctx.end_frame
+
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    w = Egui::ScrollArea::CLASSIC_W
+    viewport.top.should be_close(w, 0.01)
+    viewport.height.should be_close(100.0 - w, 0.01)
+  end
 end
 
 describe "window resize (phase 5)" do
@@ -2004,6 +2094,19 @@ describe "textures & images (phase 6)" do
     cmd.texture_id.should eq(tex)
     cmd.rect.width.should eq(50.0)
     cmd.rect.height.should eq(40.0)
+  end
+
+  it "stream textures can be updated in place and destroyed" do
+    ctx = Egui::Context.new
+    stream = ctx.textures.create_stream(2, 2)
+    stream.should be > 0
+
+    ctx.textures.update(stream, 2, 2, Bytes.new(16, 128_u8))
+    ctx.textures.destroy(stream)
+    # a fresh texture must not reuse the destroyed id deterministically
+    # (the GPU registry frees the slot; the dummy one just moves on)
+    other = ctx.textures.create_stream(4, 4)
+    other.should be > 0
   end
 
   it "hue bar paints the full rainbow gradient (uv 0..1)" do
@@ -2614,31 +2717,45 @@ describe "Sidebar (sections + tabs)" do
     ctx.painter.commands.select(Egui::LineCmd).should be_empty
   end
 
-  it "drops overflowing tabs instead of poking their close X over the last visible one" do
+  it "scrolls overflowing tabs: they lay out past the bottom, clipped to the viewport" do
     ctx = Egui::Context.new
     # A 90px-tall panel: the section header + first tab fit, the rest
-    # overflow — their rects get squashed against the bottom (down to
-    # zero height).
+    # overflow. The column rides a scroll area now, so overflowing tabs
+    # are laid out past the bottom (instead of being dropped) and every
+    # paint command / hit rect is clipped to the 90px viewport.
     short = Egui::Ui.new(ctx, Egui::Id.from("spec"),
       Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(300.0, 90.0)))
 
-    raw_frame(ctx)
-    short.sidebar(
-      [Egui::Sidebar::Section.new("S", ["a", "b", "c"], closable: true)],
-      0, 0) { |s, t| }
-    ctx.end_frame
-
-    # At least one tab is visible, and every hit rect (tabs AND their
-    # nested X buttons) stays inside the panel — a squashed tab's X
-    # would otherwise be centered below the bottom edge and catch
-    # clicks over the last visible tab.
-    tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 100.0 && r.height > 5.0 }
-    tab_rects.size.should be >= 1
-    ctx.memory.widget_rects.values.each do |r|
-      r.max.y.should be <= 90.0
+    closed = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      short.sidebar(
+        [Egui::Sidebar::Section.new("S", ["a", "b", "c"], closable: true)],
+        0, 0, on_close: ->(s : Int32, t : Int32) { closed = {s, t} }) { |s, t| }
+      ctx.end_frame
     end
-    # one close X (2 line segments) per interacted tab, no strays
-    ctx.painter.commands.select(Egui::LineCmd).size.should eq(2 * tab_rects.size)
+
+    draw.call([] of Egui::Event, 0.016)
+
+    # All three tabs are laid out (none dropped), and at least one
+    # overflows past the panel bottom.
+    tab_rects = ctx.memory.widget_rects.values.select { |r| r.width > 100.0 && r.height > 5.0 }
+    tab_rects.size.should eq(3)
+    tab_rects.any? { |r| r.max.y > 90.0 }.should be_true
+    # One close X (2 line segments) per tab — the overflowed ones paint
+    # too, but every X command carries the viewport clip.
+    xs = ctx.painter.commands.select(Egui::LineCmd)
+    xs.size.should eq(2 * tab_rects.size)
+    xs.each { |cmd| cmd.clip.max.y.should be <= 90.0 }
+
+    # A click on an overflowed tab's X (below the panel edge) is
+    # blocked by the clip: no close, no selection change.
+    x = Egui::Pos2.new(tab_rects[2].right - 14.0, tab_rects[2].center.y)
+    x.y.should be > 90.0
+    draw.call([Egui::Event.pointer_moved(x),
+      Egui::Event.pointer_pressed(x)], 0.032)
+    draw.call([Egui::Event.pointer_released(x)], 0.048)
+    closed.should be_nil
   end
 end
 

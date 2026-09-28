@@ -65,7 +65,7 @@ module Egui
       v.interact_cursor = CursorIcon::Pointer
 
       if dark
-        v.window_fill = Color32.rgba(27, 27, 30, 235)
+        v.window_fill = Color32.rgba(27, 27, 30, 255)
         v.window_stroke = Color32.rgba(80, 80, 80, 255)
         v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(22, 22, 24, 255)
@@ -80,7 +80,7 @@ module Egui
         v.separator_color = Color32.rgba(90, 90, 90, 255)
         v.modal_dim = Color32.rgba(0, 0, 0, 100)
       else
-        v.window_fill = Color32.rgba(252, 252, 252, 245)
+        v.window_fill = Color32.rgba(252, 252, 252, 255)
         v.window_stroke = Color32.rgba(190, 190, 190, 255)
         v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(243, 243, 243, 255)

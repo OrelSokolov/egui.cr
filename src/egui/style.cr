@@ -88,7 +88,7 @@ module Egui
     def initialize
       @interact_cursor = CursorIcon::Pointer
       @dark = true
-      @window_fill = Color32.rgba(27, 27, 30, 235)
+      @window_fill = Color32.rgba(27, 27, 30, 255)
       @window_stroke = Color32.rgba(80, 80, 80, 255)
       @title_bar_fill = @window_fill
       @window_rounding = 6.0
