@@ -23,6 +23,10 @@ describe Egui::Icon do
     # string names and the `_` → `-` file-name mapping
     Egui::Icon.from_file(:lucide, "arrow-up").should be_a(Egui::Svg)
     Egui::Icon.from_file(:lucide, :arrow_up).should be_a(Egui::Svg)
+    # the bootstrap provider (MIT, fill-based 16×16 set) embeds the
+    # same way
+    Egui::Icon.from_file(:bootstrap, :house).should be_a(Egui::Svg)
+    Egui::Icon.from_file(:bootstrap, "box-seam").should be_a(Egui::Svg)
   end
 
   it "paints a real lucide icon as tinted line commands" do

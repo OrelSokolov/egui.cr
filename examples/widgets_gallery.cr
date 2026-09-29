@@ -1068,4 +1068,4 @@ end
 
 Egui::Backend::Sokol.run(GalleryApp.new, title: "egui-cr — widget gallery",
   width: 900, height: 700,
-  icon: {rgba: ICON_64_RGBA, width: 64, height: 64})
+  icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

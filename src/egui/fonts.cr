@@ -14,6 +14,15 @@ module Egui
 
     abstract def measure(text : String, size : Float64) : Vec2
 
+    # Memoized `measure` for STATIC text (label-like widgets — see
+    # AtlasFonts#measure_cached for the cache design). The base class
+    # and every non-AtlasFonts backend just measure; only the real
+    # font stacks gain a cache, so headless specs see identical
+    # behavior either way.
+    def measure_cached(text : String, size : Float64) : Vec2
+      measure(text, size)
+    end
+
     # Memoized layouts (upstream caches galleys in Fonts too): a
     # widget re-layouts its text every frame, which is fine for labels
     # but pins a textarea with a multi-megabyte buffer to a full
@@ -27,9 +36,11 @@ module Egui
       getter text : String
       getter size : Float64
       getter max_width : Float64?
+      getter color : Color32?
+      getter? underline : Bool
       getter galley : Galley
 
-      def initialize(@text, @size, @max_width, @galley)
+      def initialize(@text, @size, @max_width, @color, @underline, @galley)
       end
     end
 
@@ -40,22 +51,28 @@ module Egui
                max_width : Float64? = nil) : Galley
       if runs.size == 1
         run = runs.first
+        # The style rides the key: run color and underline are baked
+        # into the galley's rows, so a state-recolor of the same text
+        # (a hovered link) must not hit a differently-styled entry.
         @layout_cache.each do |e|
           if e.size == run.size && e.max_width == max_width &&
-             e.text == run.text
+             e.text == run.text && e.color == run.color &&
+             e.underline? == run.underline?
+            Egui::Bench.count("fonts.layout.hit")
             hit = e.galley
             @layout_cache.delete(e)
             @layout_cache.push(e) # MRU last
             return hit
           end
         end
-        galley = build_galley(runs, max_width)
+        Egui::Bench.count("fonts.layout.miss")
+        galley = Egui::Bench.span("Fonts#layout(miss)") { build_galley(runs, max_width) }
         {% if env("EGUI_LAYOUT_DEBUG") %}
           STDERR.puts "layout MISS bytes=#{run.text.bytesize} size=#{run.size} mw=#{max_width}"
         {% end %}
         @layout_cache.shift if @layout_cache.size >= LAYOUT_CACHE_MAX
         @layout_cache << LayoutCacheEntry.new(
-          run.text, run.size, max_width, galley)
+          run.text, run.size, max_width, run.color, run.underline?, galley)
         galley
       else
         build_galley(runs, max_width)

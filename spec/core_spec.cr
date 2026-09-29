@@ -758,7 +758,9 @@ describe "phase 1 widgets" do
     hovered.should be_true
 
     text = ctx.painter.commands.select(Egui::TextCmd).first
-    text.color.should eq(ctx.style.visuals.hyperlink_color)
+    # hovered → the link:hover overlay recolors the text (HTML <a>)
+    text.color.should eq(
+      ctx.stylesheet.resolve("link", "hover").color?("text_color").not_nil!)
     ctx.painter.commands.select(Egui::LineCmd).size.should eq(1)
   end
 end
@@ -3170,6 +3172,24 @@ describe "StyleSheet (CSS-like classes)" do
     pad.vertical.should eq(20.0)
     pad.horizontal.should eq(34.0)
     Egui::StyleVars.new.box("padding").top.should eq(0.0)
+  end
+
+  it "clamps negative padding to zero (styles never pull text outside a widget)" do
+    # Style keys — scalar shorthand and per-side, both read back at 0.
+    box = Egui::StyleVars{"padding" => -5.0, "padding.left" => -3}
+    pad = box.box("padding")
+    pad.top.should eq(0.0)
+    pad.left.should eq(0.0)
+    box.box?("padding").not_nil!.right.should eq(0.0)
+
+    # Theme Vec2 paddings clamp in their setters too.
+    spacing = Egui::Spacing.new
+    spacing.button_padding = Egui::Vec2.new(-8.0, 4.0)
+    spacing.window_padding = Egui::Vec2.new(10.0, -2.0)
+    spacing.button_padding.x.should eq(0.0)
+    spacing.button_padding.y.should eq(4.0)
+    spacing.window_padding.x.should eq(10.0)
+    spacing.window_padding.y.should eq(0.0)
   end
 
   it "introspects: classes, selectors and dump list every key" do

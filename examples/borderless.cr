@@ -73,4 +73,4 @@ class BorderlessApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(BorderlessApp.new,
-  title: "egui-cr — borderless", decorations: false)
+  title: "egui-cr — borderless", decorations: false, inspector: :hidden)

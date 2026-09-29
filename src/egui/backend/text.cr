@@ -80,6 +80,42 @@ module Egui
         Egui::Vec2.new(width, asc - desc)
       end
 
+      # Memoized `measure` for STATIC text (labels, captions, button
+      # texts — strings that return frame after frame unchanged).
+      # Anything the user types into (TextEdit/TextArea/…) keeps calling
+      # #measure: its content churns per keystroke, and dead entries
+      # would only pollute the map.
+      #
+      # The same (text, physical size, tracking) always walks to the
+      # same width — advances and kerning are per-glyph constants of
+      # the font — so no invalidation is ever needed for correctness:
+      # every width input (draw size = size * scale, letter_spacing)
+      # rides the key. Memory is bounded by TWO guards: a LENGTH filter
+      # (unbounded distinct strings — buffer lines, caret prefixes —
+      # must never land here) and a COUNT cap with clear-on-overflow
+      # (every dropped entry rebuilds in one walk, cheaper than LRU
+      # bookkeeping on every hit).
+      MEASURE_CACHE_TEXT_MAX = 64
+      MEASURE_CACHE_MAX      = 8192
+      @measure_cache = {} of {String, Int32, Int32} => Float64
+
+      def measure_cached(text : String, size : Float64) : Egui::Vec2
+        return Egui::Vec2.zero if text.empty? || !loaded?
+        asc, desc = metrics_at(size)
+        key = {text, size_key(size * @scale), size_key(@letter_spacing)}
+        if (width = @measure_cache[key]?)
+          Egui::Bench.count("fonts.measure_cached.hit")
+          return Egui::Vec2.new(width, asc - desc)
+        end
+        Egui::Bench.count("fonts.measure_cached.miss")
+        width = Egui::Bench.span("Fonts#measure_cached(miss)") do
+          walk(text, size * @scale) { |_, _| } / @scale
+        end
+        @measure_cache.clear if @measure_cache.size >= MEASURE_CACHE_MAX
+        @measure_cache[key] = width
+        Egui::Vec2.new(width, asc - desc)
+      end
+
       # Walk the run exactly like the draw path does (fractional advances +
       # kerning), yielding (pen_x, glyph) per char. Returns the final pen.
       def walk(text : String, size : Float64, & : Float64, Glyph -> Nil) : Float64
@@ -88,7 +124,7 @@ module Egui
         prev = 0
         text.each_char_with_index do |ch, idx|
           gid = glyph_index(ch.ord)
-          pen += kern_px(prev, gid, size) if prev > 0
+          pen += kern_at(prev, gid, size) if prev > 0
           pen += letter_spacing if idx > 0
           g = glyph(gid, size)
           yield pen, g
@@ -96,6 +132,27 @@ module Egui
           prev = gid
         end
         pen
+      end
+
+      # Memoized kerning in front of the backend FFI: kerning is a
+      # constant per (glyph pair, size) of the immutable font file, so
+      # no invalidation is ever needed. Real text touches a few hundred
+      # distinct pairs; the cap exists only as a hard bound (a sythetic
+      # sweep over every glyph pair of a CJK font would be huge) —
+      # clear-on-overflow like the measure cache.
+      KERN_CACHE_MAX = 65_536
+      @kern_cache = {} of {Int32, Int32, Int32} => Float64
+
+      private def kern_at(prev_gid : Int32, gid : Int32, size : Float64) : Float64
+        key = {prev_gid, gid, size_key(size)}
+        if (k = @kern_cache[key]?)
+          k
+        else
+          k = kern_px(prev_gid, gid, size)
+          @kern_cache.clear if @kern_cache.size >= KERN_CACHE_MAX
+          @kern_cache[key] = k
+          k
+        end
       end
 
       def glyph(gid : Int32, size : Float64) : Glyph

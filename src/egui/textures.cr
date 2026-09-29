@@ -6,6 +6,14 @@
 
 module Egui
   abstract class TextureRegistry
+    # True when #register_rgba hands out real GPU textures. The Svg
+    # raster cache (see Svg#paint) only engages on a graphical
+    # backend; the headless dummy keeps the vector paint path so
+    # specs still assert on LineCmd/CircleCmd geometry.
+    def graphical? : Bool
+      false
+    end
+
     # Upload RGBA8 pixel data; returns a texture id (0 = failure).
     abstract def register_rgba(width : Int32, height : Int32,
                                data : Bytes) : UInt64
@@ -25,6 +33,26 @@ module Egui
 
     # Release a texture from #register_rgba, #load or #create_stream.
     abstract def destroy(id : UInt64) : Nil
+
+    # Destroy at END of frame. Raster-cache evictions (Svg#paint)
+    # happen while the frame's commands are still being built, and a
+    # texture referenced by an already-emitted ImageCmd must survive
+    # until the frame is drawn — the sokol backend flushes after its
+    # pass; this default destroys immediately (headless draws nothing).
+    def destroy_later(id : UInt64) : Nil
+      destroy(id)
+    end
+
+    # True while #destroy_later entries are pending — the backend
+    # must not replay its cached idle-frame commands (they may
+    # reference textures awaiting destruction).
+    def pending_destroys? : Bool
+      false
+    end
+
+    # Run the pending #destroy_later entries (sokol: after the pass).
+    def flush_destroys : Nil
+    end
   end
 
   # Headless registry: hands out deterministic incrementing ids so

@@ -15,4 +15,4 @@ require "./video/app"
 app = VideoApp.new(ARGV[0]?)
 
 Egui::Backend::Sokol.run(app,
-  title: "egui-cr — video", width: 960, height: 620)
+  title: "egui-cr — video", width: 960, height: 620, inspector: :hidden)

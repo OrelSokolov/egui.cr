@@ -24,7 +24,8 @@
 # alternative UI, not another panel in the same layout.
 #
 # Look (Win11 settings page): an opaque panel_fill surface, a 44pt
-# header with a round 32×32 back button (left-arrow glyph, hover
+# header with a round 32×32 back button (Lucide chevron-left glyph,
+# hover
 # fill) and an 18pt title; the content block runs in a child Ui below
 # the header. `title:`/`on_back:` are both optional — no header is
 # drawn when neither is given.
@@ -74,6 +75,11 @@ module Egui
               visuals.window_stroke, 1.0)
           end
           icon = back_rect.shrink(BACK_D * 0.3)
+          # Optical centering: a chevron's ink mass sits right of its
+          # tip, so the geometrically centered glyph reads a touch too
+          # far right in the round button — nudge it left.
+          icon = Rect.from_min_size(
+            Pos2.new(icon.left - 2.0, icon.top), icon.size)
           Icons.draw(painter, :left, icon, visuals.text_color, 2.0)
           on_back.call if back.clicked?
           ctx.request_repaint if back.clicked?

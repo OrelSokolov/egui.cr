@@ -34,6 +34,11 @@ module Egui
     getter theme : Theme
     property fonts : Fonts
     property textures : TextureRegistry
+    # Framebuffer pixels per UI point (retina: 2.0), set by the
+    # backend each frame — 1.0 headless. Raster caches (Svg textures,
+    # like the font atlas) bake at this scale so a 2x display gets
+    # 2x-texel rasters, not upscaled blur.
+    property pixels_per_point : Float64 = 1.0
 
     getter fps : Float64
 
@@ -41,6 +46,12 @@ module Egui
     # `PlatformOutput::cursor_icon`): reset to Default each
     # begin_frame, set by widgets via #set_cursor_icon / hover.
     getter cursor_icon : CursorIcon
+
+    # Upstream `PlatformOutput::cursor_image`: when set, the
+    # integration should display this RGBA bitmap as the OS cursor
+    # instead of #cursor_icon (backends without support fall back to
+    # the icon). Reset each begin_frame, set via #set_cursor_image.
+    getter cursor_image : CustomCursorImage?
 
     # egui `Context::available_rect`: screen area not yet claimed by
     # panels. Reset each begin_frame; every panel takes a bite; the
@@ -82,6 +93,7 @@ module Egui
       @painter = Painter.new
       @theme = Theme.dark
       @cursor_icon = CursorIcon::Default
+      @cursor_image = nil
       @fonts = MonospaceFonts.new
       @textures = DummyTextureRegistry.new
       @prev_time = nil
@@ -108,6 +120,7 @@ module Egui
       @prev_time = raw.time
       @available_rect = raw.screen_rect
       @cursor_icon = CursorIcon::Default
+      @cursor_image = nil
 
       # Any event this frame means the UI may react to it — make sure
       # the backend runs a full update/paint pass (on-demand mode).
@@ -144,9 +157,14 @@ module Egui
     end
 
     # Instant theme swap (see #theme) — takes effect next frame.
+    # Idempotent: assigning the theme already in place (compared by
+    # name) is a no-op and does not request a repaint, so an app may
+    # re-assign unconditionally every frame.
     def theme=(theme : Theme) : Theme
-      @theme = theme
-      request_repaint
+      unless theme.name == @theme.name
+        @theme = theme
+        request_repaint
+      end
       theme
     end
 
@@ -168,10 +186,12 @@ module Egui
       # Rendered before Memory#end_frame so its widget ids survive
       # pruning, and while @in_frame is still set (reactive setters
       # inside it keep their in-frame semantics).
-      flush_central_panel
+      flush_central_panel_spanned
       @in_frame = false
-      @memory.end_frame
-      @painter.commands_in_layer_order
+      Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
+      Egui::Bench.span("Painter#commands_in_layer_order") do
+        @painter.commands_in_layer_order
+      end
     end
 
     # --- hotkey actions (see hotkeys.cr) -----------------------------------
@@ -215,6 +235,15 @@ module Egui
     # end_frame.
     def set_cursor_icon(icon : CursorIcon) : Nil
       @cursor_icon = icon
+    end
+
+    # egui `Context::set_cursor_image`: display this RGBA bitmap as the
+    # OS cursor for the frame, instead of the standard #cursor_icon —
+    # the CSS `cursor: url(…)` equivalent. Backends without
+    # bitmap-cursor support silently fall back to the icon. Pass nil to
+    # clear. Reset each begin_frame.
+    def set_cursor_image(image : CustomCursorImage?) : Nil
+      @cursor_image = image
     end
 
     def interact(id : Id, rect : Rect, sense : Sense,
@@ -794,20 +823,30 @@ module Egui
 # drag grip on the panel's inner edge grows/shrinks it, persisted per
 # panel id in Memory. `height:`/`width:` become the INITIAL size.
     PANEL_GRIP     = 6.0    # draggable strip thickness around the edge
-    PANEL_MIN_SIZE = 20.0   # default panel extent (px) when none is given;
-                            # also the floor a drag grip cannot shrink past
+    PANEL_MIN_SIZE = 20.0   # the floor a drag grip cannot shrink past;
+                            # also the minimum default panel extent
     PANEL_GRIP_SALT  = 0x9E51A1_u64 # grip interact id (away from content counters)
     PANEL_SIZE_SALT  = 0x51AB2E5_u64 # stored size key in IdTypeMap
 
-    # *height* pins the strip height (nil → the global default
-    # PANEL_MIN_SIZE, 20px — panels never collapse to zero); the
+    # Default height for a top/bottom strip with no *height*: one text
+    # line plus the panel's vertical padding. #panel_ui shrinks a panel
+    # by window_padding on EVERY side, so the flat PANEL_MIN_SIZE floor
+    # (20px) leaves a zero-height interior — the strip's content then
+    # spilled past the window edge (half-clipped status bars, the
+    # 4bbf49b regression this restores the 7ff099d default for).
+    private def default_strip_height : Float64
+      {style.font_size * Fonts::LINE_H_FACTOR +
+        2 * style.spacing.window_padding.y, PANEL_MIN_SIZE}.max
+    end
+
+    # *height* pins the strip height (nil → #default_strip_height); the
     # client-side window frame uses it for its caption.
     # *resizable* (default) adds the drag grip on the inner edge — the
     # size persists across frames and restarts-of-frame-loop; pass
     # false for fixed chrome strips (the window frame does).
     def top_panel(id : String = "top_panel", height : Float64? = nil,
                   resizable : Bool = true, &block : Ui ->) : Rect
-      h = panel_size(id, height || PANEL_MIN_SIZE, resizable)
+      h = panel_size(id, height || default_strip_height, resizable)
       rect = Rect.from_min_size(@available_rect.min,
         Vec2.new(@available_rect.width, h))
       @available_rect = Rect.new(
@@ -821,7 +860,7 @@ module Egui
     def bottom_panel(id : String = "bottom_panel", height : Float64? = nil,
                      resizable : Bool = true, layer : LayerId? = nil,
                      fill : Color32? = nil, &block : Ui ->) : Rect
-      h = panel_size(id, height || PANEL_MIN_SIZE, resizable)
+      h = panel_size(id, height || default_strip_height, resizable)
       rect = Rect.from_min_size(
         Pos2.new(@available_rect.min.x, @available_rect.max.y - h),
         Vec2.new(@available_rect.width, h))
@@ -899,6 +938,14 @@ module Egui
         panel_ui(central[0], @available_rect, Layout.top_down,
           central[2]) { |ui| central[1].call(ui) }
       end
+    end
+
+    # Bench seam: the central panel is DEFERRED to end_frame (see
+    # #end_frame), so a benchmark's "update" phase runs only the
+    # panels declared before it — make the deferred render visible as
+    # its own span instead of hiding it inside end_frame's total.
+    private def flush_central_panel_spanned : Nil
+      Egui::Bench.span("Context#central_panel(deferred)") { flush_central_panel }
     end
 
     private def panel_ui(id : String, rect : Rect, layout : Layout,

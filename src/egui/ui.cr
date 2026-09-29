@@ -33,6 +33,25 @@ module Egui
 
     @child_counter : UInt64 = 0
 
+    # Horizontal-row cross-axis extent (upstream's cursor cross sides):
+    # the height of the row built so far — the max of every widget
+    # placed on it, seeded by #horizontal with `interact_size.y`
+    # (upstream's initial row height). Each new widget is vertically
+    # CENTERED within it (upstream `Layout::cross_align == Align::Center`
+    # for horizontal layouts), and the row only ever grows DOWN
+    # (upstream: "for horizontal layouts we always want to expand down,
+    # or we will overlap the row above"). Without this every widget in
+    # a mixed-height row (checkbox + label + DragValue) top-aligns and
+    # their centers scatter by a pixel or two. Only read for
+    # left_to_right layouts.
+    @row_h : Float64 = 0.0
+
+    # Seed the row height (see #@row_h): #horizontal and #add_sized open
+    # a row whose baseline height is known upfront.
+    def seed_row_height(h : Float64) : Nil
+      @row_h = {@row_h, h}.max
+    end
+
     def initialize(@ctx : Context, @id : Id, @max_rect : Rect,
                    @layout : Layout = Layout.top_down)
       @cursor = @max_rect.min
@@ -92,11 +111,31 @@ module Egui
     # clipped by `clip` and scrolled by the owning ScrollArea).
     def allocate_space(size : Vec2) : Rect
       max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x }.max
-      raw_y = @cursor.y + size.y
-      max_y = @v_overflow ? raw_y : {raw_y, @max_rect.bottom}.min
-      max_y = {max_y, @cursor.y}.max
-      rect = Rect.new(@cursor, Pos2.new(max_x, max_y))
-      @min_rect = @min_rect.union(rect)
+      if @layout.horizontal?
+        # Cross-axis centering (see #@row_h): center the widget within
+        # the current row height, clamped to this region's bottom by
+        # the max-size rule like everything else.
+        @row_h = {@row_h, size.y}.max
+        top = @cursor.y + (@row_h - size.y) / 2.0
+        raw_bottom = top + size.y
+        max_y = @v_overflow ? raw_bottom : {raw_bottom, @max_rect.bottom}.min
+        max_y = {max_y, @cursor.y}.max
+        rect = Rect.new(Pos2.new(@cursor.x, top), Pos2.new(max_x, max_y))
+        # The row slice (upstream's frame rect) reserves the FULL row
+        # height even when the centered widget doesn't reach its bottom
+        # edge — otherwise the region's bounding box would depend on
+        # widget order.
+        frame_bottom = @v_overflow ? @cursor.y + @row_h
+                                   : {@cursor.y + @row_h, @max_rect.bottom}.min
+        @min_rect = @min_rect.union(
+          Rect.new(@cursor, Pos2.new(max_x, {frame_bottom, @cursor.y}.max)))
+      else
+        raw_y = @cursor.y + size.y
+        max_y = @v_overflow ? raw_y : {raw_y, @max_rect.bottom}.min
+        max_y = {max_y, @cursor.y}.max
+        rect = Rect.new(@cursor, Pos2.new(max_x, max_y))
+        @min_rect = @min_rect.union(rect)
+      end
       @cursor = @layout.advance(@cursor, rect.size,
         style.spacing.item_spacing)
       rect
@@ -134,7 +173,7 @@ module Egui
       parent = @ctx.current_widget
       @ctx.current_widget = widget
       begin
-        widget.ui(self)
+        Egui::Bench.span(widget.class.name) { widget.ui(self) }
       ensure
         @ctx.current_widget = parent
       end
@@ -392,6 +431,14 @@ module Egui
       add(Image.new(texture_id, size, tint))
     end
 
+    # A pixel Canvas with Paint-style interaction; the block receives
+    # this frame's Canvas::Interaction (pointer/drag in pixel coords).
+    def canvas(canvas : Canvas, & : Canvas::Interaction ->) : Response
+      ia = canvas.show(self)
+      yield ia
+      ia.response
+    end
+
     # egui `ui.color_edit32(&mut color)`: the block fires with the new
     # color when the picker changed it this frame.
     def color_edit32(color : Color32, &on_change : Color32 ->) : Response
@@ -503,9 +550,19 @@ module Egui
     # grow past the row and overlap what's below.
     def add_sized(size : Vec2, widget : Widget) : Response
       rect = allocate_space(size)
-      cell = child_ui(rect)
+      # Upstream `allocate_ui` keeps the PARENT layout for the cell: in
+      # a horizontal row the cell is left_to_right too, so its content
+      # cross-centers within the exact cell instead of hugging its top
+      # (a Label in a 20pt cell would sit 2px low otherwise). Vertical
+      # parents keep the top_down cell unchanged.
+      if @layout.horizontal?
+        cell = child_ui(rect, layout: Layout.left_to_right)
+        cell.seed_row_height(rect.height)
+      else
+        cell = child_ui(rect)
+      end
       cell.v_overflow = false
-      widget.ui(cell)
+      Egui::Bench.span(widget.class.name) { widget.ui(cell) }
     end
 
     # egui `ui.scope` — a nested region with its own id space (children
@@ -624,6 +681,11 @@ module Egui
       row = child_ui(
         Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)),
         layout: Layout.left_to_right)
+      # Upstream seeds the row at `interact_size.y` ("assume there will
+      # be something interactive on the horizontal layout") so short
+      # widgets share a common center line before anything tall grows
+      # the row — and a row of short widgets keeps a sane height.
+      row.seed_row_height(style.spacing.interact_size.y)
       yield row
       @min_rect = @min_rect.union(row.min_rect)
       @cursor = Pos2.new(@max_rect.min.x,

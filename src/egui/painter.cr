@@ -92,15 +92,19 @@ module Egui
   # Textured quad (egui `epaint::ImageShape`): `rect` on screen, `uv`
   # maps into the texture (0..1, origin top-left), `tint` multiplies.
   # Texture handles come from a TextureRegistry (backend-owned).
+  # `nearest` picks point sampling — pixel-art surfaces (a Paint
+  # canvas) must not blur under fractional scaling.
   struct ImageCmd
     getter clip : Rect
     getter rect : Rect
     getter uv : Rect
     getter texture_id : UInt64
     getter tint : Color32
+    getter? nearest : Bool
 
     def initialize(@clip : Rect, @rect : Rect, @uv : Rect,
-                   @texture_id : UInt64, @tint : Color32)
+                   @texture_id : UInt64, @tint : Color32,
+                   @nearest : Bool = false)
     end
   end
 
@@ -290,11 +294,13 @@ module Egui
         width, color))
     end
 
-    # Full quad of the texture by default.
+    # Full quad of the texture by default; `nearest` requests point
+    # sampling (pixel-art canvases).
     def image(rect : Rect, texture_id : UInt64,
-              uv : Rect? = nil, tint : Color32 = Color32.new(255, 255, 255, 255)) : Nil
+              uv : Rect? = nil, tint : Color32 = Color32.new(255, 255, 255, 255),
+              nearest : Bool = false) : Nil
       uv ||= Rect.from_min_size(Pos2.new(0.0, 0.0), Vec2.new(1.0, 1.0))
-      add(ImageCmd.new(@clip, rect, uv, texture_id, tint))
+      add(ImageCmd.new(@clip, rect, uv, texture_id, tint, nearest))
     end
 
     # egui `GraphicLayers::drain(order)`: flatten per layer, back to

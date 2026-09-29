@@ -145,7 +145,7 @@ describe "inspector panel rendering smoke" do
     close.not_nil!.right.should be > SMOKE_SCREEN.width - 50.0
     close.not_nil!.top.should be < 60.0
 
-    # the ⋮ menu lists both docks with the current one checked
+    # the dock menu lists both docks with the current one checked
     ctx.open_popup(Egui::Inspector::DOCK_MENU)
     smoke_frame(ctx, time: 0.032) do |c|
       c.window("w") { |ui| ui.button("OK") }

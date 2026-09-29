@@ -205,14 +205,14 @@ describe "widget inspector" do
     ctx.painter.commands.any?(Egui::RectCmd).should be_true
   end
 
-  it "shows non-stylable widgets honestly (Spinner has no props)" do
+  it "shows non-stylable widgets honestly (RadioButton has no props)" do
     ctx = Egui::Context.new
     ctx.inspector_enabled = true
     insp_frame(ctx) do |c|
-      c.window("w") { |ui| ui.spinner }
+      c.window("w") { |ui| ui.radio(false, "r") }
     end
     metas = ctx.inspector.meta_values
-    metas.any? { |m| m.kind == "Spinner" }.should be_true
-    metas.find { |m| m.kind == "Spinner" }.not_nil!.props.should be_empty
+    metas.any? { |m| m.kind == "RadioButton" }.should be_true
+    metas.find { |m| m.kind == "RadioButton" }.not_nil!.props.should be_empty
   end
 end

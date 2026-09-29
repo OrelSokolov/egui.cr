@@ -40,4 +40,4 @@ end
 
 Egui::Backend::Sokol.run(LogosApp.new, title: "egui-cr — logo.svg variants",
   width: 900, height: 700,
-  icon: {rgba: ICON_64_RGBA, width: 64, height: 64})
+  icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

@@ -17,6 +17,38 @@ end
 # arc flags, relative commands, implicit linetos.
 LUCIDE_SQUARE = %(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/></svg>)
 
+# A graphical TextureRegistry stand-in: counts #register_rgba calls
+# so the specs can assert the raster cache bakes once per size, and
+# captures the baked pixels for rasterizer-dispatch asserts.
+class CountingRegistry < Egui::TextureRegistry
+  property count = 0
+  property last_data : Bytes? = nil
+
+  def graphical? : Bool
+    true
+  end
+
+  def register_rgba(width, height, data) : UInt64
+    @count += 1
+    @last_data = data
+    @count.to_u64
+  end
+
+  def load(path) : UInt64
+    0_u64
+  end
+
+  def create_stream(width, height) : UInt64
+    0_u64
+  end
+
+  def update(id, width, height, data) : Nil
+  end
+
+  def destroy(id) : Nil
+  end
+end
+
 describe Egui::Svg do
   it "parses the icon-twin variant into shapes + viewBox" do
     shapes, view = Egui::Svg.parse(LOGO_VARIANTS["icon"])
@@ -188,5 +220,92 @@ describe Egui::Svg do
     tinted.size.should be >= 3
     # 24-unit viewBox at 24 px: stroke 2 → 2 px on screen
     tinted.each { |l| l.width.should eq 2.0 }
+  end
+
+  # -- rasterize + raster-texture cache ---------------------------------
+
+  it "rasterizes with analytic anti-aliasing (coverage ramp)" do
+    src = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg>)
+    svg = Egui::Svg.new(src, current_color: Egui::Color32.rgb(200, 200, 200))
+    buf = svg.rasterize(24, 24)
+    buf.size.should eq(24 * 24 * 4)
+
+    alphas = (0...24 * 24).map { |i| buf[i * 4 + 3] }
+    # stroke center is fully covered
+    alphas.should contain(255_u8)
+    # the one-pixel coverage ramp on the edge → intermediate values
+    alphas.any? { |a| a > 1 && a < 254 }.should be_true
+    # outside the stroke: fully transparent
+    alphas.first.should eq(0_u8)
+    # color carries the tint, alpha-weighted pixels only
+    i = alphas.index(255_u8).not_nil! * 4
+    buf[i].should eq(200)
+    buf[i + 3].should eq(255)
+  end
+
+  it "paints through the raster-texture cache on a graphical registry" do
+    registrations = [] of Tuple(Int32, Int32)
+
+    src = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><path d="M5 12h14"/></svg>)
+    registry = CountingRegistry.new
+    ctx = Egui::Context.new
+    ctx.textures = registry
+    svg_frame(ctx)
+    3.times do
+      ctx.window("icons") do |ui|
+        ui.svg(src, Egui::Vec2.new(48.0, 48.0))
+      end
+      ctx.end_frame
+    end
+
+    # one bake for three frames at the same size…
+    registry.count.should eq(1)
+    ctx.painter.commands.select(Egui::ImageCmd).size.should be >= 1
+
+    # …and a new size re-bakes (font-atlas invalidation contract)
+    svg_frame(ctx)
+    ctx.window("icons") do |ui|
+      ui.svg(src, Egui::Vec2.new(96.0, 96.0))
+    end
+    ctx.end_frame
+    registry.count.should eq(2)
+  end
+
+  # -- external rasterizer dispatch (NanoSVG primary, built-in fallback) --
+
+  it "bakes through external_rasterizer and falls back on nil" do
+    # Distinct sources per phase: the raster cache is keyed by source,
+    # so a cached texture from phase 1 must not shadow phase 2's bake.
+    src_external = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><path d="M5 12h14"/></svg>)
+    src_fallback = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><path d="M12 5v14"/></svg>)
+
+    Egui::Svg.external_rasterizer = ->(_src : String, _tint : Egui::Color32,
+      w : Int32, h : Int32) : Bytes? { Bytes.new(w * h * 4, 0x7F) }
+    registry = CountingRegistry.new
+    ctx = Egui::Context.new
+    ctx.textures = registry
+    begin
+      svg_frame(ctx)
+      ctx.window("icons") do |ui|
+        ui.svg(src_external, Egui::Vec2.new(32.0, 32.0))
+      end
+      ctx.end_frame
+      data = registry.last_data.not_nil!
+      data.size.should eq(32 * 32 * 4)
+      data.all?(&.==(0x7F_u8)).should be_true
+
+      # nil from the external rasterizer → the built-in software bake
+      Egui::Svg.external_rasterizer = ->(_src : String, _tint : Egui::Color32,
+        _w : Int32, _h : Int32) : Bytes? { nil }
+      svg_frame(ctx)
+      ctx.window("icons2") do |ui|
+        ui.svg(src_fallback, Egui::Vec2.new(32.0, 32.0))
+      end
+      ctx.end_frame
+      expected = Egui::Svg.new(src_fallback).rasterize(32, 32)
+      registry.last_data.not_nil!.should eq(expected)
+    ensure
+      Egui::Svg.external_rasterizer = nil
+    end
   end
 end

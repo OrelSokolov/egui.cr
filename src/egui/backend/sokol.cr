@@ -10,6 +10,7 @@
 require "../../egui"
 require "./text"
 require "./freetype"
+require "./nanosvg"
 
 @[Link("egui_cr_sokol")]
 {% if flag?(:win32) %}
@@ -44,7 +45,8 @@ lib LibEguiCr
   fun sapp_run = egui_cr_sapp_run(init : InitCb, frame : FrameCb, event : EventCb,
                                   cleanup : CleanupCb, title : UInt8*,
                                   width : Int32, height : Int32,
-                                  borderless : Int32, transparent : Int32)
+                                  borderless : Int32, transparent : Int32,
+                                  swap_interval : Int32)
   fun gfx_init = egui_cr_gfx_init
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
@@ -113,6 +115,7 @@ lib LibEguiCr
                                               h : Int32, data : UInt8*)
   fun destroy_texture = egui_cr_destroy_texture(view_id : UInt32)
   fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
+  fun sgl_bind_texture_nearest = egui_cr_sgl_texture_nearest(view_id : UInt32)
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
   fun sgl_disable_texture = egui_cr_sgl_disable_texture
   fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
@@ -153,6 +156,14 @@ lib LibEguiCr
 
   # cursor (shim): `name` is a CSS cursor keyword
   fun set_cursor = egui_cr_set_cursor(name : UInt8*)
+  # cursor (shim): straight-alpha RGBA bitmap cursor (CSS
+  # `cursor: url(…)`); (hx, hy) is the hotspot from the top-left
+  fun set_cursor_image = egui_cr_set_cursor_image(rgba : UInt8*, w : Int32,
+                                                  h : Int32, hx : Int32,
+                                                  hy : Int32)
+  # decode an image file to a CPU-side straight-alpha RGBA8 buffer
+  # (malloc'd — free via #mem_free)
+  fun load_rgba = egui_cr_load_rgba(path : UInt8*, w : Int32*, h : Int32*) : UInt8*
 end
 
 module Egui
@@ -170,7 +181,12 @@ module Egui
       @@last_fb_w = 0
       @@last_fb_h = 0
       @@start = Time.instant
-      @@cursor = Egui::CursorIcon::Default
+      @@cursor : Egui::CursorIcon? = nil
+      # Last applied bitmap cursor — holds the object alive too, so the
+      # buffer pointer #same? dedupes against can't be GC-recycled.
+      @@cursor_image : Egui::CustomCursorImage? = nil
+      # Last applied scissor (framebuffer px, x/y/w/h) — see #apply_scissor.
+      @@last_scissor : Tuple(Float64, Float64, Float64, Float64)? = nil
       # Transparent window mode (run(transparent: true)): clear to
       # alpha 0 and blend UI quads premultiplied.
       @@transparent = false
@@ -395,7 +411,24 @@ module Egui
       #   live via `Sokol.chrome_style=`.
       # * *inspector* — `:on` enables the runtime widget inspector
       # (right-click any widget → «Inspect»; F12 toggles the bottom
-      # panel — see `egui/inspector.cr`). Debug mode, off by default.
+      # panel — see `egui/inspector.cr`) with the panel visible from
+      # the start; `:hidden` enables it the same way but starts with
+      # the panel closed (invoked via F12 or «Inspect»). Off by
+      # default.
+      # Decode an image file (PNG/…) into a CPU-side straight-alpha RGBA
+      # buffer — the source for `CustomCursorImage` (a GPU texture can't
+      # be read back). Returns nil when the file can't be decoded.
+      def self.load_rgba(path : String)
+        w = uninitialized Int32
+        h = uninitialized Int32
+        ptr = LibEguiCr.load_rgba(path.to_unsafe, pointerof(w), pointerof(h))
+        return nil if ptr.null? || w <= 0 || h <= 0
+        size = w * h * 4
+        rgba = Bytes.new(size) { |i| ptr[i] }
+        LibEguiCr.mem_free(ptr)
+        {rgba: rgba, width: w, height: h}
+      end
+
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
@@ -404,7 +437,8 @@ module Egui
                    transparent : Bool = false,
                    chrome : Bool? = nil,
                    chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
-                   inspector : Symbol = :off) : Nil
+                   inspector : Symbol = :off,
+                   vsync : Bool = true) : Nil
         @@app = app
         @@icon = icon
         @@transparent = transparent
@@ -412,7 +446,14 @@ module Egui
         @@chrome_enabled = chrome.nil? ? !decorations && !transparent : chrome.not_nil!
         @@chrome_active = @@chrome_enabled && !decorations
         @@chrome_style = chrome_style
-        app.ctx.inspector_enabled = (inspector == :on)
+        if inspector == :on || inspector == :hidden
+          app.ctx.inspector_enabled = true
+          # :hidden = invocable (F12 / right-click → «Inspect»), panel
+          # closed until then.
+          app.ctx.inspector.open = false if inspector == :hidden
+        else
+          app.ctx.inspector_enabled = false
+        end
         # Framework CLI: pull --page out of ARGV (in place, so the app's
         # own file/flag parsing still works) and deep-link the router.
         # Validation is soft — an unknown page renders the "Page not
@@ -444,7 +485,8 @@ module Egui
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
-          width, height, decorations ? 0 : 1, transparent ? 1 : 0)
+          width, height, decorations ? 0 : 1, transparent ? 1 : 0,
+          vsync ? 1 : 0)
       end
 
       # Win32 IFileDialog through the shim: the picker runs on its own
@@ -631,6 +673,9 @@ module Egui
         fb_h = LibEguiCr.sapp_height
 
         app = @@app.not_nil!
+        # Raster caches (Svg textures — the font-atlas analogue) bake
+        # at the physical pixel scale, like AtlasFonts#scale above.
+        app.ctx.pixels_per_point = @@pixels_per_point
 
         # On-demand repaint: sokol_app's loop swaps every vsync tick
         # regardless, but an idle frame (no events, no repaint request,
@@ -641,6 +686,7 @@ module Egui
         # to a full frame.
         if (cache = @@last_commands) &&
            delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
+           !app.ctx.textures.pending_destroys? &&
            fb_w == @@last_fb_w && fb_h == @@last_fb_h
           paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
           return
@@ -681,13 +727,27 @@ module Egui
                                    fb_h : Int32,
                                    commands : Array(Egui::PaintCmd),
                                    touch_fonts : Bool) : Nil
-        # egui `PlatformOutput::cursor_icon`: apply when it changed —
-        # the shim maps the CSS keyword onto the platform cursors
-        # (Xcursor theme / Win32 IDC_*).
-        icon = ctx.cursor_icon
-        if icon != @@cursor
-          @@cursor = icon
-          LibEguiCr.set_cursor(icon.to_css.to_unsafe)
+        # egui `PlatformOutput::cursor_icon` / `cursor_image`: apply
+        # whichever changed — a bitmap cursor wins over the CSS keyword,
+        # which the shim maps onto the platform cursors (Xcursor theme
+        # / Win32 IDC_*). Both sides dedupe (buffer identity here, bytes
+        # in the shim), so re-pushing the same request is free.
+        if (image = ctx.cursor_image)
+          unless @@cursor_image.try &.same?(image)
+            @@cursor_image = image
+            LibEguiCr.set_cursor_image(image.rgba.to_unsafe, image.width,
+              image.height, image.hotspot_x, image.hotspot_y)
+          end
+          # Force the icon path to re-apply once the bitmap goes away
+          # (the egui-winit `current_cursor_icon` resync contract).
+          @@cursor = nil
+        else
+          @@cursor_image = nil
+          icon = ctx.cursor_icon
+          if icon != @@cursor
+            @@cursor = icon
+            LibEguiCr.set_cursor(icon.to_css.to_unsafe)
+          end
         end
 
         w = fb_w.to_f64 / @@pixels_per_point
@@ -746,6 +806,17 @@ module Egui
         LibEguiCr.alpha_pipeline_pop
 
         LibEguiCr.end_pass
+
+        # Raster-cache evictions queued mid-frame (Svg#paint's
+        # TextureRegistry#destroy_later) run now, after every
+        # ImageCmd referencing them has been drawn. A real flush
+        # invalidates the idle-frame cache — the cached commands may
+        # reference the destroyed ids, and replaying them would hit
+        # sg_apply_bindings with a dead view.
+        if ctx.textures.pending_destroys?
+          ctx.textures.flush_destroys
+          @@last_commands = nil
+        end
       end
 
       def self.paint(cmd : Egui::PaintCmd) : Nil
@@ -781,6 +852,16 @@ module Egui
         y = (clip.min.y * s).floor
         w = {(clip.max.x * s).ceil - x, 1.0}.max
         h = {(clip.max.y * s).ceil - y, 1.0}.max
+        # sgl_scissor_rect emits a command UNCONDITIONALLY (no
+        # same-rect dedupe in sokol_gl), and a scissor between two
+        # begin/end blocks breaks sgl's consecutive-draw merging — so
+        # a painted SVG stroke (one LineCmd per segment, one scissor
+        # each) used to mint two commands per segment and blow past
+        # sgl's command budget, silently dropping everything after
+        # it. Skip the no-op emit instead; identical state lets sgl
+        # merge the draws.
+        return if @@last_scissor == {x, y, w, h}
+        @@last_scissor = {x, y, w, h}
         LibEguiCr.sgl_scissor_rectf(
           x.to_f32, y.to_f32, w.to_f32, h.to_f32, true)
       end
@@ -805,7 +886,8 @@ module Egui
         # pipeline has no blending, so an RGBA texture's transparent
         # texels would overwrite the destination with black — an icon
         # with soft/rounded edges would come out as a hard black box.
-        LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!)
+        LibEguiCr.sgl_bind_texture_nearest(cmd.texture_id.to_u32!) if cmd.nearest?
+        LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!) unless cmd.nearest?
         LibEguiCr.sgl_enable_texture
         LibEguiCr.text_pipeline_push
         LibEguiCr.sgl_begin_quads
@@ -1259,6 +1341,10 @@ module Egui
           return
         end
 
+        # The caster silhouette itself is solid shadow (CSS fills the
+        # offset shape before blurring) — without it, an `offset` shows
+        # a gap between the rect and the outward fade.
+        rounded_rect_fill(base, radius, cmd.color)
         pts = rounded_perimeter(base, radius)
         # Bands cover the blur width; alpha stops follow exp(-2t²).
         bands = {blur.ceil.to_i, 1}.max.clamp(1..4)
@@ -1328,6 +1414,31 @@ module Egui
       # GPU textures via the shim (sg_make_image/sampler/view); the
       # core sees opaque UInt64 handles only.
       class SokolTextureRegistry < Egui::TextureRegistry
+        # Real GPU textures — Svg#paint engages its raster-texture
+        # cache on this flag.
+        def graphical? : Bool
+          true
+        end
+
+        # Evictions queued during #destroy_later die after the pass —
+        # see the base-class comment.
+        @pending_destroys = [] of UInt64
+
+        def destroy_later(id : UInt64) : Nil
+          @pending_destroys << id unless id.zero?
+        end
+
+        def pending_destroys? : Bool
+          !@pending_destroys.empty?
+        end
+
+        def flush_destroys : Nil
+          @pending_destroys.each do |id|
+            LibEguiCr.destroy_texture(id.to_u32!)
+          end
+          @pending_destroys.clear
+        end
+
         def register_rgba(width : Int32, height : Int32,
                           data : Bytes) : UInt64
           return 0_u64 if width <= 0 || height <= 0

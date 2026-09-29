@@ -1,7 +1,13 @@
-# A minimal SVG viewer widget — no rasterizer, no dependencies: SVG
-# source is parsed once (a small subset) and painted as vector
-# primitives through the regular Painter commands, so it stays crisp
-# at any size.
+# A minimal SVG viewer widget — no external dependencies for the
+# vector path: SVG source is parsed once (a small subset) and painted
+# as vector primitives through the regular Painter commands, crisp at
+# any size. On a GPU backend, #paint instead replays a cached
+# software-rasterized texture per size (see #paint and #rasterize —
+# the font-atlas approach applied to vector art). The bake itself
+# goes through an EXTERNAL rasterizer when one is linked — NanoSVG
+# (backend/nanosvg.cr) brings real polygon fills, arbitrary-angle
+# gradients and nested transforms — with the built-in #rasterize as
+# the fallback (the freetype.cr/text.cr split).
 #
 # Supported subset (enough for logo-style artwork like
 # assets/icon.svg and for stroke icon sets like Lucide): `<svg>`
@@ -114,13 +120,21 @@ module Egui
     # A flattened outline: one `<path>` subpath or a whole
     # `<polyline>`/`<polygon>`. User-unit points, stroked as painter
     # line segments (see the class docs for the fill degradation).
+    # `round_caps`/`round_joins` carry the root/shape
+    # `stroke-linecap`/`stroke-linejoin` = `round` — segments are
+    # individual quads, so #paint back-fills corners and open ends
+    # with small discs to reproduce the round look (stroke icon sets
+    # like Lucide are drawn with round everything).
     struct PolylineShape
       getter points : Array(Vec2)
       getter? closed : Bool
       getter stroke : Color32?
       getter stroke_width : Float64
+      getter? round_caps : Bool
+      getter? round_joins : Bool
 
-      def initialize(@points, @closed, @stroke, @stroke_width)
+      def initialize(@points, @closed, @stroke, @stroke_width,
+                     @round_caps = false, @round_joins = false)
       end
     end
 
@@ -129,11 +143,20 @@ module Egui
 
     @shapes : Array(Shape)
     @view : ViewBox
+    # Kept for the raster-texture cache key (see #paint): the raw
+    # source and the tint `currentColor` resolved to — two Svgs with
+    # the same source/tint share one baked texture whatever their
+    # instance identity (Icon memoizes parses, but `ui.svg` builds a
+    # fresh Svg every frame).
+    @source : String
+    @current_color : Color32
 
     # `current_color` resolves `currentColor` in the source (icon
     # sets are monochrome; pass the theme fg here).
     def initialize(source : String, @size : Vec2 = Vec2.new(128.0, 128.0),
                    current_color : Color32 = BLACK)
+      @source = source
+      @current_color = current_color
       @shapes, @view = Svg.parse(source, current_color)
     end
 
@@ -150,9 +173,74 @@ module Egui
 
     # Fit the viewBox into `rect` (aspect preserved, centered) and
     # replay the shapes as painter commands.
+    #
+    # On a graphical backend (real TextureRegistry) this first routes
+    # through the RASTER-TEXTURE CACHE — the font-atlas approach
+    # applied to vector art: the whole Svg is software-rasterized ONCE
+    # per (source, tint, pixel size) into an RGBA texture with
+    # analytic anti-aliasing, then replayed as ONE textured quad per
+    # frame. A size change re-bakes (like a font atlas rebakes per
+    # ppem); MAX_RASTER_SIZES bounds the bakes per icon so a size
+    # slider evicts the oldest instead of accumulating. Headless (no
+    # GPU) keeps the direct vector path so specs still assert on
+    # LineCmd/CircleCmd geometry.
+    MAX_RASTER_SIZES = 8
+    # Global budget across ALL Svgs (GPU memory + the sokol image
+    # pool): past it the oldest bake is destroyed FIFO — scrolled-away
+    # icons re-bake on return (~a millisecond each), memory stays
+    # bounded whatever the app does. Sized to hold the full lucide
+    # set (~1850) plus headroom: sokol frees destroyed image slots a
+    # few frames LATE, so a budget below the working set makes rapid
+    # eviction churn exhaust the pool even with the cap respected
+    # (the LUCIDE_NO_CULL stress lesson).
+    MAX_RASTER_TEXTURES = 2000
+    @@raster_cache = {} of {String, Color32} =>
+      Array(Tuple(Int32, Int32, UInt64))
+    @@raster_order = [] of Tuple({String, Color32}, UInt64)
+
+    # Primary rasterizer for the texture bake: (source, tint, w, h) →
+    # straight-alpha RGBA8 bytes, or nil to use the built-in
+    # #rasterize. backend/nanosvg.cr sets it to NanoSVG when the
+    # native backend is linked; headless builds leave it nil — the
+    # freetype.cr/text.cr primary/fallback split for vector art.
+    class_property external_rasterizer : Proc(String, Color32, Int32,
+      Int32, Bytes?) | ::Nil = nil
+
     def paint(ui : Ui, rect : Rect) : Nil
+      Egui::Bench.span("Svg#paint") { paint_body(ui, rect) }
+    end
+
+    private def paint_body(ui : Ui, rect : Rect) : Nil
       painter = ui.painter
       scale = {rect.width / @view.width, rect.height / @view.height}.min
+
+      if ui.ctx.textures.graphical?
+        fit_w = @view.width * scale
+        fit_h = @view.height * scale
+        ppp = ui.ctx.pixels_per_point
+        # Raster and quad are DERIVED from each other: bake at whole
+        # physical pixels, then draw the quad at exactly that many
+        # pixels, snapped to the pixel grid — a 1:1 texel-to-pixel
+        # mapping samples without resampling blur. This is why fonts
+        # are crisp: they rasterize at their exact ppem and land
+        # 1:1. (A quad of 44.2 px sampling a 45-texel raster smears
+        # every texel into its neighbor — the "soapy icon" look.)
+        tw = {(fit_w * ppp).round.to_i, 1}.max
+        th = {(fit_h * ppp).round.to_i, 1}.max
+        if (id = raster_texture(ui.ctx.textures, tw, th)) != 0_u64
+          qw = tw / ppp
+          qh = th / ppp
+          cx = rect.left + rect.width / 2.0
+          cy = rect.top + rect.height / 2.0
+          x0 = (((cx - qw / 2.0) * ppp).round) / ppp
+          y0 = (((cy - qh / 2.0) * ppp).round) / ppp
+          painter.image(Rect.from_min_size(Pos2.new(x0, y0),
+            Vec2.new(qw, qh)), id)
+          return
+        end
+        # texture upload failed — fall through to the vector path
+      end
+
       ox = rect.left + (rect.width - @view.width * scale) / 2.0 - @view.min_x * scale
       oy = rect.top + (rect.height - @view.height * scale) / 2.0 - @view.min_y * scale
 
@@ -213,8 +301,292 @@ module Egui
           (1...pts.size).each do |i|
             painter.line(pts[i - 1], pts[i], w, s)
           end
+          # Round joins/caps: every segment is its own rectangle quad,
+          # so corners notch and open ends butt square — a disc at
+          # each REAL corner (near-collinear flattened-curve vertices
+          # skip theirs, they already overlap) and at the two ends
+          # fills the gap.
+          if shape.round_caps? || shape.round_joins?
+            r = w / 2.0
+            last = pts.size - 1
+            pts.each_with_index do |p, i|
+              if (shape.round_caps? && (i.zero? || i == last)) ||
+                 (shape.round_joins? && i > 0 && i < last &&
+                  corner?(pts[i - 1], p, pts[i + 1]))
+                painter.circle(p, r, fill: s)
+              end
+            end
+          end
         end
       end
+    end
+
+    # Cache lookup/bake for #paint's textured path. Keyed by
+    # (source, tint) with per-size entries — the "invalidate on size
+    # change" contract, same as the font atlas per-ppem rebake.
+    private def raster_texture(registry : TextureRegistry,
+                               w_px : Int32, h_px : Int32) : UInt64
+      key = {@source, @current_color}
+      sizes = (@@raster_cache[key] ||= [] of Tuple(Int32, Int32, UInt64))
+      sizes.each do |tw, th, id|
+        if !id.zero? && tw == w_px && th == h_px
+          Egui::Bench.count("svg.raster.hit")
+          return id
+        end
+      end
+      Egui::Bench.count("svg.raster.miss")
+      pixels = if (raster = Svg.external_rasterizer) &&
+                  (bytes = raster.call(@source, @current_color, w_px, h_px))
+        Egui::Bench.count("svg.raster.external")
+        bytes
+      else
+        Egui::Bench.count("svg.raster.fallback")
+        rasterize(w_px, h_px)
+      end
+      id = Egui::Bench.span("Svg#rasterize") do
+        registry.register_rgba(w_px, h_px, pixels)
+      end
+      return 0_u64 if id.zero?
+      if sizes.size >= MAX_RASTER_SIZES
+        old = sizes.shift?
+        if old && !old[2].zero?
+          registry.destroy_later(old[2])
+          @@raster_order.reject! { |_, oid| oid == old[2] }
+        end
+      end
+      while @@raster_order.size >= MAX_RASTER_TEXTURES
+        old_key, old_id = @@raster_order.shift
+        if (arr = @@raster_cache[old_key]?)
+          arr.reject! { |_, _, oid| oid == old_id }
+          @@raster_cache.delete(old_key) if arr.empty?
+        end
+        # destroy_later, not destroy: an earlier cell this frame may
+        # already have emitted an ImageCmd for this id (see
+        # TextureRegistry#destroy_later).
+        registry.destroy_later(old_id) unless old_id.zero?
+      end
+      sizes << {w_px, h_px, id}
+      @@raster_order << {key, id}
+      id
+    end
+
+    # Software-rasterize the shapes into a w×h RGBA8 bitmap (straight
+    # alpha) — the FALLBACK bake path (NanoSVG is the primary; see
+    # .external_rasterizer): per-pixel analytic coverage from the
+    # signed distance to each shape's edge (cov = half-extent + 0.5 −
+    # dist), so edges anti-alias with a one-pixel ramp — no MSAA, no
+    # supersampling. Round caps/joins come free from the same
+    # distance fields (segment + disc unions). TextShape is skipped
+    # (needs the font stack; #paint still draws it live) — icon sets
+    # don't use SVG <text>.
+    def rasterize(w : Int32, h : Int32) : Bytes
+      buf = Bytes.new(w * h * 4, 0)
+      scale = {w.to_f64 / @view.width, h.to_f64 / @view.height}.min
+      ox = (w - @view.width * scale) / 2.0 - @view.min_x * scale
+      oy = (h - @view.height * scale) / 2.0 - @view.min_y * scale
+
+      @shapes.each do |shape|
+        case shape
+        when PolylineShape
+          next unless (s = shape.stroke) && shape.stroke_width > 0.0
+          hw = {shape.stroke_width * scale / 2.0, 0.5}.max
+          pts = shape.points.map { |p| {ox + p.x * scale, oy + p.y * scale} }
+          pts << pts.first if shape.closed?
+          (1...pts.size).each do |i|
+            a, b = pts[i - 1], pts[i]
+            stamp_segment(buf, w, h, a[0], a[1], b[0], b[1], hw, s)
+          end
+          if shape.round_caps? || shape.round_joins?
+            last = pts.size - 1
+            pts.each_with_index do |p, i|
+              if (shape.round_caps? && (i.zero? || i == last)) ||
+                 (shape.round_joins? && i > 0 && i < last &&
+                  raster_corner?(pts[i - 1], p, pts[i + 1]))
+                stamp_disc(buf, w, h, p[0], p[1], hw, s)
+              end
+            end
+          end
+        when LineShape
+          hw = {shape.width * scale / 2.0, 0.5}.max
+          stamp_segment(buf, w, h, ox + shape.x1 * scale, oy + shape.y1 * scale,
+            ox + shape.x2 * scale, oy + shape.y2 * scale, hw, shape.color)
+        when CircleShape
+          cx = ox + shape.cx * scale
+          cy = oy + shape.cy * scale
+          r = shape.r * scale
+          if (c = flat_fill(shape.fill))
+            stamp_disc(buf, w, h, cx, cy, r, c)
+          end
+          if (s = shape.stroke) && shape.stroke_width > 0.0
+            stamp_ring(buf, w, h, cx, cy, r,
+              {shape.stroke_width * scale / 2.0, 0.5}.max, s)
+          end
+        when RectShape
+          stamp_round_rect(buf, w, h, ox + shape.x * scale, oy + shape.y * scale,
+            shape.w * scale, shape.h * scale, shape.rx * scale,
+            flat_fill(shape.fill), shape.stroke,
+            shape.stroke_width > 0.0 ? {shape.stroke_width * scale / 2.0, 0.5}.max : 0.0)
+        end
+      end
+      buf
+    end
+
+    # A gradient flattens to the blended midpoint (the raster has no
+    # per-vertex gradient quads — the same degradation as a
+    # non-vertical gradient in the vector path).
+    private def flat_fill(fill : Paint?) : Color32?
+      case f = fill
+      when Color32 then f
+      when LinearGradient then blend(f.first, f.last)
+      end
+    end
+
+    private def put_pixel(buf : Bytes, w : Int32, x : Int32, y : Int32,
+                          c : Color32, cov : Float64) : Nil
+      a = (cov * 255.0).round.clamp(0.0, 255.0).to_u8
+      i = (y * w + x) * 4
+      # Topmost coverage wins: overlapping strokes at a join take the
+      # max instead of additively saturating.
+      return if a <= buf[i + 3]
+      buf[i] = c.r
+      buf[i + 1] = c.g
+      buf[i + 2] = c.b
+      buf[i + 3] = a
+    end
+
+    # Pixel-bbox clamp (Int32 has no #min/#max pair idiom).
+    private def clamp_px(v : Int32, lo : Int32, hi : Int32) : Int32
+      v < lo ? lo : (v > hi ? hi : v)
+    end
+
+    private def stamp_segment(buf : Bytes, w : Int32, h : Int32,
+                              ax : Float64, ay : Float64,
+                              bx : Float64, by : Float64,
+                              hw : Float64, c : Color32) : Nil
+      pad = hw + 1.0
+      x0 = clamp_px(({ax, bx}.min - pad).floor.to_i, 0, w - 1)
+      x1 = clamp_px(({ax, bx}.max + pad).ceil.to_i, 0, w - 1)
+      y0 = clamp_px(({ay, by}.min - pad).floor.to_i, 0, h - 1)
+      y1 = clamp_px(({ay, by}.max + pad).ceil.to_i, 0, h - 1)
+      dx = bx - ax
+      dy = by - ay
+      len2 = dx * dx + dy * dy
+      (y0..y1).each do |py|
+        (x0..x1).each do |px|
+          rx = px + 0.5 - ax
+          ry = py + 0.5 - ay
+          t = if len2 > 1e-12
+                u = (rx * dx + ry * dy) / len2
+                u < 0.0 ? 0.0 : (u > 1.0 ? 1.0 : u)
+              else
+                0.0
+              end
+          qx = t * dx - rx
+          qy = t * dy - ry
+          cov = hw + 0.5 - Math.sqrt(qx * qx + qy * qy)
+          put_pixel(buf, w, px, py, c, cov) if cov > 0.0
+        end
+      end
+    end
+
+    private def stamp_disc(buf : Bytes, w : Int32, h : Int32,
+                           cx : Float64, cy : Float64, r : Float64,
+                           c : Color32) : Nil
+      x0 = clamp_px((cx - r - 1.0).floor.to_i, 0, w - 1)
+      x1 = clamp_px((cx + r + 1.0).ceil.to_i, 0, w - 1)
+      y0 = clamp_px((cy - r - 1.0).floor.to_i, 0, h - 1)
+      y1 = clamp_px((cy + r + 1.0).ceil.to_i, 0, h - 1)
+      (y0..y1).each do |py|
+        (x0..x1).each do |px|
+          dx = px + 0.5 - cx
+          dy = py + 0.5 - cy
+          cov = r + 0.5 - Math.sqrt(dx * dx + dy * dy)
+          put_pixel(buf, w, px, py, c, cov) if cov > 0.0
+        end
+      end
+    end
+
+    private def stamp_ring(buf : Bytes, w : Int32, h : Int32,
+                           cx : Float64, cy : Float64, r : Float64,
+                           hw : Float64, c : Color32) : Nil
+      x0 = clamp_px((cx - r - hw - 1.0).floor.to_i, 0, w - 1)
+      x1 = clamp_px((cx + r + hw + 1.0).ceil.to_i, 0, w - 1)
+      y0 = clamp_px((cy - r - hw - 1.0).floor.to_i, 0, h - 1)
+      y1 = clamp_px((cy + r + hw + 1.0).ceil.to_i, 0, h - 1)
+      (y0..y1).each do |py|
+        (x0..x1).each do |px|
+          dx = px + 0.5 - cx
+          dy = py + 0.5 - cy
+          d = Math.sqrt(dx * dx + dy * dy)
+          cov = hw + 0.5 - (d - r).abs
+          put_pixel(buf, w, px, py, c, cov) if cov > 0.0
+        end
+      end
+    end
+
+    # Filled/stroked rounded rect through its signed distance field
+    # (the iq sdRoundBox formulation, clamped radius included).
+    private def stamp_round_rect(buf : Bytes, w : Int32, h : Int32,
+                                 x : Float64, y : Float64, rw : Float64,
+                                 rh : Float64, rr : Float64,
+                                 fill : Color32?, stroke : Color32?,
+                                 hw : Float64) : Nil
+      rr = {rr, rw / 2.0, rh / 2.0, 0.0}.min
+      cx = x + rw / 2.0
+      cy = y + rh / 2.0
+      hx = rw / 2.0 - rr
+      hy = rh / 2.0 - rr
+      x0 = clamp_px((x - hw - 1.0).floor.to_i, 0, w - 1)
+      x1 = clamp_px((x + rw + hw + 1.0).ceil.to_i, 0, w - 1)
+      y0 = clamp_px((y - hw - 1.0).floor.to_i, 0, h - 1)
+      y1 = clamp_px((y + rh + hw + 1.0).ceil.to_i, 0, h - 1)
+      (y0..y1).each do |py|
+        (x0..x1).each do |px|
+          qx = (px + 0.5 - cx).abs - hx
+          qy = (py + 0.5 - cy).abs - hy
+          ox = qx > 0.0 ? qx : 0.0
+          oy = qy > 0.0 ? qy : 0.0
+          d = (qx > qy ? qx : qy)
+          d = d < 0.0 ? d : 0.0
+          d += Math.sqrt(ox * ox + oy * oy) - rr
+          if (f = fill)
+            cov = 0.5 - d
+            put_pixel(buf, w, px, py, f, cov) if cov > 0.0
+          end
+          if (s = stroke) && hw > 0.0
+            cov = hw + 0.5 - d.abs
+            put_pixel(buf, w, px, py, s, cov) if cov > 0.0
+          end
+        end
+      end
+    end
+
+    # Raster twin of #corner?: near-collinear flattened-curve vertices
+    # (~15° of straight) skip their join disc.
+    private def raster_corner?(a : {Float64, Float64}, p : {Float64, Float64},
+                               b : {Float64, Float64}) : Bool
+      ax = p[0] - a[0]
+      ay = p[1] - a[1]
+      bx = b[0] - p[0]
+      by = b[1] - p[1]
+      la = Math.sqrt(ax * ax + ay * ay)
+      lb = Math.sqrt(bx * bx + by * by)
+      return false if la < 1e-9 || lb < 1e-9
+      (ax * bx + ay * by) / (la * lb) < 0.966
+    end
+
+    # Is the bend at `p` a real corner? Near-collinear (within ~15°
+    # of straight) is the flattened-curve case: the neighboring
+    # segment quads already overlap, no join disc needed.
+    private def corner?(prev : Pos2, p : Pos2, nxt : Pos2) : Bool
+      ax = p.x - prev.x
+      ay = p.y - prev.y
+      bx = nxt.x - p.x
+      by = nxt.y - p.y
+      la = Math.sqrt(ax * ax + ay * ay)
+      lb = Math.sqrt(bx * bx + by * by)
+      return false if la < 1e-9 || lb < 1e-9
+      (ax * bx + ay * by) / (la * lb) < 0.966
     end
 
     # -- parsing ----------------------------------------------------------
@@ -247,10 +619,13 @@ module Egui
 
       # Icon-set inheritance: paint attributes on the root `<svg>`
       # (e.g. Lucide's `fill="none" stroke="currentColor"
-      # stroke-width="2"`) are the defaults for every shape.
+      # stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`)
+      # are the defaults for every shape.
       root_fill = paint(root_attrs["fill"]?, gradients, current_color)
       root_stroke = color(root_attrs["stroke"]?, current_color)
       root_sw = num(root_attrs, "stroke-width", 1.0)
+      root_caps = root_attrs["stroke-linecap"]? == "round"
+      root_joins = root_attrs["stroke-linejoin"]? == "round"
 
       shapes = [] of Shape
       src.scan(/<rect\b([^>]*?)\/?>/) do |m|
@@ -299,8 +674,10 @@ module Egui
         stroke ||= fill.as?(Color32)
         next unless stroke
         sw = a["stroke-width"]? ? num(a, "stroke-width", 1.0) : root_sw
+        caps = (a["stroke-linecap"]? || (root_caps ? "round" : nil)) == "round"
+        joins = (a["stroke-linejoin"]? || (root_joins ? "round" : nil)) == "round"
         parse_path(d).each do |pts, closed|
-          shapes << PolylineShape.new(pts, closed, stroke, sw)
+          shapes << PolylineShape.new(pts, closed, stroke, sw, caps, joins)
         end
       end
       src.scan(/<polyline\b([^>]*?)\/?>/) do |m|
@@ -310,7 +687,9 @@ module Egui
         stroke ||= color(a["fill"]?, current_color)
         next unless stroke
         sw = a["stroke-width"]? ? num(a, "stroke-width", 1.0) : root_sw
-        shapes << PolylineShape.new(pts, false, stroke, sw)
+        caps = (a["stroke-linecap"]? || (root_caps ? "round" : nil)) == "round"
+        joins = (a["stroke-linejoin"]? || (root_joins ? "round" : nil)) == "round"
+        shapes << PolylineShape.new(pts, false, stroke, sw, caps, joins)
       end
       src.scan(/<polygon\b([^>]*?)\/?>/) do |m|
         a = attrs(m[1])
@@ -319,7 +698,9 @@ module Egui
         stroke ||= color(a["fill"]?, current_color)
         next unless stroke
         sw = a["stroke-width"]? ? num(a, "stroke-width", 1.0) : root_sw
-        shapes << PolylineShape.new(pts, true, stroke, sw)
+        caps = (a["stroke-linecap"]? || (root_caps ? "round" : nil)) == "round"
+        joins = (a["stroke-linejoin"]? || (root_joins ? "round" : nil)) == "round"
+        shapes << PolylineShape.new(pts, true, stroke, sw, caps, joins)
       end
 
       {shapes, view}

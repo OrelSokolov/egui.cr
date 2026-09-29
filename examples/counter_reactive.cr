@@ -70,4 +70,5 @@ class CounterApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(CounterApp.new, title: "egui-cr — reactive")
+Egui::Backend::Sokol.run(CounterApp.new, title: "egui-cr — reactive",
+  inspector: :hidden)

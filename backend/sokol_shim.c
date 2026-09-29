@@ -76,10 +76,30 @@ static void sh_event_cb(const sapp_event* ev) {
 
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
-                      int width, int height, int borderless, int transparent) {
+                      int width, int height, int borderless, int transparent,
+                      int swap_interval) {
     g_init = init; g_frame = frame; g_event = event; g_cleanup = cleanup;
     g_borderless = borderless;
     g_transparent = transparent;
+#if defined(_SAPP_LINUX)
+    // XWayland DRI3 deadlock workaround. Under rapid input, sokol's X11
+    // loop (Xlib XPending/XNextEvent on the app connection) races with
+    // Mesa's DRI3, which waits for Present "special events" on the SAME
+    // connection (xcb_wait_for_special_event inside sg_begin_pass's
+    // loader_dri3_get_buffers). When the Xlib read wins, the Present
+    // event is consumed as an unknown XEvent and dropped — the wait
+    // then blocks forever and the window freezes (0% CPU, no repaints;
+    // reproducible by wiggling the pointer over any egui-cr app for a
+    // few seconds under mutter/XWayland). Keeping DRI3 off routes buffer
+    // exchange through DRI2 — still hardware accelerated — and the
+    // special-event wait never happens. Scoped to XWayland (a Wayland
+    // session plus an X display) and never overrides an explicit
+    // LIBGL_DRI3_DISABLE from the environment.
+    if (getenv("WAYLAND_DISPLAY") && getenv("DISPLAY") &&
+        !getenv("LIBGL_DRI3_DISABLE")) {
+        setenv("LIBGL_DRI3_DISABLE", "1", 1);
+    }
+#endif
     sapp_desc desc = {
         .init_cb = sh_init_cb,
         .frame_cb = sh_frame_cb,
@@ -99,6 +119,11 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         // and the compositor cannot blend per pixel. Transparent windows
         // trade MSAA for the 32-bit visual (Win32/macOS unaffected).
         .sample_count = transparent ? 1 : 4,
+        // VSync (1 = on, 0 = off): off trades tear-free presentation
+        // for uncapped frame rate — the perf-measuring demos want
+        // that (an FPS meter reading vsync is measuring the monitor,
+        // not the app).
+        .swap_interval = swap_interval,
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .enable_dragndrop = true, // Event.dropped_files (drop.enabled gates the FILES_DROPPED event)
         .max_dropped_files = 8,
@@ -111,11 +136,26 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
 void egui_cr_gfx_init(void) {
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
+        // Defaults are 128 images / 256 views — an icon-catalog frame
+        // alone rasters hundreds of Svg textures (see Svg#paint), and
+        // sg_make_image past the pool fails with IMAGE_POOL_EXHAUSTED
+        // (icons silently fall back to the slow vector path). The
+        // pools are preallocated slot arrays, and sokol returns a
+        // destroyed slot only a few frames later — budget for the
+        // working set PLUS that in-flight tail. The pools are
+        // preallocated slot arrays — a few hundred KB.
+        .image_pool_size = 4096,
+        .view_pool_size = 4096,
         .logger.func = slog_func,
     });
     sgl_setup(&(sgl_desc_t){
-        .max_vertices = 1 << 16,
-        .max_commands = 1 << 14,
+        // A full lucide catalog frame (hundreds of icons × dozens of
+        // stroke quads each) needs well beyond sokol_gl's 64k-vertex
+        // default; past the cap geometry is silently dropped
+        // (_sgl_next_vertex error path). ~6 MB of vertex memory for
+        // 256k vertices.
+        .max_vertices = 1 << 18,
+        .max_commands = 1 << 16,
         // Must match the swapchain sample count requested in
         // egui_cr_sapp_run, or sokol_gfx validation fails.
         .sample_count = sapp_sample_count(),
@@ -355,6 +395,9 @@ void egui_cr_replace_pipeline_pop(void) {
 // --- textures -------------------------------------------------------------
 
 static sg_sampler g_linear_sampler;
+// Point-sampled twin for pixel-art surfaces (the Paint canvas): created
+// lazily by egui_cr_sgl_texture_nearest.
+static sg_sampler g_nearest_sampler;
 
 // view-id → image registry for textures that outlive their upload:
 // immutable (make_texture) so they can be destroyed, and stream
@@ -470,6 +513,19 @@ void egui_cr_sgl_texture(uint32_t view_id) {
     sgl_texture(view, g_linear_sampler);
 }
 
+// Same bind, point sampling — for canvases whose texels must stay crisp
+// under non-integer scaling.
+void egui_cr_sgl_texture_nearest(uint32_t view_id) {
+    if (!g_nearest_sampler.id) {
+        g_nearest_sampler = sg_make_sampler(&(sg_sampler_desc){
+            .min_filter = SG_FILTER_NEAREST,
+            .mag_filter = SG_FILTER_NEAREST,
+        });
+    }
+    sg_view view = {.id = view_id};
+    sgl_texture(view, g_nearest_sampler);
+}
+
 void egui_cr_sgl_enable_texture(void) { sgl_enable_texture(); }
 void egui_cr_sgl_disable_texture(void) { sgl_disable_texture(); }
 
@@ -482,6 +538,16 @@ uint32_t egui_cr_load_image(const char* path) {
     uint32_t view_id = egui_cr_make_texture(w, h, data);
     stbi_image_free(data);
     return view_id;
+}
+
+// Decode an image file into a CPU-side straight-alpha RGBA8 buffer —
+// the `CustomCursorImage` source (the GPU texture from
+// egui_cr_load_image can't be read back). malloc'd, exactly w*h*4
+// bytes; free with egui_cr_mem_free. NULL on failure.
+unsigned char* egui_cr_load_rgba(const char* path, int* w, int* h) {
+    int n;
+    unsigned char* data = stbi_load(path, w, h, &n, 4);
+    return data; // stb_image's buffer IS straight RGBA8, heap-allocated
 }
 
 // --- Crystal text stack GPU bits ---------------------------------------------
@@ -611,6 +677,52 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
 //     diagonal resize cursors exist only as private NSCursor methods,
 //     resolved at runtime with a public fallback.
 
+// --- cursor: custom bitmap --------------------------------------------------
+//
+// egui `PlatformOutput::cursor_image` (the CSS `cursor: url(…)`
+// equivalent): a straight-alpha RGBA bitmap + hotspot uploaded to the
+// OS as a real cursor. Same platform mapping winit uses:
+//
+//   X11: XcursorImage → XRender cursor (packed straight ARGB — what
+//     winit's CustomCursor::new feeds XcursorImageLoadCursor).
+//   Win32: CreateIconIndirect over a 32-bpp ARGB DIB section + an
+//     all-zero AND mask; the subclassed WndProc re-applies it on
+//     WM_SETCURSOR exactly like the IDC_* handles.
+//   macOS: NSCursor initWithImage:hotspot: over an NSBitmapImageRep
+//     (the winit cursor_from_image recipe — no hotspot y-flip).
+
+// Fast-path dedupe shared by the branches: the Crystal side already
+// dedupes by buffer identity, but an app rebuilding `CustomCursorImage`
+// per frame would otherwise churn an XID / HCURSOR per frame — compare
+// the bytes too, and forget the cache whenever a named cursor is
+// applied (else the bitmap would be skipped while the window shows the
+// named cursor).
+static unsigned char* g_custom_prev;
+static int g_custom_prev_w, g_custom_prev_h, g_custom_prev_hx, g_custom_prev_hy;
+
+static int sh_custom_same(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    if (!g_custom_prev || g_custom_prev_w != w || g_custom_prev_h != h ||
+        g_custom_prev_hx != hx || g_custom_prev_hy != hy)
+        return 0;
+    return memcmp(rgba, g_custom_prev, (size_t)w * (size_t)h * 4) == 0;
+}
+
+static void sh_custom_remember(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    size_t size = (size_t)w * (size_t)h * 4;
+    unsigned char* copy = (unsigned char*)malloc(size);
+    if (!copy) { free(g_custom_prev); g_custom_prev = NULL; return; }
+    memcpy(copy, rgba, size);
+    free(g_custom_prev);
+    g_custom_prev = copy;
+    g_custom_prev_w = w; g_custom_prev_h = h;
+    g_custom_prev_hx = hx; g_custom_prev_hy = hy;
+}
+
+static void sh_custom_forget(void) {
+    free(g_custom_prev);
+    g_custom_prev = NULL;
+}
+
 #if defined(_SAPP_LINUX) // X11 backend (this sokol version gates it with _SAPP_LINUX, not _SAPP_X11)
 
 static Cursor g_none_cursor; // 1x1 transparent cursor for CSS `none`
@@ -669,7 +781,43 @@ void egui_cr_set_cursor(const char* css_name) {
         XDefineCursor(dpy, win, cursor);
         XFlush(dpy);
         g_current_cursor = cursor;
+        sh_custom_forget(); // a named cursor replaced the bitmap
     }
+}
+
+// The last bitmap-uploaded X cursor — freed when replaced, so per-frame
+// re-creation can't leak XIDs (themed/library cursors are server
+// resources shared with other clients; only ours are freed).
+static Cursor g_custom_x_cursor;
+
+void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win || !rgba || w <= 0 || h <= 0) return;
+    if (sh_custom_same(rgba, w, h, hx, hy)) return;
+    XcursorImage* image = XcursorImageCreate(w, h);
+    if (!image) return;
+    image->xhot = (unsigned int)hx;
+    image->yhot = (unsigned int)hy;
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        const unsigned char* p = rgba + i * 4;
+        image->pixels[i] = ((unsigned int)p[3] << 24) |
+                           ((unsigned int)p[0] << 16) |
+                           ((unsigned int)p[1] << 8) |
+                           (unsigned int)p[2];
+    }
+    Cursor cursor = XcursorImageLoadCursor(dpy, image);
+    XcursorImageDestroy(image);
+    if (!cursor) return;
+    if (cursor != g_current_cursor) {
+        XDefineCursor(dpy, win, cursor);
+        XFlush(dpy);
+        if (g_custom_x_cursor && g_custom_x_cursor != cursor)
+            XFreeCursor(dpy, g_custom_x_cursor);
+        g_custom_x_cursor = cursor;
+        g_current_cursor = cursor;
+    }
+    sh_custom_remember(rgba, w, h, hx, hy);
 }
 
 #elif defined(_WIN32)
@@ -764,7 +912,75 @@ void egui_cr_set_cursor(const char* css_name) {
     if (c && c != g_win_current) {
         SetCursor(c);
         g_win_current = c;
+        sh_custom_forget(); // a named cursor replaced the bitmap
     }
+}
+
+// The last bitmap-uploaded HCURSOR — destroyed when replaced, so
+// per-frame re-creation can't leak icon handles.
+static HCURSOR g_win_custom;
+
+void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    // The subclass must be in place BEFORE the first SetCursor, or the
+    // first mouse move resets it to the class arrow.
+    sh_win_install_cursor_proc();
+    if (!rgba || w <= 0 || h <= 0) return;
+    if (sh_custom_same(rgba, w, h, hx, hy)) return;
+
+    // 32-bpp ARGB DIB section, top-down so rows copy in source order.
+    // BI_BITFIELDS + bV5AlphaMask is what makes CreateIconIndirect use
+    // the alpha channel instead of the AND mask for transparency.
+    BITMAPV5HEADER bi;
+    ZeroMemory(&bi, sizeof(bi));
+    bi.bV5Size = sizeof(bi);
+    bi.bV5Width = w;
+    bi.bV5Height = -h; // top-down
+    bi.bV5Planes = 1;
+    bi.bV5BitCount = 32;
+    bi.bV5Compression = BI_BITFIELDS;
+    bi.bV5RedMask = 0x00FF0000;
+    bi.bV5GreenMask = 0x0000FF00;
+    bi.bV5BlueMask = 0x000000FF;
+    bi.bV5AlphaMask = 0xFF000000;
+
+    void* bits = NULL;
+    HDC hdc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(hdc, (BITMAPINFO*)&bi, DIB_RGB_COLORS,
+                                     &bits, NULL, 0);
+    ReleaseDC(NULL, hdc);
+    if (!color) return;
+    unsigned char* dst = (unsigned char*)bits;
+    for (size_t i = 0; i < (size_t)w * (size_t)h; i++) {
+        const unsigned char* p = rgba + i * 4; // RGBA → BGRA
+        dst[i * 4 + 0] = p[2];
+        dst[i * 4 + 1] = p[1];
+        dst[i * 4 + 2] = p[0];
+        dst[i * 4 + 3] = p[3];
+    }
+    // All-zero AND mask: every pixel's transparency comes from alpha.
+    HBITMAP mask = CreateBitmap(w, h, 1, 1, NULL);
+    if (!mask) { DeleteObject(color); return; }
+
+    ICONINFO ii;
+    ZeroMemory(&ii, sizeof(ii));
+    ii.fIcon = FALSE;
+    ii.xHotspot = (DWORD)(hx < 0 ? 0 : hx);
+    ii.yHotspot = (DWORD)(hy < 0 ? 0 : hy);
+    ii.hbmColor = color;
+    ii.hbmMask = mask;
+    HCURSOR c = CreateIconIndirect(&ii);
+    DeleteObject(color);
+    DeleteObject(mask);
+    if (!c) return;
+    if (c != g_win_current) {
+        SetCursor(c);
+        if (g_win_custom && g_win_custom != c) DestroyCursor(g_win_custom);
+        g_win_custom = c;
+        g_win_current = c;
+    } else {
+        DestroyCursor(c);
+    }
+    sh_custom_remember(rgba, w, h, hx, hy);
 }
 
 #elif defined(__APPLE__)
@@ -846,6 +1062,7 @@ void egui_cr_set_cursor(const char* css_name) {
     if (strlen(css_name) >= sizeof(g_mac_cursor)) return;
     if (strcmp(g_mac_cursor, css_name) == 0) return; // dedupe per-frame calls
     strcpy(g_mac_cursor, css_name);
+    sh_custom_forget(); // a named cursor replaced the bitmap
     if (strcmp(css_name, "none") == 0) {
         [NSCursor setHiddenUntilMouseMoves:YES];
         return;
@@ -853,10 +1070,42 @@ void egui_cr_set_cursor(const char* css_name) {
     [sh_mac_cursor(css_name) set];
 }
 
+// The winit cursor_from_image recipe: NSBitmapImageRep over the raw
+// RGBA bytes (straight alpha), NSCursor initWithImage:hotspot: with the
+// hotspot passed through unflipped. The name cache is cleared so the
+// next named request re-applies instead of dedupe-skipping.
+void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    if (!rgba || w <= 0 || h <= 0) return;
+    if (sh_custom_same(rgba, w, h, hx, hy)) return;
+    NSBitmapImageRep* rep = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL
+                     pixelsWide:w
+                     pixelsHigh:h
+                  bitsPerSample:8
+                samplesPerPixel:4
+                       hasAlpha:YES
+                       isPlanar:NO
+                 colorSpaceName:NSDeviceRGBColorSpace
+                    bytesPerRow:w * 4
+                     bitsPerPixel:32];
+    if (!rep) return;
+    memcpy([rep bitmapData], rgba, (size_t)w * (size_t)h * 4);
+    NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
+    [image addRepresentation:rep];
+    NSCursor* cursor = [[NSCursor alloc] initWithImage:image
+                                               hotspot:NSMakePoint(hx, hy)];
+    [cursor set];
+    g_mac_cursor[0] = '\0'; // force the named path to re-apply
+    sh_custom_remember(rgba, w, h, hx, hy);
+}
+
 #else
 
-// Other backends: cursor switching not wired. The call is a no-op.
+// Other backends: cursor switching not wired. The calls are no-ops.
 void egui_cr_set_cursor(const char* css_name) { (void)css_name; }
+void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    (void)rgba; (void)w; (void)h; (void)hx; (void)hy;
+}
 
 #endif
 

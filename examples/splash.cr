@@ -87,4 +87,4 @@ end
 
 Egui::Backend::Sokol.run(SplashApp.new,
   title: "egui-cr — splash", width: SplashApp::SIZE, height: SplashApp::SIZE,
-  decorations: false, transparent: true)
+  decorations: false, transparent: true, inspector: :hidden)

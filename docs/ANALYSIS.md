@@ -525,3 +525,51 @@ No single upstream file maps onto these two; they combine the emath
 - Specs: history velocity/flush, KineticScroller glide/decay/edges,
   ScrollArea fling-after-wheel + settle-without-overshoot, textarea
   typing/navigation/paste/wheel (core_spec.cr).
+
+## 14. Delta: Canvas widget (pixel editing) + nearest sampling
+
+`src/egui/widgets/canvas.cr` — `Egui::Canvas`, egui.cr-native (upstream
+egui has no raster-edit widget; apps rasterize offscreen). A retained
+RGBA8 pixel buffer shown as a NEAREST-sampled stream texture
+(`TextureRegistry#create_stream`/`#update`; texture recreated on
+resize, released via `#destroy_later` so an idle-frame replay never
+samples a dead texture). Built-in raster ops: Bresenham line (square
+brush width), rect outline/fill, midpoint ellipse outline/fill,
+scanline flood fill, region copy/blit (with transparent-color skip),
+coverage `blend` (antialiased text), `invert`, snapshot/`restore_sized`
+(undo across resizes).
+
+Interaction is reported in CANVAS pixel coordinates (`Interaction`:
+pointer, drag start/stop, click/double-click, both mouse buttons — the
+left draws with the Paint foreground color, the right with the
+background). Two subtleties covered:
+
+- `Sense::Click | Sense::Drag` only classifies a drag after a few
+  pixels of movement, but Paint strokes must start on PRESS (a pencil
+  click is a dot) — `response.pressed?` also starts a canvas drag.
+- The secondary (right) button has no drag/release tracking upstream of
+  this change; `InputState` gained `secondary_down?`/`secondary_released?`
+  (parallel to the primary button state) and the canvas tracks the
+  right drag itself.
+
+`ImageCmd` gained a `nearest` flag — the shim binds a point-sampled
+sampler (`egui_cr_sgl_texture_nearest`) instead of the shared linear
+one. Without it a zoomed pixel canvas blurs under fractional DPI.
+
+Demo: `examples/paint.cr` (bin/paint) — a Windows XP Paint clone: the
+16-tool jspaint toolbox (icons 1:1 from jspaint's classic theme,
+`assets/paint/tools.png`, MIT), per-tool option strips, 28-color
+palette with the overlapped fg/bg swatch (right-click sets bg,
+double-click edits), status bar with live cursor coordinates, zoom
+1–8×, all 16 tools (free-form select + select with floating
+move/opaque/transparent, eraser + color eraser, fill, picker,
+magnifier, pencil, brush tips, airbrush, FreeType-rasterized text,
+line, two-bend curve, rect/polygon/ellipse/rounded rect with the three
+fill styles), undo/redo (25 levels, resize-aware), Image menu
+transforms (flip/rotate/stretch/skew/invert/attributes), File →
+New/Open/Save/Save As through the cross-platform SystemPorts dialogs
+(zenity/kdialog/osascript/WinForms) and a pure-stdlib PNG codec
+(`examples/paint/png.cr`; encode RGBA, decode 8/16-bit gray, RGB,
+palette incl. 1/2/4-bit indices, gray+A, RGBA). Specs:
+`spec/canvas_spec.cr` (raster ops, pixel-coordinate interaction, zoom,
+nearest ImageCmd, secondary-button drag, undo across resize).

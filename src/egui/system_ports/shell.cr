@@ -1,6 +1,7 @@
-# System ports OpenUrl / RevealInFolder: hand a URL or a file to the OS —
-# "open in the default browser" and "show in the file manager" (the
-# egui `ui.link` / eframe `reveal` equivalents).
+# System ports OpenUrl / RevealInFolder / FileOpen: hand a URL or a
+# file to the OS — "open in the default browser", "show in the file
+# manager" (the egui `ui.link` / eframe `reveal` equivalents) and
+# "open with the default application" (the double-click behavior).
 #
 # Windows calls `ShellExecuteW` (shell32) directly — the documented way
 # to launch a URL or folder with the default handler. Linux/BSD shells
@@ -53,7 +54,25 @@ module Egui
       end
     end
 
-    # Win32 launcher shared by OpenUrl / RevealInFolder.
+    # Open `path` (file or directory) with its default OS application
+    # — what a double click does. False when no launcher is available
+    # or it refused the path.
+    module FileOpen
+      def self.show(path : String) : Bool
+        path = File.expand_path(path)
+        {% if flag?(:win32) %}
+          Shell.execute("open", path)
+        {% elsif flag?(:darwin) %}
+          return false unless Dialogs.which("open")
+          Dialogs.run?("open", [path])
+        {% else %}
+          return false unless Dialogs.which("xdg-open")
+          Dialogs.run?("xdg-open", [path])
+        {% end %}
+      end
+    end
+
+    # Win32 launcher shared by OpenUrl / FileOpen / RevealInFolder.
     module Shell
       {% if flag?(:win32) %}
         SW_SHOWNORMAL = 1

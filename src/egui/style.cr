@@ -4,8 +4,19 @@
 module Egui
   class Spacing
     property item_spacing : Vec2
-    property button_padding : Vec2
-    property window_padding : Vec2
+    # Padding setters clamp negatives to 0: this layout engine has no
+    # "padding pulls content outside the widget" notion, so a negative
+    # value only made text overflow its rect.
+    getter button_padding : Vec2
+    getter window_padding : Vec2
+
+    def button_padding=(pad : Vec2) : Vec2
+      @button_padding = Vec2.new({pad.x, 0.0}.max, {pad.y, 0.0}.max)
+    end
+
+    def window_padding=(pad : Vec2) : Vec2
+      @window_padding = Vec2.new({pad.x, 0.0}.max, {pad.y, 0.0}.max)
+    end
     property indent : Float64
     # Icon column width for checkbox/radio (upstream `Spacing`).
     property icon_width : Float64
@@ -67,6 +78,14 @@ module Egui
     property button_hovered : Color32
     property button_active : Color32
     property button_stroke : Color32
+    # Menu row highlight. Upstream egui reuses the button hover/active
+    # visuals for it, but an app theme that flattens those to the panel
+    # color (classic-look apps do) ends up with an invisible menu
+    # selection — so a dedicated override exists. nil falls back to
+    # button_hovered (hovered rows / bar entries) or button_active
+    # (open bar entry); `menu_highlight_text` nil → text_color.
+    property menu_highlight_fill : Color32?
+    property menu_highlight_text : Color32?
     # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
     # progress bar fill, slider handle, hyperlinks.
     property selection_fill : Color32
@@ -130,6 +149,22 @@ module Egui
       end
     end
 
+    # The hover counterpart of #fade_color: a "stronger" variant of
+    # `color` — dark themes lighten (blend towards white), light themes
+    # darken, so a hovered accent (link color, …) reads stronger on
+    # both, the way #fade_color reads weaker.
+    def strong_color(color : Color32, factor : Float64 = 0.2) : Color32
+      if @dark
+        Color32.rgba(
+          (color.r.to_f + (255 - color.r) * factor).round.to_u8,
+          (color.g.to_f + (255 - color.g) * factor).round.to_u8,
+          (color.b.to_f + (255 - color.b) * factor).round.to_u8,
+          color.a)
+      else
+        color.mul_color(1.0 - factor)
+      end
+    end
+
     # Deep copy (all fields are value types) — see `Spacing#clone`.
     def clone : Visuals
       other = Visuals.new
@@ -145,6 +180,8 @@ module Egui
       other.button_hovered = button_hovered
       other.button_active = button_active
       other.button_stroke = button_stroke
+      other.menu_highlight_fill = menu_highlight_fill
+      other.menu_highlight_text = menu_highlight_text
       other.selection_fill = selection_fill
       other.hyperlink_color = hyperlink_color
       other.separator_color = separator_color

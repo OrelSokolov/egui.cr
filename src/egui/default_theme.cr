@@ -161,6 +161,22 @@ module Egui
       })
       sheet.rule("button:hover", StyleVars{"background" => v.button_hovered})
       sheet.rule("button:active", StyleVars{"background" => v.button_active})
+
+      # link — `ui.hyperlink` / `ui.hyperlink_to` (HTML <a>: colored,
+      # underlined text by default). The `:hover`/`:active` overlays
+      # recolor the text the way button states recolor the fill;
+      # `underline` is the CSS `text-decoration` (a `link:hover {
+      # underline }` rule can re-enable it per state).
+      sheet.rule("link", StyleVars{
+        "text_color" => v.hyperlink_color,
+        "underline"  => true,
+      })
+      sheet.rule("link:hover", StyleVars{
+        "text_color" => v.strong_color(v.hyperlink_color),
+      })
+      sheet.rule("link:active", StyleVars{
+        "text_color" => v.fade_color(v.hyperlink_color, 0.8),
+      })
     end
   end
 end

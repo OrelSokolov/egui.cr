@@ -66,9 +66,13 @@ module Egui
     DOCK_MENU  = "inspector_dock"
     PANEL_H    = 190.0
     # Default width of the right column (the bottom strip is PANEL_H):
-    # wide enough for the header's action cluster (tabs + Export + ⋮ +
-    # ✕ + gaps) even after the panel padding.
-    PANEL_W    = 420.0
+    # wide enough for the header's action cluster (tabs + Export + ⚙ +
+    # ✕ + gaps) even after the panel padding. Exact budget: interior =
+    # PANEL_W − 2×10 window padding; the header needs 2×TAB_W + 2 tab
+    # gaps + EXPORT_W + MENU_W + CLOSE_W + 3 cluster gaps (+8 item
+    # spacing each) = 402 → 422 leaves the spacer's gap non-negative
+    # (at 420 the ✕ cell was clamped 26→24 and its glyph spilled).
+    PANEL_W    = 422.0
     LABEL_W    = 130.0
     # Header geometry: equal-width tab cells (the «Класс»/«Элемент»
     # pair reads as one control) and the right-pinned action cluster.
@@ -114,7 +118,7 @@ module Egui
     @element_state : String?
     @color_target : ColorTarget?
     @color_anchor : Pos2
-    @dock_rect : Rect    # last frame's ⋮ button rect (popup anchor)
+    @dock_rect : Rect    # last frame's dock-menu button rect (popup anchor)
 
     def initialize(@ctx : Context)
       @open = true
@@ -190,6 +194,17 @@ module Egui
       @element_state = nil
       @tab = :element if id
       id
+    end
+
+    # Panel visibility (F12 flips it). The backend's `inspector: :hidden`
+    # starts closed — enabled but invoked on demand.
+    def open=(flag : Bool) : Bool
+      @open = flag
+      flag
+    end
+
+    def open? : Bool
+      @open
     end
 
     # Select `id` AND show the panel — the pick menu's action. Picking
@@ -366,8 +381,8 @@ module Egui
     # The DevTools-style header shared by both docks: tab cells on the
     # left (equal width, active fill + accent underline), the actions
     # pinned to the panel's RIGHT edge (Export with the download icon,
-    # the ⋮ dock menu, then ✕) through a spacer consuming the leftover
-    # width.
+    # the settings dock menu, then ✕) through a spacer consuming the
+    # leftover width.
     private def render_header(ui : Ui) : Nil
       ui.horizontal do |row|
         if render_tab(row, "Класс", @tab == :class)
@@ -379,7 +394,7 @@ module Egui
         # Right-pinned cluster: the spacer eats the leftover width so
         # the cluster's LAST item (✕) ends flush at the panel's right
         # edge. Each item_spacing gap after the spacer (spacer→export,
-        # export→⋮, ⋮→✕) is part of the cluster's footprint.
+        # export→cog, cog→✕) is part of the cluster's footprint.
         s = row.style.spacing.item_spacing.x
         cluster = EXPORT_W + MENU_W + CLOSE_W + 3 * s
         gap = {row.available_width - cluster, 0.0}.max
@@ -390,8 +405,13 @@ module Egui
           open_export
         end
         render_dock_menu_button(row)
+        # ✕ uses the Lucide X glyph, tinted like the neighboring
+        # settings icon (`Icon.from_file` — compile-time embedded,
+        # parsed once per tint).
         @open = false if row.add_sized(Vec2.new(CLOSE_W, TAB_H),
-          Button.new("", id: "inspector_close").icon(:close)).clicked?
+          Button.new("", id: "inspector_close")
+            .icon(Icon.from_file(:lucide, :x,
+              tint: row.style.visuals.text_color))).clicked?
       end
     end
 
@@ -418,12 +438,12 @@ module Egui
       resp.clicked?
     end
 
-    # The ⋮ (kebab) dock switcher: a fixed-size icon button opening a
-    # dropdown with the dock choices. Hand-rolled like #render_tab —
-    # the shared Ui#menu_button stretches to the row's full height.
-    # The open/close bookkeeping rides the same Memory#menu_open +
-    # popup pair menu_button uses (a click elsewhere closes the popup
-    # and clears menu_open in Memory#end_frame).
+    # The settings-gear dock switcher: a fixed-size icon
+    # button opening a dropdown with the dock choices. Hand-rolled like
+    # #render_tab — the shared Ui#menu_button stretches to the row's
+    # full height. The open/close bookkeeping rides the same
+    # Memory#menu_open + popup pair menu_button uses (a click elsewhere
+    # closes the popup and clears menu_open in Memory#end_frame).
     private def render_dock_menu_button(row : Ui) : Nil
       v = row.style.visuals
       rect = row.allocate_space(Vec2.new(MENU_W, TAB_H))
@@ -444,14 +464,17 @@ module Egui
       elsif resp.hovered?
         row.painter.rect(rect, 4.0, v.button_hovered)
       end
-      Icons.draw(row.painter, :more,
+      # The settings gear comes straight from the vendored Lucide set
+      # (`icons/lucide/settings.svg`) through `Icon.from_file` — compile-time
+      # embedded, parsed once per tint.
+      Icon.from_file(:lucide, :settings, tint: v.text_color).paint(row,
         Rect.from_min_size(
-          Pos2.new(rect.center.x - 6.0, rect.center.y - 6.0),
-          Vec2.new(12.0, 12.0)), v.text_color)
+          Pos2.new(rect.center.x - 7.0, rect.center.y - 7.0),
+          Vec2.new(14.0, 14.0)))
     end
 
-    # The ⋮ dropdown: where the panel lives. A check marks the current
-    # dock; picking one re-docks the panel on the next frame.
+    # The settings dropdown: where the panel lives. A check marks the
+    # current dock; picking one re-docks the panel on the next frame.
     private def render_dock_menu : Nil
       return unless @ctx.popup_open?(DOCK_MENU)
       anchor = @ctx.dropdown_anchor(DOCK_MENU, @dock_rect)
@@ -614,6 +637,12 @@ module Egui
       y0 = ui.cursor.y
       col_x = 0.0
       ui.horizontal do |row|
+        # Pin the row height upfront: the marker checkbox is the SHORTEST
+        # thing here (14px icon) and arrives FIRST — centered in the
+        # generic 18px row seed it would sit 1px above the row's true
+        # center once the 20px name cell grows the row, and every taller
+        # item (text, editors) would read as hanging below it.
+        row.seed_row_height(ROW_H)
         row.checkbox(set_here, "") do |v|
           if v
             # Turning the override on starts from the current display
@@ -666,7 +695,9 @@ module Egui
           {"top" => b.top, "right" => b.right,
            "bottom" => b.bottom, "left" => b.left}.each do |side, v|
             row.drag_value(v, speed: 1.0, prefix: side[0].upcase.to_s) do |nv|
-              setter.call("#{prop.key}.#{side}", nv)
+              # Same clamp as StyleVars#box — keep the stored sheet value
+              # sane, not just the read side.
+              setter.call("#{prop.key}.#{side}", {nv, 0.0}.max)
             end
           end
         end
@@ -683,6 +714,7 @@ module Egui
       y0 = ui.cursor.y
       col_x = 0.0
       ui.horizontal do |row|
+        row.seed_row_height(ROW_H)
         row.allocate_space(Vec2.new(MARK_W, ROW_H))
         col_x = row.cursor.x
         name = row.allocate_space(Vec2.new(LABEL_W, ROW_H))
@@ -699,18 +731,23 @@ module Egui
     # rule between the name and value columns (per row — the segments
     # stack into continuous table borders). Called after the row's
     # `horizontal` block, when the cursor sits just below the row.
+    # The horizontal rule rides the MIDDLE of the inter-row gap, not the
+    # row's bottom edge: the eye reads the band BETWEEN two rules as the
+    # row, and with the rule at the bottom edge the whole item_spacing
+    # gap lands above the next row — its content then sits ~3px below
+    # the band's centerline and every row reads as sagging downward.
     private def paint_table_row(ui : Ui, y0 : Float64, col_x : Float64,
                                 header : Bool = false) : Nil
       v = ui.style.visuals
       spacing = ui.style.spacing.item_spacing.y
-      bottom = ui.cursor.y - spacing
+      bottom = ui.cursor.y - spacing / 2.0
       left = ui.cursor.x
       right = left + ui.available_width
       row_color = v.fade_color(v.separator_color, 0.5)
       ui.painter.line(Pos2.new(left, bottom), Pos2.new(right, bottom), 1.0,
         header ? v.fade_color(v.text_color, 0.3) : row_color)
-      ui.painter.line(Pos2.new(col_x, y0), Pos2.new(col_x, bottom), 1.0,
-        row_color)
+      ui.painter.line(Pos2.new(col_x, y0 - spacing / 2.0),
+        Pos2.new(col_x, bottom), 1.0, row_color)
     end
 
     # Remove one property's override at the row's scope. Box props are

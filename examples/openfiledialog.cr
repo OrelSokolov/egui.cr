@@ -62,4 +62,5 @@ class OpenFileDialogApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(OpenFileDialogApp.new,
-  title: "egui-cr — file dialogs", width: 520, height: 320)
+  title: "egui-cr — file dialogs", width: 520, height: 320,
+  inspector: :hidden)

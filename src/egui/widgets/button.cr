@@ -115,7 +115,7 @@ module Egui
             StyleBox.new(bp.y, bp.x, bp.y, bp.x)
 
       font_size = style.font_size
-      text_size = ui.ctx.fonts.measure(@text, font_size)
+      text_size = ui.ctx.fonts.measure_cached(@text, font_size)
       # An icon-only button (empty label) still needs a glyph-height
       # box: `measure("")` is zero and would collapse the icon to
       # nothing. Fall back to the estimated line height.
@@ -208,8 +208,18 @@ module Egui
                  ((name = @icon) && Icons::NAMES.includes?(name))
       icon_w = has_icon ? glyph_h : 0.0
       block_w = icon_w + (@text.empty? ? 0.0 : icon_adv) + text_size.x
-      block_left = rect.left + pad.left +
-        {(rect.width - pad.horizontal) - block_w, 0.0}.max / 2.0
+      # Center the block in the content box (rect minus padding); when
+      # the cell is TIGHTER than the natural size (#add_sized
+      # hard-clamps to the region's max rect — e.g. a fixed-size icon
+      # cell at a panel edge), center in the whole rect instead so the
+      # glyph stays inside instead of spilling past the right edge
+      # into the clip.
+      slack = (rect.width - pad.horizontal) - block_w
+      block_left = if slack >= 0.0
+        rect.left + pad.left + slack / 2.0
+      else
+        rect.left + (rect.width - block_w) / 2.0
+      end
       if (tex = @image_texture) && !tex.zero?
         icon_box = Rect.from_min_size(
           Pos2.new(block_left, rect.center.y - glyph_h / 2.0),

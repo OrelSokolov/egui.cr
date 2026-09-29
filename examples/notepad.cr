@@ -112,6 +112,9 @@ class NotepadApp < Egui::App
   @pending_close : Doc? = nil
   # Quit is running: confirm every dirty document, then really quit.
   @quitting = false
+  # Debug toggle (Settings → Show FPS): while on, the status bar shows
+  # the smoothed FPS from ctx.fps.
+  @show_fps = false
   # Saved settings — theme choice, persisted through AppConfig.
   @settings : Settings = Egui::SystemPorts::AppConfig.load(
     "notepad", Settings.new)
@@ -173,7 +176,8 @@ class NotepadApp < Egui::App
 
   def update(ctx : Egui::Context) : Nil
     # The saved theme choice → the live theme (cheap, every frame, so
-    # the swap from the settings dropdown shows immediately).
+    # the swap from the settings dropdown shows immediately — a no-op
+    # while the choice hasn't changed, see Context#theme=).
     ctx.theme = @settings.theme == "Light" ? Egui::Theme.light : Egui::Theme.dark
 
     # Default hotkey bindings — once, on the first frame.
@@ -207,6 +211,9 @@ class NotepadApp < Egui::App
           # page navigation, not a document operation.
           bar.menu_button("Settings") do |menu|
             menu.menu_item("Settings…", ACTION_SETTINGS)
+            menu.menu_item("#{@show_fps ? "✓ " : ""}Show FPS") do
+              @show_fps = !@show_fps
+            end
           end
         end
 
@@ -247,6 +254,13 @@ class NotepadApp < Egui::App
                      "#{doc.dirty? ? " — modified" : ""}")
           end
           ui.label(@status)
+          # A live meter needs live frames: with on-demand repaint an
+          # idle app would freeze at the last reading.
+          if @show_fps
+            ctx.request_repaint
+            ui.label("FPS: #{"%.1f" % ctx.fps}  " \
+                     "(frame #{"%.1f" % (ctx.input.dt * 1000)} ms)")
+          end
         end
       end
 
@@ -533,4 +547,4 @@ end
 Egui::Backend::Sokol.run(app,
   title: "egui-cr — notepad", width: 800, height: 600,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64},
-  decorations: false)
+  decorations: false, inspector: :hidden)

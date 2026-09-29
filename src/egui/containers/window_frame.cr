@@ -9,7 +9,7 @@
 #     (`ctx.theme`), like Win11's own dark/light mode.
 #   * WindowsXp — the classic XP Luna look: blue gradient titlebar
 #     with glossy rounded caption buttons (red close), app icon slot,
-#     and a THICK 6pt blue frame around the client area (the only
+#     and a 2pt blue frame around the client area (the only
 #     style that reserves border space — the others share a 1px
 #     window outline).
 #   * Ubuntu  — the classic Ambiance look (~2017): 28pt titlebar with a
@@ -512,34 +512,37 @@ module Egui
     # ==========================================================================
     # Windows XP — the classic Luna theme (~2002): blue gradient
     # titlebar with glossy rounded caption buttons (red close), the app
-    # icon slot, and a THICK 6pt blue frame around the client area —
+    # icon slot, and a 2pt blue frame around the client area —
     # the only style that reserves border space (#reserve_border).
     # ==========================================================================
     class WindowsXp < WindowFrame
-      CAPTION_H = 28.0 # Luna titlebar height
-      BORDER_W  = 4.0  # thick blue frame thickness (XP default, 4px)
-      BTN       = 21.0 # glossy caption button box
+      CAPTION_H = 42.0 # Luna titlebar height
+      BORDER_W  = 2.0  # blue frame thickness (XP default halved, 2px)
+      BTN       = 25.0 # glossy caption button box
       BTN_GAP   = 2.0  # gap between buttons
       BTN_INSET = 4.0  # button inset from the right window edge
       TITLE_PAD = 8.0  # title text inset from the left edge
-      TITLE_PT  = 12.0 # Tahoma-ish caption font
+      TITLE_PT  = 16.0 # Tahoma-ish caption font
       ICON_SIZE = 16.0 # app icon box (same slot as the Win11 style)
       ICON_PAD  = 6.0
       ICON_GAP  = 4.0
 
-      # Luna blue titlebar: a bright band at the top fading into the
-      # deep blue body (approximated with two stacked gradients).
-      CAP_LIGHT     = Color32.new(9, 151, 255, 255)   # #0997FF top band
-      CAP_MID       = Color32.new(0, 83, 238, 255)    # #0053EE
-      CAP_DEEP      = Color32.new(0, 61, 215, 255)    # #003DD7
+      # Luna blue titlebar, measured off a genuine XP screenshot (the
+      # Security Center SP2 shot on Wikipedia, lossless PNG): a bright
+      # band over the top quarter, and a body that LIGHTENS toward the
+      # bottom (not the other way round) before the inner hairline.
+      CAP_LIGHT     = Color32.new(0, 104, 254, 255)   # #0068FE band peak
+      CAP_MID       = Color32.new(2, 53, 206, 255)    # #0235CE body top
+      CAP_DEEP      = Color32.new(50, 101, 254, 255)  # #3265FE body bottom (lighter!)
       FG            = Color32.new(255, 255, 255, 255) # title + glyphs
       TITLE_SHADOW  = Color32.new(0, 40, 130, 255)    # soft drop shadow
 
-      # The thick frame: solid Luna blue with a navy outer line and a
-      # light hairline where it meets the client area.
-      FRAME       = Color32.new(0, 85, 234, 255)     # #0055EA
-      FRAME_OUTER = Color32.new(8, 49, 217, 255)     # #0831D9
-      FRAME_INNER = Color32.new(140, 188, 250, 255)  # #8CBCFA
+      # The frame: the real Luna border is a beveled deep blue (#0342C6
+      # with #688EDD highlight rows) — solid average ≈ #2F5AC9, with a
+      # near-black-blue outer line and a light bevel at the client edge.
+      FRAME       = Color32.new(47, 90, 201, 255)     # #2F5AC9
+      FRAME_OUTER = Color32.new(0, 32, 164, 255)      # #0020A4
+      FRAME_INNER = Color32.new(104, 142, 221, 255)   # #688EDD
 
       # Glossy caption buttons: blue min/max, red close — gradient
       # stops plus a darker ring and hover/press variants.
@@ -583,8 +586,8 @@ module Egui
         painter.clip = bar.shrink(-1.0)
         grown = bar.shrink(-1.0)
         painter.rect_gradient(grown, 0.0, CAP_MID, CAP_DEEP)
-        # the bright Luna band over the upper third of the titlebar
-        band_h = {bar.height * 0.35, 2.0}.max
+        # the bright Luna band over the top quarter of the titlebar
+        band_h = {bar.height * 0.25, 2.0}.max
         painter.rect_gradient(Rect.from_min_size(
           Pos2.new(grown.left, grown.top),
           Vec2.new(grown.width, band_h)), 0.0, CAP_LIGHT, CAP_MID)
@@ -704,7 +707,7 @@ module Egui
         end
       end
 
-      # The THICK blue Luna frame (space reserved by #reserve_border):
+      # The thick blue Luna frame (space reserved by #reserve_border):
       # the rim strips filled solid blue, a navy outline around the
       # window and a light hairline where the frame meets the client
       # area.
@@ -848,10 +851,10 @@ module Egui
     # ==========================================================================
     class Macos < WindowFrame
       CAPTION_H  = 28.0 # macOS titlebar height
-      LIGHT_D    = 16.0 # traffic light diameter
+      LIGHT_D    = 14.0 # traffic light diameter
       LIGHT_GAP  = 8.0  # gap between lights
-      FIRST_CX   = 24.0 # first light center x from the left edge
-      TITLE_PT   = 14.0
+      FIRST_CX   = 20.0 # first light center x from the left edge
+      TITLE_PT   = 17.0
 
       BG_TOP     = Color32.new(243, 243, 243, 255)  # subtle titlebar gradient
       BG_BOTTOM  = Color32.new(233, 233, 233, 255)

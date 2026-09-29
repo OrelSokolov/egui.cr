@@ -139,8 +139,12 @@ ID-override — верхний слой; чистится вручную из и
     `bevel_dark`, `shadow.color/blur/spread/x/y/inset` (states: true);
   - `Checkbox`, `ToggleButton`, `SelectableLabel`: базовый набор
     (`text_color`, …) — по факту читаемых ключей;
-  - `Label`/`Hyperlink`: `text_color`, `font_size`
-    (+ `hyperlink_color` у Hyperlink);
+  - `Label`: `text_color`, `font_size`;
+  - `Hyperlink`: `text_color` (states: true), `font_size`,
+    `hyperlink_color`, `underline` (states: true, fallback: true) —
+    HTML `<a>`: подчёркнутый и окрашенный по умолчанию, перекраска
+    hover/active через правила `link` / `link:hover` / `link:active`
+    (как у кнопки), `underline(false)` = `text-decoration: none`;
   - `Slider`, `Separator`, `ProgressBar`, `Spinner`: по факту;
   - общий хелпер `StyleProps.textlike` / `StyleProps.buttonlike`,
     чтобы списки не дублировать.
@@ -171,8 +175,9 @@ ID-override — верхний слой; чистится вручную из и
 
 ## Фаза 4 — ядро инспектора (`src/egui/inspector.cr`)
 
-Активация: `Sokol.run(app, inspector: :on)` (Symbol, `:off` по
-умолчанию; единственный режим сейчас) → `ctx.inspector_enabled = true`.
+Активация: `Sokol.run(app, inspector: :on | :hidden)` (Symbol, `:off` по
+умолчанию) → `ctx.inspector_enabled = true`; `:hidden` стартует с
+закрытой панелью (вызов — F12 или правый клик → «Inspect»).
 
 - [x] `Egui::Inspector` — состояние + рендер:
   - `@selected : Id?`; `@tab : Symbol` (:class | :element);

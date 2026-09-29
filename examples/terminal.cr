@@ -355,4 +355,4 @@ config = Egui::Terminal::Config.load
 
 Egui::Backend::Sokol.run(TerminalApp.new(config),
   title: "egui-cr — terminal", width: 900, height: 640,
-  transparent: true)
+  transparent: true, inspector: :hidden)

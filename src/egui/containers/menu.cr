@@ -99,8 +99,16 @@ module Egui
       pad = style.spacing.button_padding
       text_size = ctx.fonts.measure(label, font_size)
 
-      rect = allocate_at_least(Vec2.new(text_size.x + 2 * pad.x,
-        {available_height, text_size.y}.max))
+      # In the menu bar the button stretches to the bar's full height
+      # so its highlight runs edge-to-edge; nested inside a popup
+      # (View → Zoom) the row sizes like a menu_item instead — a popup
+      # Ui's max_rect is unbounded, so stretching there would balloon
+      # the popup far past its last item.
+      height = @menu_popup_key ?
+        {text_size.y + 2 * MENU_PAD_Y, style.spacing.interact_size.y}.max :
+        {available_height, text_size.y}.max
+      rect = allocate_at_least(
+        Vec2.new(text_size.x + 2 * pad.x, height))
       id = next_widget_id
       response = interact(rect, id, Sense.click)
 
@@ -127,13 +135,17 @@ module Egui
       end
 
       visuals = style.visuals
-      if mine_open
-        painter.rect(rect, 3.0, visuals.button_active)
-      elsif response.hovered?
-        painter.rect(rect, 3.0, visuals.button_hovered)
+      highlighted = mine_open || response.hovered?
+      if highlighted
+        painter.rect(rect, 3.0, visuals.menu_highlight_fill ||
+          (mine_open ? visuals.button_active : visuals.button_hovered))
       end
+      # Text goes highlight-colored only over the band, so a navy
+      # highlight can carry white text like a native menu.
+      text_color = highlighted ?
+        (visuals.menu_highlight_text || visuals.text_color) : visuals.text_color
       painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
-        label, font_size, visuals.text_color)
+        label, font_size, text_color)
 
       if mine_open
         # Zero vertical pad: the frame starts right at the first item
@@ -219,21 +231,24 @@ module Egui
 
       visuals = style.visuals
       if response.hovered?
-        painter.rect(rect, 3.0, visuals.button_hovered)
+        painter.rect(rect, 3.0,
+          visuals.menu_highlight_fill || visuals.button_hovered)
       end
+      text_color = response.hovered? ?
+        (visuals.menu_highlight_text || visuals.text_color) : visuals.text_color
       content_x = rect.left + pad.x
       if has_icon
         icon_box = Rect.from_min_size(
           Pos2.new(content_x, rect.center.y - label_size.y / 2.0),
           Vec2.new(label_size.y, label_size.y))
-        Icons.draw(painter, icon.not_nil!, icon_box, visuals.text_color)
+        Icons.draw(painter, icon.not_nil!, icon_box, text_color)
         content_x += icon_size
       end
       painter.text(Pos2.new(content_x, rect.left_center.y),
-        label, font_size, visuals.text_color)
+        label, font_size, text_color)
       if shortcut
         painter.text(Pos2.new(rect.right - pad.x - shortcut_size.x,
-          rect.left_center.y), shortcut, font_size, visuals.text_color)
+          rect.left_center.y), shortcut, font_size, text_color)
       end
 
       # Trigger on click, or on the action firing while this menu is

@@ -7,7 +7,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "lucide_icons"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -45,6 +45,10 @@ SHIM_HEADERS = {
     vendor/sokol/util/sokol_fontstash.h
   ],
   "stb_truetype_shim" => %w[vendor/fontstash/stb_truetype.h],
+  "nanosvg_shim" => %w[
+    vendor/nanosvg/nanosvg.h
+    vendor/nanosvg/nanosvgrast.h
+  ],
   "pty_shim" => [],
 }
 
@@ -56,6 +60,7 @@ SHIM_HEADERS.each do |shim, headers|
       includes = case shim
         when "sokol_shim"        then "/Ivendor\\sokol /Ivendor\\fontstash /Ivendor"
         when "stb_truetype_shim" then "/Ivendor\\fontstash"
+        when "nanosvg_shim"      then "/Ivendor\\nanosvg"
         else ""
       end
       msvc(
@@ -71,6 +76,7 @@ SHIM_HEADERS.each do |shim, headers|
         when "sokol_shim"
           "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor"
         when "stb_truetype_shim" then "-Ivendor/fontstash"
+        when "nanosvg_shim"      then "-Ivendor/nanosvg"
         else ""
       end
       sh "cc -O2 #{args} -c backend/#{shim}.c -o #{obj}"
@@ -189,6 +195,22 @@ end
 desc "Run the spec suite (headless — no GPU needed)"
 task :spec do
   sh "crystal spec"
+end
+
+desc "Refresh icons/bootstrap from upstream (SVG set + MIT license)"
+task "download:bootstrap" do
+  src = "/tmp/bootstrap-src"
+  FileUtils.rm_rf(src)
+  system("git", "clone", "--depth", "1", "--filter=blob:none", "--sparse",
+    "https://github.com/twbs/icons.git", src) or abort "clone failed"
+  system("git", "-C", src, "sparse-checkout", "set", "icons") or abort "sparse checkout failed"
+  dest = "icons/bootstrap"
+  FileUtils.mkdir_p(dest)
+  # Full re-sync: upstream renames/removals must not leave stale SVGs.
+  FileUtils.rm(Dir.glob("#{dest}/*.svg"))
+  FileUtils.cp(Dir.glob("#{src}/icons/*.svg"), dest)
+  FileUtils.cp(File.join(src, "LICENSE"), File.join(dest, "LICENSE"))
+  puts "icons/bootstrap: #{Dir.glob("#{dest}/*.svg").size} SVGs refreshed"
 end
 
 desc "Refresh icons/lucide from upstream (SVG set + ISC license)"

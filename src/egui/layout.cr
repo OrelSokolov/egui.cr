@@ -32,7 +32,9 @@ module Egui
     end
 
     # Where the next widget starts after one of `size` was placed at
-    # `cursor` (egui `Layout::advance_cursor` minus the cross-axis parts).
+    # `cursor` (egui `Layout::advance_cursor` minus the cross-axis
+    # parts — cross-axis centering for horizontal rows lives in
+    # `Ui#allocate_space` / `Ui#@row_h`).
     def advance(cursor : Pos2, size : Vec2, spacing : Vec2) : Pos2
       if horizontal?
         Pos2.new(cursor.x + size.x + spacing.x, cursor.y)

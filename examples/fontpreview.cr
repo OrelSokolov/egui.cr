@@ -75,4 +75,4 @@ class FontPreviewApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(FontPreviewApp.new, title: "egui-cr — fontpreview",
-  width: 820, height: 720)
+  width: 820, height: 720, inspector: :hidden)

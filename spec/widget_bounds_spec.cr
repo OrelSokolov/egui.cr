@@ -63,8 +63,8 @@ describe "widget bounds (an explicit size is a hard bound)" do
     end
 
     r = rect.not_nil!
-    # :close is the rect's diagonal — its line endpoints meet at the
-    # icon box center; a centered glyph puts that at the button center
+    # :close is the Lucide x — its diagonals cross at the icon box
+    # center; a centered glyph puts that at the button center
     diag = ctx.painter.commands.select(Egui::LineCmd).last.not_nil!
     center = Egui::Pos2.new((diag.p1.x + diag.p2.x) / 2.0, (diag.p1.y + diag.p2.y) / 2.0)
     center.x.should be_close(r.center.x, 0.5)

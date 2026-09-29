@@ -152,14 +152,17 @@ module Egui
     # The four-sided box under `prefix` ("padding", "margin", …):
     # `prefix.top/left/right/bottom`, each side falling back to the
     # scalar `prefix` shorthand (CSS `padding: 12px` sets all sides),
-    # missing sides to 0.
+    # missing sides to 0. Negative sides clamp to 0 — this layout
+    # engine has no notion of "padding pulling content outside the
+    # widget", so a negative value only made text overflow its rect.
     def box(prefix : String) : StyleBox
       all = f64?(prefix)
+      side = ->(k : String) { {(f64?(k) || all || 0.0), 0.0}.max }
       StyleBox.new(
-        f64?("#{prefix}.top") || all || 0.0,
-        f64?("#{prefix}.right") || all || 0.0,
-        f64?("#{prefix}.bottom") || all || 0.0,
-        f64?("#{prefix}.left") || all || 0.0)
+        side.call("#{prefix}.top"),
+        side.call("#{prefix}.right"),
+        side.call("#{prefix}.bottom"),
+        side.call("#{prefix}.left"))
     end
 
     # Same, but nil when no box key is set at all (callers fall back to
@@ -295,8 +298,10 @@ module Egui
     def resolve(path : String, state : String? = nil) : StyleVars
       key = {path, state}
       if (cached = @resolved[key]?)
+        Egui::Bench.count("style.resolve.hit")
         return cached
       end
+      Egui::Bench.count("style.resolve.miss")
 
       bag = StyleVars.new
       chain = ancestors(path)

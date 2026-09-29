@@ -198,6 +198,11 @@ module Egui
     # per-button pointer state.
     getter? secondary_pressed : Bool
     getter secondary_pos : Pos2?
+    # Secondary (right) button held state — the Paint-canvas idiom of
+    # drawing with the background color needs drag + release, not just
+    # the press event (which is all #secondary_pressed? carries).
+    getter? secondary_down : Bool
+    getter? secondary_released : Bool
     getter scroll : Vec2
     getter time : Float64
     getter dt : Float64
@@ -225,6 +230,8 @@ module Egui
                    @modifiers : Modifiers = Modifiers.new,
                    @secondary_pressed : Bool = false,
                    @secondary_pos : Pos2? = nil,
+                   @secondary_down : Bool = false,
+                   @secondary_released : Bool = false,
                    @dropped_files : Array(String) = [] of String)
       @consumed_keys = Set(KeyCode).new
     end
@@ -287,6 +294,8 @@ module Egui
       modifiers = prev.try(&.modifiers) || Modifiers.new
       secondary_pressed = false
       secondary_pos : Pos2? = nil
+      secondary_down = prev.try(&.secondary_down?) || false
+      secondary_released = false
       dropped_files = [] of String
 
       raw.events.each do |e|
@@ -300,6 +309,7 @@ module Egui
             pos = e.pos unless e.pos.nil?
           elsif e.button.secondary?
             secondary_pressed = true
+            secondary_down = true
             secondary_pos = e.pos
           end
         in .pointer_button_released?
@@ -307,6 +317,9 @@ module Egui
             down = false
             released = true
             pos = e.pos unless e.pos.nil?
+          elsif e.button.secondary?
+            secondary_down = false
+            secondary_released = true
           end
         in .scroll?
           scroll = scroll + e.scroll
@@ -340,7 +353,8 @@ module Egui
 
       new(raw.screen_rect, pos, down, pressed, released, scroll, raw.time, dt,
         delta, velocity, keys_down, keys_pressed, keys_released, text, modifiers,
-        secondary_pressed, secondary_pos, dropped_files)
+        secondary_pressed, secondary_pos, secondary_down, secondary_released,
+        dropped_files)
     end
   end
 end

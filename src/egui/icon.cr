@@ -2,7 +2,9 @@
 #
 # A provider is a named folder under `icons/` holding one icon set
 # plus its LICENSE (`icons/lucide` — Lucide, ISC license, ~1850
-# stroke icons on a 24×24 grid). `Icon.from_file(:lucide, :save)`
+# stroke icons on a 24×24 grid; `icons/bootstrap` — Bootstrap Icons,
+# MIT license, ~2000 fill icons on a 16×16 grid).
+# `Icon.from_file(:lucide, :save)`
 # resolves `icons/lucide/save.svg` AT COMPILE TIME through the macro
 # `read_file`, so only the icons actually referenced are embedded in
 # the binary — the provider folder on disk can hold thousands. A
@@ -24,10 +26,12 @@ module Egui
     # key for the life of the process.
     def self.cached(provider : String, name : String, tint : Color32?,
                     source : String) : Svg
-      key = tint ? "#{provider}/#{name}/#{tint.not_nil!.r}/#{tint.not_nil!.g}/#{tint.not_nil!.b}"
-                  : "#{provider}/#{name}/-"
-      @@cache[key] ||= Svg.new(source, Vec2.new(24.0, 24.0),
-        tint || Color32.rgb(0, 0, 0))
+      Egui::Bench.span("Icon.cached") do
+        key = tint ? "#{provider}/#{name}/#{tint.not_nil!.r}/#{tint.not_nil!.g}/#{tint.not_nil!.b}"
+                    : "#{provider}/#{name}/-"
+        @@cache[key] ||= Svg.new(source, Vec2.new(24.0, 24.0),
+          tint || Color32.rgb(0, 0, 0))
+      end
     end
 
     # Embed `icons/<provider>/<name>.svg` at the call site. The

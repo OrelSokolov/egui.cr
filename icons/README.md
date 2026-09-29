@@ -6,9 +6,10 @@ at compile time by `Egui::Icon.from_file(provider, name)` (see
 are embedded into the binary; the folders on disk can hold the full
 sets.
 
-| Provider | Folder    | License | Notes                                   |
-|----------|-----------|---------|-----------------------------------------|
-| lucide   | `lucide/` | ISC     | ~1850 stroke icons, 24×24 grid, 2px stroke |
+| Provider  | Folder       | License | Notes                                      |
+|-----------|--------------|---------|--------------------------------------------|
+| lucide    | `lucide/`    | ISC     | ~1850 stroke icons, 24×24 grid, 2px stroke |
+| bootstrap | `bootstrap/` | MIT     | ~2000 fill icons, 16×16 viewBox (`fill="currentColor"`) |
 
 ## Usage
 
@@ -34,3 +35,14 @@ rake download:lucide
 <https://github.com/lucide-icons/lucide.git>, then a full re-sync of
 `icons/*.svg` + `LICENSE` into `icons/lucide/` — stale files from
 upstream renames are removed.)
+
+## Updating bootstrap
+
+```sh
+rake download:bootstrap
+```
+
+Same shape, upstream <https://github.com/twbs/icons.git> (MIT). Note:
+bootstrap icons are fill-based (no stroke), and the Svg widget has no
+polygon tessellation yet — a filled path renders as its stroked
+outline, so glyphs show as contours rather than solid shapes.

@@ -368,4 +368,4 @@ class BoxShadowApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(BoxShadowApp.new,
-  title: "egui.cr — box-shadow (bootstrap 2.0.4)")
+  title: "egui.cr — box-shadow (bootstrap 2.0.4)", inspector: :hidden)

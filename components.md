@@ -51,6 +51,7 @@ Conventions for every phase:
 | Panels (top/side/central), Resize, Area | `containers/{panel,resize,area}.rs` | missing | **P5** |
 | Textures, Image, button icons | `load/`, `widgets/image.rs` | missing | **P6** |
 | ColorPicker | `widgets/color_picker.rs` | missing | **P6** |
+| Canvas (pixel editing, Paint-style) | — (egui.cr-native, no upstream counterpart) | done (`widgets/canvas.cr`) | P7 |
 | Grid, columns, add_sized, scope, enabled | `grid.rs`, `ui.rs` | Grid done; ui.rs helpers missing | P7 |
 | Context menu, drag&drop payload, on-demand repaint, IME, clipboard | various | context menu done | P7 (optional) |
 | `scene` container (new in 0.36) | `containers/scene.rs` | missing | deferred |
@@ -623,6 +624,29 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       back button fires once per click, content below the header (and
       no header without title/on_back).
 - [ ] Drag&drop payload ← `crates/egui/src/drag_and_drop.rs` (optional).
+- [x] Canvas widget + XP Paint demo (user request): `src/egui/widgets/
+      canvas.cr` — a retained RGBA8 pixel buffer on a NEAREST-sampled
+      stream texture (ImageCmd gained a `nearest` flag, the shim a
+      point sampler; `InputState` gained `secondary_down?`/
+      `secondary_released?` so right-button drags work — the Paint
+      bg-color idiom). Interaction reported in canvas pixel coords
+      (pointer, drag start/stop per button, click/double-click), with
+      a press counting as a drag start (a pencil click is a dot).
+      Raster ops built in: Bresenham line, rect/ellipse (outline,
+      filled, thickness), flood fill, region blit with transparency
+      skip, coverage blend, invert, undo-across-resize restore.
+      Demo: `examples/paint.cr` (bin/paint) — a Windows XP Paint
+      clone: 16-tool toolbox with jspaint's classic icons 1:1
+      (assets/paint/tools.png, MIT), per-tool option strips, 28-color
+      palette (fg/bg swatch, right-click bg, double-click edit),
+      status bar with live coords, zoom 1–8×, undo/redo, Image-menu
+      transforms (flip/rotate/stretch/skew/invert/attributes), and
+      File → New/Open/Save/Save As through the cross-platform
+      SystemPorts dialogs + a pure-stdlib PNG codec
+      (examples/paint/png.cr, encode + decode incl. sub-byte
+      palette). Text tool rasterizes through FreeType directly into
+      the canvas (examples/paint/text.cr). Specs:
+      spec/canvas_spec.cr. See docs/ANALYSIS.md §14.
 - [x] On-demand repaint: honor `request_repaint` in the sokol loop instead
       of redrawing every vsync — idle frames replay the last paint commands
       (`backend/sokol.cr` frame callback).

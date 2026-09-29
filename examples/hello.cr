@@ -67,6 +67,12 @@ class HelloApp < Egui::App
         # lands on the Boehm GC, so watch alloc/frame and collection
         # frequency (a spike in collections mid-frame = stutter risk).
         ctx.bottom_panel("fps") do |ui|
+          # A live meter needs live frames: with on-demand repaint an
+          # idle app re-emits cached commands and this label freezes —
+          # and dt measures gaps between FULL frames, so the EMA slides
+          # toward the full-frame rate, not the display rate. Request a
+          # repaint every frame while the telemetry is on screen.
+          ctx.request_repaint
           ui.label("FPS: #{"%.1f" % ctx.fps}  (frame #{(ctx.input.dt * 1000).round(1)} ms)")
 
           st = GC.stats
@@ -83,4 +89,5 @@ class HelloApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(HelloApp.new, title: "egui-cr — hello")
+Egui::Backend::Sokol.run(HelloApp.new, title: "egui-cr — hello",
+  inspector: :hidden)

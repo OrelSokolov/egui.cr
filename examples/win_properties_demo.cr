@@ -196,4 +196,4 @@ class WinPropertiesDemo < Egui::App
 end
 
 Egui::Backend::Sokol.run(WinPropertiesDemo.new,
-  title: "egui-cr — Windows Properties tabs (Win95)")
+  title: "egui-cr — Windows Properties tabs (Win95)", inspector: :hidden)

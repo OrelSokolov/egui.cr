@@ -68,4 +68,53 @@ module Egui
       values.find { |icon| icon.to_s.underscore == normalized }
     end
   end
+
+  # Port of egui `CustomCursorImage` (`PlatformOutput::cursor_image`): a
+  # bitmap the integration uploads to the OS as the real cursor — unlike
+  # painter-drawn cursor sprites it is not clipped by the window, exactly
+  # what the CSS `cursor: url(…)` syntax gives a browser. `rgba` is
+  # straight (non-premultiplied) RGBA, exactly `width * height * 4`
+  # bytes; the hotspot is the pixel the pointer position maps to,
+  # measured from the top-left. Backends without bitmap-cursor support
+  # fall back to `CursorIcon`.
+  #
+  # Build one and hold it (a constant or ivar), then push it per frame:
+  #
+  #   FILL_CURSOR = Egui::CustomCursorImage.new(rgba, 32, 32, 4, 28)
+  #   resp.on_hover_cursor_image(FILL_CURSOR)
+  class CustomCursorImage
+    getter rgba : Bytes
+    getter width : Int32
+    getter height : Int32
+    getter hotspot_x : Int32
+    getter hotspot_y : Int32
+
+    def initialize(rgba : Bytes, width : Int32, height : Int32,
+                   hotspot_x : Int32 = 0, hotspot_y : Int32 = 0)
+      if width <= 0 || height <= 0
+        raise ArgumentError.new(
+          "cursor image size must be positive (got #{width}x#{height})")
+      end
+      if rgba.size != width * height * 4
+        raise ArgumentError.new(
+          "rgba must be exactly width*height*4 bytes " \
+          "(got #{rgba.size}, need #{width * height * 4})")
+      end
+      @rgba = rgba
+      @width = width
+      @height = height
+      @hotspot_x = hotspot_x.clamp(0, width - 1)
+      @hotspot_y = hotspot_y.clamp(0, height - 1)
+    end
+
+    # The identity check the backend dedupes OS cursor uploads by (the
+    # `Arc::ptr_eq` role upstream): same buffer, geometry and hotspot —
+    # reusing one instance across frames re-uploads nothing.
+    def same?(other : CustomCursorImage) : Bool
+      rgba.to_unsafe == other.rgba.to_unsafe &&
+        rgba.size == other.rgba.size &&
+        width == other.width && height == other.height &&
+        hotspot_x == other.hotspot_x && hotspot_y == other.hotspot_y
+    end
+  end
 end

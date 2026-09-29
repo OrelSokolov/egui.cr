@@ -117,6 +117,19 @@ module Egui
       self
     end
 
+    # Bitmap-cursor twins of the two above (`Context#set_cursor_image`):
+    # show a `CustomCursorImage` (e.g. a paint-bucket sprite) instead of
+    # a standard icon while hovered / dragged.
+    def on_hover_cursor_image(cursor : CustomCursorImage) : self
+      @ctx.set_cursor_image(cursor) if hovered?
+      self
+    end
+
+    def on_hover_and_drag_cursor_image(cursor : CustomCursorImage) : self
+      @ctx.set_cursor_image(cursor) if hovered? || dragged?
+      self
+    end
+
     # egui tooltip (containers/tooltip.rs): appears in the Tooltip
     # layer at the pointer + offset, after the widget has been hovered
     # for a short delay (hover-start time is per-widget system state).
@@ -155,7 +168,11 @@ module Egui
       painter.clip = Rect.from_min_size(pos, size)
       painter.rect(Rect.from_min_size(pos, size), 4.0,
         style.visuals.window_fill, style.visuals.window_stroke, 1.0)
-      painter.text(pos + margin, text, font_size, style.visuals.text_color)
+      # Painter#text anchors the LEFT-CENTER of the text box, so pass the
+      # center of the inner (margin-padded) area — pos + margin alone
+      # would shift the glyphs up by half a line, under the top border.
+      painter.text(Pos2.new(pos.x + margin.x, pos.y + margin.y + text_size.y / 2.0),
+        text, font_size, style.visuals.text_color)
       painter.layer = Order::Background
       painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
     end
