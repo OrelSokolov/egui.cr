@@ -1,8 +1,11 @@
 # Port of egui_upstream/crates/egui/src/widgets/label.rs.
 #
 # A Label reserves its text size and paints the text. Accepts a String
-# or RichText; `wrap` lays the text out with greedy word-wrap against
-# the available width (egui `Label::wrap`).
+# or RichText. `wrap` is tri-state (upstream `MaybeWrap`): nil (default)
+# wraps a label on its own line in a vertical layout against the
+# available width, `true` wraps always, `false` never. Wrapping is
+# greedy by words, with a per-character fallback when a single word
+# is longer than the whole width.
 #
 # Selectable by default (`userselect: true`, upstream
 # `interaction.selectable_labels`): the label senses click+drag, a
@@ -17,10 +20,10 @@ module Egui
     include Widget
 
     getter rich : RichText
-    getter? wrap : Bool
+    getter wrap : Bool?
     getter? userselect : Bool
 
-    def initialize(text : String, size : Float64? = nil, wrap : Bool = false,
+    def initialize(text : String, size : Float64? = nil, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil)
       @rich = RichText.new(text)
       @rich.size(size) if size
@@ -29,7 +32,7 @@ module Egui
       @id_name = id
     end
 
-    def initialize(@rich : RichText, wrap : Bool = false,
+    def initialize(@rich : RichText, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil)
       @wrap = wrap
       @userselect = userselect
@@ -48,7 +51,14 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
       runs = @rich.runs(style.font_size, style.visuals.text_color)
-      max_width = @wrap ? ui.available_width : nil
+      # Default (nil): wrap only where the label owns the rest of the
+      # line — a vertical layout (upstream `TextWrapMode::Wrap`); a
+      # label inside a horizontal row stays inline (`Extend`). A zero
+      # remaining width would char-break every glyph onto its own row —
+      # treat it as unbounded instead.
+      wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
+      available = ui.available_width
+      max_width = wrap && available > 0.0 ? available : nil
       galley = ui.ctx.fonts.layout(runs, max_width)
 
       rect = ui.allocate_at_least(galley.size)

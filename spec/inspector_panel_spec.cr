@@ -56,9 +56,9 @@ describe "inspector panel rendering smoke" do
     end
 
     # element edit actually reaches the paint output through the panel:
-    # simulate what a row editor write does ("fill" edits the BASE
-    # state, so the pointer must be off the button — not hovering it)
-    ctx.set_id_style(Egui::Id.from("save"), "fill",
+    # simulate what a row editor write does — a BASE edit is flat across
+    # states (CSS inline semantics), so it shows even while hovering
+    ctx.set_id_style(Egui::Id.from("save"), "background",
       Egui::Color32.rgb(10, 200, 30))
     smoke_frame(ctx, events: [Egui::Event.pointer_moved(Egui::Pos2.new(4.0, 4.0))],
       time: 0.096) do |c|
@@ -66,11 +66,121 @@ describe "inspector panel rendering smoke" do
     end
     ctx.painter.commands.select(Egui::RectCmd)
       .any? { |r| r.fill == Egui::Color32.rgb(10, 200, 30) }.should be_true
+  end
 
-    # panel closed → F12 semantics (toggle directly) and frames keep running
+  it "shows the real theme value for unset keys (font_size ≠ 0)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    smoke_frame(ctx, time: 0.032) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    fs = "%.1f" % ctx.style.font_size
+    # the row is [label "font_size"][drag_value] — the editor must show
+    # the real theme size (16.0), not the pre-fix bogus 0.0
+    idx = texts.index("font_size").not_nil!
+    texts[idx + 1].should eq(fs)
+  end
+
+  it "reveals the panel when picking with it hidden" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
     ctx.inspector.open = false
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    ctx.inspector.open?.should be_true
+    ctx.inspector.selected.should eq Egui::Id.from("save")
     smoke_frame(ctx, time: 0.112) do |c|
       c.window("w") { |ui| ui.button("OK", id: "save") }
     end
+  end
+
+  it "exports element overrides as set_id_style calls" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    ctx.set_id_style(Egui::Id.from("save"), "background",
+      Egui::Color32.rgb(10, 200, 30))
+    snippet = ctx.inspector.export_element_snippet
+    snippet.should contain(%[ctx.set_id_style(Egui::Id.from("save"), "background", Egui::Color32.rgb(10, 200, 30))])
+  end
+
+  it "exports class rules (base + state overlays) as rule calls" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{"background" => Egui::Color32.rgb(1, 2, 3)})
+    ctx.stylesheet.rule("button:hover", Egui::StyleVars{"background" => Egui::Color32.rgb(4, 5, 6)})
+    ctx.inspector_enabled = true
+    ctx.inspector.tab = :class
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK") }
+    end
+    snippet = ctx.inspector.export_class_snippet
+    snippet.should contain(%[ctx.stylesheet.rule("button", Egui::StyleVars{])
+    snippet.should contain(%["background" => Egui::Color32.rgb(1, 2, 3),])
+    snippet.should contain(%[ctx.stylesheet.rule("button:hover", Egui::StyleVars{])
+  end
+
+  it "docks right by default and re-docks to the bottom strip" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    close = nil
+
+    # right dock (the default): the header — and its ✕ — sits at the
+    # TOP-right of the screen, next to the right edge.
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK") }
+      close = c.memory.widget_rects[Egui::Id.from("inspector_close")]
+    end
+    ctx.inspector.dock.should eq(:right)
+    close.not_nil!.right.should be > SMOKE_SCREEN.width - 50.0
+    close.not_nil!.top.should be < 60.0
+
+    # the ⋮ menu lists both docks with the current one checked
+    ctx.open_popup(Egui::Inspector::DOCK_MENU)
+    smoke_frame(ctx, time: 0.032) do |c|
+      c.window("w") { |ui| ui.button("OK") }
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Right")
+    texts.should contain("Bottom")
+
+    # bottom dock: the header moves to the bottom strip
+    ctx.inspector.dock = :bottom
+    smoke_frame(ctx, time: 0.048) do |c|
+      c.window("w") { |ui| ui.button("OK") }
+      close = c.memory.widget_rects[Egui::Id.from("inspector_close")]
+    end
+    ctx.inspector.dock.should eq(:bottom)
+    close.not_nil!.right.should be > SMOKE_SCREEN.width - 50.0
+    close.not_nil!.top.should be > SMOKE_SCREEN.height - 250.0
+  end
+
+  it "renders the export modal with the snippet and copies to clipboard" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    ctx.set_id_style(Egui::Id.from("save"), "background", Egui::Color32.rgb(9, 9, 9))
+    ctx.inspector.open_export
+    smoke_frame(ctx, time: 0.032) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Export style")
+    texts.should contain("Копировать")
+    # the textarea shows the snippet (its label row paints it)
+    texts.join("\n").should contain("set_id_style")
   end
 end

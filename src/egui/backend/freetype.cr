@@ -234,14 +234,14 @@ module Egui
         if w > 0 && h > 0 && bmp.pixel_mode == LibFreetype::FT_PIXEL_MODE_GRAY &&
            w <= atlas.size && h <= atlas.size
           cov = bitmap_coverage(bmp)
-          if slot_xy = atlas.alloc(w, h)
+          if slot_xy = alloc_glyph(w, h)
             ax, ay = slot_xy
             atlas.blit(ax, ay, w, h, cov)
             inv = 1.0f32 / atlas.size.to_f32
             return Glyph.new(ax * inv, ay * inv, (ax + w) * inv, (ay + h) * inv,
               ax, ay, w, h, slot.value.bitmap_left.to_f64, slot.value.bitmap_top, adv)
           end
-          # Atlas full: drop the glyph, like fontstash does.
+          # Atlas full: blank this frame (a reset recovers on the next).
         end
         Glyph.new(0, 0, 0, 0, 0, 0, 0, 0, slot.value.bitmap_left.to_f64,
           slot.value.bitmap_top, adv)

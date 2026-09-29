@@ -4,6 +4,16 @@
 # Semantically a Checkbox (reads `checked`, reports the flip through
 # `Response#changed?`), but painted as an iOS-style track + knob, which
 # reads better for instantaneous settings than a checkbox does.
+#
+# Sizing: by default the tumbler matches the text height
+# (`sync_with_text` = true). Untie it (`sync_with_text => false`) and
+# `tumbler_size` (the knob/track height; the track stays 2x as wide)
+# takes over:
+#
+#   ctx.stylesheet.rule("toggle_button", StyleVars{
+#     "sync_with_text" => false,
+#     "tumbler_size"   => 20.0,
+#   })
 
 module Egui
   class ToggleButton
@@ -13,10 +23,16 @@ module Egui
       @id_name = id
     end
 
+    def style_class : String?
+      "toggle_button"
+    end
+
     def style_properties : Array(StyleProp)
       StyleProps.textlike + [
         StyleProp.new("selection_fill", :color, label: "fill (on)"),
         StyleProp.new("stroke", :color, label: "track stroke"),
+        StyleProp.new("sync_with_text", :bool, fallback: true),
+        StyleProp.new("tumbler_size", :number),
       ]
     end
 
@@ -30,8 +46,18 @@ module Egui
       visuals = style.visuals
       font_size = style.font_size
       text_size = @text ? ui.ctx.fonts.measure(@text.not_nil!, font_size) : Vec2.zero
+      class_vars = style_vars(ui, id, "toggle_button")
 
-      knob = style.spacing.icon_width
+      # Sizing: synced (default) the tumbler rides the text height (the
+      # icon width when there is no text); unsynced, tumbler_size wins.
+      icon = style.spacing.icon_width
+      text_h = @text ? text_size.y : 0.0
+      if class_vars.bool("sync_with_text", true)
+        tumbler_h = text_h > 0.0 ? text_h : icon
+      else
+        tumbler_h = class_vars.f64("tumbler_size", icon)
+      end
+      knob = tumbler_h
       track_w = 2.0 * knob
       track_h = knob
       height = {track_h, text_size.y, style.spacing.interact_size.y * 0.7}.max

@@ -13,10 +13,35 @@
 > * пик правым кликом открывает popup «Inspect <Kind> · <имя>»;
 >   приложение со своим контекстным меню на этом виджете главнее
 >   (`Context#popup_opened_this_frame?`);
-> * «fill» во вкладке «Элемент» правит базовое состояние (CSS
->   inline-семантика); hover/active — отдельные ключи
->   `fill_hovered`/`fill_active` и вкладка состояний в редакторе
->   класса.
+> * `background` — единственный ключ заливки (CSS-семантика): во
+>   вкладке «Элемент» базовая правка действует во всех состояниях
+>   (inline-семантика), hover/active-значения — тот же ключ с
+>   переключателем «Состояние» (База/Hover/Active, как во вкладке
+>   «Класс»); отдельных ключей `fill_hovered`/`fill_active` больше
+>   нет, разрешение состояния автоматическое
+>   (`Widget#background_color`).
+> * Панели ресайзятся по умолчанию (egui `Panel::resizable`): грип
+>   на внутренней кромке (drag, cursor ns/ew-resize), размер
+>   персистится в Memory по id панели, clamp [PANEL_MIN_SIZE, 90%
+>   экрана]; `resizable: false` для фиксированных полос (хром окна).
+>   `height:`/`width:` панелей теперь — начальный размер.
+> * Export Style: кнопка в шапке инспектора открывает модал со
+>   сниппетом (textarea + «Копировать» в буфер) — «Элемент»
+>   экспортирует `ctx.set_id_style(...)`, «Класс» —
+>   `ctx.stylesheet.rule(...)` включая state-оверлеи.
+> * overflow-y: `panel_ui` оборачивает top-down панели (side/central)
+>   в ScrollArea по умолчанию (контент влезает — как раньше, бара
+>   нет; не влезает — колесо + overlay-бар вместо каши на срезе);
+>   горизонтальные top/bottom-полосы — одна строка, без скролла;
+>   панель инспектора скроллит своё тело сама (шапка закреплена).
+>   Механика — `Ui#v_overflow` (аллокация вниз не клампится, высота
+>   для fill-виджетов остаётся честной); флаг наследуется
+>   `Ui#child_ui` вместе с layer/clip — иначе вложенные регионы
+>   (`#horizontal`-строки) у сгиба слипались и перекрывались.
+>   Исключение — `Ui#add_sized`: ячейка точного размера жёсткая
+>   граница (флаг не наследует), виджет внутри не может её
+>   перерасти даже в скролл-контенте (фикс: кнопки шапки инспектора
+>   вылезали за 26px-строку).
 >
 > Не сделано (осознанно, следующий шаг): свип `id:`/`style_properties`
 > по остальным виджетам (TextEdit, TextArea, NumberInput, DragValue,
@@ -109,12 +134,11 @@ ID-override — верхний слой; чистится вручную из и
 - [x] `Widget#style_properties : Array(StyleProp)` — в модуле по
   умолчанию `[]` (виджет без стилей). Виджеты-«участники» объявляют
   ровно те ключи, которые читают:
-  - `Button`: `fill`, `fill_hovered`, `fill_active`, `stroke`,
-    `text_color`, `font_size`, `padding`(box), `rounding`,
-    `bevel_light`, `bevel_dark`, `shadow.color/blur/spread/x/y/inset`
-    (states: true);
+  - `Button`: `background` (states: true), `stroke`, `text_color`,
+    `font_size`, `padding`(box), `rounding`, `bevel_light`,
+    `bevel_dark`, `shadow.color/blur/spread/x/y/inset` (states: true);
   - `Checkbox`, `ToggleButton`, `SelectableLabel`: базовый набор
-    (`fill*`, `text_color`, …) — по факту читаемых ключей;
+    (`text_color`, …) — по факту читаемых ключей;
   - `Label`/`Hyperlink`: `text_color`, `font_size`
     (+ `hyperlink_color` у Hyperlink);
   - `Slider`, `Separator`, `ProgressBar`, `Spinner`: по факту;

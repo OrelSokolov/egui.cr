@@ -162,7 +162,7 @@ module Egui
       # accessors — @@vars live per-class in Crystal, and #draw runs
       # on a STYLE SUBCLASS instance whose own copies stay nil.
       h = WindowFrame.caption_height? || caption_height
-      bar = @ctx.top_panel("window_frame/caption", height: h) { }
+      bar = @ctx.top_panel("window_frame/caption", height: h, resizable: false) { }
       reserve_border(bar)
       handle_drag(bar)
       paint_caption(bar)
@@ -571,11 +571,11 @@ module Egui
       def reserve_border(bar : Rect) : Nil
         @border_top = bar.bottom
         @ctx.side_panel(:left, "window_frame/border/left",
-          width: BORDER_W) { }
+          width: BORDER_W, resizable: false) { }
         @ctx.side_panel(:right, "window_frame/border/right",
-          width: BORDER_W) { }
+          width: BORDER_W, resizable: false) { }
         @ctx.bottom_panel("window_frame/border/bottom",
-          height: BORDER_W) { }
+          height: BORDER_W, resizable: false) { }
       end
 
       def paint_caption(bar : Rect) : Nil

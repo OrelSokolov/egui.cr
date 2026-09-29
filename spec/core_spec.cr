@@ -1224,6 +1224,21 @@ describe "phase 2 widgets" do
     ctx.painter.commands.select(Egui::LineCmd).size.should eq(2)
   end
 
+  it "an icon-only button (empty label) still paints its icon" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    ui.add(Egui::Button.new("").icon(:close))
+    ctx.end_frame
+
+    # measure("") is zero — the icon box must fall back to the
+    # estimated glyph height instead of collapsing to nothing.
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    lines.size.should eq(2) # ✕ = 2 diagonal segments
+    box = lines.first.p1
+    box.x.should_not eq(box.y) # a real square, not a degenerate point
+  end
+
   it "tooltip appears after the hover delay" do
     ctx = Egui::Context.new
     center = nil
@@ -1386,6 +1401,47 @@ describe "rich text & wrapping (phase 4)" do
     # the fragments reassemble into the original words
     cmds = ctx.painter.commands.select(Egui::TextCmd).map(&.text).join
     cmds.gsub(" ", "").should eq(text.gsub(" ", ""))
+  end
+
+  it "wraps a long label by default in a vertical layout" do
+    ctx = Egui::Context.new
+    text = "The quick brown fox jumps over the lazy dog again and again"
+
+    raw_frame(ctx)
+    rect = widget_ui(ctx).label(text).rect
+    ctx.end_frame
+
+    line_h = ctx.fonts.measure("x", ctx.style.font_size).y
+    rect.height.should be > line_h # wrapped to 2+ rows without wrap: true
+    rect.width.should be <= 300.0
+  end
+
+  it "keeps a label on one line inside a horizontal row by default" do
+    ctx = Egui::Context.new
+    text = "The quick brown fox jumps over the lazy dog again and again"
+
+    raw_frame(ctx)
+    widget_ui(ctx).horizontal { |row| row.label(text) }
+    ctx.end_frame
+
+    # one row, one merged run — the whole text in a single TextCmd
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain(text)
+  end
+
+  it "hard-breaks a word longer than the whole width character by character" do
+    ctx = Egui::Context.new
+    text = "a" * 100 # single word, no spaces: ~960pt of text
+
+    raw_frame(ctx)
+    rect = widget_ui(ctx).label(text).rect
+    ctx.end_frame
+
+    line_h = ctx.fonts.measure("x", ctx.style.font_size).y
+    rect.height.should be > 3 * line_h # ~31 monospace chars per 300pt row
+    rect.width.should be <= 300.0
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text).join
+      .should eq(text)
   end
 
   it "respects explicit newlines" do
@@ -1935,7 +1991,8 @@ describe "scroll area (phase 5)" do
     viewport = ctx.memory.scroll_rects[Egui::Id.from("spec").child(1)].not_nil![0]
     # overlay = nothing reserved: the viewport spans the full width
     viewport.width.should be_close(300.0, 0.01)
-    # the track: an 8px strip on the viewport's LEFT edge
+    # the track: an 8px strip just OUTSIDE the viewport's left edge
+    # (in the margin — off the content, flush to the region edge)
     track = ctx.painter.commands.select(Egui::RectCmd)
       .find { |c| c.rect.width <= Egui::ScrollArea::BAR_W && c.rect.height > 50.0 }
     track.should_not be_nil
@@ -2449,7 +2506,7 @@ describe "theme (global style + per-widget overrides)" do
     red = Egui::Color32.rgb(170, 40, 40)
 
     raw_frame(ctx)
-    widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.fill = red })
+    widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.background = red })
     rects = ctx.end_frame.select(Egui::RectCmd)
     rects.any?(&.fill.==(red)).should be_true
   end
@@ -2458,7 +2515,7 @@ describe "theme (global style + per-widget overrides)" do
     ctx = Egui::Context.new
     red = Egui::Color32.rgb(170, 40, 40)
     button = ->(ui : Egui::Ui) do
-      ui.add(Egui::Button.new("OK").style { |s| s.fill = red })
+      ui.add(Egui::Button.new("OK").style { |s| s.background = red })
       ui.add(Egui::Button.new("plain"))
     end
 
@@ -2472,7 +2529,7 @@ describe "theme (global style + per-widget overrides)" do
 
     raw_frame(ctx, time: 0.032)
     ui = widget_ui(ctx)
-    ui.add(Egui::Button.new("OK").style { |s| s.fill = red })
+    ui.add(Egui::Button.new("OK").style { |s| s.background = red })
     ui.add(Egui::Button.new("plain"))
     ctx.end_frame
 
@@ -3054,33 +3111,33 @@ end
 describe "StyleSheet (CSS-like classes)" do
   it "cascades in two layers: class defaults first, states always on top" do
     sheet = Egui::StyleSheet.new
-    sheet.rule("sidebar", Egui::StyleVars{"fill" => Egui::Color32.rgb(1, 1, 1)})
+    sheet.rule("sidebar", Egui::StyleVars{"background" => Egui::Color32.rgb(1, 1, 1)})
     # a second rule on the same selector merges per key, CSS-cascade style
     sheet.rule("sidebar", Egui::StyleVars{"font_size" => 14.0})
     sheet.rule("sidebar.tab", Egui::StyleVars{
-      "fill"   => Egui::Color32.rgb(2, 2, 2),
+      "background"   => Egui::Color32.rgb(2, 2, 2),
       "height" => 30.0,
     })
     sheet.rule("sidebar:hover", Egui::StyleVars{
-      "fill"   => Egui::Color32.rgb(9, 9, 9),
+      "background"   => Egui::Color32.rgb(9, 9, 9),
       "height" => 5.0,
     })
-    sheet.rule("sidebar.tab:hover", Egui::StyleVars{"fill" => Egui::Color32.rgb(3, 3, 3)})
+    sheet.rule("sidebar.tab:hover", Egui::StyleVars{"background" => Egui::Color32.rgb(3, 3, 3)})
 
     # class layer (defaults): more specific class wins per key
     base = sheet.resolve("sidebar.tab")
     base["font_size"].should eq(14.0)                    # inherited from ancestor
-    base["fill"].should eq(Egui::Color32.rgb(2, 2, 2))   # own class wins
+    base["background"].should eq(Egui::Color32.rgb(2, 2, 2))   # own class wins
     base["height"].should eq(30.0)
 
     hover = sheet.resolve("sidebar.tab", "hover")
     # states always override classes — even the ancestor state beats
     # the leaf class default ("height" only set by sidebar:hover)
     hover["height"].should eq(5.0)
-    # among states the leaf wins ("fill")
-    hover["fill"].should eq(Egui::Color32.rgb(3, 3, 3))
+    # among states the leaf wins ("background")
+    hover["background"].should eq(Egui::Color32.rgb(3, 3, 3))
     # the class-only resolve stays unaffected by overlays
-    sheet.resolve("sidebar.tab")["fill"].should eq(Egui::Color32.rgb(2, 2, 2))
+    sheet.resolve("sidebar.tab")["background"].should eq(Egui::Color32.rgb(2, 2, 2))
   end
 
   it "caches merged bags between frames; rule() drops the cache" do
@@ -3100,7 +3157,7 @@ describe "StyleSheet (CSS-like classes)" do
     vars["height"] = 24
     vars.f64("height", 0.0).should eq(24.0)
     vars.f64("missing", 7.0).should eq(7.0)
-    vars.f64?("fill").should be_nil # wrong type = unset, not a crash
+    vars.f64?("background").should be_nil # wrong type = unset, not a crash
 
     # per-side keys; missing sides fall back to the scalar shorthand,
     # then to 0 (CSS: `padding: 10px` sets all sides)
@@ -3143,12 +3200,12 @@ describe "StyleSheet (CSS-like classes)" do
     dark = Egui::Theme.dark
     light = Egui::Theme.light
 
-    dark.sheet.resolve("sidebar.tab", "selected")["fill"]
+    dark.sheet.resolve("sidebar.tab", "selected")["background"]
       .should eq(dark.style.visuals.selection_fill)
-    dark.sheet.resolve("sidebar.tab", "hover")["fill"]
+    dark.sheet.resolve("sidebar.tab", "hover")["background"]
       .should eq(dark.style.visuals.button_weak)
     # each preset owns its sheet — light hover follows light visuals
-    light.sheet.resolve("sidebar.tab", "hover")["fill"]
+    light.sheet.resolve("sidebar.tab", "hover")["background"]
       .should eq(light.style.visuals.button_weak)
     light.sheet.should_not be(dark.sheet)
   end
@@ -3173,7 +3230,7 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
      "button", "button:hover", "button:active"}.each do |sel|
       sheet.selectors.should contain(sel)
     end
-    sheet.resolve("button")["fill"]
+    sheet.resolve("button")["background"]
       .should eq(Egui::Theme.dark.style.visuals.button_weak)
   end
 
@@ -3200,7 +3257,7 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
 
     # class state rule paints the hover fill
     orange = Egui::Color32.rgb(255, 140, 0)
-    ctx.stylesheet.rule("button:hover", Egui::StyleVars{"fill" => orange})
+    ctx.stylesheet.rule("button:hover", Egui::StyleVars{"background" => orange})
     draw.call([Egui::Event.pointer_moved(after.center)], 0.048)
     ctx.painter.commands.select(Egui::RectCmd)
       .find(&.fill.==(orange)).should_not be_nil
@@ -3209,7 +3266,7 @@ describe "DefaultTheme (default_theme.cr — all defaults in one place)" do
     red = Egui::Color32.rgb(170, 40, 40)
     draw2 = ->(events : Array(Egui::Event), time : Float64) do
       raw_frame(ctx, events: events, time: time)
-      widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.fill = red })
+      widget_ui(ctx).add(Egui::Button.new("OK").style { |s| s.background = red })
       ctx.end_frame
     end
     # park the pointer away so the button is in its base state
@@ -3337,6 +3394,34 @@ describe "new widgets (selectable, toggle, segmented)" do
     end
     ctx.end_frame
     changed.should be_true
+  end
+
+  it "ToggleButton syncs its tumbler with the text height; tumbler_size unties it" do
+    ctx = Egui::Context.new
+    text = "Toggle me"
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      rect = widget_ui(ctx).add(Egui::ToggleButton.new(false, text)).rect
+      ctx.end_frame
+      rect
+    end
+
+    text_size = ctx.fonts.measure(text, ctx.style.font_size)
+    floor = ctx.style.spacing.interact_size.y * 0.7
+
+    # Default (sync_with_text): the tumbler IS the text height.
+    synced = draw.call(0.016)
+    synced.height.should be_close({text_size.y, floor}.max, 0.01)
+
+    # Untied: tumbler_size drives the geometry (track = size x 2*size).
+    ctx.stylesheet.rule("toggle_button", Egui::StyleVars{
+      "sync_with_text" => false,
+      "tumbler_size"   => 34.0,
+    })
+    unsynced = draw.call(0.032)
+    unsynced.height.should be_close({34.0, floor}.max, 0.01)
+    unsynced.width.should be_close(
+      68.0 + ctx.style.spacing.icon_spacing + text_size.x, 0.01)
   end
 
   it "SegmentedControl publishes the clicked index" do
@@ -4177,6 +4262,52 @@ describe "floating containers are constrained to the screen" do
 
     rect = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
     rect.width.should be >= 240.0
+  end
+
+  it "combo popup rows span the popup width even after the button shrank" do
+    ctx = Egui::Context.new
+    selected = ""
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ui = widget_ui(ctx)
+      Egui::ComboBox.new("cb", selected, ["First", "Second"],
+        label: "A Very Long Placeholder Option").show(ui) { |s| selected = s }
+      ctx.end_frame
+    end
+    click = ->(pos : Egui::Pos2, time : Float64) do
+      draw.call([Egui::Event.pointer_moved(pos),
+        Egui::Event.pointer_pressed(pos)], time)
+      draw.call([Egui::Event.pointer_released(pos)], time + 0.016)
+    end
+
+    # Open with the empty selection: the button shows the long
+    # placeholder, so button and popup start out wide.
+    draw.call([] of Egui::Event, 0.016)
+    button = ctx.memory.widget_rects.values.first
+    click.call(button.center, 0.032)
+
+    # Pick "First" (rows[0] is the placeholder row) — the popup closes
+    # and the button shrinks to fit the widest option.
+    rows = ctx.memory.widget_rects.values.select { |r| r.top > button.bottom }
+    click.call(rows[1].center, 0.064)
+    selected.should eq("First")
+
+    # Reopen: the popup keeps its measured (wide) width while the
+    # button is now narrow — the row bands must span the popup's inner
+    # width, not the button's. Click near the button's LEFT edge, a
+    # spot that stays on the button in both the pre-shrink and
+    # post-shrink geometry (hit-testing at press uses the pre-shrink
+    # rect, at release the shrunk one).
+    on_button = Egui::Pos2.new(button.left + 10.0, button.center.y)
+    click.call(on_button, 0.096)
+    shrunk = ctx.memory.widget_rects.values.first
+    popup = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
+    popup.width.should be > shrunk.width
+    rows = ctx.memory.widget_rects.values.select { |r| r.top > shrunk.bottom }
+    rows.should_not be_empty
+    inner = popup.width - 2 * ctx.style.spacing.window_padding.x
+    rows.each { |r| r.width.should be >= inner - 0.5 }
   end
 
   it "a combo popup near the screen bottom flips above its button" do

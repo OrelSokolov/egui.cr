@@ -47,7 +47,7 @@ module Egui
   # non-nil fields onto a copy of the theme's Style:
   #
   #   ui.add(Egui::Button.new("OK").style do |s|
-  #     s.fill = Egui::Color32.rgb(180, 40, 40)
+  #     s.background = Egui::Color32.rgb(180, 40, 40)
   #     s.text_color = Egui::Color32.rgb(255, 255, 255)
   #   end)
   #
@@ -55,11 +55,11 @@ module Egui
   # every field left nil follows the new theme automatically.
   class WidgetStyle
     property text_color : Color32?
-    # Button idle / hovered / active fills (upstream `WidgetVisuals`
-    # weak/hovered/active — see `Visuals#button_fill`).
-    property fill : Color32?
-    property fill_hovered : Color32?
-    property fill_active : Color32?
+    # The box fill of button-like widgets — ONE CSS-like key. It is flat
+    # across states (inline-style semantics); per-state values live in
+    # class rules (`button:hover { … }`), resolved by
+    # `Widget#background_color`, not by a Style slot.
+    property background : Color32?
     property stroke : Color32?
     # Accent: progress bar fill, slider handle, selection.
     property selection_fill : Color32?
@@ -70,9 +70,7 @@ module Egui
 
     def initialize
       @text_color = nil
-      @fill = nil
-      @fill_hovered = nil
-      @fill_active = nil
+      @background = nil
       @stroke = nil
       @selection_fill = nil
       @separator_color = nil
@@ -88,15 +86,6 @@ module Egui
       v = merged.visuals
       if (c = @text_color)
         v.text_color = c
-      end
-      if (c = @fill)
-        v.button_weak = c
-      end
-      if (c = @fill_hovered)
-        v.button_hovered = c
-      end
-      if (c = @fill_active)
-        v.button_active = c
       end
       if (c = @stroke)
         v.button_stroke = c

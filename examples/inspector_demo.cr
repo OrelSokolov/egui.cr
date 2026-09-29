@@ -2,8 +2,8 @@
 #
 # Right-click any widget → «Inspect» opens the bottom panel:
 # * «Элемент» — per-element style overrides (live, the top cascade
-#   layer); every widget is addressable, explicit ids just give nicer
-#   names than the auto 6-char ones;
+#   layer), with the same База/Hover/Active switch as the class tab —
+#   one `background` key, state rules like CSS pseudo-classes;
 # * «Класс» — the widget's stylesheet class rules (button, checkbox…),
 #   base state plus :hover/:active overlays.
 # F12 toggles the panel. The Spinner at the bottom is the honest
@@ -38,7 +38,7 @@ class InspectorDemoApp < Egui::App
       ui.slider(@speed, 0.0..2.0, "Скорость", id: "speed") { |v| @speed = v }
       ui.progress_bar(@progress, text: "Прогресс")
       ui.selectable(true, "Выбранный пункт", id: "sel")
-      ui.toggle_button(@checked, "Тумблер", id: "toggle")
+      ui.toggle_button(@checked, "Тумблер", id: "toggle") { |v| @checked = v }
 
       ui.separator
       ui.label("Не-стилизуемый виджет (spinner):")

@@ -63,7 +63,7 @@ module Egui
     # Per-element style overrides set by the inspector (the top layer
     # of the style cascade — see `Widget#effective_style`). Runtime
     # debug state: never persisted, cleared from the inspector.
-    @id_style_overrides : Hash(Id, StyleVars)
+    @id_style_overrides : Hash(Id, Hash(String?, StyleVars))
     # The widget currently being run through `Ui#add` — recorded by
     # `Inspector#record_meta` in #interact when the inspector is on.
     @current_widget : Widget?
@@ -95,7 +95,7 @@ module Egui
       @hotkey_capture = false
       @in_frame = false
       @claimed_ids = Set(Id).new
-      @id_style_overrides = {} of Id => StyleVars
+      @id_style_overrides = {} of Id => Hash(String?, StyleVars)
       @current_widget = nil
       @inspector = nil
       @inspector_enabled = false
@@ -168,11 +168,7 @@ module Egui
       # Rendered before Memory#end_frame so its widget ids survive
       # pruning, and while @in_frame is still set (reactive setters
       # inside it keep their in-frame semantics).
-      if (central = @central_block)
-        @central_block = nil
-        rect = @available_rect
-        panel_ui(central[0], rect, Layout.top_down, central[2]) { |ui| central[1].call(ui) }
-      end
+      flush_central_panel
       @in_frame = false
       @memory.end_frame
       @painter.commands_in_layer_order
@@ -307,31 +303,49 @@ module Egui
 
     # Runtime per-element style overrides (the inspector's Element
     # tab). The top layer of the cascade — see `Widget#effective_style`.
-    def id_style_overrides : Hash(Id, StyleVars)
+    def id_style_overrides : Hash(Id, Hash(String?, StyleVars))
       @id_style_overrides
     end
 
-    # Set one per-element style key (inspector Element tab). Applies on
-    # the next frame — immediate mode needs no apply step.
-    def set_id_style(id : Id, key : String, value : StyleValue) : Nil
-      (@id_style_overrides[id] ||= StyleVars.new)[key] = value
+    # Set one per-element style key (inspector Element tab), optionally
+    # scoped to an interaction state ("hover"/"active"; nil = base —
+    # applies to every state unless the same layer defines a state
+    # value, CSS inline-style semantics). Applies on the next frame —
+    # immediate mode needs no apply step.
+    def set_id_style(id : Id, key : String, value : StyleValue,
+                     state : String? = nil) : Nil
+      states = (@id_style_overrides[id] ||= {} of String? => StyleVars)
+      (states[state] ||= StyleVars.new)[key] = value
       request_repaint
     end
 
-    # Remove one key (nil = wipe every key) from a per-element
-    # override; the slot goes back to inheriting the cascade. An empty
-    # bag is dropped entirely.
-    def clear_id_style(id : Id, key : String? = nil) : Nil
-      if key
-        bag = @id_style_overrides[id]?
-        if bag
+    # Remove one key (nil = wipe every key of every state) from a
+    # per-element override; the slot goes back to inheriting the
+    # cascade. Empty bags are dropped entirely.
+    def clear_id_style(id : Id, key : String? = nil,
+                       state : String? = nil) : Nil
+      states = @id_style_overrides[id]?
+      if states && key
+        if (bag = states[state]?)
           bag.delete(key)
-          @id_style_overrides.delete(id) if bag.empty?
+          states.delete(state) if bag.empty?
         end
+        @id_style_overrides.delete(id) if states.empty?
       else
         @id_style_overrides.delete(id)
       end
       request_repaint
+    end
+
+    # The per-element override bag for `state`: base keys with the
+    # state overlay merged on top (a fresh copy — safe to mutate).
+    # Nil when the id has no overrides at all.
+    def id_style_state_vars(id : Id, state : String?) : StyleVars?
+      return nil unless states = @id_style_overrides[id]?
+      merged = StyleVars.new
+      merged.merge!(states[nil]) if states[nil]?
+      merged.merge!(states[state]) if state && states[state]?
+      merged.empty? ? nil : merged
     end
 
     # The inspector state (built on first enable — zero cost while
@@ -632,8 +646,12 @@ module Egui
     # the buttons as an equal-width stretched row. Returns the label of
     # the footer button clicked this frame (nil otherwise); `title:`
     # nil skips the h1, an empty `buttons` array skips the footer.
+    # `on_scrim_click:` fires on a click on the dimmed area OUTSIDE the
+    # card (modal pages use it as their "back" — the scrim IS the back
+    # button; the card's own widgets are hit-tested above it).
     def modal(id : String = "modal", width : Float64 = 480.0,
               title : String? = nil, buttons : Array(String) = [] of String,
+              on_scrim_click : (-> Nil)? = nil,
               &block : Ui ->) : String?
       @memory.mark_modal
       modal_id = Id.from("modal/#{id}")
@@ -665,11 +683,32 @@ module Egui
       @painter.clip = screen
       @painter.rect(screen, 0.0, v.modal_dim)
 
+      # The scrim as a click target ("click outside to dismiss") —
+      # declared BEFORE the card content, so the card's widgets are
+      # hit-tested above it in the same Foreground layer.
+      if on_scrim_click
+        scrim = interact(Id.from("modal/#{id}/scrim"), screen,
+          Sense::Click, layer, screen)
+        if scrim.clicked?
+          on_scrim_click.call
+          request_repaint
+        end
+      end
+
       # Center using last frame's size.
       prev_size = @memory.layer_sizes[modal_id]? ||
         Vec2.new(width, {min_h, footer_h * 4.0}.max)
       pos = Pos2.new(screen.center.x - prev_size.x / 2.0,
         screen.center.y - prev_size.y / 2.0)
+
+      # The card itself as a click claim, ABOVE the scrim (registered
+      # later in the same layer): a click on blank card space dies on
+      # the card instead of popping through to the scrim's "back".
+      if on_scrim_click
+        card_rect = Rect.from_min_size(pos, prev_size)
+        interact(Id.from("modal/#{id}/card"), card_rect,
+          Sense::Click, layer, card_rect)
+      end
 
       # The dialog shell is back-painted at the end (bg_index below);
       # the stroke is window_stroke at low alpha — a full-strength
@@ -751,43 +790,59 @@ module Egui
     # #end_frame.
     @central_block : {String, Proc(Ui, Nil), Color32?} | Nil = nil
 
-    # *height* pins the strip height (nil → one text line + window
-    # padding); the client-side window frame uses it for its caption.
+    # Panel resizing (egui `Panel::resizable`, default there too): a
+# drag grip on the panel's inner edge grows/shrinks it, persisted per
+# panel id in Memory. `height:`/`width:` become the INITIAL size.
+    PANEL_GRIP     = 6.0    # draggable strip thickness around the edge
+    PANEL_MIN_SIZE = 20.0   # default panel extent (px) when none is given;
+                            # also the floor a drag grip cannot shrink past
+    PANEL_GRIP_SALT  = 0x9E51A1_u64 # grip interact id (away from content counters)
+    PANEL_SIZE_SALT  = 0x51AB2E5_u64 # stored size key in IdTypeMap
+
+    # *height* pins the strip height (nil → the global default
+    # PANEL_MIN_SIZE, 20px — panels never collapse to zero); the
+    # client-side window frame uses it for its caption.
+    # *resizable* (default) adds the drag grip on the inner edge — the
+    # size persists across frames and restarts-of-frame-loop; pass
+    # false for fixed chrome strips (the window frame does).
     def top_panel(id : String = "top_panel", height : Float64? = nil,
-                  &block : Ui ->) : Rect
-      h = height || begin
-        line_h = style.font_size * Fonts::LINE_H_FACTOR
-        pad = style.spacing.window_padding
-        line_h + 2 * pad.y
-      end
+                  resizable : Bool = true, &block : Ui ->) : Rect
+      h = panel_size(id, height || PANEL_MIN_SIZE, resizable)
       rect = Rect.from_min_size(@available_rect.min,
         Vec2.new(@available_rect.width, h))
       @available_rect = Rect.new(
         Pos2.new(rect.left, rect.bottom),
         @available_rect.max)
-      panel_ui(id, rect, Layout.left_to_right) { |ui| yield ui }
+      panel_ui(id, rect, Layout.left_to_right,
+        resizable: resizable, edge: :bottom, size: h) { |ui| yield ui }
       rect
     end
 
-    def bottom_panel(id : String = "bottom_panel",
-                     height : Float64? = nil, &block : Ui ->) : Rect
-      height ||= begin
-        line_h = style.font_size * Fonts::LINE_H_FACTOR
-        pad = style.spacing.window_padding
-        line_h + 2 * pad.y
-      end
+    def bottom_panel(id : String = "bottom_panel", height : Float64? = nil,
+                     resizable : Bool = true, layer : LayerId? = nil,
+                     fill : Color32? = nil, &block : Ui ->) : Rect
+      h = panel_size(id, height || PANEL_MIN_SIZE, resizable)
       rect = Rect.from_min_size(
-        Pos2.new(@available_rect.min.x, @available_rect.max.y - height),
-        Vec2.new(@available_rect.width, height))
+        Pos2.new(@available_rect.min.x, @available_rect.max.y - h),
+        Vec2.new(@available_rect.width, h))
       @available_rect = Rect.new(@available_rect.min,
         Pos2.new(rect.right, rect.top))
-      panel_ui(id, rect, Layout.left_to_right) { |ui| yield ui }
+      panel_ui(id, rect, Layout.left_to_right,
+        resizable: resizable, edge: :top, size: h,
+        layer: layer, fill: fill) { |ui| yield ui }
       rect
     end
 
     def side_panel(side : Symbol, id : String = "side_panel",
-                   width : Float64 = 200.0, &block : Ui ->) : Rect
-      w = {width, @available_rect.width}.min
+                   width : Float64 = PANEL_MIN_SIZE, resizable : Bool = true,
+                   layer : LayerId? = nil, fill : Color32? = nil,
+                   &block : Ui ->) : Rect
+      # The available-width bound is floored at PANEL_MIN_SIZE: a
+      # window narrower than the panel shrinks the panel only down to
+      # the floor (overflowing the screen edge and getting clipped),
+      # never collapsing it to zero width.
+      avail_w = {@available_rect.width, PANEL_MIN_SIZE}.max
+      w = {panel_size(id, width, resizable), avail_w}.min
       rect = if side == :right
         Rect.from_min_size(
           Pos2.new(@available_rect.max.x - w, @available_rect.min.y),
@@ -803,7 +858,10 @@ module Egui
         Rect.new(Pos2.new(rect.right, @available_rect.min.y),
           @available_rect.max)
       end
-      panel_ui(id, rect, Layout.top_down) { |ui| yield ui }
+      panel_ui(id, rect, Layout.top_down,
+        resizable: resizable,
+        edge: side == :right ? :left : :right,
+        size: w, layer: layer, fill: fill) { |ui| yield ui }
       rect
     end
 
@@ -829,11 +887,31 @@ module Egui
       rect
     end
 
+    # Render the deferred central panel NOW, into the current
+    # #available_rect. Called from #end_frame — and from #page, so a
+    # page's ctx-level panels (menu bar, status bar, central panel)
+    # complete INSIDE the page, before the page bites the remainder
+    # (otherwise the deferred central block would render after the
+    # bite, into an empty rect — the routed-notepad lesson).
+    private def flush_central_panel : Nil
+      if (central = @central_block)
+        @central_block = nil
+        panel_ui(central[0], @available_rect, Layout.top_down,
+          central[2]) { |ui| central[1].call(ui) }
+      end
+    end
+
     private def panel_ui(id : String, rect : Rect, layout : Layout,
-                         fill : Color32? = nil, &block : Ui ->) : Nil
+                         fill : Color32? = nil, resizable : Bool = false,
+                         edge : Symbol? = nil, size : Float64 = 0.0,
+                         layer : LayerId? = nil, &block : Ui ->) : Nil
       pad = style.spacing.window_padding
 
-      @painter.layer = Order::Background
+      # Normally panels ride the Background layer under everything;
+      # `layer` hoists a panel above it (the inspector panel rides a
+      # dedicated z=98 layer above app windows — see inspector.cr) —
+      # paint AND interaction both follow the layer's z.
+      @painter.layer = layer ? layer.z : Order::Background
       bg_index = @painter.add_noop
       @painter.clip = rect
       @painter.set(bg_index,
@@ -843,9 +921,84 @@ module Egui
       ui = Ui.new(self, Id.from("panel/#{id}"),
         rect.shrink(pad.x), layout)
       ui.clip = rect
-      yield ui
+      ui.layer = layer if layer
+      # CSS `overflow-y: auto` by default for top-down panels (egui.cr
+      # fix, no upstream counterpart): side/central panel content that
+      # fits renders exactly as before — the overlay scrollbar only
+      # appears on overflow — while taller content scrolls (wheel +
+      # bar) instead of collapsing at the clipped bottom edge.
+      # Horizontal top/bottom strips lay out a single row and keep
+      # their old behavior (a panel that must scroll its body wraps
+      # its own content in `ui.scroll_area` — see the Inspector).
+      if layout.horizontal?
+        yield ui
+      else
+        ScrollArea.new.show(ui) { |inner| yield inner }
+      end
+      panel_resize_grip(Id.from("panel/#{id}"), rect, edge, size, layer) if resizable && edge
 
+      @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+    end
+
+    # The stored panel size (the panel's `height:`/`width:` default
+    # until the user drags the grip). Marked used every frame so
+    # end-frame pruning keeps the cell. Explicit sizes are respected
+    # as given (window-frame chrome strips pass their own exact
+    # extents); only the drag grip enforces the PANEL_MIN_SIZE floor.
+    private def panel_size(id : String, default : Float64,
+                           resizable : Bool) : Float64
+      key = Id.from("panel/#{id}").child(PANEL_SIZE_SALT)
+      @memory.use_id(key)
+      @memory.data.get_f64(key, default)
+    end
+
+    # The drag grip on a panel's inner edge (egui `Panel::resizable`):
+    # a PANEL_GRIP-tall strip straddling the edge, interacting with
+    # Sense::drag this frame (the position is stable, so prev-frame
+    # hit-testing finds it). Dragging maps the pointer delta onto the
+    # grow axis (edge-dependent sign), clamps to [PANEL_MIN_SIZE,
+    # 90% of the screen along the axis] and persists the new size —
+    # the panel re-lays out on the next frame. Painted as a hairline
+    # on the exact edge; hover/drag highlights it with the accent.
+    private def panel_resize_grip(pid : Id, rect : Rect, edge : Symbol,
+                                  size : Float64, layer : LayerId? = nil) : Nil
+      half = PANEL_GRIP / 2.0
+      grip = case edge
+             when :top    then Rect.new(Pos2.new(rect.left, rect.top - half), Pos2.new(rect.right, rect.top + half))
+             when :bottom then Rect.new(Pos2.new(rect.left, rect.bottom - half), Pos2.new(rect.right, rect.bottom + half))
+             when :left   then Rect.new(Pos2.new(rect.left - half, rect.top), Pos2.new(rect.left + half, rect.bottom))
+             when :right  then Rect.new(Pos2.new(rect.right - half, rect.top), Pos2.new(rect.right + half, rect.bottom))
+             else              return
+             end
+      response = interact(pid.child(PANEL_GRIP_SALT), grip, Sense.drag,
+        layer || LayerId.background, @input.screen_rect)
+
+      vertical = edge == :top || edge == :bottom
+      if response.hovered? || response.dragged?
+        set_cursor_icon(vertical ? CursorIcon::NsResize : CursorIcon::EwResize)
+      end
+
+      v = style.visuals
+      color = response.dragged? ? v.selection_fill :
+              response.hovered? ? v.fade_color(v.selection_fill, 0.6) :
+              v.separator_color
+      if vertical
+        y = edge == :top ? rect.top : rect.bottom
+        @painter.line(Pos2.new(rect.left, y), Pos2.new(rect.right, y), 1.0, color)
+      else
+        x = edge == :left ? rect.left : rect.right
+        @painter.line(Pos2.new(x, rect.top), Pos2.new(x, rect.bottom), 1.0, color)
+      end
+
+      return unless response.dragged?
+      delta = response.drag_delta
+      grow = vertical ? (edge == :top ? -delta.y : delta.y)
+                      : (edge == :left ? -delta.x : delta.x)
+      extent = vertical ? @input.screen_rect.height : @input.screen_rect.width
+      new_size = (size + grow).clamp(PANEL_MIN_SIZE, extent * 0.9)
+      @memory.data.set_f64(pid.child(PANEL_SIZE_SALT), new_size)
+      request_repaint
     end
   end
 end

@@ -15,6 +15,8 @@
 #
 # Bar PLACEMENT is per axis and per side:
 #   vbar: :right (default) | :left   — the vertical scrollbar's side
+#        (an overlay :left bar rides OUTSIDE the viewport, in the
+#        margin left of it — flush to the region edge, off the content)
 #   hbar: nil (default) | :bottom | :top — horizontal scrolling, off
 #        unless a side is given (nil keeps the inner Ui viewport-wide,
 #        which is what fill-width content like the Sidebar wants)
@@ -122,10 +124,16 @@ module Egui
         {outer_clip.max.y, viewport.max.y}.min)
       ui.painter.clip = Rect.new(clip_min, clip_max)
 
+      # The inner Ui is viewport-sized but vertically unbounded
+      # (`v_overflow`, CSS overflow-y): fill-height widgets size to the
+      # viewport via `available_height`, while longer content keeps
+      # allocating below it — clipped by `clip`, scrolled by this
+      # ScrollArea — instead of collapsing into zero-height rows.
       inner = ui.child_ui(
         Rect.from_min_size(viewport.min - offset,
-          Vec2.new(@hbar ? 1e6 : viewport.width, 1e6)),
+          Vec2.new(@hbar ? 1e6 : viewport.width, viewport.height)),
         id: id.child(1))
+      inner.v_overflow = true
       inner.layer = ui.layer
       inner.clip = Rect.new(clip_min, clip_max)
       yield inner
@@ -218,12 +226,19 @@ module Egui
                              content_h : Float64, max_offset : Float64,
                              offset : Vec2, kin : KineticScroller) : Bool
       memory = ui.ctx.memory
+      # A LEFT overlay bar rides OUTSIDE the viewport — pressed into
+      # the margin left of it (the window padding), flush against the
+      # region's edge and clear of the content instead of on top of
+      # it. The strip can fall outside the ambient clip (which already
+      # ends at the viewport), so hit-testing and painting below run
+      # on a clip widened by the track rect.
       track = Rect.from_min_size(
-        Pos2.new(vbar_left? ? viewport.left : viewport.right - BAR_W,
+        Pos2.new(vbar_left? ? viewport.left - BAR_W : viewport.right - BAR_W,
           viewport.top),
         Vec2.new(BAR_W, viewport.height))
       bar_id = id.child(2)
-      response = ui.interact(track, bar_id, Sense.click_and_drag)
+      response = ui.ctx.interact(bar_id, track, Sense.click_and_drag,
+        ui.layer, ui.clip.union(track))
 
       thumb_h = (viewport.height * viewport.height / content_h)
         .clamp(12.0, viewport.height)
@@ -260,6 +275,8 @@ module Egui
       end
 
       visuals = ui.style.visuals
+      saved_clip = ui.painter.clip
+      ui.painter.clip = saved_clip.union(track)
       ui.painter.rect(track, 4.0, visuals.button_weak)
 
       thumb = Rect.from_min_size(
@@ -275,6 +292,7 @@ module Egui
       thumb_color = visuals.button_active if response.pressed? || response.dragged?
       thumb_color ||= visuals.button_weak
       ui.painter.rect(thumb, 3.0, thumb_color, visuals.button_stroke, 1.0)
+      ui.painter.clip = saved_clip
       direct
     end
 

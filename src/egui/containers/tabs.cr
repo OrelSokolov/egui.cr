@@ -178,7 +178,7 @@ module Egui
       # when the container behind it is transparent (a terminal app with
       # a translucent grid — the strip must not show the desktop
       # through the gaps between the tab buttons).
-      ui.painter.rect(strip, fill: root.color("fill", visuals.panel_fill))
+      ui.painter.rect(strip, fill: root.color("background", visuals.panel_fill))
 
       # The active tab's x-span on its row (for the merge gap) —
       # computed from the layout data, before any rect is painted.
@@ -291,7 +291,7 @@ module Egui
           else
             tab
           end
-          if (fill = state_vars.color?("fill"))
+          if (fill = state_vars.color?("background"))
             ui.painter.rect(rect, 3.0, fill)
           end
           # 3D bevel (Win95-style raised tab): light top/left, dark

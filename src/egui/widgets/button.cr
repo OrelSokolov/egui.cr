@@ -8,7 +8,8 @@
 #   5. paint: bg rect (state-colored) + centered text; return response
 #
 # egui.cr extras: `#gradient(c1, c2)` paints a vertical gradient fill,
-# `#icon(name)` draws a vector icon left of the text.
+# `#icon(name)` draws a vector icon left of the text (a `Symbol` from
+# `Icons::NAMES` or an `Svg`, e.g. `Icon.from_file(:lucide, :save)`).
 
 module Egui
   class Button
@@ -18,6 +19,7 @@ module Egui
 
     @gradient : Tuple(Color32, Color32)?
     @icon : Symbol?
+    @icon_svg : Svg?
     @image_texture : UInt64?
     @cursor : CursorIcon?
 
@@ -44,7 +46,7 @@ module Egui
     def style_properties : Array(StyleProp)
       StyleProps.buttonlike + [
         StyleProp.new("padding", :box),
-        StyleProp.new("rounding", :number),
+        StyleProp.new("rounding", :number, fallback: 4.0),
         StyleProp.new("bevel_light", :color, states: true),
         StyleProp.new("bevel_dark", :color, states: true),
         StyleProp.new("shadow.color", :color, states: true),
@@ -79,6 +81,14 @@ module Egui
       self
     end
 
+    # An SVG icon (e.g. `Icon.from_file(:lucide, :save, tint: fg)`),
+    # drawn left of the text; takes precedence over the `Symbol`
+    # vector icon, below a raster texture.
+    def icon(svg : Svg) : self
+      @icon_svg = svg
+      self
+    end
+
     # A raster icon: texture drawn left of the text (phase 6; takes
     # precedence over the vector icon).
     def image_texture(texture_id : UInt64) : self
@@ -90,11 +100,11 @@ module Egui
       sense = Sense.click | Sense::Focusable
       id = resolve_id(ui)
 
-      # Full cascade (theme → button class → :hover/:active overlay →
-      # per-widget `#style` → inspector per-element override): see
-      # `default_theme.cr` for the class defaults. Sizing uses the
-      # state-less style; the state only picks colors, re-resolved
-      # after the interaction verdict.
+      # Full cascade (theme → button class rules → per-widget `#style`
+      # → inspector per-element override): see `default_theme.cr` for
+      # the class defaults. Sizing uses the state-less style; the
+      # state only picks colors, re-resolved after the interaction
+      # verdict.
       class_vars = style_vars(ui, id, "button")
       style = effective_style(ui, id, class_vars)
 
@@ -106,16 +116,27 @@ module Egui
 
       font_size = style.font_size
       text_size = ui.ctx.fonts.measure(@text, font_size)
+      # An icon-only button (empty label) still needs a glyph-height
+      # box: `measure("")` is zero and would collapse the icon to
+      # nothing. Fall back to the estimated line height.
+      glyph_h = text_size.y > 0.0 ? text_size.y : font_size * Fonts::LINE_H_FACTOR
+      # No text after the icon → no icon→text gap, so the glyph
+      # centers in an icon-only button.
+      icon_adv = @text.empty? ? 0.0 : style.spacing.icon_spacing
       size = Vec2.new(text_size.x + pad.horizontal,
-        text_size.y + pad.vertical)
-      if (ms = @min_size)
-        size = Vec2.new({size.x, ms.x}.max, {size.y, ms.y}.max)
-      end
-      if (name = @icon) && Icons::NAMES.includes?(name)
-        size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
-      end
+        {text_size.y, glyph_h}.max + pad.vertical)
+      # Size floor: the button's own `min_size:` when given, else the
+      # global default (Ui::DEFAULT_WIDGET_SIZE) — content may grow the
+      # button larger, but its size never collapses to zero.
+      ms = @min_size || Vec2.new(Ui::DEFAULT_WIDGET_SIZE, Ui::DEFAULT_WIDGET_SIZE)
+      size = Vec2.new({size.x, ms.x}.max, {size.y, ms.y}.max)
       if (tex = @image_texture) && !tex.zero?
-        size += Vec2.new(text_size.y + style.spacing.icon_spacing, 0.0)
+        size += Vec2.new(glyph_h + icon_adv, 0.0)
+      end
+      if (svg = @icon_svg)
+        size += Vec2.new(glyph_h + icon_adv, 0.0)
+      elsif (name = @icon) && Icons::NAMES.includes?(name)
+        size += Vec2.new(glyph_h + icon_adv, 0.0)
       end
 
       rect = ui.allocate_at_least(size)
@@ -124,13 +145,20 @@ module Egui
         ui.ctx.set_cursor_icon(cursor)
       end
 
-      # The state overlay slots UNDER any `#style` overrides, so an
-      # inline fill still wins over `button:hover`.
+      # CSS-like state resolution: ONE `background` key whose value for
+      # the widget's live state comes from the cascade (element
+      # override → inline `#style` → class base/:hover/:active rules →
+      # theme slots) — see `Widget#background_color`. The stroke rides
+      # the same state bag (a `button:hover { stroke }` rule applies
+      # while hovered).
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      paint_style = state ? effective_style(ui, id, class_vars, state) : style
-      fill = paint_style.visuals.button_fill(response.hovered?, response.active?)
+      state_vars = style_vars(ui, id, "button", state)
+      fill = background_color(ui, id, "button", state,
+        response.hovered?, response.active?)
+      stroke_color = state_vars.color?("stroke") ||
+                     style.visuals.button_stroke
       # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
-      # keys, read from the SAME state overlay as the fill — a
+      # keys, read from the SAME state bag as the fill — a
       # `button:active` rule swapping the two colors sinks the box.
       # The class `rounding` key replaces the hardcoded 4 px default.
       # The `shadow.*` keys (a CSS box-shadow, `StyleVars#shadow?`) draw
@@ -138,7 +166,6 @@ module Egui
       # it — `button:active { shadow.inset }` is the bootstrap pressed
       # look.
       rounding = class_vars.f64("rounding", 4.0)
-      state_vars = style_vars(ui, id, "button", state)
       shadow = state_vars.shadow?
       if shadow && !shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
@@ -148,7 +175,7 @@ module Egui
       bevel_dark = state_vars.color?("bevel_dark")
       if (grad = @gradient) && !response.active?
         ui.painter.rect(rect, rounding: rounding, fill: grad[0], fill2: grad[1],
-          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: stroke_color, stroke_width: 1.0)
       elsif bevel_light && bevel_dark
         ui.painter.rect(rect, rounding: rounding, fill: fill)
         # Raised bevel: light on the top/left, dark on the bottom/right.
@@ -162,7 +189,7 @@ module Egui
           Pos2.new(rect.max.x, rect.max.y - 0.5), 1.0, bevel_dark)
       else
         ui.painter.rect(rect, rounding: rounding, fill: fill,
-          stroke_color: paint_style.visuals.button_stroke, stroke_width: 1.0)
+          stroke_color: stroke_color, stroke_width: 1.0)
       end
       if shadow && shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
@@ -170,29 +197,40 @@ module Egui
           inset: true)
       end
 
-      # Content: optional icon + centered text.
-      content_left = rect.left + pad.left
-      content_w = rect.width - pad.horizontal
+      # Content: optional icon + centered text. The icon→text gap
+      # drops in icon-only buttons (see `icon_adv` above), and the
+      # whole icon+text block centers as one — an icon-only button
+      # centers its glyph instead of packing it left (the Inspector's
+      # ✕ must sit in the middle of its square cell).
+      icon_adv = @text.empty? ? 0.0 : style.spacing.icon_spacing
+      has_icon = ((tex = @image_texture) && !tex.zero?) ||
+                 @icon_svg.is_a?(Svg) ||
+                 ((name = @icon) && Icons::NAMES.includes?(name))
+      icon_w = has_icon ? glyph_h : 0.0
+      block_w = icon_w + (@text.empty? ? 0.0 : icon_adv) + text_size.x
+      block_left = rect.left + pad.left +
+        {(rect.width - pad.horizontal) - block_w, 0.0}.max / 2.0
       if (tex = @image_texture) && !tex.zero?
         icon_box = Rect.from_min_size(
-          Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
-          Vec2.new(text_size.y, text_size.y))
+          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
+          Vec2.new(glyph_h, glyph_h))
         ui.painter.image(icon_box, tex)
-        content_left += text_size.y + style.spacing.icon_spacing
-        content_w -= text_size.y + style.spacing.icon_spacing
-      end
-      if (name = @icon) && Icons::NAMES.includes?(name)
+      elsif (svg = @icon_svg)
         icon_box = Rect.from_min_size(
-          Pos2.new(content_left, rect.center.y - text_size.y / 2.0),
-          Vec2.new(text_size.y, text_size.y))
+          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
+          Vec2.new(glyph_h, glyph_h))
+        svg.paint(ui, icon_box)
+      elsif (name = @icon) && Icons::NAMES.includes?(name)
+        icon_box = Rect.from_min_size(
+          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
+          Vec2.new(glyph_h, glyph_h))
         Icons.draw(ui.painter, name, icon_box,
           style.visuals.text_color)
-        content_left += text_size.y + style.spacing.icon_spacing
-        content_w -= text_size.y + style.spacing.icon_spacing
       end
-      pos = Pos2.new(content_left + (content_w - text_size.x).clamp(0.0, Float64::MAX) / 2.0,
-        rect.center.y)
-      ui.painter.text(pos, @text, font_size, paint_style.visuals.text_color)
+      pos = Pos2.new(block_left + icon_w + icon_adv, rect.center.y)
+      text_color = state_vars.color?("text_color") ||
+                   style.visuals.text_color
+      ui.painter.text(pos, @text, font_size, text_color)
 
       response.paint_focus_ring
       response

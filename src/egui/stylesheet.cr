@@ -11,7 +11,7 @@
 #     "text_color" => Egui::Color32.rgb(235, 235, 235),
 #   })
 #   ctx.stylesheet.rule("sidebar.tab:selected", StyleVars{
-#     "fill" => Egui::Color32.rgb(0, 122, 204),
+#     "background" => Egui::Color32.rgb(0, 122, 204),
 #   })
 #
 # Resolution (`#resolve`) works in two layers, like the CSS cascade:
@@ -90,9 +90,14 @@ module Egui
     # overlay (button fills, bevels, shadows) — the inspector then
     # offers the base/hover/active switch for it.
     getter? states : Bool
+    # The widget's own hardcoded default for the key (what #ui passes
+    # to `vars.f64(key, …)` when neither class rules nor theme define
+    # it) — the inspector shows it as the value while unset, instead
+    # of a bogus 0.
+    getter fallback : StyleValue?
 
     def initialize(@key : String, @kind : Symbol, label : String? = nil,
-                   @states : Bool = false)
+                   @states : Bool = false, @fallback : StyleValue? = nil)
       @label = label || @key
     end
   end
@@ -106,12 +111,13 @@ module Egui
        StyleProp.new("font_size", :number)]
     end
 
-    # Widgets painted as a filled box (buttons & friends).
+    # Widgets painted as a filled box (buttons & friends). ONE CSS-like
+    # `background` key — per-state values come from state rules
+    # (`button:hover { … }`) and are resolved automatically from the
+    # widget's live interaction state (see `Widget#background_color`).
     def self.buttonlike : Array(StyleProp)
       textlike + [
-        StyleProp.new("fill", :color, states: true),
-        StyleProp.new("fill_hovered", :color),
-        StyleProp.new("fill_active", :color),
+        StyleProp.new("background", :color, states: true),
         StyleProp.new("stroke", :color, states: true),
       ]
     end
@@ -185,34 +191,24 @@ module Egui
     end
 
     def bool(key : String, fallback : Bool) : Bool
-      bool?(key) || fallback
+      # An explicit `false` must not fall through (`false || fallback`
+      # and `if (v = bool?(key))` both drop it).
+      v = bool?(key)
+      v.nil? ? fallback : v
     end
 
-    # The class layer of the cascade: apply this bag onto a copy of
-    # `base` (the same key vocabulary `WidgetStyle#merge_over` uses).
-    # `state` maps the `fill` key onto the matching Visuals slot
-    # ("hover" → button_hovered, "active" → button_active), so a
-    # state overlay lands on its state's color. Skips cloning for
-    # empty bags.
-    def apply_over(base : Style, state : String? = nil) : Style
+    # Apply this bag onto a copy of `base` (the same key vocabulary
+    # `WidgetStyle#merge_over` uses), mapping keys onto their `Style`
+    # slots. `background` is deliberately NOT mapped here: it is
+    # state-scoped, so state-painted widgets read it from the
+    # state-merged bag through `Widget#background_color` instead of a
+    # flat Style slot. Skips cloning for empty bags.
+    def apply_over(base : Style) : Style
       return base if empty?
       merged = base.clone
       v = merged.visuals
       if (c = color?("text_color"))
         v.text_color = c
-      end
-      if (c = color?("fill"))
-        case state
-        when "hover"  then v.button_hovered = c
-        when "active" then v.button_active = c
-        else               v.button_weak = c
-        end
-      end
-      if (c = color?("fill_hovered"))
-        v.button_hovered = c
-      end
-      if (c = color?("fill_active"))
-        v.button_active = c
       end
       if (c = color?("stroke"))
         v.button_stroke = c

@@ -13,6 +13,10 @@ def svg_frame(ctx : Egui::Context)
   ctx.begin_frame(Egui::RawInput.new(SVG_SCREEN, [] of Egui::Event, 0.016))
 end
 
+# Lucide-style icon: root-inherited paint attrs, currentColor, spaced
+# arc flags, relative commands, implicit linetos.
+LUCIDE_SQUARE = %(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/></svg>)
+
 describe Egui::Svg do
   it "parses the icon-twin variant into shapes + viewBox" do
     shapes, view = Egui::Svg.parse(LOGO_VARIANTS["icon"])
@@ -98,5 +102,91 @@ describe Egui::Svg do
       .not_nil!
     inner.rect.width.should be_close(60.0, 0.001)
     inner.rect.left.should be_close(rect.not_nil!.left + 2.0, 0.001)
+  end
+
+  # Lucide-style icon root-inheritance/currentColor/arc specs use the
+  # LUCIDE_SQUARE constant above.
+
+  it "parses paths with root-inherited stroke and currentColor" do
+    shapes, view = Egui::Svg.parse(LUCIDE_SQUARE,
+      Egui::Color32.rgb(10, 20, 30))
+    view.width.should eq 24.0
+
+    pl = shapes.select(Egui::Svg::PolylineShape).first
+    stroke = pl.stroke.not_nil!
+    stroke.r.should eq 10
+    stroke.g.should eq 20
+    stroke.b.should eq 30
+    pl.stroke_width.should eq 2.0 # inherited from the root
+    pl.closed?.should be_true     # the `z`
+    pl.points.size.should be > 10 # arcs flattened to segments
+    pl.points.first.should eq Egui::Vec2.new(19.0, 21.0)
+    pl.points.last.should eq Egui::Vec2.new(19.0, 21.0)
+
+    # without a tint currentColor falls back to black
+    plain = Egui::Svg.parse(LUCIDE_SQUARE).first
+      .select(Egui::Svg::PolylineShape).first
+    plain.stroke.not_nil!.r.should eq 0
+  end
+
+  it "flattens cubic/quadratic beziers and relative implicit linetos" do
+    shapes = Egui::Svg.parse(%(<svg viewBox="0 0 24 24"><path stroke="black" d="M0 0C0 6 6 12 12 12"/></svg>)).first
+    pl = shapes.select(Egui::Svg::PolylineShape).first
+    pl.points.first.should eq Egui::Vec2.new(0.0, 0.0)
+    pl.points.last.should eq Egui::Vec2.new(12.0, 12.0)
+    # t=0.5 of the curve is (3.75, 8.25); some sample lands near it
+    pl.points.any? { |p|
+      (p.x - 3.75).abs < 0.5 && (p.y - 8.25).abs < 0.5
+    }.should be_true
+
+    # lowercase m: first pair is a moveto, following pairs are relative
+    # implicit linetos (12,5) → (19,12) → (12,19)
+    shapes = Egui::Svg.parse(%(<svg viewBox="0 0 24 24"><path stroke="black" d="m12 5 7 7-7 7"/></svg>)).first
+    pl = shapes.select(Egui::Svg::PolylineShape).first
+    pl.points.should eq [Egui::Vec2.new(12.0, 5.0),
+      Egui::Vec2.new(19.0, 12.0), Egui::Vec2.new(12.0, 19.0)]
+  end
+
+  it "samples elliptical arcs via the center parameterization" do
+    # half circle from (4,12) up over (12,4) to (20,12), sweep=1
+    shapes = Egui::Svg.parse(%(<svg viewBox="0 0 24 24"><path stroke="black" d="M4 12a8 8 0 0 1 16 0"/></svg>)).first
+    pl = shapes.select(Egui::Svg::PolylineShape).first
+    pl.points.last.should eq Egui::Vec2.new(20.0, 12.0)
+    pl.points.any? { |p|
+      (p.x - 12.0).abs < 0.1 && (p.y - 4.0).abs < 0.1
+    }.should be_true
+  end
+
+  it "parses polyline and polygon (fill degrades to stroke)" do
+    shapes = Egui::Svg.parse(%(<svg viewBox="0 0 10 10"><polyline points="1,1 9,1 9,9" stroke="red" fill="none"/><polygon points="1,1 9,1 5,9" fill="blue"/></svg>)).first
+    pls = shapes.select(Egui::Svg::PolylineShape)
+    pls.size.should eq 2
+    pls[0].closed?.should be_false
+    red = pls[0].stroke.not_nil!
+    red.r.should eq 220 # named "red"
+    pls[1].closed?.should be_true
+    # filled polygon: no polygon tessellation yet → outline in fill color
+    blue = pls[1].stroke.not_nil!
+    blue.r.should eq 50
+    blue.b.should eq 220
+  end
+
+  it "paints path icons as tinted line commands" do
+    src = %(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>)
+    ctx = Egui::Context.new
+    svg_frame(ctx)
+    tint = Egui::Color32.rgb(0x33, 0x66, 0x99)
+    ctx.window("icons") do |ui|
+      ui.svg(src, Egui::Vec2.new(24.0, 24.0), tint)
+    end
+    ctx.end_frame
+
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    # the h-line is 1 segment, the arrow 2, both at the tint color —
+    # plus whatever frame the window itself paints
+    tinted = lines.select { |l| l.color == tint }
+    tinted.size.should be >= 3
+    # 24-unit viewBox at 24 px: stroke 2 → 2 px on screen
+    tinted.each { |l| l.width.should eq 2.0 }
   end
 end

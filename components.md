@@ -470,7 +470,9 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       `SelectableLabel` (`widgets/selectable_label.cr`; upstream 0.36
       folds it into `Button::selectable`) + `ui.selectable(selected,
       text) { |v| }`; `ToggleButton` (`widgets/toggle_button.cr`) —
-      switch-style checkbox (track + knob); `SegmentedControl`
+      switch-style checkbox (track + knob); the tumbler matches the
+      text height by default, untie with `sync_with_text => false` +
+      `tumbler_size` (CSS class `toggle_button`); `SegmentedControl`
       (`widgets/segmented.cr`) — joined one-of-many row, chosen index
       via `Response#widget_value`, `ui.segmented(sel, labels) { |i| }`;
       `TreeView` (`containers/tree_view.cr`) — `node`/`leaf` rows,

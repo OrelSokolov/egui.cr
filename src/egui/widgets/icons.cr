@@ -5,7 +5,7 @@
 module Egui
   module Icons
     NAMES = {:check, :close, :left, :right, :up, :down, :plus, :minus,
-             :copy, :paste, :trash}
+             :copy, :paste, :trash, :download, :more}
 
     # Draw `name` fitted into `rect` with `color` and stroke width.
     def self.draw(painter : Painter, name : Symbol, rect : Rect,
@@ -37,6 +37,37 @@ module Egui
         tip = Pos2.new(rect.center.x, rect.max.y)
         painter.line(Pos2.new(rect.min.x, rect.min.y), tip, width, color)
         painter.line(tip, Pos2.new(rect.max.x, rect.min.y), width, color)
+      when :download
+        # An arrow pointing down into a tray (export/save-as glyph).
+        cx = rect.center.x
+        painter.line(Pos2.new(cx, rect.top),
+          Pos2.new(cx, rect.top + 0.55 * rect.height), width, color)
+        painter.line(Pos2.new(rect.left + 0.26 * rect.width,
+          rect.top + 0.32 * rect.height),
+          Pos2.new(cx, rect.top + 0.60 * rect.height), width, color)
+        painter.line(Pos2.new(rect.right - 0.26 * rect.width,
+          rect.top + 0.32 * rect.height),
+          Pos2.new(cx, rect.top + 0.60 * rect.height), width, color)
+        painter.line(Pos2.new(rect.left + 0.12 * rect.width,
+          rect.top + 0.84 * rect.height),
+          Pos2.new(rect.right - 0.12 * rect.width,
+            rect.top + 0.84 * rect.height), width, color)
+        painter.line(Pos2.new(rect.left + 0.12 * rect.width,
+          rect.top + 0.64 * rect.height),
+          Pos2.new(rect.left + 0.12 * rect.width,
+            rect.top + 0.84 * rect.height), width, color)
+        painter.line(Pos2.new(rect.right - 0.12 * rect.width,
+          rect.top + 0.64 * rect.height),
+          Pos2.new(rect.right - 0.12 * rect.width,
+            rect.top + 0.84 * rect.height), width, color)
+      when :more
+        # Kebab: three vertical dots (the overflow-menu glyph).
+        r = {width, rect.width * 0.11}.max
+        cx = rect.center.x
+        {0.26, 0.50, 0.74}.each do |t|
+          painter.circle_filled(Pos2.new(cx, rect.top + t * rect.height),
+            r, color)
+        end
       when :plus
         cx, cy = rect.center.x, rect.center.y
         painter.line(Pos2.new(cx, rect.top), Pos2.new(cx, rect.bottom), width, color)

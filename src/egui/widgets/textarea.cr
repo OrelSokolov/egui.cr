@@ -26,16 +26,16 @@ module Egui
 
     ANCHOR_SALT = 0x5EED_u64
     SCROLL_SALT = 0x5C40_u64
-    VEL_SALT    = 0x7E1_u64
-    BAR_SALT    = 0xBA2_u64
-    BAR_W       = 8.0
+    VEL_SALT    =  0x7E1_u64
+    BAR_SALT    =  0xBA2_u64
+    BAR_W       =        8.0
     # Above this size (bytes) the textarea goes virtual — see the file
     # header. 512 KiB still full-wraps in ~100 ms once; past it, the
     # open-time wrap and the per-edit re-wrap stop being pocket change.
     BIG_TEXT_BYTES = 1 << 19
 
     def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8,
-                   @frame : Bool = true)
+                   @frame : Bool = true, @focus_id : String? = nil)
     end
 
     # Cross-frame state for the virtual big-text mode: TextArea widgets
@@ -165,7 +165,7 @@ module Egui
       fonts = ui.ctx.fonts
       memory = ui.ctx.memory
       input = ui.ctx.input
-      id = ui.next_widget_id
+      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
 
       anchor_id = id.child(ANCHOR_SALT)
       scroll_id = id.child(SCROLL_SALT)
@@ -451,8 +451,7 @@ module Egui
         thumb_h = (view_h * view_h / content_h).clamp(12.0, view_h)
         scrollable = view_h - thumb_h
         thumb_y = ->(off : Float64) : Float64 do
-          max_offset > 0.0 ? track.top + scrollable * off / max_offset
-                            : track.top
+          max_offset > 0.0 ? track.top + scrollable * off / max_offset : track.top
         end
 
         if (bar_resp.pressed? || bar_resp.dragged?) &&
@@ -464,8 +463,7 @@ module Egui
             thumb_now = Rect.from_min_size(
               Pos2.new(track.left, thumb_y.call(offset)),
               Vec2.new(BAR_W, thumb_h))
-            grab = thumb_now.contains?(pointer) ? pointer.y - thumb_now.top
-                                                : thumb_h / 2.0
+            grab = thumb_now.contains?(pointer) ? pointer.y - thumb_now.top : thumb_h / 2.0
             memory.data.set_f64(bar_id, grab)
           end
           if scrollable > 0.0
@@ -563,11 +561,11 @@ module Egui
     # Row index whose vertical band contains a galley y (for page-wise
     # caret movement); y past the bottom clamps to the last row.
     private def row_at_y(galley : Galley, y : Float64) : Int32
-  galley.rows.each_with_index do |r, i|
-    return i if y < r.y + r.height
-  end
-  {galley.rows.size - 1, 0}.max
-end
+      galley.rows.each_with_index do |r, i|
+        return i if y < r.y + r.height
+      end
+      {galley.rows.size - 1, 0}.max
+    end
 
     # Nearest caret character offset for an x position on a row.
     private def char_at(galley : Galley, row_starts : Array(Int32),

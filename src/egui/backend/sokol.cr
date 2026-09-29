@@ -13,26 +13,26 @@ require "./freetype"
 
 @[Link("egui_cr_sokol")]
 {% if flag?(:win32) %}
-# sokol_app/Win32 + WGL: windowing/GDI and the GL context live in the
-# system DLLs — no X11 stack, no dl/pthread/m (MSVC CRT is implicit).
-@[Link("opengl32")]
-@[Link("gdi32")]
-@[Link("user32")]
-@[Link("shell32")]
+  # sokol_app/Win32 + WGL: windowing/GDI and the GL context live in the
+  # system DLLs — no X11 stack, no dl/pthread/m (MSVC CRT is implicit).
+  @[Link("opengl32")]
+  @[Link("gdi32")]
+  @[Link("user32")]
+  @[Link("shell32")]
 {% elsif flag?(:darwin) %}
-# sokol_app/macOS = Cocoa + NSOpenGL. Frameworks are passed by the
-# Rakefile's --link-flags (-framework Cocoa/OpenGL/QuartzCore), and
-# brew's libfreetype resolves through -L/opt/homebrew/lib — no -l links
-# are needed here.
+  # sokol_app/macOS = Cocoa + NSOpenGL. Frameworks are passed by the
+  # Rakefile's --link-flags (-framework Cocoa/OpenGL/QuartzCore), and
+  # brew's libfreetype resolves through -L/opt/homebrew/lib — no -l links
+  # are needed here.
 {% else %}
-@[Link("GL")]
-@[Link("X11")]
-@[Link("Xi")]
-@[Link("Xcursor")]
-@[Link("Xext")]
-@[Link("dl")]
-@[Link("pthread")]
-@[Link("m")]
+  @[Link("GL")]
+  @[Link("X11")]
+  @[Link("Xi")]
+  @[Link("Xcursor")]
+  @[Link("Xext")]
+  @[Link("dl")]
+  @[Link("pthread")]
+  @[Link("m")]
 {% end %}
 lib LibEguiCr
   alias InitCb = ->
@@ -358,14 +358,14 @@ module Egui
       end
 
       # sapp_event_type values (sokol_app.h)
-      KEY_DOWN    = 1
-      KEY_UP      = 2
-      CHAR        = 3
-      MOUSE_DOWN  =  4
-      MOUSE_UP    =  5
-      MOUSE_SCROLL = 6
-      MOUSE_MOVE  =  7
-      RESIZED     = 14
+      KEY_DOWN      =  1
+      KEY_UP        =  2
+      CHAR          =  3
+      MOUSE_DOWN    =  4
+      MOUSE_UP      =  5
+      MOUSE_SCROLL  =  6
+      MOUSE_MOVE    =  7
+      RESIZED       = 14
       FILES_DROPPED = 23
 
       # eframe::run_native — blocks until the window closes.
@@ -399,12 +399,11 @@ module Egui
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
-                                     height: Int32)? = nil,
+                     height: Int32)? = nil,
                    decorations : Bool = true,
                    transparent : Bool = false,
                    chrome : Bool? = nil,
-                   chrome_style : WindowFrame::Style =
-                     WindowFrame::Style::Windows,
+                   chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
                    inspector : Symbol = :off) : Nil
         @@app = app
         @@icon = icon
@@ -414,6 +413,14 @@ module Egui
         @@chrome_active = @@chrome_enabled && !decorations
         @@chrome_style = chrome_style
         app.ctx.inspector_enabled = (inspector == :on)
+        # Framework CLI: pull --page out of ARGV (in place, so the app's
+        # own file/flag parsing still works) and deep-link the router.
+        # Validation is soft — an unknown page renders the "Page not
+        # found" warning page (see Egui::Router).
+        cli = Egui::CLI.parse(ARGV)
+        if (route = cli[:route])
+          app.ctx.router.navigate(route)
+        end
         # The native (Win32) icon above + the client-side caption's
         # icon slot show the same pixels.
         Egui::WindowFrame.icon = icon if icon
@@ -427,13 +434,12 @@ module Egui
           end
         {% end %}
 
-        init = ->{ on_init }
-        frame = ->{ on_frame }
-        event = ->(t : Int32, mx : Float32, my : Float32, sx : Float32, sy : Float32,
-                    mods : UInt32, btn : UInt32, key : UInt32, chr : UInt32) {
+        init = -> { on_init }
+        frame = -> { on_frame }
+        event = ->(t : Int32, mx : Float32, my : Float32, sx : Float32, sy : Float32, mods : UInt32, btn : UInt32, key : UInt32, chr : UInt32) {
           on_event(t, mx, my, sx, sy, mods, btn, key, chr)
         }
-        cleanup = ->{ }
+        cleanup = -> { }
 
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
@@ -497,7 +503,7 @@ module Egui
         else
           font_paths = Egui::SystemPorts::Fonts.search_paths
           if font = FreetypeFonts.from_system(font_paths) ||
-                     LightHintedFonts.from_system(font_paths)
+                    LightHintedFonts.from_system(font_paths)
             @@fonts = font
             app.ctx.fonts = font
           else
@@ -548,7 +554,7 @@ module Egui
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,
                                   sx : Float32, sy : Float32, mods : UInt32,
                                   btn : UInt32, key : UInt32,
-                                  chr : UInt32) : Nil        # sokol reports pointer positions in framebuffer pixels (macOS
+                                  chr : UInt32) : Nil # sokol reports pointer positions in framebuffer pixels (macOS
         # multiplies by the backing scale); the UI works in points
         # (sapp_width), like upstream egui's pixels_per_point conversion.
         if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
@@ -701,11 +707,18 @@ module Egui
 
         # Rasterize every glyph this frame's text needs (at the PHYSICAL
         # pixel size — see paint_text) and upload the atlas BEFORE the
-        # render pass — sg_update_image is illegal inside a pass.
+        # render pass — sg_update_image is illegal inside a pass. An
+        # overflowed atlas (font-size drags bake a glyph set per
+        # fractional size) is wiped and re-baked here, so the pass never
+        # rasterizes and no glyph stays blank-cached.
         if touch_fonts && (fonts = @@fonts)
-          commands.each do |cmd|
-            fonts.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
+          touch_block = ->(f : Egui::Backend::AtlasFonts) do
+            commands.each do |cmd|
+              f.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
+            end
           end
+          touch_block.call(fonts)
+          touch_block.call(fonts) if fonts.reset_if_full
           fonts.flush
         end
 
@@ -922,10 +935,10 @@ module Egui
           end
         end
         rad = Math::PI
-        corner.call(r.min.x + round, r.min.y + round, Math::PI)              # top-left
-        corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5)        # top-right
-        corner.call(r.max.x - round, r.max.y - round, 0.0)                   # bottom-right
-        corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0)        # bottom-left
+        corner.call(r.min.x + round, r.min.y + round, Math::PI)       # top-left
+        corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5) # top-right
+        corner.call(r.max.x - round, r.max.y - round, 0.0)            # bottom-right
+        corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0) # bottom-left
 
         center = r.center
         LibEguiCr.sgl_begin_quads
@@ -963,7 +976,6 @@ module Egui
         LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, pc.r, pc.g, pc.b, pc.a)
         LibEguiCr.sgl_v2f_c4b(q.x.to_f32, q.y.to_f32, qc.r, qc.g, qc.b, qc.a)
       end
-
 
       def self.paint_text(cmd : Egui::TextCmd) : Nil
         fonts = @@fonts
@@ -1156,26 +1168,25 @@ module Egui
       def self.rounded_perimeter(r : Egui::Rect, radius : Float64) : Array(PerimPt)
         radius = {radius, r.width / 2.0, r.height / 2.0}.min
         pts = [] of PerimPt
-        corner = ->(cx : Float64, cy : Float64, a0 : Float64,
-                    s1 : Symbol, s2 : Symbol) do
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64, s1 : Symbol, s2 : Symbol) do
           6.times do |i|
             a = a0 + (Math::PI / 2.0) * i / 5.0
             dir = Egui::Vec2.new(Math.cos(a), Math.sin(a))
             pts << {Egui::Pos2.new(cx + radius * dir.x, cy + radius * dir.y),
-              dir * -1.0, s1, s2}
+                    dir * -1.0, s1, s2}
           end
         end
         pts << {Egui::Pos2.new(r.min.x + radius, r.min.y),
-          Egui::Vec2.new(0.0, 1.0), :top, :top}
+                Egui::Vec2.new(0.0, 1.0), :top, :top}
         corner.call(r.max.x - radius, r.min.y + radius, Math::PI * 1.5, :top, :right)
         pts << {Egui::Pos2.new(r.max.x, r.min.y + radius),
-          Egui::Vec2.new(-1.0, 0.0), :right, :right}
+                Egui::Vec2.new(-1.0, 0.0), :right, :right}
         corner.call(r.max.x - radius, r.max.y - radius, 0.0, :right, :bottom)
         pts << {Egui::Pos2.new(r.max.x - radius, r.max.y),
-          Egui::Vec2.new(0.0, -1.0), :bottom, :bottom}
+                Egui::Vec2.new(0.0, -1.0), :bottom, :bottom}
         corner.call(r.min.x + radius, r.max.y - radius, Math::PI / 2.0, :bottom, :left)
         pts << {Egui::Pos2.new(r.min.x, r.max.y - radius),
-          Egui::Vec2.new(1.0, 0.0), :left, :left}
+                Egui::Vec2.new(1.0, 0.0), :left, :left}
         corner.call(r.min.x + radius, r.min.y + radius, Math::PI, :left, :top)
         pts
       end

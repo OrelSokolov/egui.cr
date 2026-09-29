@@ -227,9 +227,10 @@ Upstream keeps `Style` on the Context (`Context::style`) with
   `Context#style` now delegates to `theme.style` (existing widget code
   unchanged). `App#theme`/`#theme=` delegate to the Context.
 - `WidgetStyle`: per-widget overrides where every field is nilable,
-  nil = inherit from the theme (`text_color`, `fill`/`fill_hovered`/
-  `fill_active`, `stroke`, `selection_fill`, `separator_color`,
-  `hyperlink_color`, `font_size`, `button_padding`).
+  nil = inherit from the theme (`text_color`, `background` (flat —
+  one CSS-like key; per-state values live in class rules, resolved by
+  `Widget#background_color`), `stroke`, `selection_fill`,
+  `separator_color`, `hyperlink_color`, `font_size`, `button_padding`).
   `#merge_over(base : Style)` clones the theme's Style and copies the
   non-nil fields in — the theme is never mutated.
 - `Widget#style { |s| … }` collects overrides on any widget;

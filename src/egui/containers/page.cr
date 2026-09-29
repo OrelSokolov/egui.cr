@@ -109,12 +109,15 @@ module Egui
     # app owns navigation — this only renders the page it is asked
     # for. `title:` draws the header title; `on_back:` arms the round
     # back button and fires the callback on click. The page bites the
-    # whole remainder, like any other panel.
+    # whole remainder, like any other panel — but only AFTER the
+    # deferred central panel registered inside it is flushed, so a
+    # page containing ctx-level panels behaves like a frame of its own.
     def page(id : String, title : String? = nil,
              on_back : (-> Nil)? = nil, fill : Color32? = nil,
              &block : Ui ->) : Rect
       rect = Page.show(ctx: self, id: id, title: title, on_back: on_back,
         fill: fill) { |ui| block.call(ui) }
+      flush_central_panel
       @available_rect = Rect.new(
         Pos2.new(@available_rect.min.x, rect.bottom), @available_rect.max)
       rect

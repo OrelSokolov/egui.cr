@@ -24,55 +24,61 @@ class HelloApp < Egui::App
   @gc_collections = 0
 
   def update(ctx : Egui::Context) : Nil
-    # Movable window: drag the title bar (window position is system
-    # state — Areas), the body content sits below it.
-    ctx.window("Hello egui-cr", Egui::Pos2.new(40.0, 40.0), width: 360.0) do |ui|
-      ui.heading("Hello World!")
+    # The routed app: hello world IS the root page (root/root) — the
+    # default address every routed app starts at.
+    ctx.routes do |r|
+      r.page "root/root" do
+        # Movable window: drag the title bar (window position is system
+        # state — Areas), the body content sits below it.
+        ctx.window("Hello egui-cr", Egui::Pos2.new(40.0, 40.0), width: 360.0) do |ui|
+          ui.heading("Hello World!")
 
-      # System ports demo: native dialogs + cross-platform exit. The
-      # dialog call never blocks the frame — the picker runs in its own
-      # fiber (AsyncDialogs) and the path arrives in the callback on a
-      # later frame; meanwhile the UI keeps rendering ("opening…" row).
-      if ui.button("Open file…").clicked?
-        @opened = nil
-        Egui::SystemPorts::OpenFileDialog.show(
-          filters: ["*.png", "*.jpg"]) { |path| @opened = path }
-      end
-      if Egui::SystemPorts::AsyncDialogs.pending?
-        ui.label("opening…")
-      else
-        ui.label("opened: #{@opened || "—"}")
-      end
+          # System ports demo: native dialogs + cross-platform exit. The
+          # dialog call never blocks the frame — the picker runs in its own
+          # fiber (AsyncDialogs) and the path arrives in the callback on a
+          # later frame; meanwhile the UI keeps rendering ("opening…" row).
+          if ui.button("Open file…").clicked?
+            @opened = nil
+            Egui::SystemPorts::OpenFileDialog.show(
+              filters: ["*.png", "*.jpg"]) { |path| @opened = path }
+          end
+          if Egui::SystemPorts::AsyncDialogs.pending?
+            ui.label("opening…")
+          else
+            ui.label("opened: #{@opened || "—"}")
+          end
 
-      if ui.button("Quit").clicked?
-        Egui::SystemPorts::Quit.quit!
-      end
+          if ui.button("Quit").clicked?
+            Egui::SystemPorts::Quit.quit!
+          end
 
-      # CollapsingHeader: open/closed flag is system state (IdTypeMap),
-      # not app state — try collapsing and watch it survive.
-      Egui::CollapsingHeader.new("Demo", default_open: true).show(ui) do |body|
-        if body.button("Click me").clicked?
-          @count += 1
+          # CollapsingHeader: open/closed flag is system state (IdTypeMap),
+          # not app state — try collapsing and watch it survive.
+          Egui::CollapsingHeader.new("Demo", default_open: true).show(ui) do |body|
+            if body.button("Click me").clicked?
+              @count += 1
+            end
+            body.label("Clicked #{@count} times")
+          end
         end
-        body.label("Clicked #{@count} times")
+
+        # FPS + GC telemetry panel pinned to the bottom of the screen.
+        # Immediate mode allocates geometry every frame; in Crystal that
+        # lands on the Boehm GC, so watch alloc/frame and collection
+        # frequency (a spike in collections mid-frame = stutter risk).
+        ctx.bottom_panel("fps") do |ui|
+          ui.label("FPS: #{"%.1f" % ctx.fps}  (frame #{(ctx.input.dt * 1000).round(1)} ms)")
+
+          st = GC.stats
+          alloc = st.total_bytes - @gc_prev.total_bytes
+          @gc_collections += 1 if st.bytes_since_gc < @gc_prev.bytes_since_gc
+          ui.label(
+            "GC: #{@gc_collections} collections, #{"%.1f" % (alloc / 1024.0)} KiB/frame, " \
+            "heap #{"%.1f" % (st.heap_size / 1024.0 / 1024.0)} MiB (#{"%.0f" % (st.free_bytes / 1024.0)} KiB free)"
+          )
+          @gc_prev = st
+        end
       end
-    end
-
-    # FPS + GC telemetry panel pinned to the bottom of the screen.
-    # Immediate mode allocates geometry every frame; in Crystal that
-    # lands on the Boehm GC, so watch alloc/frame and collection
-    # frequency (a spike in collections mid-frame = stutter risk).
-    ctx.bottom_panel("fps") do |ui|
-      ui.label("FPS: #{"%.1f" % ctx.fps}  (frame #{(ctx.input.dt * 1000).round(1)} ms)")
-
-      st = GC.stats
-      alloc = st.total_bytes - @gc_prev.total_bytes
-      @gc_collections += 1 if st.bytes_since_gc < @gc_prev.bytes_since_gc
-      ui.label(
-        "GC: #{@gc_collections} collections, #{"%.1f" % (alloc / 1024.0)} KiB/frame, " \
-        "heap #{"%.1f" % (st.heap_size / 1024.0 / 1024.0)} MiB (#{"%.0f" % (st.free_bytes / 1024.0)} KiB free)"
-      )
-      @gc_prev = st
     end
   end
 end

@@ -106,7 +106,8 @@ module Egui
       # The section/tab column sits on a vertical scroll area: when
       # the tabs overflow the panel the wheel + overlay scrollbar take
       # over (instead of the non-fitting tabs silently disappearing off
-      # the panel bottom). The bar rides the LEFT edge — away from the
+      # the panel bottom). The bar rides the LEFT side — outside the
+      # content, pressed into the panel's left padding, away from the
       # tabs' close X buttons on the right.
       ScrollArea.new(vbar: :left).show(ui) do |inner|
         @sections.each_with_index do |section, si|
@@ -176,7 +177,7 @@ module Egui
               else
                 tab
               end
-              if (fill = state_vars.color?("fill"))
+              if (fill = state_vars.color?("background"))
                 inner.painter.rect(rect, 3.0, fill)
               end
               text_color = state_vars.color("text_color", visuals.text_color)

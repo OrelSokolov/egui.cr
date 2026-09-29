@@ -13,12 +13,12 @@
 #
 #   # 1. live, CSS-like — tweak classes of the active theme:
 #   ctx.stylesheet.rule("sidebar.tab:selected",
-#     StyleVars{"fill" => Color32.rgb(255, 140, 0)})
+#     StyleVars{"background" => Color32.rgb(255, 140, 0)})
 #
 #   # 2. derive a whole theme from the defaults:
 #   theme = DefaultTheme.dark
 #   theme.style.visuals.selection_fill = Color32.rgb(255, 140, 0)
-#   theme.sheet.rule("button:hover", StyleVars{"fill" => Color32.rgb(120, 40, 40)})
+#   theme.sheet.rule("button:hover", StyleVars{"background" => Color32.rgb(120, 40, 40)})
 #   ctx.theme = theme
 
 module Egui
@@ -124,9 +124,9 @@ module Egui
         "padding.left"   => 12.0,
         "text_color"     => v.text_color,
       })
-      sheet.rule("sidebar.tab:hover", StyleVars{"fill" => v.button_weak})
+      sheet.rule("sidebar.tab:hover", StyleVars{"background" => v.button_weak})
       sheet.rule("sidebar.tab:selected", StyleVars{
-        "fill"       => v.selection_fill,
+        "background" => v.selection_fill,
         "text_color" => Color32.rgba(240, 240, 240, 255),
       })
 
@@ -140,11 +140,11 @@ module Egui
         "text_color"     => v.fade_color(v.text_color),
       })
       sheet.rule("tabs.tab:hover", StyleVars{
-        "fill"       => v.button_weak,
+        "background" => v.button_weak,
         "text_color" => v.text_color,
       })
       sheet.rule("tabs.tab:selected", StyleVars{
-        "fill"            => v.button_hovered,
+        "background"         => v.button_hovered,
         "text_color"      => v.text_color,
         "underline_color" => v.selection_fill,
         "underline_width" => 2.0,
@@ -152,15 +152,15 @@ module Egui
 
       # button
       sheet.rule("button", StyleVars{
-        "fill"            => v.button_weak,
+        "background"         => v.button_weak,
         "text_color"      => v.text_color,
         "padding.top"     => 4.0,
         "padding.right"   => 8.0,
         "padding.bottom"  => 4.0,
         "padding.left"    => 8.0,
       })
-      sheet.rule("button:hover", StyleVars{"fill" => v.button_hovered})
-      sheet.rule("button:active", StyleVars{"fill" => v.button_active})
+      sheet.rule("button:hover", StyleVars{"background" => v.button_hovered})
+      sheet.rule("button:active", StyleVars{"background" => v.button_active})
     end
   end
 end

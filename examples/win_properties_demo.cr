@@ -53,12 +53,12 @@ module Win95
     # Tab strip: silver surface, dark baselines, and the active tab
     # merging into the page (no underline, baseline gap under it).
     sheet.rule("tabs", Egui::StyleVars{
-      "fill"           => SILVER,
+      "background"       => SILVER,
       "rule_color"     => DKGRAY,
       "merge_selected" => 1.0,
     })
     sheet.rule("tabs.tab", Egui::StyleVars{
-      "fill"            => SILVER,
+      "background"       => SILVER,
       "text_color"      => BLACK,
       "bevel_light"     => WHITE,
       "bevel_dark"      => DKGRAY,
@@ -72,17 +72,17 @@ module Win95
     # theme's selected overlay (button_hovered ≈ #D1D1D1) leaks through
     # and the active tab no longer matches the page below it.
     sheet.rule("tabs.tab:hover", Egui::StyleVars{
-      "fill" => SILVER,
+      "background" => SILVER,
     })
     sheet.rule("tabs.tab:selected", Egui::StyleVars{
-      "fill"            => SILVER,
+      "background"       => SILVER,
       "underline_width" => 0.0,
     })
 
     # Command buttons: silver with a raised bevel; :active swaps the
     # bevel colors → sunken, like a pressed Win95 button.
     sheet.rule("button", Egui::StyleVars{
-      "fill"            => SILVER,
+      "background"       => SILVER,
       "text_color"      => BLACK,
       "rounding"        => 0.0,
       "bevel_light"     => WHITE,

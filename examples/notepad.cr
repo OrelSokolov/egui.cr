@@ -5,13 +5,17 @@
 # becomes an X on hover, a "+" new-tab button, carousel scrolling when
 # the tabs overflow. Below the caption: a File menu with hotkey hints
 # (New / Open… / Save / Save As… / Close Tab / Quit), a per-document
-# textarea and a status bar. Each tab's editor runs in a child Ui id'd
-# per tab, so every document keeps its own caret and selection across
-# tab switches; the tab selection is a reactive Signal and keyboard
-# focus follows it — the ACTIVE tab's textarea is always the active
-# editor. Native open/save dialogs go through SystemPorts
-# (fiber-backed, never block frames). The theme choice on the settings
-# page persists as JSON through the AppConfig system port.
+# textarea and a status bar. The app is a set of routed PAGES
+# (Egui::Router): root/root the editor, root/settings the full-window
+# settings page, root/confirm-close the unsaved-changes confirmation
+# (a modal page — "a modal is just a page"); deep links work:
+# `notepad --page root/settings#search`. Each tab's editor runs in a
+# child Ui id'd per tab, so every document keeps its own caret and
+# selection across tab switches; the tab selection is a reactive
+# Signal and keyboard focus follows it — the ACTIVE tab's textarea is
+# always the active editor. Native open/save dialogs go through
+# SystemPorts (fiber-backed, never block frames). The theme choice on
+# the settings page persists as JSON through the AppConfig system port.
 
 require "json"
 require "mime"
@@ -41,6 +45,7 @@ class NotepadApp < Egui::App
   TEXT_MIME_EXTRAS = {"application/json", "application/xml",
                       "application/yaml", "application/x-yaml",
                       "application/toml", "application/javascript"}
+
   # One open document: its text, the file it came from (nil = never
   # saved) and the dirty flag (edits since the last save).
   class Doc
@@ -89,10 +94,12 @@ class NotepadApp < Egui::App
   # The active editor's child-Ui id, derived from the selection
   # (memoized — recomputed only when `selected` actually changes).
   computed editor_ui_id : Egui::Id = Egui::Id.from("notepad/doc/#{selected}")
-  # In-app ROUTE (Win11 Notepad idiom): the settings page is a
-  # full-window Page, not a modal. The app owns the routing — the
-  # page widget only renders what this signal says.
-  reactive settings_open = false
+  # In-app ROUTE (Win11 Notepad idiom): the settings page and the
+  # unsaved-changes confirmation are routed PAGES (Egui::Router) —
+  # root/root is the editor, root/settings the full-window settings
+  # page, root/confirm-close the confirmation (a modal page). The
+  # router owns navigation; deep links work: --page root/settings.
+  @search = ""
   @status = "Ready."
   @hotkeys_ready = false
   @next_untitled = 1
@@ -108,8 +115,8 @@ class NotepadApp < Egui::App
   @settings : Settings = Egui::SystemPorts::AppConfig.load(
     "notepad", Settings.new)
 
-  def initialize
-    super
+  def initialize(files : Array(String) = [] of String)
+    super()
     # Win11 Notepad chrome: the tabs live IN the caption, left of the
     # caption buttons (WindowFrame draws the hook before app frames).
     # A tab click writes the selection signal; close goes through the
@@ -118,7 +125,7 @@ class NotepadApp < Egui::App
       height: Egui::TitleBarTabs::CAPTION_H) do |ctx, area|
       # No tabs on the settings page (Win11 Notepad hides them there) —
       # the caption keeps only its drag strip and control buttons.
-      unless settings_open
+      unless ctx.router.current.page == "settings"
         Egui::TitleBarTabs.show(ctx, area, @docs.map(&.title), selected,
           dirty: @docs.map(&.dirty?),
           on_select: ->(t : Int32) { self.selected = t; nil },
@@ -126,9 +133,11 @@ class NotepadApp < Egui::App
           on_new: -> { new_doc })
       end
     end
-    # Files passed on the command line open straight into tabs.
+    # Files passed on the command line open straight into tabs (the
+    # framework --page flag is already extracted — see the entry point
+    # at the bottom of this file).
     opened = 0
-    ARGV.each do |arg|
+    files.each do |arg|
       opened += 1 if open_at_startup(arg)
     end
     # Command-line files make the pristine welcome tab redundant.
@@ -172,13 +181,78 @@ class NotepadApp < Egui::App
       @hotkeys_ready = true
     end
 
-    # ROUTE: the settings page replaces the whole editor UI (menu,
-    # tabs live only in the caption, editor, status bar) — a page,
-    # not a modal. Back returns to the editor.
-    if settings_open
-      ctx.page("settings", title: "Settings",
-        on_back: -> { self.settings_open = false; nil }) do |ui|
+    # ROUTES: the editor (root/root), the settings page (root/settings)
+    # and the unsaved-changes confirmation (root/confirm-close, a modal
+    # page over the editor). The router renders the current stack; back
+    # buttons pop it.
+    ctx.routes do |r|
+      # root/root — the editor: menu bar, per-document textarea
+      # (the tabs live in the caption), status bar.
+      r.page "root/root" do
+        ctx.menu_bar do |bar|
+          bar.menu_button("File") do |menu|
+            menu.menu_item("New", ACTION_NEW)
+            menu.menu_item("Open…", ACTION_OPEN)
+            menu.menu_item("Save", ACTION_SAVE)
+            menu.menu_item("Save As…", ACTION_SAVE_AS)
+            menu.menu_item("Close Tab", ACTION_CLOSE)
+            menu.menu_item("Settings", ACTION_SETTINGS)
+            menu.menu_item("Quit", ACTION_QUIT)
+          end
+          bar.menu_button("View") do |menu|
+            menu.menu_item("Next Tab", ACTION_NEXT_TAB)
+            menu.menu_item("Previous Tab", ACTION_PREV_TAB)
+          end
+        end
+
+        ctx.central_panel do |ui|
+          if @docs.empty?
+            ui.label("No documents open — File → New (Ctrl+N), or the " \
+                     "\"+\" in the title bar.")
+          else
+            # Claim the rest of the panel, then run the editor in a child
+            # Ui id'd per tab — each document keeps its own caret and
+            # selection (TextArea state lives under the widget id).
+            doc = @docs[selected]
+            rect = ui.allocate_at_least(
+              Egui::Vec2.new(ui.available_width, ui.available_height))
+            editor = ui.child_ui(rect, editor_ui_id)
+            editor_resp = editor.textarea(doc.text, rows: 100,
+              frame: false) do |t|
+              doc.text = t
+              doc.dirty = true
+            end
+
+            # ACTIVE TAB = ACTIVE EDITOR, reactively: whenever the
+            # selection signal moved (any path — click, Ctrl+Tab, open,
+            # close), the new tab's textarea takes keyboard focus (a focus
+            # request lands next frame, like every focus change). No
+            # per-event plumbing — one place watches the signal version.
+            if selected_signal.version != @focused_tab_version
+              @focused_tab_version = selected_signal.version
+              ctx.memory.focus.request(editor_resp.id)
+            end
+          end
+        end
+
+        ctx.bottom_panel("status") do |ui|
+          if (doc = @docs[selected]?)
+            chars, lines = doc.stats
+            ui.label("#{doc.path || doc.title} — #{chars} chars, #{lines} lines" \
+                     "#{doc.dirty? ? " — modified" : ""}")
+          end
+          ui.label(@status)
+        end
+      end
+
+      # root/settings — the full-window settings page; the round back
+      # button pops the route. The search field's focus_id makes
+      # `--page root/settings#search` land the caret in it.
+      r.page "root/settings", title: "Settings" do |ui|
         ui.heading("Settings")
+        ui.text_edit_singleline(@search, hint: "Search settings…",
+          focus_id: "search") { |t| @search = t }
+        ui.separator
         ui.label("Theme:")
         # Theme dropdown: swaps the palette next frame and persists the
         # choice to the user config dir.
@@ -189,89 +263,42 @@ class NotepadApp < Egui::App
         ui.separator
         ui.label("Editor font size: 14")
         ui.label("Tab width: 4")
-        ui.label("This page is a routing demo — a full-window Page, " \
-                 "switched by a reactive Signal.")
+        ui.label("This page is a routed page — deep-link with " \
+                 "--page root/settings (+#search to focus the search field).")
       end
-      handle_actions(ctx)
-      return
-    end
 
-    ctx.menu_bar do |bar|
-      bar.menu_button("File") do |menu|
-        menu.menu_item("New", ACTION_NEW)
-        menu.menu_item("Open…", ACTION_OPEN)
-        menu.menu_item("Save", ACTION_SAVE)
-        menu.menu_item("Save As…", ACTION_SAVE_AS)
-        menu.menu_item("Close Tab", ACTION_CLOSE)
-        menu.menu_item("Settings", ACTION_SETTINGS)
-        menu.menu_item("Quit", ACTION_QUIT)
-      end
-      bar.menu_button("View") do |menu|
-        menu.menu_item("Next Tab", ACTION_NEXT_TAB)
-        menu.menu_item("Previous Tab", ACTION_PREV_TAB)
-      end
-    end
-
-    ctx.central_panel do |ui|
-      if @docs.empty?
-        ui.label("No documents open — File → New (Ctrl+N), or the " \
-                 "\"+\" in the title bar.")
-      else
-        # Claim the rest of the panel, then run the editor in a child
-        # Ui id'd per tab — each document keeps its own caret and
-        # selection (TextArea state lives under the widget id).
-        doc = @docs[selected]
-        rect = ui.allocate_at_least(
-          Egui::Vec2.new(ui.available_width, ui.available_height))
-        editor = ui.child_ui(rect, editor_ui_id)
-        editor_resp = editor.textarea(doc.text, rows: 100,
-          frame: false) do |t|
-          doc.text = t
-          doc.dirty = true
-        end
-
-        # ACTIVE TAB = ACTIVE EDITOR, reactively: whenever the
-        # selection signal moved (any path — click, Ctrl+Tab, open,
-        # close), the new tab's textarea takes keyboard focus (a focus
-        # request lands next frame, like every focus change). No
-        # per-event plumbing — one place watches the signal version.
-        if selected_signal.version != @focused_tab_version
-          @focused_tab_version = selected_signal.version
-          ctx.memory.focus.request(editor_resp.id)
+      # root/confirm-close — unsaved changes. A modal is just a page:
+      # an addressable overlay route, semi-transparent over the editor.
+      # Declared only while a confirmation is pending, so a deep link
+      # to it without one lands on the soft not-found page.
+      # (The local is NOT named `doc` on purpose: a same-named local in
+      # this scope and in the editor's central-panel closure trips a
+      # Crystal 1.21 closure-env bug — the on-change proc then sees a
+      # nil Doc and typing segfaults.)
+      if @pending_close
+        pending_doc = @pending_close.not_nil!
+        r.modal "root/confirm-close",
+          title: @quitting ? "Save changes before quitting?" : "Save changes?" do |ui|
+          ui.label("\"#{pending_doc.title}\" has unsaved changes.")
+          ui.separator
+          ui.horizontal do |row|
+            if row.button("Save").clicked?
+              @pending_close = nil
+              ctx.router.back
+              save_and_close(pending_doc)
+            elsif row.button("Don't save").clicked?
+              @pending_close = nil
+              ctx.router.back
+              do_close(pending_doc)
+              continue_quit
+            elsif row.button("Cancel").clicked?
+              @pending_close = nil
+              ctx.router.back
+              @quitting = false
+            end
+          end
         end
       end
-    end
-
-    # Unsaved-changes confirmation for a pending close (or the quit
-    # cascade) — the modal blocks everything below until one of the
-    # three is picked.
-    if (doc = @pending_close)
-      clicked = ctx.modal("confirm_close",
-        title: @quitting ? "Save changes before quitting?" : "Save changes?",
-        buttons: ["Save", "Don't save", "Cancel"]) do |ui|
-        ui.label("\"#{doc.title}\" has unsaved changes.")
-      end
-      case clicked
-      when "Save"
-        @pending_close = nil
-        save_and_close(doc)
-      when "Don't save"
-        @pending_close = nil
-        do_close(doc)
-        continue_quit
-      when "Cancel"
-        @pending_close = nil
-        @quitting = false
-      end
-    end
-
-    ctx.bottom_panel("status") do |ui|
-      if (doc = @docs[selected]?)
-        chars, lines = doc.stats
-        ui.label("#{doc.path || doc.title} — #{chars} chars, #{lines} lines" \
-                 "#{doc.dirty? ? " — modified" : ""}")
-      end
-      ui.label(@status)
     end
 
     # Action dispatch runs last so menu-click re-firings and hotkey
@@ -286,7 +313,8 @@ class NotepadApp < Egui::App
     @status = "Settings saved: #{Egui::SystemPorts::AppConfig.path("notepad")}"
   end
 
-  private def handle_actions(ctx : Egui::Context) : Nil    new_doc if ctx.consume_action(ACTION_NEW)
+  private def handle_actions(ctx : Egui::Context) : Nil
+    new_doc if ctx.consume_action(ACTION_NEW)
     open_doc if ctx.consume_action(ACTION_OPEN)
     save_doc if ctx.consume_action(ACTION_SAVE)
     save_doc_as if ctx.consume_action(ACTION_SAVE_AS)
@@ -294,7 +322,7 @@ class NotepadApp < Egui::App
     quit_flow if ctx.consume_action(ACTION_QUIT)
     next_tab if ctx.consume_action(ACTION_NEXT_TAB)
     previous_tab if ctx.consume_action(ACTION_PREV_TAB)
-    self.settings_open = true if ctx.consume_action(ACTION_SETTINGS)
+    ctx.router.navigate("root/settings") if ctx.consume_action(ACTION_SETTINGS)
   end
 
   # Tab cycling (Ctrl+Tab / Ctrl+Shift+Tab): wrap around the open
@@ -318,6 +346,7 @@ class NotepadApp < Egui::App
     else
       @quitting = true
       @pending_close = dirty.first
+      ctx.router.navigate("root/confirm-close")
     end
   end
 
@@ -330,6 +359,7 @@ class NotepadApp < Egui::App
       Egui::SystemPorts::Quit.quit!
     else
       @pending_close = dirty.first
+      ctx.router.navigate("root/confirm-close")
     end
   end
 
@@ -446,6 +476,7 @@ class NotepadApp < Egui::App
     return if @pending_close # a confirmation is already on screen
     if doc.dirty?
       @pending_close = doc
+      ctx.router.navigate("root/confirm-close")
     else
       do_close(doc)
     end
@@ -485,7 +516,16 @@ class NotepadApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(NotepadApp.new,
+# Entry point: the framework CLI parse pulls --page out of ARGV (in
+# place — the file arguments left over go to the app), the router is
+# deep-linked before the first frame, and Backend.run does the same
+# parse as a no-op fallback for apps that don't do it themselves.
+cli = Egui::CLI.parse(ARGV)
+app = NotepadApp.new(cli[:argv])
+if (route = cli[:route])
+  app.ctx.router.navigate(route)
+end
+Egui::Backend::Sokol.run(app,
   title: "egui-cr — notepad", width: 800, height: 600,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64},
   decorations: false)

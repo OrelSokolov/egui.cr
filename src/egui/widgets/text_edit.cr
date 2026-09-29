@@ -38,14 +38,14 @@ module Egui
     MASK_CHAR = "●"
 
     def initialize(@text : String, @hint : String? = nil,
-                   @password : Bool = false)
+                   @password : Bool = false, @focus_id : String? = nil)
     end
 
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       font_size = style.font_size
       fonts = ui.ctx.fonts
-      id = ui.next_widget_id
+      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
       anchor_id = id.child(0x5EED_u64)
       scroll_id = id.child(0x5C20_u64)
       # The anchor cell has no #interact of its own — mark it used or

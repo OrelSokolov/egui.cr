@@ -25,7 +25,7 @@ module Egui
         StyleProp.new("box_fill", :color, states: true),
         StyleProp.new("box_stroke", :color),
         StyleProp.new("check_color", :color),
-        StyleProp.new("rounding", :number),
+        StyleProp.new("rounding", :number, fallback: 3.0),
       ]
     end
 
@@ -51,9 +51,14 @@ module Egui
       icon_rect = Rect.from_min_size(
         Pos2.new(rect.left, rect.center.y - icon / 2.0),
         Vec2.new(icon, icon))
+      # `box_fill` is state-scoped (states: true) — read from the
+      # state-aware bag so a `checkbox:hover { box_fill }` rule applies;
+      # the fallback is the theme's state slots.
+      state = response.active? ? "active" : response.hovered? ? "hover" : nil
+      state_vars = style_vars(ui, id, "checkbox", state)
       ui.painter.rect(icon_rect,
         class_vars.f64("rounding", 3.0),
-        class_vars.color("box_fill",
+        state_vars.color("box_fill",
           visuals.button_fill(response.hovered?, response.active?)),
         class_vars.color("box_stroke", visuals.button_stroke), 1.0)
 

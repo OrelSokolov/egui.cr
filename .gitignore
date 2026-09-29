@@ -26,3 +26,4 @@ perf.data*
 
 # Stray local build output
 /egui
+/.crystal-cache/

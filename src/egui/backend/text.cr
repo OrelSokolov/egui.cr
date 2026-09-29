@@ -44,6 +44,7 @@ module Egui
       def initialize
         @atlas = GlyphAtlas.new(ATLAS_SIZE)
         @glyphs = {} of {Int32, Int32} => Glyph # {glyph id, size*10} -> glyph
+        @needs_reset = false
       end
 
       abstract def loaded? : Bool
@@ -99,6 +100,30 @@ module Egui
 
       def glyph(gid : Int32, size : Float64) : Glyph
         @glyphs[{gid, size_key(size)}] ||= build_glyph(gid, size)
+      end
+
+      # Allocate an atlas slot for a glyph bitmap, flagging the atlas as
+      # exhausted when the packer refuses (sizes accumulate — a font-size
+      # drag bakes a full glyph set per 0.1px step). The glyph itself is
+      # still dropped for this frame; `reset_if_full` recovers before the
+      # next one.
+      protected def alloc_glyph(w : Int32, h : Int32) : {Int32, Int32}?
+        @needs_reset = true unless slot = @atlas.alloc(w, h)
+        slot
+      end
+
+      # Wipe the atlas and the glyph cache when a frame overflowed it
+      # (fontstash's texture reset): everything visible re-bakes on
+      # demand, so dropped letters come back instead of staying blank
+      # forever (dropped glyphs are cached as blanks otherwise). Call
+      # before `flush`, outside a render pass; a true result means the
+      # caller should re-`touch` this frame's text commands.
+      def reset_if_full : Bool
+        return false unless @needs_reset
+        @needs_reset = false
+        @atlas.reset
+        @glyphs.clear
+        true
       end
 
       # Rasterized coverage bitmap as text (debug/tests) — works for
@@ -334,14 +359,14 @@ module Egui
             flatten_contour(contour, to_bitmap, edges)
           end
           cov = rasterize_edges(edges, w, h)
-          if slot = atlas.alloc(w, h)
+          if slot = alloc_glyph(w, h)
             ax, ay = slot
             atlas.blit(ax, ay, w, h, cov)
             inv = 1.0f32 / atlas.size.to_f32
             return Glyph.new(ax * inv, ay * inv, (ax + w) * inv, (ay + h) * inv,
               ax, ay, w, h, x_min, top.to_i, adv)
           end
-          # Atlas full: drop the glyph, like fontstash does.
+          # Atlas full: blank this frame (a reset recovers on the next).
         end
         Glyph.new(0, 0, 0, 0, 0, 0, 0, 0, x_min, top.to_i, adv)
       end
@@ -860,6 +885,9 @@ module Egui
 
     # RGBA8 glyph atlas with shelf packing. RGB is white; alpha is the
     # glyph coverage — the draw path multiplies by the text color.
+    # Baked glyphs are never freed individually; when the shelves run
+    # out (font-size drags bake a set per fractional size), `reset`
+    # empties everything for a full re-bake.
     class GlyphAtlas
       getter size : Int32
       getter view_id = 0_u32
@@ -903,6 +931,18 @@ module Egui
             di += 4
           end
         end
+        @dirty = true
+      end
+
+      # Empty the atlas: shelf state back to the origin, pixels zeroed.
+      # Keeps the GPU texture/view id — the next `flush` re-uploads the
+      # whole buffer. (fontstash's reset-and-rebake, invoked by
+      # AtlasFonts#reset_if_full when the packer runs out of space.)
+      def reset : Nil
+        @shelf_x = 0
+        @shelf_y = 0
+        @shelf_h = 0
+        @rgba.fill(0_u8)
         @dirty = true
       end
 

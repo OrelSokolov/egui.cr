@@ -33,6 +33,7 @@ class GalleryApp < Egui::App
   @drag = 10.0_f64
   @spin = 42
   @combo = "Second"
+  @combo_none = ""
   @modal_open = false
   @buffer = "edit me"
   # Long enough to overflow the field — demonstrates the max-width
@@ -327,13 +328,29 @@ class GalleryApp < Egui::App
         @modal_open = true if c
       end
       # Per-widget style: merged over the app theme (nil fields keep
-      # the theme value), so the fill stays custom across theme
-      # swaps while the stroke/text follow the theme.
+      # the theme value), so the background stays custom across theme
+      # swaps while the stroke/text follow the theme. The inline
+      # background is FLAT across states (CSS inline-style semantics);
+      # per-state colors live in class rules
+      # (`ctx.stylesheet.rule("button:hover", …)`).
       row.add(Egui::Button.new("Themed red").style do |s|
-        s.fill = Egui::Color32.rgb(170, 40, 40)
-        s.fill_hovered = Egui::Color32.rgb(200, 55, 55)
-        s.fill_active = Egui::Color32.rgb(140, 25, 25)
+        s.background = Egui::Color32.rgb(170, 40, 40)
       end)
+    end
+    # Provider icons (icons/lucide, ISC): `Icon.from_file` embeds
+    # just the referenced SVGs into the binary at compile time and
+    # resolves the set's `currentColor` through `tint:`.
+    ui.label("Provider icon buttons (lucide):")
+    ui.horizontal do |row|
+      fg = row.style.visuals.text_color
+      row.add(Egui::Button.new("Save")
+        .icon(Egui::Icon.from_file(:lucide, :save, tint: fg)))
+      row.add(Egui::Button.new("Open")
+        .icon(Egui::Icon.from_file(:lucide, :folder_open, tint: fg)))
+      row.add(Egui::Button.new("Download")
+        .icon(Egui::Icon.from_file(:lucide, :download, tint: fg)))
+      row.add(Egui::Button.new("Delete")
+        .icon(Egui::Icon.from_file(:lucide, :trash, tint: fg)))
     end
     # Right-click anything below — a context menu opens at the pointer
     # (egui `Response#context_menu`; `menu_item` rows close it, a click
@@ -371,7 +388,19 @@ class GalleryApp < Egui::App
     ui.separator
 
     ui.label("Combo / text edit:")
-    ui.combo_box("gallery_combo", @combo, COMBO_OPTIONS) { |opt| @combo = opt }
+    # zero state: nothing selected — the placeholder shows until a pick
+    ui.combo_box("gallery_combo", @combo_none, COMBO_OPTIONS,
+      label: "Select option") { |opt| @combo_none = opt }
+    # GTK3 style: the list opens right on top of the button, with the
+    # placeholder leading it — picking that row clears the selection
+    ui.combo_box("gallery_combo_gtk", @combo_none, COMBO_OPTIONS,
+      label: "Select option", overlay: true) { |opt| @combo_none = opt }
+    # input-field look with a select button
+    ui.combo_box("gallery_combo_field", @combo, COMBO_OPTIONS,
+      variant: :field) { |opt| @combo = opt }
+    # rigid single button, chevron inline (no separated strip)
+    ui.combo_box("gallery_combo_plain", @combo, COMBO_OPTIONS,
+      variant: :plain) { |opt| @combo = opt }
     ui.text_edit_singleline(@buffer, hint: "type here…") { |t| @buffer = t }
     ui.text_edit_singleline(@buffer2) { |t| @buffer2 = t }
     ui.label("(select with Shift+arrows or double-click / drag; Ctrl+A/C/X/V)")

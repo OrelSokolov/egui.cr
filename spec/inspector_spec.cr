@@ -53,7 +53,7 @@ describe "widget inspector" do
     m.kind.should eq "Button"
     m.style_class.should eq "button"
     m.id_name.should eq "save"
-    m.props.any? { |p| p.key == "fill" }.should be_true
+    m.props.any? { |p| p.key == "background" }.should be_true
 
     ctx.inspector_enabled = false
     2.times do |i|
@@ -72,25 +72,25 @@ describe "widget inspector" do
     green = Egui::Color32.rgb(0, 255, 0)
     blue = Egui::Color32.rgb(0, 0, 255)
     # class rule blue + inline green — inline should win…
-    ctx.stylesheet.rule("button", Egui::StyleVars{"fill" => blue})
+    ctx.stylesheet.rule("button", Egui::StyleVars{"background" => blue})
 
     button_fill = nil
     raw = Egui::RawInput.new(INSP_SCREEN, [] of Egui::Event, 0.016)
     ctx.begin_frame(raw)
     ctx.window("w") do |ui|
       ui.add(Egui::Button.new("OK", id: "save").style do |s|
-        s.fill = green
+        s.background = green
       end)
     end
     ctx.end_frame
     cmds = ctx.painter.commands
     # …and the element override red beats both
-    ctx.set_id_style(Egui::Id.from("save"), "fill", red)
+    ctx.set_id_style(Egui::Id.from("save"), "background", red)
     raw = Egui::RawInput.new(INSP_SCREEN, [] of Egui::Event, 0.032)
     ctx.begin_frame(raw)
     ctx.window("w") do |ui|
       ui.add(Egui::Button.new("OK", id: "save").style do |s|
-        s.fill = green
+        s.background = green
       end)
     end
     ctx.end_frame
@@ -99,12 +99,55 @@ describe "widget inspector" do
     rects.none? { |r| r.fill == blue }.should be_true
   end
 
+  it "one background key: element base edit applies while hovering; a state edit refines it" do
+    ctx = Egui::Context.new
+    red = Egui::Color32.rgb(255, 0, 0)
+    lime = Egui::Color32.rgb(0, 255, 100)
+    center = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw = Egui::RawInput.new(INSP_SCREEN, events, time)
+      ctx.begin_frame(raw)
+      ctx.window("w") { |ui| center = ui.button("OK", id: "save").rect.center }
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::RectCmd)
+    end
+    draw.call([] of Egui::Event, 0.016)
+
+    # a BASE element edit is flat across states (CSS inline semantics):
+    # it shows even while hovering, beating the default button:hover rule
+    ctx.set_id_style(Egui::Id.from("save"), "background", red)
+    draw.call([Egui::Event.pointer_moved(center.not_nil!)], 0.032)
+      .any? { |r| r.fill == red }.should be_true
+
+    # an element hover-state edit refines it (state value over base)
+    ctx.set_id_style(Egui::Id.from("save"), "background", lime, state: "hover")
+    draw.call([Egui::Event.pointer_moved(center.not_nil!)], 0.048)
+      .any? { |r| r.fill == lime }.should be_true
+
+    # off the button the base value shows again
+    draw.call([Egui::Event.pointer_moved(Egui::Pos2.new(4.0, 4.0))], 0.064)
+      .any? { |r| r.fill == red }.should be_true
+  end
+
+  it "declares one state-scoped background prop — no fill_hovered/fill_active" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    insp_frame(ctx) do |c|
+      c.window("w") { |ui| ui.add(Egui::Button.new("OK", id: "save")) }
+    end
+    m = ctx.inspector.meta_for(Egui::Id.from("save")).not_nil!
+    bg = m.props.find { |p| p.key == "background" }.not_nil!
+    bg.states?.should be_true
+    m.props.any? { |p| {"fill_hovered", "fill_active"}.includes?(p.key) }
+      .should be_false
+  end
+
   it "clear_id_style drops the override" do
     ctx = Egui::Context.new
     red = Egui::Color32.rgb(255, 0, 0)
-    ctx.set_id_style(Egui::Id.from("save"), "fill", red)
+    ctx.set_id_style(Egui::Id.from("save"), "background", red)
     ctx.id_style_overrides[Egui::Id.from("save")].should_not be_nil
-    ctx.clear_id_style(Egui::Id.from("save"), "fill")
+    ctx.clear_id_style(Egui::Id.from("save"), "background")
     ctx.id_style_overrides[Egui::Id.from("save")]?.should be_nil
   end
 
@@ -119,12 +162,12 @@ describe "widget inspector" do
       ctx.painter.commands.select(Egui::RectCmd)
     end
     before = draw.call(0.016)
-    ctx.stylesheet.rule("button", Egui::StyleVars{"fill" => pink})
+    ctx.stylesheet.rule("button", Egui::StyleVars{"background" => pink})
     after = draw.call(0.032)
     after.any? { |r| r.fill == pink }.should be_true
     before.none? { |r| r.fill == pink }.should be_true
     # unset reverts to the theme
-    ctx.stylesheet.unset("button", "fill")
+    ctx.stylesheet.unset("button", "background")
     reverted = draw.call(0.048)
     reverted.none? { |r| r.fill == pink }.should be_true
   end
@@ -155,7 +198,7 @@ describe "widget inspector" do
     ctx.inspector.selected.should eq Egui::Id.from("save")
 
     # frame 3: the panel renders without exploding and the highlight
-    # paints on the tooltip layer
+    # paints on its own layer above windows, below the panel/popups
     insp_frame(ctx, time: 0.048) do |c|
       c.window("w") { |ui| ui.button("OK", id: "save") }
     end

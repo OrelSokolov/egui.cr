@@ -19,8 +19,8 @@ module Egui
     # Auto-repeat: steps per second while an arrow button stays held,
     # and how long the hold must last before the repeats begin
     # (Windows updown: instant first step, then repeats).
-    REPEAT_RATE  =  15.0
-    REPEAT_DELAY =   0.4
+    REPEAT_RATE  = 15.0
+    REPEAT_DELAY =  0.4
 
     # Child-id salts: the two arrow buttons, their repeat accumulators.
     UP_SALT   = 0xB0B1_u64
@@ -30,7 +30,7 @@ module Egui
 
     def initialize(@value : Int32, @range : Range(Int32, Int32)? = nil,
                    @step : Int32 = 1, @prefix : String = "",
-                   @suffix : String = "")
+                   @suffix : String = "", @focus_id : String? = nil)
     end
 
     def ui(ui : Ui) : Response
@@ -39,7 +39,7 @@ module Egui
       fonts = ui.ctx.fonts
       memory = ui.ctx.memory
       input = ui.ctx.input
-      id = ui.next_widget_id
+      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
       up_id = id.child(UP_SALT)
       down_id = id.child(DOWN_SALT)
       up_acc_id = id.child(UP_ACC)
@@ -67,10 +67,10 @@ module Egui
       # arrow buttons, so the two native controls match.
       arrow_w = 16.0
       height = {fonts.measure(shown_for_size, font_size).y,
-        font_size * Fonts::LINE_H_FACTOR,
-        style.spacing.interact_size.y}.max + (pad.y + border) * 2.0
+                font_size * Fonts::LINE_H_FACTOR,
+                style.spacing.interact_size.y}.max + (pad.y + border) * 2.0
       width = {text_w + (pad.x + border) * 2.0 + arrow_w,
-        style.spacing.interact_size.x + arrow_w}.max
+               style.spacing.interact_size.x + arrow_w}.max
       whole = ui.allocate_at_least(Vec2.new(width, height))
       field = Rect.from_min_size(whole.min,
         Vec2.new(whole.width - arrow_w, whole.height))
@@ -255,10 +255,8 @@ module Egui
       memory = ctx.memory
       editing, saved_buffer = edit_state(memory, id)
 
-      page = input.consume_key(KeyCode::PageUp) ? @step * 10 :
-             input.consume_key(KeyCode::PageDown) ? -@step * 10 : 0
-      nudge = input.consume_key(KeyCode::Up) ? @step :
-              input.consume_key(KeyCode::Down) ? -@step : 0
+      page = input.consume_key(KeyCode::PageUp) ? @step * 10 : input.consume_key(KeyCode::PageDown) ? -@step * 10 : 0
+      nudge = input.consume_key(KeyCode::Up) ? @step : input.consume_key(KeyCode::Down) ? -@step : 0
 
       unless editing
         # Not editing yet: a digit (or an allowed "-") starts an edit

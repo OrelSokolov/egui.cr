@@ -15,8 +15,9 @@
 #   inspector can address any of them);
 # * style — `#style` collects a `WidgetStyle` (nilable fields — nil =
 #   inherit the theme), `effective_style` runs the full cascade
-#   theme → class rules → state overlay → inline `#style` →
-#   per-element inspector override;
+#   theme → class rules → inline `#style` → per-element inspector
+#   override, and `#background_color` resolves the state-scoped
+#   `background` key (element → inline → class → theme slots);
 # * introspection — `#style_properties` declares which `StyleVars`
 #   keys the widget actually reads; the inspector (and nothing else)
 #   builds its editors from these declarations. An empty list means
@@ -90,54 +91,70 @@ module Egui
     # The merged raw-key vars for `class_path` (+ optional state
     # overlay): `StyleSheet#resolve` with this widget's per-element
     # inspector override merged ON TOP (into a copy — the sheet's
-    # resolved bags are shared caches, read-only). Without an override
-    # this is the shared cache itself, so widgets pay nothing extra
-    # until the inspector actually touches them. Widgets read their
-    # raw keys (`padding`, `rounding`, `shadow.*`, …) through here —
-    # reading `resolve` directly would hide the per-element layer.
+    # resolved bags are shared caches, read-only; the element layer is
+    # state-keyed, base keys under the state overlay). Without an
+    # override this is the shared cache itself, so widgets pay nothing
+    # extra until the inspector actually touches them. Widgets read
+    # their raw keys (`padding`, `rounding`, `shadow.*`, …) through
+    # here — reading `resolve` directly would hide the per-element
+    # layer.
     protected def style_vars(ui : Ui, id : Id, class_path : String?,
                              state : String? = nil) : StyleVars
-      return StyleVars.new unless class_path
-      vars = ui.ctx.stylesheet.resolve(class_path, state)
-      if (ov = ui.ctx.id_style_overrides[id]?)
+      class_vars = class_path ? ui.ctx.stylesheet.resolve(class_path, state) : StyleVars.new
+      if (ov = ui.ctx.id_style_state_vars(id, state))
         merged = StyleVars.new
-        merged.merge!(vars)
+        merged.merge!(class_vars)
         merged.merge!(ov)
         merged
       else
-        vars
+        class_vars
+      end
+    end
+
+    # The CSS-like `background` of a state-painted widget, resolved
+    # from its live interaction `state` ("active"/"hover"/nil) through
+    # the cascade — one key, no per-state duplicates:
+    #
+    #   1. per-element inspector override (state value over base);
+    #   2. the inline `#style` background (flat — inline-style
+    #      semantics, CSS `style="background: …"`);
+    #   3. class rules: `StyleSheet#resolve(class, state)` — a
+    #      `:hover`/`:active` rule beats the class base value;
+    #   4. the theme's state slots (`Visuals#button_fill`) — the
+    #      user-agent default with built-in per-state colors.
+    protected def background_color(ui : Ui, id : Id, class_path : String?,
+                                   state : String?, hovered : Bool,
+                                   active : Bool) : Color32
+      if (c = ui.ctx.id_style_state_vars(id, state).try(&.color?("background")))
+        c
+      elsif (c = @style_override.try(&.background))
+        c
+      elsif class_path && (c = ui.ctx.stylesheet.resolve(class_path, state)
+                           .color?("background"))
+        c
+      else
+        ui.style.visuals.button_fill(hovered, active)
       end
     end
 
     # The effective Style with the full cascade applied:
-    # theme → class rules (`class_vars`) → class state overlay
-    # (`state`, resolved through #style_class) → this widget's `#style`
+    # theme → class rules (`class_vars`) → this widget's `#style`
     # overrides → the inspector's per-element override (`id`,
-    # `Context#id_style_overrides`). Every layer is a copy — the theme
-    # is never mutated; widgets without any layer share the theme
-    # object itself, no per-widget copying.
-    #
-    # The per-element layer sits ABOVE inline `#style` on purpose: a
-    # debug tool must see its own edits even on widgets whose code
-    # sets overrides. It maps with `state: nil` (CSS inline-style
-    # semantics — `fill` lands on the base slot, pseudo-classes keep
-    # their own `fill_hovered`/`fill_active` keys).
+    # `Context#id_style_overrides` — base keys only here; the
+    # state-scoped `background` goes through #background_color).
+    # Every layer is a copy — the theme is never mutated; widgets
+    # without any layer share the theme object itself, no per-widget
+    # copying.
     protected def effective_style(ui : Ui, id : Id? = nil,
-                                  class_vars : StyleVars? = nil,
-                                  state : String? = nil) : Style
+                                  class_vars : StyleVars? = nil) : Style
       base = ui.style
       if class_vars && !class_vars.empty?
         base = class_vars.apply_over(base)
       end
-      if state && (path = style_class) &&
-         (overlay = ui.ctx.stylesheet.state_vars(path, state)) &&
-         !overlay.empty?
-        base = overlay.apply_over(base, state)
-      end
       if (ws = @style_override)
         base = ws.merge_over(base)
       end
-      if id && (ov = ui.ctx.id_style_overrides[id]?)
+      if id && (ov = ui.ctx.id_style_state_vars(id, nil))
         base = ov.apply_over(base)
       else
         base

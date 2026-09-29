@@ -149,6 +149,50 @@ end
 Runnable demo: `bin/counter_reactive` (fiber-driven ticking signal,
 computed run counters in the status panel).
 
+## Routing (pages, modals, deep links)
+
+An app is a set of PAGES addressed `window/page` with an optional
+`#widget` fragment (`src/egui/router.cr`). One window exists today
+(`root`); every routed app starts at `root/root`:
+
+```crystal
+class MyApp < Egui::App
+  def update(ctx)
+    ctx.routes do |r|
+      r.page "root/root" do |ui| …the home UI… end
+      r.page "root/settings", title: "Settings" do |ui| … end
+      r.modal "root/confirm-close", title: "Save changes?" do |ui| … end
+    end
+  end
+end
+```
+
+- `r.page` — a full-window opaque page (an `Egui::Page`); the round
+  back button pops the route stack (`router.navigate` / `back` /
+  `replace` from code, menus, hotkeys).
+- `r.modal` — a modal is just a page: an addressable overlay route
+  rendered as the semi-transparent scrim + centered card over the base
+  page, blocking input below it. No back button — the scrim IS the
+  back: a click on the dimmed area outside the card pops the route
+  (clicks on the card itself never do).
+- Pages are declared every frame, immediate-mode style; the router
+  renders the current stack when the `ctx.routes` block ends.
+- `--page root/settings#search` on the command line opens the app
+  straight at a page — and lands keyboard focus on the widget created
+  with `focus_id: "search"` (`text_edit_singleline`, `TextEdit`,
+  `TextArea`, `NumberInput`). Everything else in ARGV passes through
+  to the app untouched.
+- Unknown addresses are a soft warning: one stderr line and a
+  "Page not found" page with a back button — never a crash.
+
+The same mechanism drives debugging and (later) screenshot generation
+in arbitrary app states. Runnable demos: `bin/hello` (`root/root`),
+`bin/notepad --page root/settings#search` (editor, settings page and
+a modal confirm-close page). Demo screenshots for those states:
+`python3 scripts/make_notepad_screenshots.py` (Linux/X11 — launches
+the app, deep-links each route, drives the modal with synthetic
+XTEST input and captures the window into `screenshots/`).
+
 ## Terminal
 
 `egui/terminal` is a cross-platform terminal emulator built on the

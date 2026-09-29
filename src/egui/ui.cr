@@ -23,6 +23,13 @@ module Egui
     # interactable inside this rect (panels/windows/scroll viewports
     # clip their contents; overflowing parts are painted over).
     property clip : Rect
+    # CSS `overflow-y`: when true, vertical allocations are NOT
+    # clamped to `max_rect`'s bottom edge — content may extend below
+    # (clipped by `clip`, scrollable through a ScrollArea viewport)
+    # instead of collapsing into zero-height rows. `available_height`
+    # stays bounded by `max_rect`, so fill-height widgets keep sizing
+    # to the viewport. Set by `ScrollArea#show` on its inner Ui.
+    property v_overflow : Bool = false
 
     @child_counter : UInt64 = 0
 
@@ -48,6 +55,27 @@ module Egui
       @id.child(@child_counter)
     end
 
+    # A stable, route-addressable widget id: this Ui's id + the name.
+    # When the router owes this page a focus fragment (`root/page#name`
+    # from `--page` or navigate) and `name` matches, the id is also
+    # given keyboard focus right away — that is how deep links land on
+    # a widget. Widgets opt in via their `focus_id:` parameter.
+    def named_id(name : String) : Id
+      id = @id.child(Id.from("named/#{name}").value)
+      if (router = @ctx.router?) && router.fragment_armed?(name)
+        @ctx.memory.focus.request(id)
+      end
+      id
+    end
+
+    # Global DEFAULT widget size (egui.cr, no upstream counterpart):
+    # the fallback floor a widget falls back to when neither its
+    # content nor an explicit size (`min_size:`, `add_sized`) defines
+    # one — a widget may be larger, but its size never collapses to
+    # zero. Window-frame chrome is exempt (it passes its own exact
+    # sizes). Panels have their own default (`Context::PANEL_MIN_SIZE`).
+    DEFAULT_WIDGET_SIZE = 10.0
+
     # egui `Ui::allocate_at_least`: place a widget of `size` at the
     # cursor, grow `min_rect`, advance the cursor.
     #
@@ -59,10 +87,14 @@ module Egui
     # plain clipping otherwise); this is the hard floor that makes
     # "long content grows past the parent" impossible. Regions with a
     # semi-infinite `max_rect` (frames, scroll contents) are
-    # unaffected by the clamp.
+    # unaffected by the clamp — and so are `v_overflow` regions (CSS
+    # `overflow-y`: the content grows past the bottom on purpose,
+    # clipped by `clip` and scrolled by the owning ScrollArea).
     def allocate_space(size : Vec2) : Rect
       max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x }.max
-      max_y = { {@cursor.y + size.y, @max_rect.bottom}.min, @cursor.y }.max
+      raw_y = @cursor.y + size.y
+      max_y = @v_overflow ? raw_y : {raw_y, @max_rect.bottom}.min
+      max_y = {max_y, @cursor.y}.max
       rect = Rect.new(@cursor, Pos2.new(max_x, max_y))
       @min_rect = @min_rect.union(rect)
       @cursor = @layout.advance(@cursor, rect.size,
@@ -80,13 +112,17 @@ module Egui
     end
 
     # egui `Ui::new_child`: a child region with its own cursor/layout.
-    # Inherits the parent's layer and clip rect; `id` may be given
-    # (stateful widgets derive a stable body id from their own id).
+    # Inherits the parent's layer, clip rect AND vertical-overflow mode
+    # (`v_overflow` — the CSS overflow-y semantics of a scroll
+    # viewport must reach the whole subtree: without this, rows built
+    # through `#horizontal`/`#scope` near the fold would clamp their
+    # children to the viewport's bottom edge and overlap there).
     def child_ui(max_rect : Rect, id : Id? = nil,
                  layout : Layout = Layout.top_down) : Ui
       child = Ui.new(@ctx, id || next_widget_id, max_rect, layout)
       child.layer = @layer
       child.clip = @clip
+      child.v_overflow = @v_overflow
       child
     end
 
@@ -105,14 +141,16 @@ module Egui
     end
 
     # egui `ui.label` — selectable text by default (`userselect: false`
-    # for the inert paint-only label).
-    def label(text : String, wrap : Bool = false,
+    # for the inert paint-only label). `wrap` nil (default) wraps the
+    # label against the available width in a vertical layout; `true`
+    # wraps always, `false` never.
+    def label(text : String, wrap : Bool? = nil,
               userselect : Bool = true) : Response
       add(Label.new(text, wrap: wrap, userselect: userselect))
     end
 
     # egui `ui.label(RichText)`.
-    def rich(text : RichText, wrap : Bool = false,
+    def rich(text : RichText, wrap : Bool? = nil,
              userselect : Bool = true) : Response
       add(Label.new(text, wrap: wrap, userselect: userselect))
     end
@@ -173,8 +211,9 @@ module Egui
     end
 
     # Vector SVG (mini parser → painter primitives); see `Egui::Svg`.
-    def svg(source : String, size : Vec2 = Vec2.new(128.0, 128.0)) : Response
-      add(Svg.new(source, size))
+    def svg(source : String, size : Vec2 = Vec2.new(128.0, 128.0),
+            current_color : Color32 = Svg::BLACK) : Response
+      add(Svg.new(source, size, current_color))
     end
 
     # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
@@ -228,9 +267,17 @@ module Egui
         .show(self) { |ui| yield ui }
     end
 
+    # `variant:` picks the closed-combo look (`:button` separated arrow
+    # strip, `:plain` rigid single button, `:field` input field + select
+    # button); `label:` is a placeholder for the empty selection that
+    # also leads the list as the zero option (picking it reports "");
+    # `overlay:` opens the list on top of the button, GTK3-style.
     def combo_box(id : String, selected : String, options : Array(String),
-                  width : Float64 = 160.0, &on_select : String ->) : Bool
-      ComboBox.new(id, selected, options, width).show(self) { |opt| on_select.call(opt) }
+                  width : Float64? = nil, variant : Symbol = :button,
+                  label : String? = nil, overlay : Bool = false,
+                  &on_select : String ->) : Bool
+      ComboBox.new(id, selected, options, width, variant, label, overlay)
+        .show(self) { |opt| on_select.call(opt) }
     end
 
     # --- reactive bindings (see reactive.cr) -------------------------------
@@ -307,8 +354,10 @@ module Egui
     end
 
     def combo_box(id : String, sig : Signal(String), options : Array(String),
-                  width : Float64 = 160.0) : Bool
-      ComboBox.new(id, sig.value, options, width).show(self) { |opt| sig.value = opt }
+                  width : Float64? = nil, variant : Symbol = :button,
+                  label : String? = nil, overlay : Bool = false) : Bool
+      ComboBox.new(id, sig.value, options, width, variant, label, overlay)
+        .show(self) { |opt| sig.value = opt }
     end
 
     # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
@@ -316,8 +365,9 @@ module Egui
     # true` masks the display with circles (one per character).
     def text_edit_singleline(buffer : String, hint : String? = nil,
                              password : Bool = false,
+                             focus_id : String? = nil,
                              &on_change : String ->) : Response
-      response = add(TextEdit.new(buffer, hint, password))
+      response = add(TextEdit.new(buffer, hint, password, focus_id))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end
@@ -444,9 +494,17 @@ module Egui
     # egui `ui.add_sized(size, widget)` — lay the widget out in an
     # exact-size cell instead of its natural size (still bounded by
     # the region's max_rect, like every allocation).
+    #
+    # The cell is a HARD bound: unlike flow regions (#horizontal,
+    # #scope, scroll content) it does NOT inherit `v_overflow` — a
+    # widget placed in an exact-size cell can never outgrow it, even
+    # inside a scrollable panel. Without this, a fixed-height header
+    # cell (the Inspector's ✕) lets the natural-size button inside
+    # grow past the row and overlap what's below.
     def add_sized(size : Vec2, widget : Widget) : Response
       rect = allocate_space(size)
       cell = child_ui(rect)
+      cell.v_overflow = false
       widget.ui(cell)
     end
 
