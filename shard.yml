@@ -7,3 +7,11 @@ description: |
 
   Reference clone: egui-upstream/ (read-only). Native vendor code:
   vendor/sokol, vendor/fontstash.
+
+dependencies:
+  nanosvg:
+    github: OrelSokolov/nanosvg.cr
+  # The Crystal port of FreeType (rasterizer + TrueType bytecode hinter).
+  # Local path dep while it tracks PLAN.md; publish before shipping.
+  freetype-cr:
+    path: ../freetype.cr

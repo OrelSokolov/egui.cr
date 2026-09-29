@@ -183,6 +183,13 @@ module Egui
         true
       end
 
+      # Coverage bytes of a baked glyph's atlas slot (specs/tests);
+      # nil for blank glyphs.
+      def glyph_coverage(g : Glyph) : Bytes?
+        return nil if g.w == 0 || g.h == 0
+        @atlas.debug_region(g)
+      end
+
       # Rasterized coverage bitmap as text (debug/tests) — works for
       # every backend: glyphs land in the shared atlas either way.
       def debug_bitmap(ch : Char, size : Float64) : Nil
