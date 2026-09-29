@@ -13,7 +13,8 @@
 # JSON through Terminal::ConfigStore — the terminal face of the
 # framework's AppConfig system port (XDG on Linux, Application Support
 # on macOS, APPDATA on Windows). Settings live in the right side panel
-# (File → Settings…).
+# (the Settings menu in the menu bar — a section of its own, not a File
+# entry).
 
 require "../src/egui"
 require "../src/egui/backend/sokol"
@@ -122,9 +123,6 @@ class TerminalApp < Egui::App
       bar.menu_button("File") do |menu|
         menu.menu_item("New Tab", ACTION_NEW_TAB)
         menu.menu_item("Close Tab", ACTION_CLOSE_TAB)
-        menu.menu_item(settings_open? ? "Hide Settings" : "Settings…") do
-          self.settings_open = !settings_open?
-        end
       end
       # Clipboard bridge. The hints are static strings on purpose:
       # TermView already handles Ctrl+Shift+C/V (and the smart Ctrl+C)
@@ -133,6 +131,12 @@ class TerminalApp < Egui::App
       bar.menu_button("Edit") do |menu|
         menu.menu_item("Copy", icon: :copy, hotkey: "Ctrl+Shift+C") { copy_selection }
         menu.menu_item("Paste", icon: :paste, hotkey: "Ctrl+Shift+V") { paste_clipboard }
+      end
+      # Settings is a section of its own, not a File entry.
+      bar.menu_button("Settings") do |menu|
+        menu.menu_item(settings_open? ? "Hide Settings" : "Settings…") do
+          self.settings_open = !settings_open?
+        end
       end
     end
 

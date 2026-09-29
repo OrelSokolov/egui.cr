@@ -140,6 +140,52 @@ task "build:examples" => ["build:native"] do
   raise "example build failed: #{failures.sort.join(', ')}" unless failures.empty?
 end
 
+# Debug build for iteration: same link flags as build:examples but without
+# --release, so codegen is parallel and ~3x faster to compile (the release
+# LLVM -O3 pass runs single-threaded over the whole ~22k-line src/egui).
+# Runtime is 10-100x slower — for shipped binaries use build:examples.
+#   rake build:dev[hello]       # one example
+#   rake build:dev              # all examples
+desc "Build example(s) into bin/ without --release (fast iteration)"
+task "build:dev", [:name] do |_, args|
+  names = args[:name] ? [args[:name]] : EXAMPLES
+  unknown = names - EXAMPLES
+  raise "unknown example(s): #{unknown.sort.join(', ')}" unless unknown.empty?
+  FileUtils.mkdir_p("bin")
+  libdir = File.expand_path("lib")
+  lib_flag = WINDOWS ? "/LIBPATH:#{libdir}" : "-L#{libdir}"
+  if DARWIN
+    ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
+    ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
+    lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
+               "-framework OpenGL -framework QuartzCore"
+  end
+  # Same worker-pool shape as build:examples: concurrent compilers scale
+  # ~N wall-clock, each with its own persistent CRYSTAL_CACHE_DIR to avoid
+  # races on the shared cache.
+  jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
+  queue = names.dup
+  queue.extend(MonitorMixin)
+  failures = []
+  lock = Thread::Mutex.new
+  Array.new(jobs) do |i|
+    Thread.new do
+      cache = File.expand_path(".crystal-cache/j#{i % 8}")
+      env = {"CRYSTAL_CACHE_DIR" => cache}
+      loop do
+        name = queue.synchronize { queue.empty? ? nil : queue.shift }
+        break unless name
+        puts "▶ crystal build #{name} (dev)"
+        cmd = "crystal build examples/#{name}.cr -o bin/#{name} --link-flags \"#{lib_flag}\""
+        unless system(env, cmd)
+          lock.synchronize { failures << name }
+        end
+      end
+    end
+  end.each(&:join)
+  raise "example build failed: #{failures.sort.join(', ')}" unless failures.empty?
+end
+
 desc "Run the spec suite (headless — no GPU needed)"
 task :spec do
   sh "crystal spec"

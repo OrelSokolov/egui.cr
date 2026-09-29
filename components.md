@@ -614,7 +614,7 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       is deliberately NOT managed: the app owns the current route
       (e.g. a reactive Signal) and draws whichever page it wants —
       `on_back` is just a click callback. The notepad demonstrates it:
-      File → Settings (Ctrl+Comma — KeyCode gained `Comma = 44`,
+      the Settings menu (Ctrl+Comma — KeyCode gained `Comma = 44`,
       SAPP_KEYCODE_COMMA) opens a settings Page reactively
       (`reactive settings_open`), the caption hook hides the tabs
       while it is open, and the back button returns to the editor.

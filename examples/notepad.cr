@@ -4,7 +4,8 @@
 # active tab lighter, rounded-top cards, a dirty-dot marker that
 # becomes an X on hover, a "+" new-tab button, carousel scrolling when
 # the tabs overflow. Below the caption: a File menu with hotkey hints
-# (New / Open… / Save / Save As… / Close Tab / Quit), a per-document
+# (New / Open… / Save / Save As… / Close Tab / Quit), a View menu, a
+# Settings menu of its own (not a File entry), a per-document
 # textarea and a status bar. The app is a set of routed PAGES
 # (Egui::Router): root/root the editor, root/settings the full-window
 # settings page, root/confirm-close the unsaved-changes confirmation
@@ -196,12 +197,16 @@ class NotepadApp < Egui::App
             menu.menu_item("Save", ACTION_SAVE)
             menu.menu_item("Save As…", ACTION_SAVE_AS)
             menu.menu_item("Close Tab", ACTION_CLOSE)
-            menu.menu_item("Settings", ACTION_SETTINGS)
             menu.menu_item("Quit", ACTION_QUIT)
           end
           bar.menu_button("View") do |menu|
             menu.menu_item("Next Tab", ACTION_NEXT_TAB)
             menu.menu_item("Previous Tab", ACTION_PREV_TAB)
+          end
+          # Settings is a section of its own, not a File entry — it's a
+          # page navigation, not a document operation.
+          bar.menu_button("Settings") do |menu|
+            menu.menu_item("Settings…", ACTION_SETTINGS)
           end
         end
 
