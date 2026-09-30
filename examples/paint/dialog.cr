@@ -195,9 +195,9 @@ module PaintXp
                         {PB_TOP, PB_BOTTOM}
                       end
         p.rect(rect, 3.0, top, ring, 1.0, bottom)
-        tw = ctx.fonts.measure(label, 12.0).x
+        tw = ctx.fonts.measure(label, 14.0).x
         p.text(Egui::Pos2.new(rect.center.x - tw / 2.0, rect.center.y),
-          label, 12.0, Egui::Color32.rgb(0, 0, 0))
+          label, 14.0, Egui::Color32.rgb(0, 0, 0))
       end
 
       # --- keyboard: Esc closes, Enter pushes the default button ------

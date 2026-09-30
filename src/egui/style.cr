@@ -86,6 +86,16 @@ module Egui
     # (open bar entry); `menu_highlight_text` nil → text_color.
     property menu_highlight_fill : Color32?
     property menu_highlight_text : Color32?
+    # Classic scrollbar override (nil = the button visuals above): apps
+    # that paint the whole Win95/XP bar one system color set these —
+    # `scrollbar_fill` is the thumb and arrow-button fill (replacing
+    # button_weak/button_fill), `scrollbar_arrow` the arrow glyph color
+    # (nil → text_color, separator_color when disabled),
+    # `scrollbar_track` the groove behind the thumb (nil → scrollbar_fill
+    # / button_weak — a contrasting track keeps the thumb readable).
+    property scrollbar_fill : Color32?
+    property scrollbar_arrow : Color32?
+    property scrollbar_track : Color32?
     # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
     # progress bar fill, slider handle, hyperlinks.
     property selection_fill : Color32

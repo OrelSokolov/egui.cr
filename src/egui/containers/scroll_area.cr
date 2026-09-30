@@ -463,15 +463,18 @@ module Egui
       # Paint: groove under everything, beveled buttons + thumb, line
       # arrows from the built-in icon set.
       visuals = ui.style.visuals
+      strip = visuals.scrollbar_fill
+      track_fill = visuals.scrollbar_track || strip || visuals.button_weak
+      arrow = visuals.scrollbar_arrow || visuals.text_color
       painter = ui.painter
-      painter.rect(bar, fill: visuals.button_weak)
+      painter.rect(bar, fill: track_fill)
 
       Icons.arrow_button(painter, :up, up_r,
-        visuals.button_fill(up.hovered?, up.pressed?),
-        visuals.text_color, pressed: up.pressed?)
+        strip || visuals.button_fill(up.hovered?, up.pressed?),
+        arrow, pressed: up.pressed?)
       Icons.arrow_button(painter, :down, down_r,
-        visuals.button_fill(down.hovered?, down.pressed?),
-        visuals.text_color, pressed: down.pressed?)
+        strip || visuals.button_fill(down.hovered?, down.pressed?),
+        arrow, pressed: down.pressed?)
 
       if track.height.positive?
         dragging = track_resp.pressed? || track_resp.dragged?
@@ -480,7 +483,7 @@ module Egui
           thumb_hover = thumb.call(offset.y).contains?(ptr)
         end
         Icons.bevel(painter, thumb.call(offset.y),
-          visuals.button_fill(thumb_hover, dragging), dragging)
+          strip || visuals.button_fill(thumb_hover, dragging), dragging)
       end
 
       {bar, direct_ctrl}
@@ -559,15 +562,18 @@ module Egui
       end
 
       visuals = ui.style.visuals
+      strip = visuals.scrollbar_fill
+      track_fill = visuals.scrollbar_track || strip || visuals.button_weak
+      arrow = visuals.scrollbar_arrow || visuals.text_color
       painter = ui.painter
-      painter.rect(bar, fill: visuals.button_weak)
+      painter.rect(bar, fill: track_fill)
 
       Icons.arrow_button(painter, :left, left_r,
-        visuals.button_fill(left.hovered?, left.pressed?),
-        visuals.text_color, pressed: left.pressed?)
+        strip || visuals.button_fill(left.hovered?, left.pressed?),
+        arrow, pressed: left.pressed?)
       Icons.arrow_button(painter, :right, right_r,
-        visuals.button_fill(right.hovered?, right.pressed?),
-        visuals.text_color, pressed: right.pressed?)
+        strip || visuals.button_fill(right.hovered?, right.pressed?),
+        arrow, pressed: right.pressed?)
 
       if track.width.positive?
         dragging = track_resp.pressed? || track_resp.dragged?
@@ -576,7 +582,7 @@ module Egui
           thumb_hover = thumb.call(offset.x).contains?(ptr)
         end
         Icons.bevel(painter, thumb.call(offset.x),
-          visuals.button_fill(thumb_hover, dragging), dragging)
+          strip || visuals.button_fill(thumb_hover, dragging), dragging)
       end
 
       {bar, direct_ctrl}
@@ -588,21 +594,27 @@ module Egui
     private def classic_vbar_disabled(ui : Ui, viewport : Rect) : Nil
       bar, up_r, down_r = classic_v_geometry(viewport)
       visuals = ui.style.visuals
-      ui.painter.rect(bar, fill: visuals.button_weak)
-      Icons.arrow_button(ui.painter, :up, up_r, visuals.button_weak,
-        visuals.separator_color, pressed: false)
-      Icons.arrow_button(ui.painter, :down, down_r, visuals.button_weak,
-        visuals.separator_color, pressed: false)
+      strip = visuals.scrollbar_fill
+      arrow = visuals.scrollbar_arrow || visuals.separator_color
+      ui.painter.rect(bar, fill:
+        visuals.scrollbar_track || strip || visuals.button_weak)
+      Icons.arrow_button(ui.painter, :up, up_r, strip || visuals.button_weak,
+        arrow, pressed: false)
+      Icons.arrow_button(ui.painter, :down, down_r, strip || visuals.button_weak,
+        arrow, pressed: false)
     end
 
     private def classic_hbar_disabled(ui : Ui, viewport : Rect) : Nil
       bar, left_r, right_r = classic_h_geometry(viewport)
       visuals = ui.style.visuals
-      ui.painter.rect(bar, fill: visuals.button_weak)
-      Icons.arrow_button(ui.painter, :left, left_r, visuals.button_weak,
-        visuals.separator_color, pressed: false)
-      Icons.arrow_button(ui.painter, :right, right_r, visuals.button_weak,
-        visuals.separator_color, pressed: false)
+      strip = visuals.scrollbar_fill
+      arrow = visuals.scrollbar_arrow || visuals.separator_color
+      ui.painter.rect(bar, fill:
+        visuals.scrollbar_track || strip || visuals.button_weak)
+      Icons.arrow_button(ui.painter, :left, left_r, strip || visuals.button_weak,
+        arrow, pressed: false)
+      Icons.arrow_button(ui.painter, :right, right_r, strip || visuals.button_weak,
+        arrow, pressed: false)
     end
   end
 end

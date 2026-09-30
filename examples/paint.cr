@@ -106,6 +106,11 @@ module PaintXp
     # cells — so menus get a dedicated highlight instead.
     v.menu_highlight_fill = NAVY
     v.menu_highlight_text = WHITE
+    # Classic scrollbars: Luna-blue thumb and arrow buttons (#b8c7e6)
+    # with slate arrows (#6b7596) on a white track.
+    v.scrollbar_fill = Egui::Color32.rgb(0xb8, 0xc7, 0xe6)
+    v.scrollbar_arrow = Egui::Color32.rgb(0x6b, 0x75, 0x96)
+    v.scrollbar_track = WHITE
     v.selection_fill = NAVY
     v.separator_color = BEVEL_DK
     theme
@@ -240,6 +245,8 @@ class PaintApp < Egui::App
 
   @canvas : Egui::Canvas
   getter canvas
+  # The backend Quit port captured before GuardedQuit replaced it.
+  @orig_quit : Egui::SystemPorts::Quit::Implementation?
   @text_raster = PaintText.new
   @tools_tex = 0_u64
   # The fill tool's bitmap cursor (the tools.png bucket cell, 2x
@@ -283,6 +290,11 @@ class PaintApp < Egui::App
     @lasso = [] of {Int32, Int32}
     @themed = false
     @hotkeys_ready = false
+    # Exit confirmation: the backend Quit port (wrapped on the first
+    # frame, once Sokol.run has installed it) so the window ✕ asks to
+    # save too, exactly like File → Exit.
+    @exiting = false
+    @orig_quit = nil
   end
 
   def update(ctx : Egui::Context) : Nil
@@ -292,6 +304,11 @@ class PaintApp < Egui::App
     unless @hotkeys_ready
       BINDINGS.each { |action, combo| ctx.hotkeys.bind(combo, action) }
       @hotkeys_ready = true
+    end
+
+    if @orig_quit.nil?
+      @orig_quit = Egui::SystemPorts::Quit.implementation
+      Egui::SystemPorts::Quit.use(GuardedQuit.new(self))
     end
 
     if @tools_tex.zero?
@@ -1697,6 +1714,26 @@ class PaintApp
     @tool = i
   end
 
+  # --- exit flow --------------------------------------------------------
+  #
+  # Like MS Paint: quitting with unsaved changes asks "Save changes to
+  # <name>?" — Yes saves (Save As first for an untitled image) and
+  # quits, No quits, Cancel stays.
+
+  # Every quit path (window ✕, ACTION_EXIT) lands here.
+  def quit_requested : Nil
+    if @exiting || !@doc_dirty
+      do_quit
+    else
+      @dialog = :confirm_exit
+    end
+  end
+
+  private def do_quit : Nil
+    @exiting = true
+    @orig_quit.not_nil!.quit
+  end
+
   # --- dialogs ------------------------------------------------------------
   #
   # Luna-styled modal dialogs (PaintXp::Dialog): gradient caption with
@@ -1754,6 +1791,36 @@ class PaintApp
           @dialog = nil
         end
       end
+    when :confirm_exit
+      name = @path ? File.basename(@path.not_nil!) : "untitled"
+      clicked = PaintXp::Dialog.new(ctx, "confirm_exit").show(
+        "Paint", 300.0, ["Yes", "No", "Cancel"]) do |ui|
+        ui.label("Save changes to #{name}?")
+      end
+      case clicked
+      when "Yes"
+        @dialog = nil
+        if (p = @path)
+          write_file(p)
+          do_quit unless @doc_dirty # save failed → stay (status says why)
+        else
+          Egui::SystemPorts::SaveFileDialog.show(
+            title: "Save As",
+            filters: ["*.png"],
+            default_name: "untitled.png"
+          ) do |path|
+            if path
+              write_file(path)
+              do_quit unless @doc_dirty
+            end
+          end
+        end
+      when "No"
+        @dialog = nil
+        do_quit
+      when "Cancel", PaintXp::Dialog::CLOSE
+        @dialog = nil
+      end
     when :about
       clicked = PaintXp::Dialog.new(ctx, "about").show(
         "About Paint", 300.0, ["OK"]) do |ui|
@@ -1772,7 +1839,7 @@ class PaintApp
     open_doc if ctx.consume_action(ACTION_OPEN)
     save_doc if ctx.consume_action(ACTION_SAVE)
     save_doc_as if ctx.consume_action(ACTION_SAVE_AS)
-    Egui::SystemPorts::Quit.quit! if ctx.consume_action(ACTION_EXIT)
+    quit_requested if ctx.consume_action(ACTION_EXIT)
     do_undo if ctx.consume_action(ACTION_UNDO)
     do_redo if ctx.consume_action(ACTION_REDO)
     select_all if ctx.consume_action(ACTION_SEL_ALL)
@@ -1790,6 +1857,19 @@ class PaintApp
       push_undo
       @canvas.fill_with(@bg)
     end
+  end
+end
+
+# The backend's Quit port, guarded by the app's exit confirmation:
+# Quit.quit! from the window-frame ✕ (or anywhere else) routes through
+# PaintApp#quit_requested instead of quitting on the spot; once the
+# confirmation clears, PaintApp#do_quit calls the wrapped port itself.
+class GuardedQuit < Egui::SystemPorts::Quit::Implementation
+  def initialize(@app : PaintApp)
+  end
+
+  def quit : Nil
+    @app.quit_requested
   end
 end
 
