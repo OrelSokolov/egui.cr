@@ -11,7 +11,10 @@
 #     with glossy rounded caption buttons (red close), app icon slot,
 #     and a 2pt blue frame around the client area (the only
 #     style that reserves border space — the others share a 1px
-#     window outline).
+#     window outline);
+#   * WindowsXpSilver — the Luna silver variant: the same chrome in
+#     silver-grey, with the close button in a rose gradient
+#     (#DFA1A6 → #913448) instead of Luna's saturated red.
 #   * Ubuntu  — the classic Ambiance look (~2017): 28pt titlebar with a
 #     vertical warm-grey gradient, centered title, round buttons at the
 #     right edge (min, max, close — close in Ubuntu orange #E95420).
@@ -39,6 +42,7 @@ module Egui
     enum Style
       Windows
       WindowsXp
+      WindowsXpSilver
       Ubuntu
       Macos
     end
@@ -48,10 +52,11 @@ module Egui
     def self.show(ctx : Context, title : String,
                   style : Style = Style::Windows) : Nil
       frame = case style
-              in Style::Windows   then Windows.new(ctx, title)
-              in Style::WindowsXp then WindowsXp.new(ctx, title)
-              in Style::Ubuntu    then Ubuntu.new(ctx, title)
-              in Style::Macos     then Macos.new(ctx, title)
+              in Style::Windows         then Windows.new(ctx, title)
+              in Style::WindowsXp       then WindowsXp.new(ctx, title)
+              in Style::WindowsXpSilver then WindowsXpSilver.new(ctx, title)
+              in Style::Ubuntu          then Ubuntu.new(ctx, title)
+              in Style::Macos           then Macos.new(ctx, title)
               end
       frame.draw
     end
@@ -562,6 +567,81 @@ module Egui
       CLOSE_DOWN_TOP = Color32.new(190, 60, 24, 255)
       CLOSE_DOWN_BOT = Color32.new(150, 26, 6, 255)
 
+      # Palette hooks: the Luna colors above, routed through instance
+      # methods so the Silver variant (WindowsXpSilver) can recolor the
+      # whole chrome without duplicating the painting code. The button
+      # methods return the gradient/hover/press tuples #paint_buttons
+      # hands to #glossy_button.
+      def cap_light : Color32
+        CAP_LIGHT
+      end
+
+      def cap_mid : Color32
+        CAP_MID
+      end
+
+      def cap_deep : Color32
+        CAP_DEEP
+      end
+
+      def fg : Color32
+        FG
+      end
+
+      def title_shadow : Color32
+        TITLE_SHADOW
+      end
+
+      def frame_color : Color32
+        FRAME
+      end
+
+      def frame_outer : Color32
+        FRAME_OUTER
+      end
+
+      def frame_inner : Color32
+        FRAME_INNER
+      end
+
+      def btn_fill : {Color32, Color32}
+        {BTN_TOP, BTN_BOTTOM}
+      end
+
+      def btn_hot : {Color32, Color32}
+        {BTN_HOT_TOP, BTN_HOT_BOT}
+      end
+
+      def btn_down : {Color32, Color32}
+        {BTN_DOWN_TOP, BTN_DOWN_BOT}
+      end
+
+      def btn_ring : Color32
+        BTN_RING
+      end
+
+      def close_fill : {Color32, Color32}
+        {CLOSE_TOP, CLOSE_BOTTOM}
+      end
+
+      def close_hot : {Color32, Color32}
+        {CLOSE_HOT_TOP, CLOSE_HOT_BOT}
+      end
+
+      def close_down : {Color32, Color32}
+        {CLOSE_DOWN_TOP, CLOSE_DOWN_BOT}
+      end
+
+      def close_ring : Color32
+        CLOSE_RING
+      end
+
+      # The close glyph color — white over the red in Luna; the Silver
+      # close fill is dark enough to keep a white glyph too.
+      def close_glyph : Color32
+        FG
+      end
+
       @border_top = 0.0 # where the blue frame starts (caption bottom)
 
       def caption_height : Float64
@@ -585,12 +665,12 @@ module Egui
         painter.layer = 1
         painter.clip = bar.shrink(-1.0)
         grown = bar.shrink(-1.0)
-        painter.rect_gradient(grown, 0.0, CAP_MID, CAP_DEEP)
+        painter.rect_gradient(grown, 0.0, cap_mid, cap_deep)
         # the bright Luna band over the top quarter of the titlebar
         band_h = {bar.height * 0.25, 2.0}.max
         painter.rect_gradient(Rect.from_min_size(
           Pos2.new(grown.left, grown.top),
-          Vec2.new(grown.width, band_h)), 0.0, CAP_LIGHT, CAP_MID)
+          Vec2.new(grown.width, band_h)), 0.0, cap_light, cap_mid)
       end
 
       def paint_title(bar : Rect) : Nil
@@ -599,8 +679,8 @@ module Egui
         x = WindowFrame.icon? ? ICON_PAD + ICON_SIZE + ICON_GAP : TITLE_PAD
         pos = Pos2.new(bar.left + x, bar.center.y)
         painter.text(Pos2.new(pos.x + 1.0, pos.y + 1.0), title, TITLE_PT,
-          TITLE_SHADOW)
-        painter.text(pos, title, TITLE_PT, FG)
+          title_shadow)
+        painter.text(pos, title, TITLE_PT, fg)
       end
 
       def paint_icon(bar : Rect) : Nil
@@ -640,14 +720,11 @@ module Egui
           Pos2.new(max_r.left - BTN_GAP - BTN, y), Vec2.new(BTN, BTN))
 
         glossy_button(min_r, "minimize",
-          {BTN_TOP, BTN_BOTTOM}, {BTN_HOT_TOP, BTN_HOT_BOT},
-          {BTN_DOWN_TOP, BTN_DOWN_BOT}, BTN_RING)
+          btn_fill, btn_hot, btn_down, btn_ring, fg)
         glossy_button(max_r, "maximize",
-          {BTN_TOP, BTN_BOTTOM}, {BTN_HOT_TOP, BTN_HOT_BOT},
-          {BTN_DOWN_TOP, BTN_DOWN_BOT}, BTN_RING)
+          btn_fill, btn_hot, btn_down, btn_ring, fg)
         glossy_button(close, "close",
-          {CLOSE_TOP, CLOSE_BOTTOM}, {CLOSE_HOT_TOP, CLOSE_HOT_BOT},
-          {CLOSE_DOWN_TOP, CLOSE_DOWN_BOT}, CLOSE_RING)
+          close_fill, close_hot, close_down, close_ring, close_glyph)
       end
 
       # A glossy Luna caption button: rounded gradient fill with a
@@ -656,7 +733,8 @@ module Egui
                                 fill : {Color32, Color32},
                                 hover : {Color32, Color32},
                                 down : {Color32, Color32},
-                                ring : Color32) : Response
+                                ring : Color32,
+                                glyph_color : Color32) : Response
         resp = click_action(rect, name)
         painter.layer = Order::Middle
         painter.clip = rect
@@ -668,7 +746,7 @@ module Egui
           fill
         end
         painter.rect(rect, 3.0, top, ring, 1.0, bottom)
-        glyph(name, rect, FG)
+        glyph(name, rect, glyph_color)
         resp
       end
 
@@ -723,29 +801,142 @@ module Egui
         bottom = Rect.from_min_size(
           Pos2.new(screen.left, screen.bottom - BORDER_W),
           Vec2.new(screen.width, BORDER_W))
-        painter.rect(left, 0.0, FRAME, nil, 0.0)
-        painter.rect(right, 0.0, FRAME, nil, 0.0)
-        painter.rect(bottom, 0.0, FRAME, nil, 0.0)
+        painter.rect(left, 0.0, frame_color, nil, 0.0)
+        painter.rect(right, 0.0, frame_color, nil, 0.0)
+        painter.rect(bottom, 0.0, frame_color, nil, 0.0)
 
         # navy outline around the window + inner hairline around the
         # client opening (the same four-bar shape as the 1px outline)
         w = screen.width
         h = screen.height
         painter.rect(Rect.from_min_size(screen.min, Vec2.new(w, 1.0)),
-          0.0, FRAME_OUTER, nil, 0.0)
+          0.0, frame_outer, nil, 0.0)
         painter.rect(Rect.from_min_size(
           Pos2.new(screen.left, screen.bottom - 1.0), Vec2.new(w, 1.0)),
-          0.0, FRAME_OUTER, nil, 0.0)
+          0.0, frame_outer, nil, 0.0)
         painter.rect(Rect.from_min_size(screen.min, Vec2.new(1.0, h)),
-          0.0, FRAME_OUTER, nil, 0.0)
+          0.0, frame_outer, nil, 0.0)
         painter.rect(Rect.from_min_size(
           Pos2.new(screen.right - 1.0, screen.top), Vec2.new(1.0, h)),
-          0.0, FRAME_OUTER, nil, 0.0)
+          0.0, frame_outer, nil, 0.0)
 
         client = Rect.new(
           Pos2.new(screen.left + BORDER_W, @border_top),
           Pos2.new(screen.right - BORDER_W, screen.bottom - BORDER_W))
-        painter.rect(client, 0.0, nil, FRAME_INNER, 1.0)
+        painter.rect(client, 0.0, nil, frame_inner, 1.0)
+      end
+    end
+
+    # ==========================================================================
+    # Windows XP Silver — the Luna silver look: the exact same chrome,
+    # geometry and layout as WindowsXp, recolored silver-grey (frame
+    # included). Only the close button is rose — a #DFA1A6 → #913448
+    # gradient with a white glyph.
+    # ==========================================================================
+    class WindowsXpSilver < WindowsXp
+      # The Silver palette — same names as the Luna constants they
+      # replace (the palette hook methods below resolve to these).
+      # Silver titlebar gradient — the same band-over-body layout as
+      # Luna blue: a bright band over a grey body that lightens toward
+      # the bottom.
+      CAP_LIGHT    = Color32.new(255, 255, 255, 255)  # #FFFFFF band peak
+      CAP_MID      = Color32.new(195, 200, 210, 255)  # #C3C8D2 body top
+      CAP_DEEP     = Color32.new(224, 227, 234, 255)  # #E0E3EA body bottom
+      FG           = Color32.new(31, 47, 105, 255)    # #1F2F69 navy title + glyphs
+      TITLE_SHADOW = Color32.new(255, 255, 255, 255)  # white drop shadow
+
+      # The frame: solid silver with a dark outer line and a white
+      # hairline where it meets the client area.
+      FRAME       = Color32.new(204, 208, 216, 255)   # #CCD0D8
+      FRAME_OUTER = Color32.new(123, 130, 145, 255)   # #7B8291
+      FRAME_INNER = Color32.new(255, 255, 255, 255)   # #FFFFFF
+
+      # Glossy silver min/max buttons.
+      BTN_TOP      = Color32.new(252, 252, 253, 255)
+      BTN_BOTTOM   = Color32.new(199, 203, 213, 255)
+      BTN_RING     = Color32.new(139, 146, 163, 255)  # #8B92A3
+      BTN_HOT_TOP  = Color32.new(255, 255, 255, 255)
+      BTN_HOT_BOT  = Color32.new(218, 222, 231, 255)
+      BTN_DOWN_TOP = Color32.new(221, 224, 231, 255)
+      BTN_DOWN_BOT = Color32.new(180, 186, 199, 255)
+
+      # The close button: a soft rose gradient — #DFA1A6 top, #913448
+      # bottom — with a darker ring, brighter hover and deeper press,
+      # white glyph.
+      CLOSE_TOP      = Color32.new(223, 161, 166, 255) # #DFA1A6
+      CLOSE_BOTTOM   = Color32.new(145, 52, 72, 255)   # #913448
+      CLOSE_RING     = Color32.new(107, 36, 52, 255)   # #6B2434
+      CLOSE_HOT_TOP  = Color32.new(242, 184, 188, 255) # #F2B8BC
+      CLOSE_HOT_BOT  = Color32.new(169, 74, 93, 255)   # #A94A5D
+      CLOSE_DOWN_TOP = Color32.new(194, 128, 135, 255) # #C28087
+      CLOSE_DOWN_BOT = Color32.new(122, 42, 60, 255)   # #7A2A3C
+
+      def cap_light : Color32
+        CAP_LIGHT
+      end
+
+      def cap_mid : Color32
+        CAP_MID
+      end
+
+      def cap_deep : Color32
+        CAP_DEEP
+      end
+
+      def fg : Color32
+        FG
+      end
+
+      def title_shadow : Color32
+        TITLE_SHADOW
+      end
+
+      def frame_color : Color32
+        FRAME
+      end
+
+      def frame_outer : Color32
+        FRAME_OUTER
+      end
+
+      def frame_inner : Color32
+        FRAME_INNER
+      end
+
+      def btn_fill : {Color32, Color32}
+        {BTN_TOP, BTN_BOTTOM}
+      end
+
+      def btn_hot : {Color32, Color32}
+        {BTN_HOT_TOP, BTN_HOT_BOT}
+      end
+
+      def btn_down : {Color32, Color32}
+        {BTN_DOWN_TOP, BTN_DOWN_BOT}
+      end
+
+      def btn_ring : Color32
+        BTN_RING
+      end
+
+      def close_fill : {Color32, Color32}
+        {CLOSE_TOP, CLOSE_BOTTOM}
+      end
+
+      def close_hot : {Color32, Color32}
+        {CLOSE_HOT_TOP, CLOSE_HOT_BOT}
+      end
+
+      def close_down : {Color32, Color32}
+        {CLOSE_DOWN_TOP, CLOSE_DOWN_BOT}
+      end
+
+      def close_ring : Color32
+        CLOSE_RING
+      end
+
+      def close_glyph : Color32
+        Color32.new(255, 255, 255, 255) # white over the dark blue-grey
       end
     end
 

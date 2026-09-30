@@ -529,9 +529,10 @@ module Egui
       #   toggle shows/hides it in step.
       # * *chrome_style* — which chrome look to draw: Windows 11 dark
       #   (default), Windows XP Luna (blue gradient titlebar + thick
-      #   blue frame), classic Ubuntu Ambiance (gradient + round orange
-      #   close) or macOS (traffic lights left, close first). Switchable
-      #   live via `Sokol.chrome_style=`.
+      #   blue frame), Windows XP Silver (same chrome silver-grey,
+      #   rose #DFA1A6→#913448 close button), classic Ubuntu Ambiance (gradient +
+      #   round orange close) or macOS (traffic lights left, close
+      #   first). Switchable live via `Sokol.chrome_style=`.
       # * *inspector* — `:on` enables the runtime widget inspector
       # (right-click any widget → «Inspect»; F12 toggles the bottom
       # panel — see `egui/inspector.cr`) with the panel visible from

@@ -1,9 +1,10 @@
 # WindowFrame specs: the default client-side chrome — caption
 # geometry, caption buttons wired to the Window/Quit ports,
 # double-click maximize, hover fills and the edge resize grips — for
-# all four styles (Windows 11 dark, Windows XP Luna, Ubuntu Ambiance,
-# macOS traffic lights). Driven headless: Egui::WindowFrame.show is
-# exactly what the sokol backend calls before app frames.
+# all five styles (Windows 11 dark, Windows XP Luna, Windows XP
+# Silver, Ubuntu Ambiance, macOS traffic lights). Driven headless:
+# Egui::WindowFrame.show is exactly what the sokol backend calls
+# before app frames.
 
 require "spec"
 require "../src/egui"
@@ -290,6 +291,43 @@ describe Egui::WindowFrame do
     frame_draw(ctx, style, [Egui::Event.pointer_pressed(min_pos)], 0.064)
     frame_draw(ctx, style, [Egui::Event.pointer_released(min_pos)], 0.080)
     win.minimized.should eq(1)
+  end
+
+  it "windows xp silver: same chrome, silver palette, rose #DFA1A6→#913448 close quits" do
+    quit = FrameQuitRecorder.new
+    Egui::SystemPorts::Quit.use(quit)
+
+    ctx = Egui::Context.new
+    style = Egui::WindowFrame::Style::WindowsXpSilver
+    remainder = frame_draw(ctx, style, [] of Egui::Event, 0.016)
+    # identical layout to the Luna style: caption + thick rim
+    remainder.top.should eq(Egui::WindowFrame::WindowsXp::CAPTION_H)
+    remainder.left.should eq(Egui::WindowFrame::WindowsXp::BORDER_W)
+
+    silver = Egui::WindowFrame::WindowsXpSilver
+    gradient = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::WindowsXpSilver::CAP_MID &&
+                   c.fill2 == Egui::WindowFrame::WindowsXpSilver::CAP_DEEP }
+    gradient.should_not be_nil
+
+    # the close button is the rose gradient #DFA1A6 → #913448
+    close = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == Egui::WindowFrame::WindowsXpSilver::CLOSE_TOP &&
+                   c.fill2 == Egui::WindowFrame::WindowsXpSilver::CLOSE_BOTTOM }
+    close.should_not be_nil
+
+    # the silver frame strips replace Luna blue
+    frame_fill = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == Egui::WindowFrame::WindowsXpSilver::FRAME }
+    frame_fill.size.should eq(3)
+
+    # clicking the close button (same geometry as Luna) quits
+    close_pos = Egui::Pos2.new(
+      800.0 - Egui::WindowFrame::WindowsXp::BTN_INSET - Egui::WindowFrame::WindowsXp::BTN / 2.0,
+      Egui::WindowFrame::WindowsXp::CAPTION_H / 2.0)
+    frame_draw(ctx, style, [Egui::Event.pointer_pressed(close_pos)], 0.032)
+    frame_draw(ctx, style, [Egui::Event.pointer_released(close_pos)], 0.048)
+    quit.count.should eq(1)
   end
 
   it "an edge press hands the resize to the native loop" do

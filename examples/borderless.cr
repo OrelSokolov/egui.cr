@@ -8,7 +8,8 @@
 #     #C42B1C close hover, hairline window outline;
 #   * Windows XP (Luna) — blue gradient titlebar, glossy rounded
 #     caption buttons with a red close, and a thick 4pt blue frame
-#     around the client area;
+#     around the client area (plus a Silver variant — same chrome in
+#     silver-grey with a rose #DFA1A6→#913448 close button);
 #   * Ubuntu (classic Ambiance) — gradient titlebar, centered title,
 #     round buttons at the right edge, close in Ubuntu orange;
 #   * macOS — light titlebar with a separator hairline, traffic lights
@@ -27,9 +28,11 @@ require "../src/egui/backend/sokol"
 class BorderlessApp < Egui::App
   STYLES = {Egui::WindowFrame::Style::Windows,
             Egui::WindowFrame::Style::WindowsXp,
+            Egui::WindowFrame::Style::WindowsXpSilver,
             Egui::WindowFrame::Style::Ubuntu,
             Egui::WindowFrame::Style::Macos}
-  STYLE_LABELS = ["Windows 11", "Windows XP", "Ubuntu", "macOS"]
+  STYLE_LABELS = ["Windows 11", "Windows XP", "Windows XP Silver", "Ubuntu",
+                  "macOS"]
 
   @decorated = false
   # `--frame windows|xp|ubuntu|macos` — the initial look (screenshots).
@@ -45,10 +48,11 @@ class BorderlessApp < Egui::App
                ARGV.find { |a| a.starts_with?("--frame=") }
                  .try(&.split('=', 2)[1]) || "windows"
     case frame.downcase
-    when "xp"     then 1
-    when "ubuntu" then 2
-    when "macos"  then 3
-    else               0
+    when "xp"                then 1
+    when "xpsilver", "silver" then 2
+    when "ubuntu"            then 3
+    when "macos"             then 4
+    else                          0
     end
   end
 
