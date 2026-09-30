@@ -29,8 +29,7 @@ perf.data*
 /.crystal-cache/
 
 # Local debug/repro scripts
-scripts/dbg_*.py
-scripts/repro_*.py
+scripts/*.py
 spec/*_dbg.cr
 spec/*_repro.cr
 __pycache__/
