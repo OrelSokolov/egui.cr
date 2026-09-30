@@ -80,6 +80,12 @@ class GalleryApp < Egui::App
   # instances are reused across clicks (see #system_themes).
   @system_themes : Array(Egui::Theme)?
 
+  # `--styled` — boot straight into a custom stylesheet theme (the
+  # screenshot demo of the CSS cascade: one derived theme restyles
+  # every widget at once). Applied once, on the first frame.
+  @styled : Bool = ARGV.includes?("--styled")
+  @styled_applied = false
+
   # Sidebar navigation: sections of tabs, all closable — the X nested
   # in each tab removes it (and the whole section when it empties).
   # Mutable app state (not a constant) because tabs disappear.
@@ -131,6 +137,12 @@ class GalleryApp < Egui::App
 
   def update(ctx : Egui::Context) : Nil
     @updates += 1
+    # --styled: swap the whole UI onto the custom stylesheet theme once,
+    # before anything renders (screenshots; see #showcase_theme).
+    if @styled && !@styled_applied
+      ctx.theme = showcase_theme
+      @styled_applied = true
+    end
     # Default hotkey bindings — once, on the first frame (the map
     # lives on the Context). Rebinds in the Hotkeys tab replace these.
     unless @hotkeys_ready
@@ -684,6 +696,40 @@ class GalleryApp < Egui::App
       windows_11_theme,
       macos_theme,
     ]
+  end
+
+  # The --styled showcase: one derived theme restyles EVERY widget —
+  # palette through `DefaultTheme.build`'s block, then CSS-cascade class
+  # rules on top (button paddings, sidebar selection, tab underlines,
+  # link color). Nothing per-widget: the sheet reaches everything.
+  private def showcase_theme : Egui::Theme
+    accent = Egui::Color32.rgb(0x7C, 0x4D, 0xFF) # violet
+    theme = Egui::DefaultTheme.build("showcase", dark: true) do |v|
+      v.window_fill = Egui::Color32.rgb(24, 22, 34)
+      v.panel_fill = Egui::Color32.rgb(18, 16, 26)
+      v.selection_fill = accent
+      v.hyperlink_color = Egui::Color32.rgb(0x5E, 0xD3, 0xB8) # teal
+      v.button_stroke = Egui::Color32.rgb(110, 96, 160)
+    end
+    sheet = theme.sheet
+    sheet.rule("button", Egui::StyleVars{
+      "padding.top"    => 7.0,
+      "padding.right"  => 14.0,
+      "padding.bottom" => 7.0,
+      "padding.left"   => 14.0,
+    })
+    sheet.rule("button:hover", Egui::StyleVars{
+      "background" => Egui::Color32.rgba(124, 77, 255, 120),
+    })
+    sheet.rule("sidebar.tab:selected", Egui::StyleVars{
+      "background" => accent,
+      "text_color" => Egui::Color32.rgb(255, 255, 255),
+    })
+    sheet.rule("tabs.tab:selected", Egui::StyleVars{
+      "underline_color" => Egui::Color32.rgb(0x5E, 0xD3, 0xB8),
+      "underline_width" => 3.0,
+    })
+    theme
   end
 
   # Preset colors are 1:1 from the platforms' own theme sources (values

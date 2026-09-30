@@ -119,8 +119,11 @@ class NotepadApp < Egui::App
   @settings : Settings = Egui::SystemPorts::AppConfig.load(
     "notepad", Settings.new)
 
-  def initialize(files : Array(String) = [] of String)
+  def initialize(files : Array(String) = [] of String, theme : String? = nil)
     super()
+    # Screenshot/theme override: `notepad --theme Light file.txt` forces
+    # the palette for this run without touching the saved settings.
+    @settings.theme = theme if theme
     # Win11 Notepad chrome: the tabs live IN the caption, left of the
     # caption buttons (WindowFrame draws the hook before app frames).
     # A tab click writes the selection signal; close goes through the
@@ -540,7 +543,21 @@ end
 # deep-linked before the first frame, and Backend.run does the same
 # parse as a no-op fallback for apps that don't do it themselves.
 cli = Egui::CLI.parse(ARGV)
-app = NotepadApp.new(cli[:argv])
+# `--theme Dark|Light` — a palette override for this run (screenshots);
+# pulled out of the file list before the app sees it.
+theme = nil
+files = [] of String
+argv = cli[:argv].dup
+argv.each_with_index do |arg, i|
+  if arg == "--theme" && (value = argv[i + 1]?)
+    theme = value
+  elsif argv[i - 1]? == "--theme"
+    next
+  else
+    files << arg
+  end
+end
+app = NotepadApp.new(files, theme)
 if (route = cli[:route])
   app.ctx.router.navigate(route)
 end

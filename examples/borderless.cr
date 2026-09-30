@@ -32,7 +32,29 @@ class BorderlessApp < Egui::App
   STYLE_LABELS = ["Windows 11", "Windows XP", "Ubuntu", "macOS"]
 
   @decorated = false
-  @style_index = 0
+  # `--frame windows|xp|ubuntu|macos` — the initial look (screenshots).
+  # Parsed as a CLASS method because the style must reach `Sokol.run`'s
+  # `chrome_style:` option: run assigns @@chrome_style AFTER the app is
+  # constructed, so an assignment from #initialize would be overwritten
+  # before the first frame (only the in-app segmented switch worked).
+  @style_index = BorderlessApp.frame_arg
+
+  def self.frame_arg : Int32
+    frame = ARGV.each_cons(2).find { |pair| pair[0] == "--frame" }
+                       .try(&.[](1)) ||
+               ARGV.find { |a| a.starts_with?("--frame=") }
+                 .try(&.split('=', 2)[1]) || "windows"
+    case frame.downcase
+    when "xp"     then 1
+    when "ubuntu" then 2
+    when "macos"  then 3
+    else               0
+    end
+  end
+
+  def self.frame_style : Egui::WindowFrame::Style
+    STYLES[frame_arg]
+  end
 
   def update(ctx : Egui::Context) : Nil
     ctx.central_panel do |ui|
@@ -73,4 +95,5 @@ class BorderlessApp < Egui::App
 end
 
 Egui::Backend::Sokol.run(BorderlessApp.new,
-  title: "egui-cr — borderless", decorations: false, inspector: :hidden)
+  title: "egui-cr — borderless", decorations: false, inspector: :hidden,
+  chrome_style: BorderlessApp.frame_style)

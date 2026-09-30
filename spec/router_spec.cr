@@ -257,4 +257,10 @@ describe Egui::CLI do
     out[:route].should be_nil
     out[:argv].should eq(["a.txt", "b.txt"])
   end
+
+  it "passes unknown app flags through instead of raising" do
+    out = Egui::CLI.parse(["--theme", "Light", "a.txt"])
+    out[:route].should be_nil
+    out[:argv].should eq(["--theme", "Light", "a.txt"])
+  end
 end

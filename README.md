@@ -4,37 +4,55 @@
 
 # egui-cr
 
-**Reactive, immediate-mode GUI for Crystal — pure Crystal UI.**
-Inspired by [egui](https://github.com/emilk/egui)'s architecture (Rust)
-and its ideas, not a port of it.
+**Beautiful UI is already here.** A framework for beautiful UIs in
+Crystal — inspired by [egui](https://github.com/emilk/egui)'s
+architecture (Rust) and its ideas, not a port of it.
 
-The only native dependency is the rendering backend:
-[sokol_gfx](https://github.com/floooh/sokol) (window + GPU). Everything
-above it is our own pure Crystal: widgets and layout, font rendering (a
-FreeType port — SFNT, TrueType bytecode hinting, ftgrays rasterizer —
-the [freetype-cr](https://github.com/OrelSokolov/freetype.cr) shard),
-and SVG/icon rasterization (a NanoSVG port). No libfreetype, no C font
-or icon code in shipped binaries; C accelerators exist only as a dev
-convenience behind `USE_C_EXTENSIONS=1` — see `.env.example`.
+|  |  |
+|---|---|
+| **Reactive** | signals, memoized computeds, one-line widget bindings — no manual repaint plumbing |
+| **Immediate mode** | egui-style per-frame UI: declare widgets every frame, state lives in your app |
+| **CSS cascade** | dotted-path style classes (`sidebar.tab`) with state overlays (`:hover`, `:selected`), resolved like the CSS cascade |
+| **Font renderer** | [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — our pure-Crystal FreeType port (SFNT, TrueType hinting, ftgrays) |
+| **SVG renderer** | [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — our pure-Crystal NanoSVG port (fills, gradients, transforms, dashes) |
+| **Rendering backend** | [sokol_gfx](https://github.com/floooh/sokol) — window + GPU; the only native dependency |
 
-State management is reactive from the start: signals, memoized
-computeds and one-line widget bindings on top of the immediate-mode
-core — no manual repaint plumbing (see "Reactive state" below).
+Everything between the backend and your app is pure Crystal — no
+libfreetype and no C font or icon code in shipped binaries; C
+accelerators exist only as a dev convenience behind
+`USE_C_EXTENSIONS=1` — see `.env.example`.
+
+## Dependencies
+
+Two Crystal shards — both our own pure-Crystal renderers, developed
+alongside egui-cr and battle-tested by it:
+
+- [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — the font
+  renderer: a Crystal port of FreeType's TrueType pipeline (the ftgrays
+  anti-aliasing rasterizer, the ttinterp bytecode hinter, an SFNT
+  loader). Pixel-exact hinted glyphs with zero libfreetype — every
+  label, editor and terminal glyph you see is rasterized by it.
+- [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — the SVG
+  renderer: a faithful Crystal port of NanoSVG (polygon fills,
+  gradients in any orientation, nested transforms, dash arrays, shape
+  and group opacity). All SVG icons and vector art bake through it.
+
+The one native dependency is the sokol_gfx backend above — everything
+else is pure Crystal.
 
 ## Build & run
 
 ```bash
-crosspack deps        # verify/install build deps (crystal, GL, X11, xcursor)
-crosspack build       # specs + native lib + examples -> builds/
-./bin/hello
+crosspack deps                    # verify/install build deps (crystal, GL, X11, xcursor)
+crosspack run widgets_gallery     # build if needed, launch the gallery
 ```
 
 Or manually:
 
 ```bash
-rake spec             # headless core specs
-rake build:examples   # vendor C + crystal build
-./bin/hello
+rake spec                  # headless core specs
+rake build:examples        # vendor C + crystal build
+./bin/widgets_gallery
 ```
 
 ### Optimized iteration: `-O3` instead of `--release`
@@ -134,6 +152,40 @@ Differences from the Linux build:
 - system ports shell out to `osascript`/`open` (dialogs, message
   boxes, notifications, URL opening, user dirs) and manage the window
   through AppKit (NSWindow/NSScreen from the ObjC shim)
+
+## Screenshots
+
+The full gallery lives in **[DEMO.md](DEMO.md)** — notepad in both
+themes, the four borderless window frames, the widget gallery (default
+and custom-stylesheet), and paint. All shots are script-generated;
+regenerate the set for a new release (Linux/X11):
+
+```bash
+python3 scripts/make_screenshots.py        # builds + shoots + rewrites DEMO.md
+```
+
+## Styling — a CSS cascade
+
+Looks are declarative, like CSS: a global tree of style classes
+addressed by dotted paths, each holding style variables for the base
+state plus overlays for interaction states — resolved exactly like the
+CSS cascade (more specific classes win, states always override
+classes, leaves beat ancestors). Merged styles are cached across
+frames; editing a rule drops the cache.
+
+```crystal
+ctx.stylesheet.rule("sidebar.tab", StyleVars{
+  "padding"    => Egui::Vec2.new(12.0, 6.0),
+  "text_color" => Egui::Color32.rgb(235, 235, 235),
+})
+ctx.stylesheet.rule("sidebar.tab:selected", StyleVars{
+  "background" => Egui::Color32.rgb(0, 122, 204),
+})
+```
+
+The sheet rides on the `Theme` (`ctx.theme = …` swaps class styles
+together with the palette); the default theme's rules live in
+`default_theme.cr`.
 
 ## Reactive state
 
