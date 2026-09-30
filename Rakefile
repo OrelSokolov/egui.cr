@@ -100,8 +100,38 @@ end
 desc "Build vendor C code (sokol_app/gfx/glue/gl + fontstash) into #{NATIVE_LIB}"
 task "build:native" => NATIVE_LIB
 
-desc "Build all examples into bin/"
-task "build:examples" => ["build:native"] do
+# Warm ONE compiler cache with a single small build, then clone it into
+# every empty worker slot. On a fresh clone (or after a cache wipe) the
+# parallel build would otherwise compile the whole dependency tree —
+# egui core + the nanosvg shard — once PER WORKER (~30s each, release).
+# The C shim's compile-once-.o analogy, done with CRYSTAL_CACHE_DIR:
+# the warm-up pays the full compile once, the workers then mostly link
+# (a cold logos build is ~30s, a warm one ~4s). No-op when every slot
+# is already populated.
+def warm_compiler_caches(jobs, opt_flags, lib_flag)
+  slots = (0...jobs).map { |i| File.expand_path(".crystal-cache/j#{i % 8}") }
+  return if slots.all? { |d| Dir.exist?(d) && !Dir.empty?(d) }
+  warm = slots.first
+  puts "▶ cache warm-up (hello, #{opt_flags.empty? ? "dev" : opt_flags.strip})"
+  FileUtils.mkdir_p("tmp")
+  system({"CRYSTAL_CACHE_DIR" => warm},
+    "crystal build examples/hello.cr -o tmp/cache_warm #{opt_flags}--link-flags \"#{lib_flag}\"") or return
+  slots.drop(1).each do |dst|
+    next if Dir.exist?(dst) && !Dir.empty?(dst) # worker already warm
+    FileUtils.rm_rf(dst) # half-empty clone target from an aborted run
+    FileUtils.cp_r(warm, dst)
+  end
+ensure
+  FileUtils.rm_f("tmp/cache_warm")
+end
+
+# Shared worker-pool build: concurrent `crystal build` processes scale
+# ~N wall-clock (a --release build is effectively one CPU — frontend +
+# LLVM opt run in one process), each with its own persistent
+# CRYSTAL_CACHE_DIR (.crystal-cache/jN, reused across runs): concurrent
+# compilers race on the shared ~/.cache/crystal (tmp-file renames).
+# opt_flags: "" (dev), "-O3 " (optimized iteration), "--release ".
+def build_examples(names, opt_flags, label)
   FileUtils.mkdir_p("bin")
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.
@@ -114,17 +144,10 @@ task "build:examples" => ["build:native"] do
     lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
                "-framework OpenGL -framework QuartzCore"
   end
-  # Parallel builds: a `crystal build --release` is effectively one CPU
-  # (frontend + LLVM opt run in one process), so N concurrent compilers
-  # scale ~N wall-clock. Capped at 8 to bound peak RAM (~1-2 GB each);
-  # override with JOBS=.
-  jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, 8].min))
-  # --release: these are the shipped demo binaries; a debug build is
-  # 10-100x slower (the notepad-on-big-files lesson).
-  # One cache slot per worker: concurrent `crystal build` processes race on
-  # the shared ~/.cache/crystal (tmp-file renames), so each gets its own
-  # persistent CRYSTAL_CACHE_DIR (.crystal-cache/jN, reused across runs).
-  queue = EXAMPLES.dup
+  # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
+  jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
+  warm_compiler_caches(jobs, opt_flags, lib_flag)
+  queue = names.dup
   queue.extend(MonitorMixin) # pop from worker threads
   failures = []
   lock = Thread::Mutex.new
@@ -135,8 +158,8 @@ task "build:examples" => ["build:native"] do
       loop do
         name = queue.synchronize { queue.empty? ? nil : queue.shift }
         break unless name
-        puts "▶ crystal build #{name}"
-        cmd = "crystal build examples/#{name}.cr -o bin/#{name} --release --link-flags \"#{lib_flag}\""
+        puts "▶ crystal build #{name}#{label.empty? ? "" : " (#{label})"}"
+        cmd = "crystal build examples/#{name}.cr -o bin/#{name} #{opt_flags}--link-flags \"#{lib_flag}\""
         unless system(env, cmd)
           lock.synchronize { failures << name }
         end
@@ -146,50 +169,49 @@ task "build:examples" => ["build:native"] do
   raise "example build failed: #{failures.sort.join(', ')}" unless failures.empty?
 end
 
-# Debug build for iteration: same link flags as build:examples but without
-# --release, so codegen is parallel and ~3x faster to compile (the release
-# LLVM -O3 pass runs single-threaded over the whole ~22k-line src/egui).
-# Runtime is 10-100x slower — for shipped binaries use build:examples.
-#   rake build:dev[hello]       # one example
-#   rake build:dev              # all examples
-desc "Build example(s) into bin/ without --release (fast iteration)"
-task "build:dev", [:name] do |_, args|
+def example_names_for(args)
   names = args[:name] ? [args[:name]] : EXAMPLES
   unknown = names - EXAMPLES
   raise "unknown example(s): #{unknown.sort.join(', ')}" unless unknown.empty?
-  FileUtils.mkdir_p("bin")
-  libdir = File.expand_path("lib")
-  lib_flag = WINDOWS ? "/LIBPATH:#{libdir}" : "-L#{libdir}"
-  if DARWIN
-    ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
-    ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
-    lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
-               "-framework OpenGL -framework QuartzCore"
-  end
-  # Same worker-pool shape as build:examples: concurrent compilers scale
-  # ~N wall-clock, each with its own persistent CRYSTAL_CACHE_DIR to avoid
-  # races on the shared cache.
-  jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
-  queue = names.dup
-  queue.extend(MonitorMixin)
-  failures = []
-  lock = Thread::Mutex.new
-  Array.new(jobs) do |i|
-    Thread.new do
-      cache = File.expand_path(".crystal-cache/j#{i % 8}")
-      env = {"CRYSTAL_CACHE_DIR" => cache}
-      loop do
-        name = queue.synchronize { queue.empty? ? nil : queue.shift }
-        break unless name
-        puts "▶ crystal build #{name} (dev)"
-        cmd = "crystal build examples/#{name}.cr -o bin/#{name} --link-flags \"#{lib_flag}\""
-        unless system(env, cmd)
-          lock.synchronize { failures << name }
-        end
-      end
-    end
-  end.each(&:join)
-  raise "example build failed: #{failures.sort.join(', ')}" unless failures.empty?
+  names
+end
+
+# --release: these are the shipped demo binaries; a debug build is
+# 10-100x slower (the notepad-on-big-files lesson).
+desc "Build all examples into bin/ (--release)"
+task "build:examples" => ["build:native"] do
+  build_examples(EXAMPLES, "--release ", "")
+end
+
+# Debug build for iteration: same link flags as build:examples but without
+# --release, so codegen is parallel and ~3x faster to compile (the release
+# LLVM -O3 pass runs single-threaded over the whole ~22k-line src/egui).
+# Runtime is 10-100x slower — for shipped binaries use build:release.
+# OPT=-O3 is the middle ground ("Optimized iteration" in the README):
+# per-unit LLVM opt keeps the shard/stdlib object cache alive across app
+# edits (unlike --release's single-module merge), rebuilds stay ~2s while
+# running only 2-3x slower than release.
+#   rake build:dev[hello]       # one example
+#   rake build:dev              # all examples
+#   OPT=-O3 rake build:dev      # optimized iteration
+desc "Build example(s) into bin/ without --release (fast iteration; OPT=-O3 for optimized)"
+task "build:dev", [:name] do |_, args|
+  # Empty for dev, e.g. "-O3 " for the optimized-iteration mode; passed to
+  # the cache warm-up too — o3 units live under different cache names
+  # (*.o3.o), so a dev-warmed slot does not warm them.
+  opt = ENV.fetch("OPT", "").strip
+  opt = "#{opt} " unless opt.empty?
+  build_examples(example_names_for(args), opt, "dev#{opt.empty? ? "" : " #{opt.strip}"}")
+end
+
+# Release build scoped to what you need — the same --release path as
+# build:examples, but one example when only one binary is wanted
+# (a full release sweep is ~30s/warm example, one is ~30s cold).
+#   rake build:release          # all examples
+#   rake build:release[paint]   # one example
+desc "Build example(s) into bin/ with --release (shipped binaries)"
+task "build:release", [:name] => ["build:native"] do |_, args|
+  build_examples(example_names_for(args), "--release ", "")
 end
 
 desc "Run the spec suite (headless — no GPU needed)"

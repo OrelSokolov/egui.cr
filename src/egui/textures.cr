@@ -8,8 +8,8 @@ module Egui
   abstract class TextureRegistry
     # True when #register_rgba hands out real GPU textures. The Svg
     # raster cache (see Svg#paint) only engages on a graphical
-    # backend; the headless dummy keeps the vector paint path so
-    # specs still assert on LineCmd/CircleCmd geometry.
+    # backend; the headless dummy paints nothing — specs assert on
+    # the bake buffers instead (NanoSvgCr works headless).
     def graphical? : Bool
       false
     end

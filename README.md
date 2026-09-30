@@ -40,6 +40,32 @@ rake build:examples   # vendor C + crystal build
 ./bin/hello
 ```
 
+### Optimized iteration: `-O3` instead of `--release`
+
+`crystal build --release` merges the whole program into a single LLVM
+module (`Compiler#release!` sets `single_module = true`) so LLVM can
+inline across the stdlib⇄shard⇄app boundaries. Side effect: the
+compiler's per-unit object cache (units = files of the require graph,
+keyed by each unit's generated bitcode) is defeated — any code edit
+re-runs `-O3` over everything, stdlib and shards included.
+
+`crystal build -O3` (no `--release`) sets the optimization level
+without the single-module merge, so the cache works: editing app code
+recompiles only the touched units and reuses the rest. Measured on the
+nanosvg benchmark app (Crystal 1.21, this repo's machine):
+
+| rebuild after an edit | `--release` | `-O3` |
+|---|---|---|
+| time                  | ~9.5 s (full re-opt) | ~2.1 s (405/406 units reused) |
+
+The trade-off: without the single-module merge there is no
+cross-module inlining, and the hot stdlib⇄shard boundary pays for it —
+the nanosvg rasterizer benchmarks run 2–3x slower than a true
+`--release` binary (and the binary is ~50% larger). So `-O3` is for
+fast iteration with optimized-ish code; ship the final binary from
+`--release`. Plain dev builds remain the fastest loop (~1.8 s, no LLVM
+optimization at all).
+
 ### Windows
 
 The same rake targets work on Windows. Requirements:

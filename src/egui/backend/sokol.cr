@@ -10,7 +10,19 @@
 require "../../egui"
 require "./text"
 require "./freetype"
-require "./nanosvg"
+# DEV-build bake accelerator: without --release the Crystal port's
+# hot loops run 10-100x slower (no regalloc/inlining, bounds checks
+# on every array access), while the C shim is cc -O2 regardless of
+# Crystal's flags. Route the Svg texture bake through C while
+# iterating; release builds stay pure Crystal (byte-identical
+# output, so dev and release render the same).
+{% unless flag?(:release) %}
+  # TEMP: C-шim отключён — dev-сборка гоняет чистый Crystal NanoSVG
+  # (NanoSvgCr). Вернуть: раскомментировать три строки ниже.
+  # require "./nanosvg"
+  # rasterizer = ->Egui::Backend::NanoSvg.rasterize(String, Egui::Color32, Int32, Int32)
+  # Egui::Svg.external_rasterizer = rasterizer
+{% end %}
 
 @[Link("egui_cr_sokol")]
 {% if flag?(:win32) %}

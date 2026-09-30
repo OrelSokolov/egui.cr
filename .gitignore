@@ -27,3 +27,14 @@ perf.data*
 # Stray local build output
 /egui
 /.crystal-cache/
+
+# Local debug/repro scripts
+scripts/dbg_*.py
+scripts/repro_*.py
+spec/*_dbg.cr
+spec/*_repro.cr
+__pycache__/
+
+# Stray screenshots/captures
+hello2*.png
+hello2.xwd

@@ -1,8 +1,10 @@
-# Headless NanoSVG smoke test: exercises the REAL C path —
+# Headless NanoSVG C smoke test: exercises the C shim —
 # backend/nanosvg_shim.c through Egui::Backend::NanoSvg.rasterize —
 # against lucide-style strokes, polygon fills, gradients and
-# currentColor tinting. Not part of `crystal spec` (it links the
-# native archive, which a fresh clone may not have built); run:
+# currentColor tinting. The C twin is comparison-only now (see
+# examples/svg_rasterizer.cr); this script checks it still matches
+# the Crystal port's contract. Not part of `crystal spec` (it links
+# the native archive, which a fresh clone may not have built); run:
 #
 #   rake build:native
 #   crystal run spec/nanosvg_smoke.cr --link-flags "-Llib"
