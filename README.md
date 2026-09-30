@@ -2,9 +2,13 @@
   <img src="assets/icon.png" width="160" alt="egui-cr logo">
 </p>
 
-# egui-cr
+# egui.cr — Crossplatform UI in pure Crystal
 
 **[► WATCH DEMO](DEMO.md)** — screenshots of everything below.
+
+| macOS | Windows | Linux | Android | iOS |
+|---|---|---|---|---|
+| ✓ | ✓ | ✓ | ✗ | ✗ |
 
 **Beautiful UI is already here.** A framework for beautiful UIs in
 Crystal — inspired by [egui](https://github.com/emilk/egui)'s
