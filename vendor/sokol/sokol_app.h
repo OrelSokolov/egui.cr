@@ -14266,6 +14266,29 @@ _SOKOL_PRIVATE void _sapp_egl_destroy(void) {
 
 #endif // _SAPP_EGL
 
+#if defined(_SAPP_LINUX)
+/* egui-cr debug (EGUI_FRAME_DEBUG): per-phase timing of the X11 run
+   loop. Chases stalls that happen BETWEEN frame callbacks (the frame
+   GAP lines in egui.cr's sokol.cr) — each phase over 50 ms is logged:
+   x11_events (Xlib batch incl. clipboard/selection round trips),
+   frame_cb+commit (Crystal on_frame + sg), glx_swap (present path),
+   xflush. No debugger needed: the loop reports itself. */
+#include <time.h>
+static int _sapp_loop_dbg = -1;
+static double _sapp_dbg_ms(struct timespec a, struct timespec b) {
+    return (double)(b.tv_sec - a.tv_sec) * 1e3 + (double)(b.tv_nsec - a.tv_nsec) / 1e6;
+}
+#define _SAPP_DBG_PHASE(name, stmt) do { \
+    struct timespec _t0; clock_gettime(CLOCK_MONOTONIC, &_t0); \
+    stmt; \
+    if (_sapp_loop_dbg > 0) { \
+        struct timespec _t1; clock_gettime(CLOCK_MONOTONIC, &_t1); \
+        double _ms = _sapp_dbg_ms(_t0, _t1); \
+        if (_ms > 50.0) fprintf(stderr, "[loop] " name " took %.0f ms\n", _ms); \
+    } \
+} while (0)
+#endif
+
 _SOKOL_PRIVATE void _sapp_linux_frame(void) {
     _sapp_x11_update_dimensions_from_window_size();
     #if defined(SOKOL_WGPU)
@@ -14273,9 +14296,17 @@ _SOKOL_PRIVATE void _sapp_linux_frame(void) {
     #elif defined(SOKOL_VULKAN)
         _sapp_vk_frame();
     #else
-        _sapp_frame();
+        #if defined(_SAPP_LINUX)
+            _SAPP_DBG_PHASE("frame_cb+commit", _sapp_frame());
+        #else
+            _sapp_frame();
+        #endif
         #if defined(_SAPP_GLX)
-            _sapp_glx_swap_buffers();
+            #if defined(_SAPP_LINUX)
+                _SAPP_DBG_PHASE("glx_swap", _sapp_glx_swap_buffers());
+            #else
+                _sapp_glx_swap_buffers();
+            #endif
         #elif defined(_SAPP_EGL)
             eglSwapBuffers(_sapp.egl.display, _sapp.egl.surface);
         #endif
@@ -14338,8 +14369,22 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
     }
 
     XFlush(_sapp.x11.display);
+    if (_sapp_loop_dbg < 0)
+        _sapp_loop_dbg = getenv("EGUI_FRAME_DEBUG") ? 1 : 0;
     while (!_sapp.quit_ordered) {
         _sapp_timing_update(&_sapp.timing, 0.0);
+        #if defined(_SAPP_LINUX)
+        _SAPP_DBG_PHASE("x11_events", {
+            int count = XPending(_sapp.x11.display);
+            while (count--) {
+                XEvent event;
+                XNextEvent(_sapp.x11.display, &event);
+                _sapp_x11_process_event(&event);
+            }
+        });
+        _sapp_linux_frame();
+        _SAPP_DBG_PHASE("xflush", XFlush(_sapp.x11.display));
+        #else
         int count = XPending(_sapp.x11.display);
         while (count--) {
             XEvent event;
@@ -14348,6 +14393,7 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
         }
         _sapp_linux_frame();
         XFlush(_sapp.x11.display);
+        #endif
         // handle quit-requested, either from window or from sapp_request_quit()
         if (_sapp.quit_requested && !_sapp.quit_ordered) {
             // give user code a chance to intervene

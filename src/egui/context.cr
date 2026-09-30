@@ -393,6 +393,13 @@ module Egui
     # app.update/tessellation and re-emits the last paint commands.
     def request_repaint : Nil
       @repaint_outstanding = 2
+      # Between frames (a PTY reader fiber, an async dialog completing)
+      # the request must also WAKE the backend loop — see
+      # Egui::Runtime.wake. Inside a frame the driving loop re-checks
+      # needs_repaint? on its own, so the doorbell is skipped.
+      unless @in_frame
+        Egui::Runtime.wake.try &.call
+      end
     end
 
     def needs_repaint? : Bool

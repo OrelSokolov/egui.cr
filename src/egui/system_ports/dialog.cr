@@ -65,14 +65,19 @@ module Egui
       end
     end
 
-    # Fiber-backed request registry behind the async dialogs. The run
-    # loop (`sapp_run`) never returns control to the Crystal scheduler,
-    # so the backend pumps it from `on_frame`: one bounded scheduler
-    # pass per frame lets worker fibers advance while the UI renders,
-    # and completed requests are delivered before `app.update`.
+    # Fiber-backed request registry behind the async dialogs.
     #
-    # Everything lives on one thread (fibers switch cooperatively), so
-    # the queues need no locks.
+    # Delivery model: the worker fiber calls `on_done` itself the moment
+    # `work` finishes (same thread, always BETWEEN frames — the backend
+    # loop may be blocked in its scheduler wait, never mid-frame) and
+    # bumps a delivered counter that the backend consumes as a
+    # produce-a-frame trigger (`take_delivered`). With the detached
+    # backend the scheduler runs fibers naturally, so completion also
+    # knocks on the backend doorbell via `Egui::Runtime.wake`; with the
+    # legacy single-thread backend (`sapp_run` never yields), the
+    # backend gives the scheduler one bounded pass per frame
+    # (`pump_pass`) — completions land during that pass and are counted
+    # the same way.
     module AsyncDialogs
       # One in-flight dialog: its worker fiber and delivery callback.
       class Request
@@ -88,10 +93,10 @@ module Egui
       end
 
       @@pending = [] of Request
-      @@done = [] of Request
+      @@delivered = 0
 
-      # Start `work` in its own fiber; `on_done` fires on the frame
-      # after `work` finishes (see `pump`).
+      # Start `work` in its own fiber; `on_done` fires when `work`
+      # finishes (in that fiber — see the module comment).
       def self.start(work : -> String?, on_done : String? ->) : Request
         req = Request.new(on_done)
         @@pending << req
@@ -99,7 +104,9 @@ module Egui
           req.result = work.call
           req.done = true
           @@pending.delete(req)
-          @@done << req
+          @@delivered += 1
+          req.complete
+          Egui::Runtime.wake.try &.call
         end
         req
       end
@@ -109,27 +116,24 @@ module Egui
         !@@pending.empty?
       end
 
-      # Give worker fibers a bounded scheduler pass and deliver every
-      # completed request. Called by the backend at frame start; safe
-      # to call from specs (headless) too. Returns how many requests
-      # were delivered — their callbacks touch app state, so the
-      # backend must run a full update pass this frame even if it was
-      # otherwise idle (on-demand repaint).
-      def self.pump : Int32
+      # Legacy backend crutch: one bounded scheduler pass per frame so
+      # worker fibers advance inside sapp_run's blocking C loop. The
+      # detached backend never calls this — its fibers run between
+      # frames on their own.
+      def self.pump_pass : Nil
         unless @@pending.empty?
           select
           when timeout(1.milliseconds)
           end
         end
-        return 0 if @@done.empty?
-        drain
       end
 
-      private def self.drain : Int32
-        requests = @@done
-        @@done = [] of Request
-        requests.each &.complete
-        requests.size
+      # Consume the completed-request count — their callbacks already
+      # ran; the count only tells the backend a full frame must follow.
+      def self.take_delivered : Int32
+        n = @@delivered
+        @@delivered = 0
+        n
       end
     end
 

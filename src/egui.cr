@@ -11,6 +11,7 @@
 require "set"
 
 require "./egui/math"
+require "./egui/runtime"
 require "./egui/color"
 require "./egui/smart_aim"
 require "./egui/history"

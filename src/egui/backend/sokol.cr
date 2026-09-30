@@ -67,16 +67,44 @@ lib LibEguiCr
   fun set_clear_color = egui_cr_set_clear_color(r : Float32, g : Float32,
                                                 b : Float32, a : Float32)
 
-  # sokol_app
+  # detached render loop (shim, Linux): spawn the render thread and get
+  # the main-thread wake-pipe fd; events arrive through a ring
+  # (#events_pop), frames leave through the packet builder
+  # (#begin_pass/#end_pass route there automatically).
+  {% if flag?(:linux) %}
+    fun start = egui_cr_start(title : UInt8*, width : Int32, height : Int32,
+                              borderless : Int32, transparent : Int32,
+                              swap_interval : Int32) : Int32
+    fun join = egui_cr_join
+    fun wake_main = egui_cr_wake_main
+    fun set_ppp = egui_cr_set_ppp(ppp : Float32)
+
+    # One input event as the render thread flattened it (backend/
+    # sokol_shim.c sh_event_rec_t). `payload` carries the dropped-files
+    # path list for FILES_DROPPED (free with #drop_payload_free).
+    struct EventRecord
+      type : Int32
+      mx, my, sx, sy : Float32
+      mods, mouse_button, key_code, char_code : UInt32
+      payload : Void*
+    end
+
+    fun events_pop = egui_cr_events_pop(out : EventRecord*, cap : Int32) : Int32
+    fun drop_payload_free = egui_cr_drop_payload_free(payload : Void*)
+  {% end %}
+
+  # sokol_app (window title/clipboard/fullscreen/quit go through shim
+  # wrappers: on the detached path they must be marshalled to the
+  # render thread's X connection)
   fun sapp_width : Int32
   fun sapp_height : Int32
   fun sapp_dpi_scale : Float32
-  fun sapp_quit
-  fun sapp_is_fullscreen : Bool
-  fun sapp_toggle_fullscreen
-  fun sapp_set_window_title = sapp_set_window_title(title : UInt8*)
-  fun sapp_set_clipboard_string = sapp_set_clipboard_string(str : UInt8*)
-  fun sapp_get_clipboard_string : UInt8*
+  fun request_quit = egui_cr_request_quit
+  fun fullscreen_q = egui_cr_fullscreen_q : Int32
+  fun toggle_fullscreen = egui_cr_toggle_fullscreen
+  fun set_window_title = egui_cr_set_window_title(title : UInt8*)
+  fun clipboard_set = egui_cr_clipboard_set(str : UInt8*)
+  fun clipboard_get = egui_cr_clipboard_get : UInt8*
   fun sapp_get_num_dropped_files = sapp_get_num_dropped_files : Int32
   fun sapp_get_dropped_file_path = sapp_get_dropped_file_path(index : Int32) : UInt8*
 
@@ -109,18 +137,19 @@ lib LibEguiCr
   fun file_dialog_result = egui_cr_file_dialog_result(handle : Void*) : UInt16*
   fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
 
-  # sokol_gl
-  fun sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
-  fun sgl_matrix_mode_projection
-  fun sgl_matrix_mode_modelview
-  fun sgl_load_identity
-  fun sgl_ortho(l : Float32, r : Float32, b : Float32, t : Float32, n : Float32, f : Float32)
-  fun sgl_scissor_rectf(x : Float32, y : Float32, w : Float32, h : Float32, origin_top_left : Bool)
-  fun sgl_begin_quads
-  fun sgl_end
-  fun sgl_v2f_c4b(x : Float32, y : Float32, r : UInt8, g : UInt8, b : UInt8, a : UInt8)
-  fun sgl_v2f_t2f_c4b(x : Float32, y : Float32, u : Float32, v : Float32,
-                      r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+  # sokol_gl (shim wrappers: on the detached path these become packet
+  # ops replayed on the render thread; pass-throughs otherwise)
+  fun sgl_viewport = egui_cr_sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
+  fun sgl_matrix_mode_projection = egui_cr_sgl_matrix_mode_projection
+  fun sgl_matrix_mode_modelview = egui_cr_sgl_matrix_mode_modelview
+  fun sgl_load_identity = egui_cr_sgl_load_identity
+  fun sgl_ortho = egui_cr_sgl_ortho(l : Float32, r : Float32, b : Float32, t : Float32, n : Float32, f : Float32)
+  fun sgl_scissor_rectf = egui_cr_sgl_scissor_rectf(x : Float32, y : Float32, w : Float32, h : Float32, origin_top_left : Bool)
+  fun sgl_begin_quads = egui_cr_sgl_begin_quads
+  fun sgl_end = egui_cr_sgl_end
+  fun sgl_v2f_c4b = egui_cr_sgl_v2f_c4b(x : Float32, y : Float32, r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+  fun sgl_v2f_t2f_c4b = egui_cr_sgl_v2f_t2f_c4b(x : Float32, y : Float32, u : Float32, v : Float32,
+                                                r : UInt8, g : UInt8, b : UInt8, a : UInt8)
 
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
@@ -223,6 +252,49 @@ module Egui
       # commands stay in points; text is rasterized at the physical size.
       @@pixels_per_point : Float64 = 1.0
 
+      # --- frame-flow debug (EGUI_FRAME_DEBUG=1) ------------------------
+      # Logs idle/full frame transitions, a heartbeat while idle and
+      # input-event counts — enough to tell "the loop stopped calling
+      # frames" (C watchdog: OUTSIDE) from "the app decided nothing
+      # changed" (idle) from "a frame never finished" (watchdog: INSIDE)
+      # when chasing freezes. The C side adds per-phase [loop] lines
+      # (x11_events / frame_cb+commit / glx_swap / xflush).
+      @@frame_debug : Bool = ENV["EGUI_FRAME_DEBUG"]? ? true : false
+      # Debug-clock epoch (Time::Instant — the monotonic clock has no
+      # absolute seconds, only differences; #dbg_now spans from here).
+      @@dbg_t0 = Time.instant
+      @@dbg_kind : String? = nil
+      @@dbg_idle_since : Float64 = 0.0
+      @@dbg_beat : Float64 = 0.0
+      @@dbg_moves = 0
+      @@dbg_last_entry : Float64 = 0.0
+
+      # Seconds on the debug clock (since @@dbg_t0).
+      private def self.dbg_now : Float64
+        (Time.instant - @@dbg_t0).total_seconds
+      end
+
+      private def self.dbg_frame(kind : String, detail : String) : Nil
+        return unless @@frame_debug
+        now = dbg_now
+        if kind != @@dbg_kind
+          STDERR.puts "[frame] %8.3f #{kind}  #{detail}" % now
+          @@dbg_kind = kind
+          @@dbg_idle_since = now if kind == "idle"
+          @@dbg_beat = now
+        elsif kind == "idle" && now - @@dbg_beat >= 2.0
+          STDERR.puts "[frame] %8.3f still idle (%.1fs)  #{detail}" %
+            {now, now - @@dbg_idle_since}
+          @@dbg_beat = now
+        elsif kind == "full" && now - @@dbg_beat >= 5.0
+          # A run of full frames is the healthy state while a session
+          # is alive — one line per 5 s proves frames keep flowing.
+          STDERR.puts "[frame] %8.3f full frames flowing  #{detail}" % now
+          @@dbg_beat = now
+        end
+        @@dbg_moves = 0
+      end
+
       # Client-side chrome (the `chrome:` run option): while the window
       # is borderless, Egui::WindowFrame — the Windows 11 dark-theme
       # look — is drawn before every app frame. `chrome_enabled` is the
@@ -266,7 +338,7 @@ module Egui
       # every backend platform and leaves the run loop.
       class QuitPort < Egui::SystemPorts::Quit::Implementation
         def quit : Nil
-          LibEguiCr.sapp_quit
+          LibEguiCr.request_quit
         end
       end
 
@@ -275,7 +347,7 @@ module Egui
       class WindowPort < Egui::SystemPorts::Window::Implementation
         def set_title(title : String) : Nil
           title.to_unsafe # ensure a contiguous buffer
-          LibEguiCr.sapp_set_window_title(title.to_unsafe)
+          LibEguiCr.set_window_title(title.to_unsafe)
           Sokol.title = title # keep the client-side caption in sync
         end
 
@@ -300,11 +372,11 @@ module Egui
         end
 
         def toggle_fullscreen : Nil
-          LibEguiCr.sapp_toggle_fullscreen
+          LibEguiCr.toggle_fullscreen
         end
 
         def fullscreen? : Bool
-          LibEguiCr.sapp_is_fullscreen
+          LibEguiCr.fullscreen_q != 0
         end
 
         def set_icon(rgba : Bytes, width : Int32, height : Int32) : Nil
@@ -389,16 +461,24 @@ module Egui
         end
       end
 
-      # System port Clipboard → sokol_app set/get clipboard string.
+      # System port Clipboard → sokol_app set/get clipboard string. The
+      # get goes through the shim's mailbox on the detached path (the X
+      # connection lives on the render thread) and returns a malloc'd
+      # copy that we free after building the String.
       class ClipboardPort < Egui::SystemPorts::Clipboard::Implementation
         def set(text : String) : Nil
           text.to_unsafe # ensure a contiguous buffer
-          LibEguiCr.sapp_set_clipboard_string(text.to_unsafe)
+          LibEguiCr.clipboard_set(text.to_unsafe)
         end
 
         def get : String?
-          ptr = LibEguiCr.sapp_get_clipboard_string
-          ptr ? String.new(ptr) : nil
+          ptr = LibEguiCr.clipboard_get
+          return nil if ptr.null?
+          begin
+            String.new(ptr)
+          ensure
+            LibEguiCr.mem_free(ptr)
+          end
         end
       end
 
@@ -507,16 +587,203 @@ module Egui
         init = -> { on_init }
         frame = -> { on_frame }
         event = ->(t : Int32, mx : Float32, my : Float32, sx : Float32, sy : Float32, mods : UInt32, btn : UInt32, key : UInt32, chr : UInt32) {
-          on_event(t, mx, my, sx, sy, mods, btn, key, chr)
+          translate_event(t, mx, my, sx, sy, mods, btn, key, chr,
+            Pointer(Void).null)
         }
         cleanup = -> { }
 
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
+
+        # Linux: the detached render loop (loop_redesign.md) — sokol's
+        # X/GLX/swap cycle runs on a C pthread while THIS thread keeps
+        # the Crystal scheduler, producing FramePackets. Disable with
+        # EGUI_RENDER_THREAD=0 (bisecting / regression hunting).
+        {% if flag?(:linux) %}
+          if ENV["EGUI_RENDER_THREAD"]? != "0"
+            run_detached(title, width, height, decorations, transparent,
+              vsync)
+            return
+          end
+        {% end %}
+
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
           vsync ? 1 : 0)
       end
+
+      {% if flag?(:linux) %}
+        # The main-thread half of the detached loop: block on the wake
+        # pipe (an evented read — the scheduler keeps serving PTY
+        # readers and dialog fibers while we wait), translate input from
+        # the event ring, and produce frames into the packet mailbox
+        # whenever input / repaint requests / texture evictions demand
+        # one. The render thread replays the last packet on its own, so
+        # idle frames need no work here at all.
+        private def self.run_detached(title : String, width : Int32,
+                                      height : Int32, decorations : Bool,
+                                      transparent : Bool,
+                                      vsync : Bool) : Nil
+          fd = LibEguiCr.start(title.to_unsafe, width, height,
+            decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
+          return if fd < 0
+          Egui::Runtime.natural_scheduler = true
+          Egui::Runtime.wake = ->{ LibEguiCr.wake_main }
+
+          pipe = IO::FileDescriptor.new(fd)
+          doorbell = Bytes.new(256)
+          records = Pointer(LibEguiCr::EventRecord).malloc(64)
+
+          # The render thread signals INIT once the window + GL context
+          # exist (the C-side init does sg/sgl setup — GL work belongs
+          # to R). Only then may Crystal build fonts and draw.
+          until drain_pipe_once(pipe, doorbell) == :init
+            # (blocks inside; a QUIT here means the window died at birth)
+          end
+          on_init_detached
+
+          app = @@app.not_nil!
+          # Frame pacing: production is paced by the render thread's
+          # present-acks (one wake byte per presented frame — the FPS
+          # reads the display rate, like the legacy loop ticked by its
+          # own swap). While a repaint run is active but acks starve
+          # (swap stall, occluded window), a 60 Hz fallback keeps
+          # app.update/PTY running; input doorbells always produce
+          # immediately.
+          fallback = 1.0 / 60.0
+          last_produce = Time.instant - 1.second
+          busy = false
+          loop do
+            # Wait for a doorbell: indefinitely when nothing is pending,
+            # until the fallback deadline while a repaint run is active.
+            wait = busy ? (last_produce + fallback.seconds - Time.instant) : 1.hour
+            pipe.read_timeout = {wait, 1.millisecond}.max
+            begin
+              n = pipe.read(doorbell)
+              break if n.zero?                          # R died
+              break if doorbell[0, n].includes?(3_u8)    # QUIT
+            rescue IO::TimeoutError
+              # no ack in the fallback window — produce anyway below
+            end
+            # Keep doorbells from filling the pipe during busy runs.
+            break if drain_doorbells_raw(fd, doorbell)
+            drain_events(records)
+            if frame_pending?(app)
+              last_produce = Time.instant
+              produce_frame
+              busy = app.ctx.needs_repaint?
+            else
+              busy = false
+              dbg_frame("idle", "moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?}")
+            end
+          end
+          LibEguiCr.join
+        end
+
+        # One non-blocking drain of the wake pipe; returns the highest
+        # tag seen this pass (nil when the pipe was empty).
+        private def self.drain_pipe_once(pipe : IO::FileDescriptor,
+                                         buf : Bytes) : Symbol?
+          n = pipe.read(buf)
+          return nil if n.zero?
+          tag = nil
+          n.times do |i|
+            case buf[i]
+            when 2 then tag = :init
+            when 3 then tag = :quit
+            end
+          end
+          tag
+        end
+
+        # Raw nonblocking read loop: while producing frames back-to-back
+        # the blocking #read never runs, so doorbell bytes would pile up
+        # and eventually silence R's writes.
+        private def self.drain_doorbells_raw(fd : Int32, buf : Bytes) : Bool
+          quit = false
+          loop do
+            n = LibC.read(fd, buf, buf.size)
+            break if n <= 0
+            quit = true if buf[0, n].includes?(3_u8)
+          end
+          quit
+        end
+
+        # True when the event ring / repaint flags / texture evictions
+        # or a resize make a new frame necessary. Idle frames are R's
+        # business alone (it replays the last packet every tick).
+        private def self.frame_pending?(app : Egui::App) : Bool
+          return true unless @@events.empty?
+          return true if app.ctx.needs_repaint?
+          return true if app.ctx.textures.pending_destroys?
+          return true if Egui::SystemPorts::AsyncDialogs.take_delivered > 0
+          LibEguiCr.sapp_width != @@last_fb_w ||
+            LibEguiCr.sapp_height != @@last_fb_h
+        end
+
+        # Pop the render thread's event ring into @@events through the
+        # shared translation (same code the legacy callback used).
+        private def self.drain_events(records : Pointer(LibEguiCr::EventRecord)) : Nil
+          while (n = LibEguiCr.events_pop(records, 64)) > 0
+            n.times do |i|
+              r = records[i]
+              translate_event(r.type, r.mx, r.my, r.sx, r.sy, r.mods,
+                r.mouse_button, r.key_code, r.char_code, r.payload)
+            end
+          end
+        end
+
+        # #on_init minus the GL setup (the render thread's init callback
+        # owns sg/sgl/pipelines on the detached path).
+        private def self.on_init_detached : Nil
+          on_init(skip_gl: true)
+        end
+
+        # The frame production half of the loop: input → update →
+        # tessellate → publish. Painting is #paint_frame unchanged —
+        # every draw call it makes lands in the packet builder instead
+        # of GL (see the shim's routing).
+        private def self.produce_frame : Nil
+          dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves}")
+          frame_t0 = Time.instant if @@frame_debug
+
+          ppp = LibEguiCr.sapp_dpi_scale.to_f64
+          @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+          LibEguiCr.set_ppp(@@pixels_per_point.to_f32)
+          set_stack_scales
+          fb_w = LibEguiCr.sapp_width
+          fb_h = LibEguiCr.sapp_height
+
+          app = @@app.not_nil!
+          app.ctx.pixels_per_point = @@pixels_per_point
+
+          time = (Time.instant - @@start).total_seconds
+          raw = Egui::RawInput.new(
+            Egui::Rect.from_min_size(Egui::Pos2.zero,
+              Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
+                fb_h.to_f64 / @@pixels_per_point)),
+            @@events, time)
+          @@events = [] of Egui::Event
+
+          app.ctx.begin_frame(raw)
+          app.ctx.inspector.before_update if app.ctx.inspector_enabled?
+          Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
+          app.update(app.ctx)
+          commands = app.ctx.end_frame
+
+          @@last_commands = commands
+          @@last_fb_w = fb_w
+          @@last_fb_h = fb_h
+
+          paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+
+          if (t0 = frame_t0) &&
+             (ms = (Time.instant - t0).total_milliseconds) > 100.0
+            STDERR.puts "[frame] %8.3f SLOW full frame: %.0fms" %
+              {dbg_now, ms}
+          end
+        end
+      {% end %}
 
       # Win32 IFileDialog through the shim: the picker runs on its own
       # thread (own STA); this fiber sleep-polls it, so the scheduler
@@ -555,9 +822,14 @@ module Egui
         end
       end
 
-      protected def self.on_init : Nil
-        LibEguiCr.gfx_init
-        LibEguiCr.text_pipeline_init
+      protected def self.on_init(skip_gl : Bool = false) : Nil
+        # sg_setup + sgl_setup + the text pipelines are GL work: on the
+        # detached path they belong to the render thread's init callback
+        # (already run by the time we get here).
+        unless skip_gl
+          LibEguiCr.gfx_init
+          LibEguiCr.text_pipeline_init
+        end
         # Window icon first thing after the window exists (taskbar and
         # caption pick it up before the first paint).
         if (icon = @@icon) && !icon[:rgba].empty?
@@ -720,15 +992,34 @@ module Egui
       protected def self.on_event(type : Int32, mx : Float32, my : Float32,
                                   sx : Float32, sy : Float32, mods : UInt32,
                                   btn : UInt32, key : UInt32,
-                                  chr : UInt32) : Nil # sokol reports pointer positions in framebuffer pixels (macOS
+                                  chr : UInt32) : Nil
+        translate_event(type, mx, my, sx, sy, mods, btn, key, chr, nil)
+      end
+
+      # sokol event tuple → Egui::Event, shared by the legacy callback
+      # (#on_event) and the detached loop's ring drain (#drain_events).
+      # `payload` carries the dropped-files path list on the detached
+      # path; nil on legacy (the paths are queried through sapp then).
+      protected def self.translate_event(type : Int32, mx : Float32,
+                                         my : Float32, sx : Float32,
+                                         sy : Float32, mods : UInt32,
+                                         btn : UInt32, key : UInt32,
+                                         chr : UInt32,
+                                         payload : Void*) : Nil
+        # sokol reports pointer positions in framebuffer pixels (macOS
         # multiplies by the backing scale); the UI works in points
         # (sapp_width), like upstream egui's pixels_per_point conversion.
         if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
           mx /= scale
           my /= scale
         end
+        if @@frame_debug && type != MOUSE_MOVE
+          STDERR.puts "[event] %8.3f type=#{type} btn=#{btn} key=#{key} chr=#{chr}" %
+            dbg_now
+        end
         case type
         when MOUSE_MOVE
+          @@dbg_moves += 1 if @@frame_debug
           @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
         when MOUSE_DOWN
           # sapp mouse_button: 0 = left, 1 = right, 2 = middle.
@@ -763,14 +1054,27 @@ module Egui
             @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
           end
         when FILES_DROPPED
-          # sokol_app collects the paths before the event fires; query
-          # them through the sapp drop API (valid until the next drop).
-          count = LibEguiCr.sapp_get_num_dropped_files
-          paths = Array(String).new(count) do |i|
-            ptr = LibEguiCr.sapp_get_dropped_file_path(i)
-            ptr ? String.new(ptr) : ""
+          if payload
+            # Detached path: the render thread copied the paths out of
+            # sokol's drop buffer; layout is {int count; char* paths[8]}.
+            count = payload.as(Int32*).value
+            base = (payload.as(UInt8*) + 8).as(Pointer(Pointer(UInt8)))
+            paths = Array(String).new(count) do |i|
+              p = base[i]
+              p ? String.new(p) : ""
+            end
+            @@events << Egui::Event.dropped_files(paths)
+            LibEguiCr.drop_payload_free(payload)
+          else
+            # sokol_app collects the paths before the event fires; query
+            # them through the sapp drop API (valid until the next drop).
+            count = LibEguiCr.sapp_get_num_dropped_files
+            paths = Array(String).new(count) do |i|
+              ptr = LibEguiCr.sapp_get_dropped_file_path(i)
+              ptr ? String.new(ptr) : ""
+            end
+            @@events << Egui::Event.dropped_files(paths)
           end
-          @@events << Egui::Event.dropped_files(paths)
         when RESIZED
           # screen_rect is rebuilt from sapp_width/height each active
           # frame; the event just marks the frame non-idle.
@@ -782,24 +1086,26 @@ module Egui
         # Advance async system ports (file dialogs) — one bounded
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
-        delivered = Egui::SystemPorts::AsyncDialogs.pump
+        Egui::SystemPorts::AsyncDialogs.pump_pass
+        delivered = Egui::SystemPorts::AsyncDialogs.take_delivered
 
-        # sokol reports sizes in FRAMEBUFFER pixels (sapp_width on retina
-        # with high_dpi is 2x the window points); the UI lays out in
-        # points, like upstream egui with pixels_per_point.
+        if @@frame_debug
+          # Wall-clock gap between on_frame entries: anything way over
+          # the vsync period (~16 ms) is time spent OUTSIDE Crystal —
+          # sapp_commit / glXSwapBuffers / X11 stall (sokol swaps after
+          # frame_cb returns).
+          now = dbg_now
+          if (@@dbg_last_entry > 0.0) &&
+             (gap = now - @@dbg_last_entry) > 0.15
+            STDERR.puts "[frame] %8.3f frame GAP %.0fms (swap/C-loop stall)" %
+              {now, gap * 1000.0}
+          end
+          @@dbg_last_entry = now
+        end
+
         ppp = LibEguiCr.sapp_dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
-        # measure() must see the draw-path ppem (see AtlasFonts#scale) —
-        # set it before begin_frame so this frame's layout agrees with
-        # what paint_text will actually emit. Every stack that can draw
-        # this frame, named ones included, plus the deferred stacks
-        # materialized so far (they reach @@named_fonts only once a
-        # TextCmd resolves to them — a family only MEASURED still needs
-        # the right scale).
-        [@@fonts, @@mono_fonts].concat(@@named_fonts.values)
-          .concat(@@materialized.values.compact).each do |f|
-          f.try &.scale = @@pixels_per_point
-        end
+        set_stack_scales
         fb_w = LibEguiCr.sapp_width
         fb_h = LibEguiCr.sapp_height
 
@@ -819,9 +1125,12 @@ module Egui
            delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
            !app.ctx.textures.pending_destroys? &&
            fb_w == @@last_fb_w && fb_h == @@last_fb_h
+          dbg_frame("idle", "moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?}")
           paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
           return
         end
+        dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?} delivered=#{delivered}")
+        frame_t0 = Time.instant if @@frame_debug
 
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(
@@ -851,6 +1160,29 @@ module Egui
         @@last_fb_h = fb_h
 
         paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+
+        if (t0 = frame_t0) &&
+           (ms = (Time.instant - t0).total_milliseconds) > 100.0
+          # The whole slow frame, phase by phase. On the legacy path the
+          # swap happens right after this callback returns — a slow
+          # frame here plus a frame GAP line at the next entry means the
+          # present path, not the app.
+          STDERR.puts "[frame] %8.3f SLOW full frame: %.0fms" % {dbg_now, ms}
+        end
+      end
+
+      # measure() must see the draw-path ppem (see AtlasFonts#scale) —
+      # set it before begin_frame so this frame's layout agrees with
+      # what paint_text will actually emit. Every stack that can draw
+      # this frame, named ones included, plus the deferred stacks
+      # materialized so far (they reach @@named_fonts only once a
+      # TextCmd resolves to them — a family only MEASURED still needs
+      # the right scale).
+      private def self.set_stack_scales : Nil
+        [@@fonts, @@mono_fonts].concat(@@named_fonts.values)
+          .concat(@@materialized.values.compact).each do |f|
+          f.try &.scale = @@pixels_per_point
+        end
       end
 
       # Emit a frame to the GPU. `touch_fonts` is false on idle frames —
@@ -860,6 +1192,10 @@ module Egui
                                    fb_h : Int32,
                                    commands : Array(Egui::PaintCmd),
                                    touch_fonts : Bool) : Nil
+        # The scissor dedupe is per-frame: on the detached path every
+        # packet is replayed from a fresh sgl state, so the first clip
+        # of each frame must always be emitted.
+        @@last_scissor = nil
         # egui `PlatformOutput::cursor_icon` / `cursor_image`: apply
         # whichever changed — a bitmap cursor wins over the CSS keyword,
         # which the shim maps onto the platform cursors (Xcursor theme
