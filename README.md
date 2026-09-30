@@ -4,25 +4,22 @@
 
 # egui-cr
 
-Immediate-mode GUI for Crystal — inspired by [egui](https://github.com/emilk/egui)'s
-architecture (Rust) and its ideas, not a port of it; rendered through
-[sokol_gfx](https://github.com/floooh/sokol).
+**Reactive, immediate-mode GUI for Crystal — pure Crystal UI.**
+Inspired by [egui](https://github.com/emilk/egui)'s architecture (Rust)
+and its ideas, not a port of it.
 
-## Layout
+The only native dependency is the rendering backend:
+[sokol_gfx](https://github.com/floooh/sokol) (window + GPU). Everything
+above it is our own pure Crystal: widgets and layout, font rendering (a
+FreeType port — SFNT, TrueType bytecode hinting, ftgrays rasterizer —
+the [freetype-cr](https://github.com/OrelSokolov/freetype.cr) shard),
+and SVG/icon rasterization (a NanoSVG port). No libfreetype, no C font
+or icon code in shipped binaries; C accelerators exist only as a dev
+convenience behind `USE_C_EXTENSIONS=1` — see `.env.example`.
 
-- `docs/ANALYSIS.md` — architecture analysis of upstream egui (crates, core
-  types, widget model) used as the blueprint this project takes its
-  ideas from.
-- `egui-upstream/` — read-only reference clone of egui.
-- `vendor/sokol`, `vendor/fontstash` — native C dependencies.
-- `assets/icon.svg` — the project icon (see `scripts/make_icon.ps1` for
-  the generated `.ico`/embed twins).
-- `src/egui/` — the library: platform-pure core (`id`, `memory`, `input`,
-  `context`, `response`, `sense`, `layout`, `ui`, `widgets/`) plus the
-  sokol backend (`backend/sokol/`).
-- `examples/hello.cr` — button + label + label change (Hello World).
-- `examples/counter_reactive.cr` — reactive demo: signals, computeds,
-  fiber-driven ticking, bound widgets.
+State management is reactive from the start: signals, memoized
+computeds and one-line widget bindings on top of the immediate-mode
+core — no manual repaint plumbing (see "Reactive state" below).
 
 ## Build & run
 
@@ -66,6 +63,26 @@ fast iteration with optimized-ish code; ship the final binary from
 `--release`. Plain dev builds remain the fastest loop (~1.8 s, no LLVM
 optimization at all).
 
+### C extensions for dev builds
+
+Crystal cannot — architecturally — produce optimal binaries through a
+fast cached path: the single-module merge that makes `--release` code
+fast defeats the incremental cache (see above), and unoptimized dev
+codegen (no regalloc/inlining, bounds checks on every array access)
+runs the hot rasterizer loops up to ~10x slower than the same
+algorithm in C. In a dev build that gap makes the UI lag; in
+`--release` Crystal code is on par with — or faster than — the C
+equivalents, so shipped binaries gain nothing from C.
+
+The escape hatch: route the two hot bakes through C extensions of the
+Crystal libraries while iterating — font rasterization via the system
+libfreetype (C FFI) and SVG rasterization via the C NanoSVG shim.
+Output is byte-identical to the pure-Crystal paths, so dev and release
+render exactly the same. Enable with `USE_C_EXTENSIONS=1` in `.env`
+(copy from `.env.example`) or in the build environment — off by
+default (a fresh clone is self-contained pure Crystal), and never
+active in `--release` builds.
+
 ### Windows
 
 The same rake targets work on Windows. Requirements:
@@ -91,12 +108,6 @@ Differences from the Linux build:
 - the native library is `lib\egui_cr_sokol.lib` (MSVC resolves
   `@[Link("egui_cr_sokol")]` to exactly that name; no `lib` prefix),
   and the examples pass the lib dir via `/LIBPATH:`, not `-L`
-- FreeType binaries (x64 import lib + DLL, pinned by SHA256) are
-  fetched by `scripts\fetch_freetype.bat` — wired into `crosspack deps`
-  (`freetype-dev`) and `rake build:native`. `bin\freetype.dll` must ship
-  next to the exes; its VC++ v14 runtime requirement is declared in the
-  runtime `deps:` section (`vc-redist` → winget
-  `Microsoft.VCRedist.2015+.x64`)
 - the Windows system ports are native: file dialogs are the Explorer
   IFileDialog (COM) on a dedicated shim thread (PowerShell+WinForms
   stays as the headless, no-backend fallback), MessageBox calls
@@ -113,9 +124,8 @@ The same commands work on macOS (host target `macos`; artifacts land in
 `builds/macos/aarch64` on Apple Silicon). Requirements:
 
 - [Crystal](https://crystal-lang.org/install/) for macOS (`brew install crystal`)
-- Xcode Command Line Tools (`xcode-select --install`)
-- Homebrew FreeType + pkg-config (`brew install freetype pkg-config`) —
-  X11/xcursor are not needed, sokol_app uses Cocoa there
+- Xcode Command Line Tools (`xcode-select --install`) — X11/xcursor
+  are not needed, sokol_app uses Cocoa there
 
 Differences from the Linux build:
 
@@ -234,8 +244,9 @@ scrollback. The engine is headless-spec'd (`spec/terminal_spec.cr`,
 
 ## Status
 
-Slice 1: the core frame loop (RawInput → begin_frame → app update →
-end_frame → paint), `Id`/`Memory` interaction tracking, `Ui` with
-vertical/horizontal layout, `Label` and `Button` widgets, sokol_app
-window + sokol_gfx rendering + fontstash text. See `docs/ANALYSIS.md`
-for the full upstream map and what is next.
+Core frame loop (RawInput → begin_frame → app update → end_frame →
+paint), `Id`/`Memory` interaction tracking, `Ui` with vertical/horizontal
+layout, `Label` and `Button` widgets, sokol_app window + sokol_gfx
+rendering, and the pure-Crystal text stack (freetype-cr with TrueType
+hinting; C-FFI FreeType as an opt-in dev accelerator). See
+`docs/ANALYSIS.md` for the full upstream map and what is next.

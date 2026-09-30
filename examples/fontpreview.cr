@@ -1,9 +1,9 @@
 # Font rendering preview: the full Latin and Cyrillic alphabets, digits and
 # punctuation at a range of sizes — the visual test bed for the Crystal
-# text stack. Three live-switchable backends (tabs at the top): FreeType
-# (the C library, real hinting), the Crystal port of it (rasterizer +
-# TrueType bytecode hinter, no libfreetype — see backend/crystalfonts.cr)
-# and the Crystal light-hint fallback — see
+# text stack. Live-switchable backend tabs: the Crystal FreeType port
+# (freetype-cr, the shipped default), the light-hint fallback, and —
+# DEV builds only — the C-FFI FreeType for A/B parity checks (release
+# builds carry no libfreetype dependency). See
 # src/egui/backend/{freetype,crystalfonts,text}.cr. Look for: solid
 # crossbars (e, A, Б), consistent baselines, even spacing, stem weight
 # parity between the tabs.
@@ -11,10 +11,13 @@
 require "../src/egui"
 require "../src/egui/backend/sokol"
 require "../src/egui/backend/crystalfonts"
-# The C-FFI tab is part of the A/B toolset — fontpreview links
-# libfreetype unconditionally, even in release builds (it is the
-# diagnostic app; shipped apps don't).
-require "../src/egui/backend/freetype"
+{% begin %}
+  {% ft_tab = !flag?(:release) %}
+  FT_TAB = {{ ft_tab }}
+{% end %}
+{% if FT_TAB %}
+  require "../src/egui/backend/freetype"
+{% end %}
 
 class FontPreviewApp < Egui::App
   GROUPS = {
@@ -28,7 +31,8 @@ class FontPreviewApp < Egui::App
 
   SIZES = [12.0, 14.0, 16.0, 20.0, 24.0, 32.0]
 
-  @tab = 0
+  # Tab 0 (C FreeType) exists only in dev builds.
+  @tab = FT_TAB ? 0 : 1
   @freetype : Egui::Backend::AtlasFonts?
   @crystal : Egui::Backend::AtlasFonts?
   @light : Egui::Backend::AtlasFonts?
@@ -40,10 +44,12 @@ class FontPreviewApp < Egui::App
   end
 
   def update(ctx : Egui::Context) : Nil
-    # All three backends loaded once, then toggled live via Sokol.select_fonts:
+    # All backends loaded once, then toggled live via Sokol.select_fonts:
     # each has its own atlas; the pipeline rebinds on the next frame.
-    @freetype ||= Egui::Backend::FreetypeFonts.from_system(
-      Egui::SystemPorts::Fonts.search_paths)
+    {% if FT_TAB %}
+      @freetype ||= Egui::Backend::FreetypeFonts.from_system(
+        Egui::SystemPorts::Fonts.search_paths)
+    {% end %}
     @crystal ||= Egui::Backend::CrystalFonts.from_system(
       Egui::SystemPorts::Fonts.search_paths)
     @light ||= Egui::Backend::LightHintedFonts.from_system(
@@ -51,7 +57,9 @@ class FontPreviewApp < Egui::App
 
     ctx.window("fontpreview", Egui::Pos2.new(24.0, 24.0), width: 780.0) do |ui|
       ui.horizontal do |row|
-        row.selectable(@tab == 0, "FreeType (C)") { |v| @tab = 0 if v }
+        {% if FT_TAB %}
+          row.selectable(@tab == 0, "FreeType (C)") { |v| @tab = 0 if v }
+        {% end %}
         row.selectable(@tab == 1, "Crystal port") { |v| @tab = 1 if v }
         row.selectable(@tab == 2, "Crystal light-hint") { |v| @tab = 2 if v }
       end
