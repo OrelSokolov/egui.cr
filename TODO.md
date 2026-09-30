@@ -69,6 +69,18 @@ popup-слоем), перехватывая `SCROLL`-событие, когда 
 
 ## Атласы глифов заканчиваются; утечка памяти на шрифтах (font selector)
 
+**Статус.** Фаза 1 реализована: один общий `GlyphAtlas` на реестр Sokol
+(стеки получают его через `AtlasFonts#initialize(atlas)` /
+`from_system(paths, atlas)`), epoch-счётчик на атласе (`GlyphAtlas#reset`
+инкрементирует; `AtlasFonts#glyph` сверяет и чистит кэш при рассинхроне),
+реестровый reset+retouch в `paint_frame` (один reset общего атласа +
+повторный touch ВСЕХ text-команд кадра; приватные атласы — старый
+`reset_if_full`), LRU-вытеснение материализованных стеков
+(`MAX_LIVE_STACKS = 64`, `evict_stale_stacks`, с откатом Context к
+deferred-состоянию) и one-pass группировка стек→команды. См.
+`spec/shared_atlas_smoke.cr`. Фаза 2 — по-прежнему «только если фаза 1
+даст трэш ресетов».
+
 **Симптом.** В `bin/widgets_gallery` (вкладка Widgets → Select box,
 каталог ~1500 системных семейств) прокрутка/выбор шрифтов: через
 ~десяток выбранных семейств текст перестаёт рисоваться, а RSS и VRAM

@@ -147,10 +147,11 @@ module Egui
     end
 
     class FreetypeFonts < AtlasFonts
-      def self.from_system(paths : Array(String)) : FreetypeFonts?
+      def self.from_system(paths : Array(String),
+                           atlas : GlyphAtlas? = nil) : FreetypeFonts?
         paths.each do |path|
           next unless File.exists?(path)
-          font = new(File.read(path))
+          font = new(File.read(path), atlas)
           return font if font.loaded?
         end
         nil
@@ -166,8 +167,8 @@ module Egui
       @kerns = {} of {Int32, Int32, Int32} => Float64
       @metrics = {} of Int32 => {Float64, Float64}
 
-      def initialize(@font_data : String)
-        super()
+      def initialize(@font_data : String, atlas : GlyphAtlas? = nil)
+        super(atlas)
         @library = Pointer(Void).null
         @face = Pointer(LibFreetype::FaceRec).null
         ft_lib = uninitialized Void*

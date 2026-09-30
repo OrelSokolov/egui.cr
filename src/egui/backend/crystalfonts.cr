@@ -40,7 +40,8 @@ module Egui
       # first); nil only when nothing parsed. Unparseable files are
       # skipped — a mixed list (TTF + a CFF the port can't read) keeps
       # the faces that work.
-      def self.from_system(paths : Array(String)) : CrystalFonts?
+      def self.from_system(paths : Array(String),
+                           atlas : GlyphAtlas? = nil) : CrystalFonts?
         datas = [] of String
         loaded = [] of String
         paths.each do |path|
@@ -51,7 +52,7 @@ module Egui
           loaded << path
         end
         return nil if datas.empty?
-        font = new(datas)
+        font = new(datas, atlas)
         font.face_paths.concat(loaded) if font.loaded?
         font.loaded? ? font : nil
       end
@@ -68,8 +69,8 @@ module Egui
       @kerns = {} of {Int32, Int32, Int32} => Float64
       @metrics = {} of Int32 => {Float64, Float64}
 
-      def initialize(font_datas : Array(String))
-        super()
+      def initialize(font_datas : Array(String), atlas : GlyphAtlas? = nil)
+        super(atlas)
         @faces = [] of TT::HintedFace
         font_datas.each do |data|
           begin

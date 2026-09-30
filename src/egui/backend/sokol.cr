@@ -190,6 +190,13 @@ module Egui
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
       @@mono_fonts : Egui::Backend::AtlasFonts? = nil
+      # THE glyph atlas every stack the backend itself creates bakes
+      # into (primary/mono chains + materialized deferred families): one
+      # GPU texture, one CPU buffer, regardless of how many font
+      # families a font picker flips through. Stacks created by the app
+      # (`select_fonts` / `register_font` before #run) keep their own
+      # atlas — mixed ownership is fine, each side resets its own.
+      @@shared_atlas : GlyphAtlas? = nil
       # Extra named stacks (`Sokol.register_font`) — what a widget group
       # draws through when its style sets `font_family` (see
       # `Context#font_families` / `Fonts` resolution in #fonts_for_cmd).
@@ -199,10 +206,17 @@ module Egui
       # cheap (name-table read only); the parse is paid per pick.
       @@deferred_fonts = {} of String => Array(String)
       # Materialized deferred stacks, memoized by file path — ONE
-      # parse/one atlas per family, shared by the ctx measure side
+      # parse per family, shared by the ctx measure side
       # (`Context#font_loader`) and #fonts_for_cmd here. A nil value
       # (unloadable file) is remembered too: no re-parse per frame.
+      # Capped by LRU eviction (see #evict_stale_stacks): a font
+      # selector walking 1500 families must not accumulate 1500 stacks
+      # of .ttf data + glyph caches.
       @@materialized = {} of String => Egui::Backend::AtlasFonts?
+      # LRU bookkeeping for the materialized stacks: frame counter and
+      # the frame each stack last drew in (see #evict_stale_stacks).
+      @@frame_counter = 0_u64
+      @@stack_frames = {} of Egui::Backend::AtlasFonts => UInt64
       @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
       # On-demand repaint: the last painted command list (re-emitted
       # verbatim on idle frames) and the framebuffer size it matched.
@@ -573,7 +587,7 @@ module Egui
           app.ctx.fonts = preselected
         else
           font_paths = Egui::SystemPorts::Fonts.search_paths
-          if font = fonts_from_system(font_paths)
+          if font = fonts_from_system(font_paths, shared_atlas)
             @@fonts = font
             app.ctx.fonts = font
           else
@@ -606,14 +620,34 @@ module Egui
       # ships) with LightHintedFonts as the parse-failure fallback.
       # Dev builds with C_EXTENSIONS enabled accelerate through the
       # C-FFI FreeType first — same glyphs, faster bake under debug
-      # codegen.
-      def self.fonts_from_system(paths : Array(String)) : AtlasFonts?
+      # codegen. `atlas` = the registry's shared glyph atlas (nil —
+      # default — bakes into a private atlas: specs, standalone tools).
+      def self.fonts_from_system(paths : Array(String),
+                                 atlas : GlyphAtlas? = nil) : AtlasFonts?
         {% if Egui::Backend::C_EXTENSIONS %}
-          FreetypeFonts.from_system(paths) || CrystalFonts.from_system(paths) ||
-            LightHintedFonts.from_system(paths)
+          FreetypeFonts.from_system(paths, atlas) ||
+            CrystalFonts.from_system(paths, atlas) ||
+            LightHintedFonts.from_system(paths, atlas)
         {% else %}
-          CrystalFonts.from_system(paths) || LightHintedFonts.from_system(paths)
+          CrystalFonts.from_system(paths, atlas) ||
+            LightHintedFonts.from_system(paths, atlas)
         {% end %}
+      end
+
+      # The one glyph atlas the backend's own stacks bake into (see
+      # @@shared_atlas) — created lazily so a headless use of this
+      # module (specs) never allocates the 16 MiB buffer.
+      private def self.shared_atlas : GlyphAtlas
+        @@shared_atlas ||= GlyphAtlas.new(ATLAS_SIZE)
+      end
+
+      # Every stack the registry knows: the primary/mono slots, the
+      # app-registered named stacks and every materialized deferred
+      # family. What the registry-level atlas reset and the per-frame
+      # scale sync iterate.
+      private def self.all_stacks : Array(Egui::Backend::AtlasFonts)
+        ([@@fonts, @@mono_fonts].concat(@@named_fonts.values)
+          .concat(@@materialized.values.compact)).compact
       end
 
       # Swap the active font backend at runtime (e.g. a preview app
@@ -651,11 +685,13 @@ module Egui
       end
 
       # Materialize a deferred family's stack through the standard
-      # backend chain, memoized per file (see @@materialized).
+      # backend chain, memoized per file (see @@materialized) and baked
+      # into the registry's shared glyph atlas. Evictable by LRU (see
+      # #evict_stale_stacks) — a re-pick simply re-parses the file.
       private def self.materialize_font(paths : Array(String)) : Egui::Backend::AtlasFonts?
         key = paths.first? || return nil
         unless @@materialized.has_key?(key)
-          @@materialized[key] = fonts_from_system(paths)
+          @@materialized[key] = fonts_from_system(paths, shared_atlas)
         end
         @@materialized[key]
       end
@@ -792,13 +828,10 @@ module Egui
         # measure() must see the draw-path ppem (see AtlasFonts#scale) —
         # set it before begin_frame so this frame's layout agrees with
         # what paint_text will actually emit. Every stack that can draw
-        # this frame, named ones included, plus the deferred stacks
-        # materialized so far (they reach @@named_fonts only once a
-        # TextCmd resolves to them — a family only MEASURED still needs
-        # the right scale).
-        [@@fonts, @@mono_fonts].concat(@@named_fonts.values)
-          .concat(@@materialized.values.compact).each do |f|
-          f.try &.scale = @@pixels_per_point
+        # this frame (see #all_stacks: named + materialized included —
+        # a family only MEASURED still needs the right scale).
+        all_stacks.each do |f|
+          f.scale = @@pixels_per_point
         end
         fb_w = LibEguiCr.sapp_width
         fb_h = LibEguiCr.sapp_height
@@ -903,20 +936,50 @@ module Egui
         # render pass — sg_update_image is illegal inside a pass. An
         # overflowed atlas (font-size drags bake a glyph set per
         # fractional size) is wiped and re-baked here, so the pass never
-        # rasterizes and no glyph stays blank-cached. Every stack in use
-        # is touched — each with the commands that resolve to it.
+        # rasterizes and no glyph stays blank-cached. Commands are
+        # grouped per stack in ONE pass (fonts_for_cmd resolves — and on
+        # first use materializes — the family of every command anyway).
         if touch_fonts
-          text_cmds = commands.select(Egui::TextCmd)
-          # Distinct stacks this frame's text resolves to (a family set
-          # on no command rasterizes nothing).
-          stacks = text_cmds.map { |cmd| fonts_for_cmd(cmd) }.uniq
-          stacks.each do |stack|
-            next unless stack
-            mine = text_cmds.select { |cmd| fonts_for_cmd(cmd) == stack }
-            mine.each { |cmd| stack.touch(cmd, @@pixels_per_point) }
-            mine.each { |cmd| stack.touch(cmd, @@pixels_per_point) } if stack.reset_if_full
-            stack.flush
+          @@frame_counter += 1
+          by_stack = {} of Egui::Backend::AtlasFonts => Array(Egui::TextCmd)
+          commands.each do |cmd|
+            next unless cmd.is_a?(Egui::TextCmd)
+            next unless stack = fonts_for_cmd(cmd)
+            (by_stack[stack] ||= [] of Egui::TextCmd) << cmd
           end
+          by_stack.each do |stack, cmds|
+            cmds.each { |cmd| stack.touch(cmd, @@pixels_per_point) }
+            @@stack_frames[stack] = @@frame_counter
+          end
+          # Registry-level overflow recovery. Every stack here bakes
+          # into ONE shared atlas, so a reset by any stack invalidates
+          # EVERYONE's cached UVs: reset the atlas once (the epoch bump
+          # makes each stack drop its glyph cache lazily, in #glyph),
+          # acknowledge the flags, then re-touch ALL of this frame's
+          # text — not just the overflowing stack's slice. Stacks on a
+          # private atlas (app-registered before #run) keep the local
+          # reset_if_full semantics.
+          if by_stack.keys.any?(&.needs_reset?)
+            if (shared = @@shared_atlas)
+              shared.reset
+              all_stacks.each do |stack|
+                if stack.atlas.same?(shared)
+                  stack.clear_overflow_flag
+                else
+                  stack.reset_if_full
+                end
+              end
+            else
+              by_stack.each_key(&.reset_if_full)
+            end
+            by_stack.each do |stack, cmds|
+              cmds.each { |cmd| stack.touch(cmd, @@pixels_per_point) }
+            end
+          end
+          # One upload for the shared atlas (first flush wins, the rest
+          # see it clean), one per private atlas.
+          by_stack.each_key(&.flush)
+          evict_stale_stacks
         end
 
         LibEguiCr.begin_pass(fb_w, fb_h)
@@ -953,6 +1016,45 @@ module Egui
         if ctx.textures.pending_destroys?
           ctx.textures.flush_destroys
           @@last_commands = nil
+        end
+      end
+
+      # Cap on simultaneously live materialized stacks (the shared
+      # atlas removes the GPU-side pressure; this caps the CPU side —
+      # .ttf data + glyph/kern/measure caches per family, a few MiB
+      # each). Above it, the least-recently-drawn stacks are dropped.
+      MAX_LIVE_STACKS = 64
+
+      # LRU eviction of materialized deferred stacks (the font-selector
+      # leak): drop the oldest stacks from @@materialized and the
+      # deferred-origin @@named_fonts entries pointing at them, and
+      # roll the app's Context back to the deferred state for those
+      # families (its #fonts_for caches resolved stacks forever —
+      # without that, the ctx reference would keep the "evicted" stack
+      # alive and measure/draw would diverge: ctx measuring the old
+      # object while fonts_for_cmd re-materializes a new one). A re-pick
+      # simply re-parses the file. Primary/mono slots and app-registered
+      # named stacks are never evicted; atlas slots recycle on the next
+      # registry reset (glyphs are never freed individually — upstream
+      # egui works the same way).
+      private def self.evict_stale_stacks : Nil
+        live = @@materialized.values.compact.uniq
+        overflow = live.size - MAX_LIVE_STACKS
+        return unless overflow > 0
+        candidates = live.reject { |s| s.same?(@@fonts) || s.same?(@@mono_fonts) }
+          .sort_by! { |s| @@stack_frames[s]? || 0_u64 }
+        ctx = @@app.try &.ctx
+        candidates.first(overflow).each do |victim|
+          @@materialized.reject! { |_path, stack| !stack.nil? && stack.same?(victim) }
+          @@deferred_fonts.each do |name, paths|
+            next unless @@named_fonts[name]?.same?(victim)
+            @@named_fonts.delete(name)
+            if ctx
+              ctx.font_families.delete(name)
+              ctx.register_deferred_font(name, paths)
+            end
+          end
+          @@stack_frames.delete(victim)
         end
       end
 
