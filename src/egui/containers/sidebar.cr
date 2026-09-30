@@ -15,6 +15,8 @@
 #   sidebar.tab      — padding.top/right/bottom/left, height,
 #                      text_color + :hover/:selected overlays
 #                      (fill, text_color)
+#   sidebar.close    — the nested close X buttons: background
+#                      (+ :hover overlay), text_color
 # The theme presets ship the defaults (`default_theme.cr`);
 # every key is introspectable via `ctx.stylesheet.dump`.
 
@@ -41,9 +43,41 @@ module Egui
     ROOT_CLASS    = "sidebar"
     SECTION_CLASS = "sidebar.section"
     TAB_CLASS     = "sidebar.tab"
+    CLOSE_CLASS   = "sidebar.close"
 
     def style_class : String?
       ROOT_CLASS
+    end
+
+    # The StyledPart behind one tab row (see widgets/styled_part.cr):
+    # carries the inspector meta for the row's interact and declares
+    # the `sidebar.tab` keys. Without it the row's interact recorded
+    # the whole Sidebar widget (kind "Sidebar", no stylable props).
+    # State overlays (:hover/:selected) resolve per row id, so class
+    # rules AND per-element inspector edits both reach the row.
+    class TabPart < StyledPart
+      def initialize(label : String)
+        super("SidebarTab", TAB_CLASS, [
+          StyleProp.new("height", :number),
+          StyleProp.new("font_size", :number),
+          StyleProp.new("font_family", :string),
+          StyleProp.new("text_color", :color),
+          StyleProp.new("padding", :box),
+          StyleProp.new("background", :color, states: true),
+        ], label)
+      end
+    end
+
+    # The StyledPart behind a row's nested close button — its own kind
+    # and `sidebar.close` class, so the X is pickable and stylable
+    # separately from the tab row it lives in.
+    class ClosePart < StyledPart
+      def initialize(label : String)
+        super("SidebarCloseButton", CLOSE_CLASS, [
+          StyleProp.new("background", :color, states: true),
+          StyleProp.new("text_color", :color),
+        ], label)
+      end
     end
 
     getter selected_section : Int32
@@ -147,6 +181,8 @@ module Egui
             # of visibility (same trick as the Tabs carousel).
             id = inner.next_widget_id
             x_id = section.closable? ? inner.next_widget_id : nil
+            part = TabPart.new(title)
+            x_part = x_id ? ClosePart.new(title) : nil
             # Overflow guard (moot inside the scroll area's unbounded
             # inner Ui, kept for squashing hosts): a rect that got
             # clamped would poke its text and close X half-over the
@@ -160,14 +196,16 @@ module Egui
             tab_resp : Response? = nil
             close_resp : Response? = nil
             if fits
-              tab_resp = inner.interact(rect, id, Sense.click)
+              tab_resp = ctx.with_inspector_widget(part) {
+                inner.interact(rect, id, Sense.click) }
               if x_id
                 icon = text_size.y * 0.66
                 x_rect = Rect.from_min_size(
                   Pos2.new(rect.right - tab_pad.right - icon,
                     rect.center.y - icon / 2.0),
                   Vec2.new(icon, icon))
-                close_resp = inner.interact(x_rect, x_id, Sense.click)
+                close_resp = ctx.with_inspector_widget(x_part.not_nil!) {
+                  inner.interact(x_rect, x_id, Sense.click) }
               end
             end
             x_hovered = close_resp.try(&.hovered?) || false
@@ -175,14 +213,15 @@ module Egui
             # State overlay on top of the base vars: the selected tab
             # gets the accent fill, hover the weak one (the tab does not
             # count as hovered while the pointer is over its X).
+            # Resolved per row id — class rules AND per-element
+            # inspector edits both land here.
             if fits
-              state_vars = if selected
-                sheet.resolve(TAB_CLASS, "selected")
+              state = if selected
+                "selected"
               elsif tab_resp.try(&.hovered?) && !x_hovered
-                sheet.resolve(TAB_CLASS, "hover")
-              else
-                tab
+                "hover"
               end
+              state_vars = part.vars(inner, id, state)
               if (fill = state_vars.color?("background"))
                 inner.painter.rect(rect, 3.0, fill)
               end
@@ -193,9 +232,13 @@ module Egui
                 title, tab_font, text_color, family: tab_family)
 
               if (cr = close_resp)
-                x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
+                x_vars = x_part.not_nil!
+                  .vars(inner, x_id.not_nil!, cr.hovered? ? "hover" : nil)
+                x_color = x_vars.color("text_color",
+                  cr.hovered? ? text_color : visuals.fade_color(text_color))
                 if cr.hovered?
-                  inner.painter.rect(cr.rect, 3.0, visuals.button_hovered)
+                  fill = x_vars.color?("background") || visuals.button_hovered
+                  inner.painter.rect(cr.rect, 3.0, fill)
                 end
                 Icons.draw(inner.painter, :close, cr.rect, x_color)
               end

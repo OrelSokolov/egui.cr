@@ -205,7 +205,18 @@ module Egui
 
       private def set_ppem(ppem : Int32, face_i : Int32) : Nil
         return if @ppem_set[face_i] == ppem
-        @faces[face_i].set_pixel_size(ppem)
+        begin
+          @faces[face_i].set_pixel_size(ppem)
+        rescue ex : Exception
+          # Belt-and-suspenders: the port degrades VM ('fpgm'/'prep')
+          # failures to unhinted rendering itself, but if a size setup
+          # still dies, this face must not take the app down — mark the
+          # ppem as done (no per-glyph retry loop) and let build_glyph's
+          # rescue blank every glyph of the broken face.
+          @ppem_set[face_i] = ppem
+          @x_scale[face_i] = TT::Fixed.divfix(ppem.to_i64 << 6, @upem[face_i].to_i64)
+          return
+        end
         @x_scale[face_i] = TT::Fixed.divfix(ppem.to_i64 << 6, @upem[face_i].to_i64)
         @ppem_set[face_i] = ppem
       end

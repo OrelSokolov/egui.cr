@@ -79,6 +79,28 @@ module Egui
       id = ui.next_widget_id
       response = ui.interact(rect, id, Sense.click)
 
+      # Wheel over the closed combo steps the selection: wheel-down is
+      # next, wheel-up is previous (clamped at the ends — no wrap).
+      # The widget registers as a scroll sink (the same arbitration as
+      # ScrollArea / NumberInput), so the delta only arrives while the
+      # pointer is over the button; an open popup owns its wheel via
+      # its own layer.
+      ui.ctx.memory.register_scroll_area(id, rect, ui.layer)
+      if !ui.ctx.popup_open?(@id) && !@options.empty? &&
+         ui.ctx.memory.active_scroll_area? == id &&
+         (dy = ui.ctx.input.scroll.y) != 0.0
+        idx = @options.index(@selected)
+        # scroll.y > 0 is wheel-up (previous), < 0 wheel-down (next) —
+        # the same sign convention as NumberInput's wheel stepping.
+        stepped = idx ? (idx + (dy < 0 ? 1 : -1)).clamp(0, @options.size - 1)
+                  : (dy < 0 ? 0 : nil)
+        if (value = stepped.try { |s| @options[s]? }) && value != @selected
+          @selected = value
+          display = value
+          on_select.call(value)
+        end
+      end
+
       visuals = style.visuals
       pad_x = style.spacing.button_padding.x
       # The placeholder reads as a hint — faded like TextEdit's.

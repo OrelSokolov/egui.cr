@@ -29,6 +29,13 @@
 # (z=0), so clicks land on the tabs, never on the window drag — the
 # empty caption around the strip still drags/moves the window — and
 # BELOW the caption buttons (z=50), which they never overlap anyway.
+#
+# Styling: the `title_bar.tab` class of the global `StyleSheet` (+
+# per-element inspector overrides — see TabPart): `min_width`,
+# `rounding`, `pad_x`, `font_size`, `top_gap`, `background` (base =
+# the active card's fill; `:hover` = an inactive card's hover),
+# `text_color`, `text_idle`, `close_hover`, `plus_hover`. The Win11
+# constants below are the unset defaults.
 
 module Egui
   class TitleBarTabs
@@ -78,6 +85,34 @@ module Egui
          new_hover: NEW_HOVER_LIGHT}
     end
 
+    # The StyledPart behind every card (tab, its X, the "+" button —
+    # see widgets/styled_part.cr): the strip paints in place, so the
+    # part carries the inspector meta AND declares the `title_bar.tab`
+    # class keys the strip reads. Class rules and per-element inspector
+    # overrides resolve per card id (`title_bar_tabs/tab/…`), so both
+    # «Класс» and «Элемент» tabs edit the strip live. Geometry keys
+    # (min_width/pad_x/font_size/top_gap) re-run the measure below —
+    # the class-level edit reflows every card, an element edit one.
+    class TabPart < StyledPart
+      def initialize(label : String? = nil, kind : String = "Tab")
+        super(kind, "title_bar.tab", [
+          StyleProp.new("min_width", :number, fallback: MIN_W),
+          StyleProp.new("rounding", :number, fallback: ROUNDING),
+          StyleProp.new("pad_x", :number, fallback: PAD_X),
+          StyleProp.new("font_size", :number, fallback: FONT),
+          StyleProp.new("top_gap", :number, fallback: TAB_TOP_GAP),
+          # base = the ACTIVE card's fill (panel_fill by default — the
+          # card merges with the bar below it); :hover = an inactive
+          # card's hover fill.
+          StyleProp.new("background", :color, states: true),
+          StyleProp.new("text_color", :color),
+          StyleProp.new("text_idle", :color),
+          StyleProp.new("close_hover", :color),
+          StyleProp.new("plus_hover", :color),
+        ], label)
+      end
+    end
+
     # Cards above the drag strip (z=0), below the caption buttons
     # (z=50) — see the class doc.
     LAYER = LayerId.new(Order::Middle, Id.from("title_bar_tabs"), 40)
@@ -87,6 +122,10 @@ module Egui
     # Show the strip: paints into `area` (the WindowFrame content
     # area) and fires at most one callback this frame. `dirty` marks
     # unsaved tabs (dot instead of X, Notepad's marker).
+    #
+    # Styling: every card reads its geometry and colors through the
+    # `title_bar.tab` class (+ per-element inspector overrides — see
+    # TabPart); the constants above are the unset defaults.
     def self.show(ctx : Context, area : Rect, titles : Array(String),
                   selected : Int32, dirty : Array(Bool) = [] of Bool,
                   on_select : (Int32 ->)? = nil,
@@ -96,19 +135,23 @@ module Egui
       sel = titles.empty? ? 0 : selected.clamp(0, titles.size - 1)
 
       # Cards hang from the BOTTOM edge of the caption: the strip air
-      # above them (TAB_TOP_GAP) stays a drag region, like Notepad.
-      card_top = area.top + TAB_TOP_GAP
-      card_h = area.height - TAB_TOP_GAP
-
+      # above them (`top_gap`) stays a drag region, like Notepad.
       # Measure first, lay out after — the carousel needs the total
       # width before the first rect is placed. The X slot is reserved
       # in EVERY card (active or not) so tabs don't change width when
       # their X appears/disappears on hover — the marker just isn't
       # PAINTED on inactive tabs (see paint_tab).
-      widths = titles.map do |title|
-        {ctx.fonts.measure(title, FONT).x + 2 * PAD_X + ICON + ICON_GAP,
-         MIN_W}.max
+      widths = titles.map_with_index do |title, i|
+        v = TabPart.new(title).vars(ctx, Id.from("title_bar_tabs/tab/#{i}"))
+        {ctx.fonts.measure(title, v.f64("font_size", FONT)).x +
+           2 * v.f64("pad_x", PAD_X) + ICON + ICON_GAP,
+         v.f64("min_width", MIN_W)}.max
       end
+      first_v = titles.empty? ? StyleVars.new :
+        TabPart.new(titles.first).vars(ctx, Id.from("title_bar_tabs/tab/0"))
+      top_gap = first_v.f64("top_gap", TAB_TOP_GAP)
+      card_top = area.top + top_gap
+      card_h = area.height - top_gap
       # The strip's visible window for the CARDS: the right edge of the
       # area always reserves the "+" button's room (NEW_GAP + NEW_BOX),
       # so the cards carousel inside what remains — the strip's width is
@@ -142,21 +185,30 @@ module Egui
           Vec2.new(widths[i], card_h))
         hidden = rect.max.x <= view.left || rect.min.x >= view.right
         unless hidden
+          part = TabPart.new(title)
+          tab_id = Id.from("title_bar_tabs/tab/#{i}")
+          vars = part.vars(ctx, tab_id)
+          hover_vars = part.vars(ctx, tab_id, "hover")
+          pad_x = vars.f64("pad_x", PAD_X)
           hit = clamp(rect, view)
-          tab_resp = ctx.interact(Id.from("title_bar_tabs/tab/#{i}"),
-            hit, Sense.click, LAYER, hit)
           # The X interacts AFTER its tab so hit-testing routes a click
           # over it to the X, never the tab (same trick as Tabs).
           x_rect = Rect.from_min_size(
-            Pos2.new(rect.right - PAD_X - ICON,
+            Pos2.new(rect.right - pad_x - ICON,
               rect.center.y - ICON / 2.0),
             Vec2.new(ICON, ICON))
           x_rect = clamp(x_rect, view)
-          x_resp = ctx.interact(Id.from("title_bar_tabs/close/#{i}"),
-            x_rect, Sense.click, LAYER, x_rect)
+          # Both interacts ride the TabPart's meta — the X belongs to
+          # its card (an element edit of e.g. `close_hover` targets the
+          # card, which is what one sees and picks).
+          tab_resp = ctx.with_inspector_widget(part) {
+            ctx.interact(tab_id, hit, Sense.click, LAYER, hit) }
+          x_resp = ctx.with_inspector_widget(part) {
+            ctx.interact(Id.from("title_bar_tabs/close/#{i}"),
+              x_rect, Sense.click, LAYER, x_rect) }
 
           paint_tab(ctx, rect, title, i == sel, tab_resp.hovered?,
-            x_resp.hovered?, dirty[i]? || false, view)
+            x_resp.hovered?, dirty[i]? || false, view, vars, hover_vars)
 
           if x_resp.clicked?
             on_close.try(&.call(i))
@@ -180,17 +232,23 @@ module Egui
         Pos2.new(plus_x, area.bottom - NEW_BOX),
         Vec2.new(NEW_BOX, NEW_BOX))
       if new_rect.max.x <= area.right
+        new_part = TabPart.new("+", kind: "NewTab")
+        new_id = Id.from("title_bar_tabs/new")
+        new_vars = new_part.vars(ctx, new_id)
         new_hit = clamp(new_rect, area)
-        new_resp = ctx.interact(Id.from("title_bar_tabs/new"),
-          new_hit, Sense.click, LAYER, new_hit)
+        new_resp = ctx.with_inspector_widget(new_part) {
+          ctx.interact(new_id, new_hit, Sense.click, LAYER, new_hit) }
 
         painter.layer = LAYER.z
         outer_clip = painter.clip
         painter.clip = area
         pal = palette(ctx)
-        fill = new_resp.hovered? ? pal[:new_hover] : nil
+        fill = new_resp.hovered? ?
+          new_vars.color("plus_hover", pal[:new_hover]) : nil
         painter.rect(new_rect, 4.0, fill, nil, 0.0)
-        color = new_resp.hovered? ? pal[:active] : pal[:idle]
+        color = new_resp.hovered? ?
+          new_vars.color("text_color", pal[:active]) :
+          new_vars.color("text_idle", pal[:idle])
         Icons.draw(painter, :plus, new_rect.shrink(9.0), color, 1.5)
         painter.clip = outer_clip
 
@@ -203,11 +261,14 @@ module Egui
 
     # One tab card: rounded-top fill (a rounded rect squared off along
     # the bottom edge — Painter rounding is all-four-corners) + title
-    # + the close marker (X / dirty dot, Notepad's swap).
+    # + the close marker (X / dirty dot, Notepad's swap). Colors and
+    # geometry come from the card's resolved vars (`title_bar.tab` —
+    # see TabPart); `hover_vars` is the :hover overlay bag.
     private def self.paint_tab(ctx : Context, rect : Rect, title : String,
                                selected : Bool, tab_hovered : Bool,
                                x_hovered : Bool, dirty : Bool,
-                               area : Rect) : Nil
+                               area : Rect, vars : StyleVars,
+                               hover_vars : StyleVars) : Nil
       painter = ctx.painter
       pal = palette(ctx)
       painter.layer = LAYER.z
@@ -216,30 +277,40 @@ module Egui
       # stay cut at the strip edge.
       painter.clip = clip_of(rect.expand(2.0), area)
 
-      fill = selected ? ctx.style.visuals.panel_fill :
-        (tab_hovered && !x_hovered ? pal[:hover] : nil)
+      # The ACTIVE card's fill is NOT a constant — it reuses the theme's
+      # panel_fill (the menu bar's color), so the active card visually
+      # merges with the bar below it, Notepad/Edge-style, in every theme.
+      fill = selected ?
+        vars.color("background", ctx.style.visuals.panel_fill) :
+        (tab_hovered && !x_hovered ?
+          hover_vars.color("background", pal[:hover]) : nil)
+      rounding = vars.f64("rounding", ROUNDING)
       if fill
-        painter.rect(rect, ROUNDING, fill, nil, 0.0)
+        painter.rect(rect, rounding, fill, nil, 0.0)
         # Square off the card's bottom corners: fill the rounding band.
         painter.rect(Rect.from_min_size(
-          Pos2.new(rect.left, rect.bottom - ROUNDING),
-          Vec2.new(rect.width, ROUNDING)), 0.0, fill, nil, 0.0)
+          Pos2.new(rect.left, rect.bottom - rounding),
+          Vec2.new(rect.width, rounding)), 0.0, fill, nil, 0.0)
       end
 
-      text_color = selected || tab_hovered ? pal[:active] : pal[:idle]
-      text_pos = Pos2.new(rect.left + PAD_X, rect.center.y)
-      painter.text(text_pos, title, FONT, text_color)
+      text_color = selected || tab_hovered ?
+        vars.color("text_color", pal[:active]) :
+        vars.color("text_idle", pal[:idle])
+      pad_x = vars.f64("pad_x", PAD_X)
+      text_pos = Pos2.new(rect.left + pad_x, rect.center.y)
+      painter.text(text_pos, title, vars.f64("font_size", FONT), text_color)
 
       # Close marker, Notepad rules: the X only in the ACTIVE tab and
       # on hover — an inactive clean tab paints nothing; an inactive
       # dirty tab paints the dot (the X replaces it on hover).
       marker_rect = Rect.from_min_size(
-        Pos2.new(rect.right - PAD_X - ICON, rect.center.y - ICON / 2.0),
+        Pos2.new(rect.right - pad_x - ICON, rect.center.y - ICON / 2.0),
         Vec2.new(ICON, ICON))
       show_x = selected || tab_hovered || x_hovered
       if !show_x && dirty
         painter.circle_filled(
-          Pos2.new(marker_rect.center.x, rect.center.y), 2.5, pal[:idle])
+          Pos2.new(marker_rect.center.x, rect.center.y), 2.5,
+          vars.color("text_idle", pal[:idle]))
       elsif show_x
         if x_hovered
           # The X as a hover BUTTON: a rounded square behind the glyph
@@ -249,7 +320,7 @@ module Egui
               Pos2.new(marker_rect.center.x - X_BOX / 2.0,
                 marker_rect.center.y - X_BOX / 2.0),
               Vec2.new(X_BOX, X_BOX)),
-            X_ROUND, pal[:x_hover], nil, 0.0)
+            X_ROUND, vars.color("close_hover", pal[:x_hover]), nil, 0.0)
         end
         Icons.draw(painter, :close, marker_rect, text_color, 1.5)
       end

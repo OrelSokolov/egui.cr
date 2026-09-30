@@ -2,10 +2,10 @@
 # egui has is `ctx.debug_on_hover`). Chrome-DevTools-lite, scoped to
 # exactly two edit targets:
 #
-# * the «Элемент» tab — per-element style overrides
+# * the "Element" tab — per-element style overrides
 #   (`Context#id_style_overrides`, the top cascade layer; state bags
-#   exactly like class rules — the same База/Hover/Active switch);
-# * the «Класс» tab — the class rules of the active `StyleSheet`
+#   exactly like class rules — the same Base/Hover/Active switch);
+# * the "Class" tab — the class rules of the active `StyleSheet`
 #   (`StyleSheet#rule`, persistable by the app).
 #
 # No widget tree, no parents: a widget's identity is its `Id` — the
@@ -35,18 +35,36 @@ module Egui
     # interacted this frame — recorded from `Context#interact` (the
     # `current_widget` set by `Ui#add`).
     class WidgetMeta
-      getter kind : String          # short class name ("Button")
+      getter id : Id                 # the interact id the meta was recorded for
+      getter kind : String           # short class name ("Button")
       getter style_class : String?
       getter props : Array(StyleProp)
       getter id_name : String?      # explicit id, if any
       getter label : String?        # text-ish human label
 
-      def initialize(widget : Widget)
-        @kind = widget.class.name.split("::").last
+      def initialize(@id : Id, widget : Widget)
+        @kind = widget.inspector_kind
         @style_class = widget.style_class
         @props = widget.style_properties
         @id_name = widget.id_name
         @label = widget.inspector_label
+      end
+    end
+
+    # The StyledPart behind the panel's own header tab cells (see
+    # widgets/styled_part.cr): the cells are paint-in-place — fixed-size
+    # rects + painter calls, not `Ui#add` — so without a part the
+    # inspector records no meta for them and a right-click pick opened
+    # an EMPTY menu. The part gives the cells a kind, the
+    # `inspector.tab` class and its keys, read through the same cascade
+    # (class rules + per-element overrides) as real widgets.
+    class TabPart < StyledPart
+      def initialize(label : String)
+        super("InspectorTab", TAB_CLASS, [
+          StyleProp.new("background", :color, states: true),
+          StyleProp.new("text_color", :color),
+          StyleProp.new("underline_color", :color),
+        ], label)
       end
     end
 
@@ -66,6 +84,10 @@ module Egui
     end
 
     PICK_MENU  = "inspector_pick"
+    # The StyleSheet class of the panel's own header tab cells — they are
+    # paint-in-place (see TabPart below), and the class keeps them
+    # restylable like any app widget: `ctx.stylesheet.rule("inspector.tab", …)`.
+    TAB_CLASS  = "inspector.tab"
     COLOR_POP  = "inspector_color"
     EXPORT_POP = "inspector_export"
     DOCK_MENU  = "inspector_dock"
@@ -79,7 +101,7 @@ module Egui
     # (at 420 the ✕ cell was clamped 26→24 and its glyph spilled).
     PANEL_W    = 422.0
     LABEL_W    = 130.0
-    # Header geometry: equal-width tab cells (the «Класс»/«Элемент»
+    # Header geometry: equal-width tab cells (the "Class"/"Element"
     # pair reads as one control) and the right-pinned action cluster.
     TAB_W      = 80.0
     TAB_H      = 26.0
@@ -147,7 +169,7 @@ module Egui
     # inspector is enabled, so the off case costs one branch.
     def record_meta(id : Id, widget : Widget?) : Nil
       return unless widget
-      @meta[id] = WidgetMeta.new(widget)
+      @meta[id] = WidgetMeta.new(id, widget)
     end
 
     # Before app.update: the panel must bite #available_rect first to
@@ -267,16 +289,16 @@ module Egui
       @ctx.request_repaint
     end
 
-    # The «Элемент» export: the per-id overrides as the exact
+    # The "Element" export: the per-id overrides as the exact
     # `Context#set_id_style` calls that reproduce them — base keys
     # first, then each state overlay. Widgets with an explicit id
     # export the stable `Id.from("…")` form; auto ids export the raw
     # value plus a hint to assign an explicit id in code.
     def export_element_snippet : String
       id = @selected
-      return "# Ничего не выбрано — правый клик по виджету → «Inspect»." unless id
+      return "# Nothing selected — right-click a widget → \"Inspect\"." unless id
       m = meta_for(id) || @last_selected_meta
-      return "# Виджет не найден (нет данных)." unless m
+      return "# Widget not found (no data)." unless m
       id_src = m.id_name ? "Egui::Id.from(#{m.id_name.inspect})" :
                            "Egui::Id.new(0x#{id.value.to_s(16)}_u64)"
       states = @ctx.id_style_overrides[id]?
@@ -285,10 +307,10 @@ module Egui
         s << " «#{m.label}»" if m.label
         s << "\n"
         unless m.id_name
-          s << "# (авто-id — назначьте виджету явный id: \"…\", чтобы адресовать его в коде)\n"
+          s << "# (auto id — assign the widget an explicit id: \"…\" to address it in code)\n"
         end
         if states.nil? || states.all? { |_st, bag| bag.empty? }
-          s << "# (нет per-element правок)\n"
+          s << "# (no per-element edits)\n"
         else
           states.keys.sort_by { |st| st ? 1 : 0 }.each do |st|
             bag = states[st]?
@@ -304,17 +326,17 @@ module Egui
       end
     end
 
-    # The «Класс» export: the class's own base rule plus every state
+    # The "Class" export: the class's own base rule plus every state
     # overlay, as `StyleSheet#rule` calls ready to paste into the app.
     def export_class_snippet : String
       path = @class_sel || @ctx.stylesheet.classes.first?
-      return "# Нет классов." unless path
+      return "# No classes." unless path
       String.build do |s|
         s << "# Class style: #{path}\n"
         if (cls = @ctx.stylesheet[path]?) && !cls.vars.empty?
           append_rule(s, path, cls.vars)
         else
-          s << "# (базовое правило не задано — всё наследуется от темы)\n"
+          s << "# (no base rule set — everything inherits from the theme)\n"
         end
         cls.try &.states.each do |state, vars|
           append_rule(s, "#{path}:#{state}", vars) unless vars.empty?
@@ -341,13 +363,13 @@ module Egui
     private def render_export_modal : Nil
       return unless @export_open
       clicked = @ctx.modal(EXPORT_POP, width: 560, title: "Export style",
-        buttons: ["Копировать", "Закрыть"]) do |ui|
+        buttons: ["Copy", "Close"]) do |ui|
         ui.textarea(@export_text, rows: 14) { |t| @export_text = t }
       end
       case clicked
-      when "Копировать"
+      when "Copy"
         Egui::SystemPorts::Clipboard.text = @export_text
-      when "Закрыть"
+      when "Close"
         @export_open = false
       end
     end
@@ -412,10 +434,10 @@ module Egui
     # leftover width.
     private def render_header(ui : Ui) : Nil
       ui.horizontal do |row|
-        if render_tab(row, "Класс", @tab == :class)
+        if render_tab(row, "Class", @tab == :class)
           @tab = :class
         end
-        if render_tab(row, "Элемент", @tab == :element)
+        if render_tab(row, "Element", @tab == :element)
           @tab = :element
         end
         # Right-pinned cluster: the spacer eats the leftover width so
@@ -443,23 +465,34 @@ module Egui
     end
 
     # One header tab: a fixed-size clickable cell (equal widths keep
-    # the «Класс»/«Элемент» pair reading as one control). The active
+    # the "Class"/"Element" pair reading as one control). The active
     # tab gets the DevTools treatment — a soft fill plus an accent
-    # underline along the bottom edge. Returns true when clicked.
+    # underline along the bottom edge. Colors run through the TabPart
+    # cascade (class rules + per-element overrides) with the DevTools
+    # look as fallbacks, so the panel's own tabs are restylable like
+    # app tabs. Returns true when clicked.
     private def render_tab(row : Ui, label : String, active : Bool) : Bool
       v = row.style.visuals
       rect = row.allocate_space(Vec2.new(TAB_W, TAB_H))
-      resp = row.interact(rect, row.next_widget_id, Sense.click)
+      part = TabPart.new(label)
+      id = row.next_widget_id
+      resp = row.ctx.with_inspector_widget(part) {
+        row.interact(rect, id, Sense.click) }
+      state = active ? "selected" : (resp.hovered? ? "hover" : nil)
+      vars = part.vars(row, id, state)
       if active
-        row.painter.rect(rect, 4.0, v.button_weak)
+        row.painter.rect(rect, 4.0, vars.color("background", v.button_weak))
         row.painter.line(Pos2.new(rect.left, rect.bottom - 1.0),
-          Pos2.new(rect.right, rect.bottom - 1.0), 2.0, v.selection_fill)
+          Pos2.new(rect.right, rect.bottom - 1.0), 2.0,
+          vars.color("underline_color", v.selection_fill))
       elsif resp.hovered?
-        row.painter.rect(rect, 4.0, v.fade_color(v.button_weak, 0.5))
+        row.painter.rect(rect, 4.0,
+          vars.color("background", v.fade_color(v.button_weak, 0.5)))
       end
       font = row.style.font_size
       w = row.ctx.fonts.measure(label, font).x
-      color = active ? v.text_color : v.fade_color(v.text_color, 0.6)
+      color = vars.color("text_color",
+        active ? v.text_color : v.fade_color(v.text_color, 0.6))
       row.painter.text(Pos2.new(rect.center.x - w / 2.0, rect.center.y),
         label, font, color)
       resp.clicked?
@@ -516,19 +549,19 @@ module Egui
       end
     end
 
-    # --- the «Класс» tab: edits `StyleSheet` rules ----------------------------
+    # --- the "Class" tab: edits `StyleSheet` rules ----------------------------
 
     private def render_class_tab(ui : Ui) : Nil
       classes = class_choices
       if classes.empty?
-        ui.label("Нет классов — виджеты ещё не рисовали кадр.")
+        ui.label("No classes yet — widgets haven't drawn a frame.")
         return
       end
       @class_sel = classes.includes?(@class_sel.to_s) ? @class_sel : classes.first
       path = @class_sel.not_nil!
 
       ui.horizontal do |row|
-        row.label("Класс:")
+        row.label("Class:")
         row.combo_box("insp_class", path, classes, 180.0) do |c|
           @class_sel = c
         end
@@ -536,7 +569,7 @@ module Egui
 
       props = class_props(path)
       if props.empty?
-        ui.label("Нет виджетов класса «#{path}» в кадре — свойства неизвестны.")
+        ui.label("No widgets of class \"#{path}\" in the frame — properties unknown.")
         return
       end
 
@@ -574,29 +607,29 @@ module Egui
       end
     end
 
-    # The «База / Hover / Active» switch shared by both tabs — the
+    # The "Base / Hover / Active" switch shared by both tabs — the
     # element layer stores per-state bags exactly like class rules.
     private def render_state_switch(ui : Ui, current : String?,
                                     &set : String? ->) : Nil
       ui.horizontal do |row|
-        row.label("Состояние:")
-        {"База" => nil, "Hover" => "hover", "Active" => "active"}.each do |label, st|
+        row.label("State:")
+        {"Base" => nil, "Hover" => "hover", "Active" => "active"}.each do |label, st|
           row.selectable(current == st, label) { |_| set.call(st) }
         end
       end
     end
 
-    # --- the «Элемент» tab: edits per-id overrides ----------------------------
+    # --- the "Element" tab: edits per-id overrides ----------------------------
 
     private def render_element_tab(ui : Ui) : Nil
       id = @selected
       if id.nil?
-        ui.label("Ничего не выбрано — правый клик по виджету → «Inspect». F12 — вкл/выкл панели.")
+        ui.label("Nothing selected — right-click a widget → \"Inspect\". F12 toggles the panel.")
         return
       end
       m = meta_for(id) || @last_selected_meta
       if m.nil?
-        ui.label("Виджет не найден (нет данных).")
+        ui.label("Widget not found (no data).")
         return
       end
       @last_selected_meta = m
@@ -608,19 +641,19 @@ module Egui
           row.label("#{"%.0f" % rect.width} × #{"%.0f" % rect.height}")
         end
         unless @meta.has_key?(id)
-          row.label("(не в этом кадре)")
+          row.label("(not in this frame)")
         end
-        if row.button("Сбросить всё", id: "insp_reset_all").clicked?
+        if row.button("Reset all", id: "insp_reset_all").clicked?
           @ctx.clear_id_style(id)
         end
       end
 
       if m.props.empty?
-        ui.label("Виджет не имеет стилизуемых свойств.")
+        ui.label("Widget has no stylable properties.")
         return
       end
 
-      # The same База/Hover/Active switch as the Class tab: the
+      # The same Base/Hover/Active switch as the Class tab: the
       # element layer stores per-state bags (`Context#set_id_style`
       # with a state), so a single `background` key covers every
       # state — no separate per-state properties.
@@ -678,7 +711,12 @@ module Egui
             when :color  then setter.call(prop.key, display_color_value(prop, vars, theme_state))
             when :number then setter.call(prop.key, display_number(prop, vars))
             when :bool   then setter.call(prop.key, display_bool(prop, vars))
-            when :string then setter.call(prop.key, display_string(prop, vars))
+            when :string
+              # Seeding an empty string (an unset family) would store a
+              # meaningless "" override — leave the row inherited.
+              unless (s = display_string(prop, vars)).empty?
+                setter.call(prop.key, s)
+              end
             when :box
               b = display_box(prop, vars)
               setter.call("#{prop.key}.top", b.top)
@@ -729,18 +767,43 @@ module Egui
             end
           end
         when :string
-          # Free-text editor (font family names); empty means "unset"
-          # for keys whose fallback is the theme slot.
-          value = display_string(prop, vars)
-          row.text_edit_singleline(value) do |text|
-            setter.call(prop.key, text)
+          # Font families edit from the CATALOG of loaded faces, not
+          # free text: a searchable `SelectBox` over
+          # `Context#font_family_catalog` (the reserved
+          # "system"/"monospace" + every `Sokol.register_font` /
+          # `#register_font_family` stack + the system-scan deferred
+          # families — potentially thousands of names, hence the
+          # search). The zero option (label «(наследуется)») UNSETS the
+          # key — back to the inherited theme family. A value not in
+          # the catalog (a typo set from code) still displays,
+          # prepended to the list.
+          if prop.key == "font_family"
+            value = display_string(prop, vars)
+            catalog = @ctx.font_family_catalog
+            options = value.empty? || catalog.includes?(value) ?
+              catalog : [value] + catalog
+            row.select_box("insp_family", value, options, 150.0,
+              label: "(наследуется)") do |opt|
+              if opt.empty?
+                unset_prop(prop, unsetter)
+              else
+                setter.call(prop.key, opt)
+              end
+            end
+          else
+            # Free-text editor for other string keys; empty means
+            # "unset" for keys whose fallback is the theme slot.
+            value = display_string(prop, vars)
+            row.text_edit_singleline(value) do |text|
+              setter.call(prop.key, text)
+            end
           end
         end
       end
       paint_table_row(ui, y0, col_x)
     end
 
-    # The table's header row: «Свойство | Значение» over the same fixed
+    # The table's header row: "Property | Value" over the same fixed
     # columns the property rows use, with a stronger rule underneath.
     private def render_table_header(ui : Ui) : Nil
       v = ui.style.visuals
@@ -754,10 +817,10 @@ module Egui
         col_x = row.cursor.x
         name = row.allocate_space(Vec2.new(LABEL_W, ROW_H))
         row.painter.text(Pos2.new(name.left + 2.0, name.center.y),
-          "Свойство", font, muted)
+          "Property", font, muted)
         value = row.allocate_space(Vec2.new(120.0, ROW_H))
         row.painter.text(Pos2.new(value.left + 2.0, value.center.y),
-          "Значение", font, muted)
+          "Value", font, muted)
       end
       paint_table_row(ui, y0, col_x, header: true)
     end
@@ -810,7 +873,7 @@ module Egui
       anchor = @ctx.memory.areas.pos_for(pop_id, @color_anchor)
       @ctx.popup(COLOR_POP, anchor, width: 220) do |ui|
         if t.nil?
-          ui.label("(цель потеряна)")
+          ui.label("(target lost)")
           next
         end
         current = display_color(t)
@@ -823,7 +886,7 @@ module Egui
             @ctx.request_repaint
           end
         end
-        if ui.button("Снять override").clicked?
+        if ui.button("Remove override").clicked?
           if (id = t.element_id)
             @ctx.clear_id_style(id, t.prop.key, t.element_state)
           elsif (path = t.class_path)
@@ -842,23 +905,24 @@ module Egui
     #
     # A key's effective value comes from three places, and the editor
     # rows must show the REAL one, not a bogus 0/gray: the merged vars
-    # bag (class rules + override) → the theme slot the key maps onto
-    # (`StyleVars#apply_over` vocabulary — font_size lives in the theme
-    # Style, not in any class rule) → the widget's own hardcoded
-    # default (`StyleProp#fallback`, e.g. Button rounding 4.0).
+    # bag (class rules + override) → the WIDGET'S OWN fallback
+    # (`StyleProp#fallback` — what #ui actually passes to
+    # `vars.f64(key, …)`/`vars.color(key, …)` when unset; the terminal
+    # grid's 14pt or #16161e beats the generic theme slot) → the theme
+    # slot the key maps onto (`StyleVars#apply_over` vocabulary —
+    # font_size lives in the theme Style, not in any class rule) → 0.
 
     private def display_number(prop : StyleProp, vars : StyleVars) : Float64
       if (v = vars.f64?(prop.key))
         return v
       end
-      if (t = theme_number(prop.key))
-        return t
+      if (f = prop.fallback)
+        case f
+        when Float64 then return f
+        when Int32   then return f.to_f64
+        end
       end
-      case f = prop.fallback
-      when Float64 then f
-      when Int32   then f.to_f64
-      else              0.0
-      end
+      theme_number(prop.key) || 0.0
     end
 
     # Bool props have no theme layer — unset reads as the widget's own
@@ -867,18 +931,27 @@ module Egui
       vars.bool?(prop.key) || prop.fallback.as?(Bool) || false
     end
 
-    # String props (font families): the merged vars → the theme slot
-    # (`Style#font_family`) → the widget's own default ("monospace" for
-    # the terminal grid). Empty string renders as an unset value.
+    # String props (font families): the merged vars → the widget's own
+    # default ("monospace" for the terminal grid — what it really draws
+    # when unset) → the theme slot (`Style#font_family`). Empty string
+    # renders as an unset value.
     private def display_string(prop : StyleProp, vars : StyleVars) : String
-      vars.str?(prop.key) || theme_string(prop.key) ||
-        prop.fallback.as?(String) || ""
+      vars.str?(prop.key) || prop.fallback.as?(String) ||
+        theme_string(prop.key) || ""
     end
 
     private def display_color_value(prop : StyleProp, vars : StyleVars,
                                     theme_state : String? = nil) : Color32
-      vars.color?(prop.key) || theme_color(prop.key, theme_state) ||
-        prop.fallback.as?(Color32) || Color32.rgb(120, 120, 120)
+      if (c = vars.color?(prop.key))
+        return c
+      end
+      # The widget's own default wins over the theme slot — it is what
+      # the widget actually paints when nothing is set (the terminal
+      # background vs the generic `button_weak` theme slot).
+      if (f = prop.fallback.as?(Color32))
+        return f
+      end
+      theme_color(prop.key, theme_state) || Color32.rgb(120, 120, 120)
     end
 
     private def display_box(prop : StyleProp, vars : StyleVars) : StyleBox

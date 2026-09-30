@@ -125,6 +125,28 @@ module Egui
           Color32.new(gray.to_u8, gray.to_u8, gray.to_u8, 255)
         end
       end
+
+      # A copy with any of the base colors overridden (nil = keep this
+      # theme's value), sharing the ANSI palette array. The terminal
+      # widget builds one per frame when `terminal { … }` class rules
+      # (or per-element inspector edits) override its colors — the
+      # SGR space resolves through it exactly like through the theme.
+      def twin(background : Color32? = nil, foreground : Color32? = nil,
+               cursor : Color32? = nil,
+               selection_overlay : Color32? = nil,
+               scrollbar : Color32? = nil,
+               scrollbar_active : Color32? = nil) : Theme
+        t = Theme.new
+        t.background = background || @background
+        t.foreground = foreground || @foreground
+        t.cursor = cursor || @cursor
+        t.selection_bg = @selection_bg
+        t.selection_overlay = selection_overlay || @selection_overlay
+        t.scrollbar = scrollbar || @scrollbar
+        t.scrollbar_active = scrollbar_active || @scrollbar_active
+        t.palette = @palette
+        t
+      end
     end
   end
 end

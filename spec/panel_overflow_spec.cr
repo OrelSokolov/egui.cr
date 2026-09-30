@@ -119,7 +119,7 @@ describe "panel overflow (CSS overflow-y: auto by default)" do
     # painted via painter.text are clipped by the backend at render, so
     # visibility is asserted on galley rows)
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
-    texts.should contain("Класс")
+    texts.should contain("Class")
     texts.should contain("text_color")
     texts.should_not contain("bevel_light")
 
@@ -175,7 +175,7 @@ describe "panel overflow (CSS overflow-y: auto by default)" do
     # BEFORE the inspector panel (z=98) — the panel paints over it.
     texts = ctx.painter.commands_in_layer_order
       .select(Egui::TextCmd).map(&.text)
-    (texts.index("Класс").not_nil! > texts.index("cover").not_nil!)
+    (texts.index("Class").not_nil! > texts.index("cover").not_nil!)
       .should be_true
 
     # Input: a click on the panel's ✕ button lands on the INSPECTOR

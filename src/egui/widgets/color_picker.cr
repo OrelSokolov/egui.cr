@@ -1,11 +1,12 @@
 # Port of egui_upstream/crates/egui/src/widgets/color_picker.rs
-# (simplified: SV square + hue bar + swatches; no alpha editing yet).
+# (simplified: SV square + hue bar + alpha bar + swatch; no hue wheel).
 #
 # The SV square and hue bar are small procedurally generated RGBA
 # textures (created once via the TextureRegistry — GPU on the sokol
 # backend, dummy ids in specs) drawn as ImageCmd and scaled up.
-# Dragging either control edits the Hsva; the result flows out through
-# the Ui#color_edit32 block.
+# The alpha bar is a cached white→transparent ramp texture tinted with
+# the current RGB over a checkerboard. Dragging any control edits the
+# Hsva; the result flows out through the Ui#color_edit32 block.
 
 module Egui
   class ColorPicker
@@ -60,9 +61,31 @@ module Egui
       ui.painter.line(Pos2.new(hx, bar.top - 2.0),
         Pos2.new(hx, bar.bottom + 2.0), 2.0, ui.style.visuals.text_color)
 
+      # --- alpha bar -----------------------------------------------------
+      alpha = Rect.from_min_size(
+        Pos2.new(square.left, bar.bottom + 6.0),
+        Vec2.new(size, bar_h))
+      paint_checkerboard(ui.painter, alpha)
+      # The cached ramp is white with alpha 0→1; tinting with the opaque
+      # version of the current color turns it into that color's alpha
+      # gradient (ImageCmd tint multiplies per texel).
+      tint = Hsva.new(hsv.h, hsv.s, hsv.v, 1.0).to_color
+      ui.painter.image(alpha, alpha_texture(ui.ctx), tint: tint)
+
+      alpha_id = id.child(3)
+      alpha_resp = ui.interact(alpha, alpha_id,
+        Sense.click_and_drag | Sense::Focusable)
+      hsv = drag_alpha(ui, hsv, alpha) if alpha_resp.dragged? || alpha_resp.clicked?
+
+      # alpha cursor mark
+      ax = alpha.left + hsv.a * alpha.width
+      ui.painter.line(Pos2.new(ax, alpha.top - 2.0),
+        Pos2.new(ax, alpha.bottom + 2.0), 2.0, ui.style.visuals.text_color)
+
       # --- swatch + layout bookkeeping -----------------------------------
-      swatch = Rect.from_min_size(Pos2.new(bar.left, bar.bottom + 6.0),
+      swatch = Rect.from_min_size(Pos2.new(bar.left, alpha.bottom + 6.0),
         Vec2.new(size, 12.0))
+      paint_checkerboard(ui.painter, swatch)
       ui.painter.rect(swatch, 3.0, hsv.to_color,
         ui.style.visuals.button_stroke, 1.0)
 
@@ -98,6 +121,12 @@ module Egui
       pos = ui.ctx.input.pointer_pos.not_nil!
       h = ((pos.x - rect.left) / rect.width).clamp(0.0, 0.9999)
       Hsva.new(h, hsv.s, hsv.v, hsv.a)
+    end
+
+    private def drag_alpha(ui : Ui, hsv : Hsva, rect : Rect) : Hsva
+      pos = ui.ctx.input.pointer_pos.not_nil!
+      a = ((pos.x - rect.left) / rect.width).clamp(0.0, 1.0)
+      Hsva.new(hsv.h, hsv.s, hsv.v, a)
     end
 
     # One 64x64 texture: horizontal saturation, vertical value, baked
@@ -148,6 +177,54 @@ module Egui
       id = ctx.textures.register_rgba(HUE_W, 1, data)
       ctx.memory.texture_cache[key] = id unless id.zero?
       id
+    end
+
+    # One 64x1 texture: white with a straight-alpha ramp 0→255
+    # (cached). The picker draws it tinted with the current RGB, so the
+    # ramp itself is color-independent and never re-created.
+    private def alpha_texture(ctx : Context) : UInt64
+      key = "color_picker/alpha"
+      if (cached = ctx.memory.texture_cache[key]?) && !cached.zero?
+        return cached
+      end
+
+      data = Bytes.new(HUE_W * 4)
+      HUE_W.times do |x|
+        i = x * 4
+        data[i] = 255_u8
+        data[i + 1] = 255_u8
+        data[i + 2] = 255_u8
+        data[i + 3] = (x.to_f64 / (HUE_W - 1) * 255.0).round.to_u8
+      end
+      id = ctx.textures.register_rgba(HUE_W, 1, data)
+      ctx.memory.texture_cache[key] = id unless id.zero?
+      id
+    end
+
+    # Alternating gray squares behind semi-transparent fills (upstream
+    # `paint_checkerboard`) — the alpha bar and the swatch use it so the
+    # transparency is visible.
+    private def paint_checkerboard(painter : Painter, rect : Rect) : Nil
+      cell = 8.0
+      light = Color32.rgb(152, 152, 152)
+      dark = Color32.rgb(96, 96, 96)
+      row = 0
+      y = rect.top
+      while y < rect.bottom
+        col = 0
+        x = rect.left
+        while x < rect.right
+          color = (row + col).even? ? light : dark
+          w = {cell, rect.right - x}.min
+          h = {cell, rect.bottom - y}.min
+          painter.rect(Rect.from_min_size(Pos2.new(x, y), Vec2.new(w, h)),
+            0.0, fill: color)
+          x += cell
+          col += 1
+        end
+        y += cell
+        row += 1
+      end
     end
   end
 end

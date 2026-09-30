@@ -1,7 +1,7 @@
-# Table — a striped, header-first table for everyday data rows, built
-# on `Grid` with pinned column widths (a deliberately slim cousin of
-# egui_extras' virtualized `Table`: no lazy loading, no resizable
-# columns — wrap it in a `ScrollArea` for long lists).
+# Table — a header-first table for everyday data rows, built on `Grid`
+# with pinned column widths (a deliberately slim cousin of egui_extras'
+# virtualized `Table`: no lazy loading, no resizable columns — wrap it
+# in a `ScrollArea` for long lists).
 #
 #   Egui::Table.new("files", ["Name", "Size"], [0.7, 0.3]).show(ui) do |rows|
 #     rows.label("a.txt"); rows.label("12 KB"); rows.end_row
@@ -13,8 +13,7 @@
 module Egui
   class Table
     def initialize(id : String, @headers : Array(String),
-                   @fractions : Array(Float64)? = nil,
-                   @striped : Bool = true)
+                   @fractions : Array(Float64)? = nil)
       @id = Id.from("table/#{id}")
     end
 
@@ -37,7 +36,7 @@ module Egui
       widths += Array.new({n - widths.size, 0}.max) { 8.0 }
 
       # Header: pinned-width grid with title-colored text and a rule
-      # below it (the body's first stripe starts under the rule).
+      # below it.
       header_color = ui.style.visuals.title_color
       Grid.new(@id.child(1_u64).value.to_s, widths: widths).show(ui) do |grid|
         @headers.each { |h| grid.add(Label.new(RichText.new(h).color(header_color))) }
@@ -45,8 +44,7 @@ module Egui
       end
       ui.separator
 
-      Grid.new(@id.child(2_u64).value.to_s, widths: widths,
-        striped: @striped).show(ui) { |grid| yield grid }
+      Grid.new(@id.child(2_u64).value.to_s, widths: widths).show(ui) { |grid| yield grid }
     end
   end
 end

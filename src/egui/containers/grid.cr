@@ -12,15 +12,13 @@
 #   end
 #
 # Explicit `widths` (one per column) pin the columns instead of
-# measuring them — what `Table` builds its fixed layout on. `striped`
-# paints every other row with a faint fill (under the cells).
+# measuring them — what `Table` builds its fixed layout on.
 
 module Egui
   class Grid
     @ui : Ui? = nil
 
-    def initialize(id : String, @widths : Array(Float64)? = nil,
-                   @striped : Bool = false)
+    def initialize(id : String, @widths : Array(Float64)? = nil)
       @grid_id = Id.from("grid/#{id}")
       @spacing = Vec2.new(8.0, 3.0)
       @origin = Pos2.zero
@@ -31,7 +29,6 @@ module Egui
       @col_widths = [] of Float64
       @measured = [] of Float64
       @row_heights = [] of Float64
-      @stripe_slots = [] of {Int32, Int32}
     end
 
     def show(ui : Ui, &block : self ->) : Rect
@@ -69,21 +66,6 @@ module Egui
         end
       end
 
-      # Back-paint the stripes under their rows (slots were reserved
-      # before the cells so the fill lands beneath them).
-      unless @stripe_slots.empty?
-        total_w = total_width
-        @stripe_slots.each do |row, slot|
-          top = @origin.y + @row_heights[0, row].sum +
-                row * @spacing.y
-          ui.painter.set(slot,
-            RectCmd.new(ui.painter.clip,
-              Rect.from_min_size(Pos2.new(@origin.x, top),
-                Vec2.new(total_w, @row_heights[row]? || 0.0)),
-              0.0, stripe_fill, nil, 0.0))
-        end
-      end
-
       content = Rect.from_min_size(@origin, content_size)
       ui.min_rect = ui.min_rect.union(content)
       ui.cursor = Pos2.new(ui.max_rect.min.x, content.bottom + @spacing.y)
@@ -110,11 +92,6 @@ module Egui
     def add(widget : Widget) : Response
       ui = @ui.not_nil!
       col = @col
-
-      # Reserve the stripe slot before any cell paints (rows 1, 3, …).
-      if @striped && col.zero? && @row_index.odd?
-        @stripe_slots << {@row_index, ui.painter.add_noop}
-      end
 
       x = @origin.x + (0...col).sum { |c| @col_widths[c]? || 0.0 } +
           col * @spacing.x
@@ -163,12 +140,6 @@ module Egui
       height = @row_heights.sum + @row_height +
                ({@row_heights.size + (@row_height > 0 ? 1 : 0), 1}.max - 1) * @spacing.y
       Vec2.new(total_width, height)
-    end
-
-    private def stripe_fill : Color32
-      ui = @ui.not_nil!
-      v = ui.style.visuals
-      v.fade_color(v.text_color, v.dark ? 0.92 : 0.96)
     end
 
     private def widths_id : Id

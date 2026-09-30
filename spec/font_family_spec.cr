@@ -84,4 +84,21 @@ describe "font_family cascade" do
     # 4 chars at 16px: 0.6 → 38.4px, 1.0 → 64px (+ padding in both).
     width.not_nil!.should be > 60.0
   end
+
+  it "exposes the primary stack as the reserved 'system' family" do
+    ctx = Egui::Context.new
+    # The primary is never anonymous in the catalog: whatever the
+    # backend loaded renders under the name "system".
+    ctx.font_family_catalog.should contain("system")
+    ctx.font_family_catalog.should contain("monospace")
+    ctx.fonts_for("system").same?(ctx.fonts).should be_true
+
+    # Registering "system" swaps the primary slot itself (it IS the
+    # primary, not a shadow stack beside it).
+    wide = WideFonts.new
+    ctx.register_font_family("system", wide)
+    ctx.fonts.same?(wide).should be_true
+    ctx.fonts_for("system").same?(wide).should be_true
+    ctx.fonts_for(nil).same?(wide).should be_true
+  end
 end

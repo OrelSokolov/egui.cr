@@ -188,6 +188,21 @@ module Egui
 
       @@events = [] of Egui::Event
       @@fonts : Egui::Backend::AtlasFonts?
+      # The monospace stack (TextCmd family "monospace"); nil = primary only.
+      @@mono_fonts : Egui::Backend::AtlasFonts? = nil
+      # Extra named stacks (`Sokol.register_font`) — what a widget group
+      # draws through when its style sets `font_family` (see
+      # `Context#font_families` / `Fonts` resolution in #fonts_for_cmd).
+      @@named_fonts = {} of String => Egui::Backend::AtlasFonts
+      # System-scan families not yet loaded (`register_deferred_font`):
+      # name → font file paths, materialized on first use. Names came
+      # cheap (name-table read only); the parse is paid per pick.
+      @@deferred_fonts = {} of String => Array(String)
+      # Materialized deferred stacks, memoized by file path — ONE
+      # parse/one atlas per family, shared by the ctx measure side
+      # (`Context#font_loader`) and #fonts_for_cmd here. A nil value
+      # (unloadable file) is remembered too: no re-parse per frame.
+      @@materialized = {} of String => Egui::Backend::AtlasFonts?
       @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
       # On-demand repaint: the last painted command list (re-emitted
       # verbatim on idle frames) and the framebuffer size it matched.
@@ -566,6 +581,23 @@ module Egui
             app.ctx.fonts = Egui::MonospaceFonts.new
           end
         end
+        # Named stacks registered before #run land in the Context now.
+        @@named_fonts.each do |name, fonts|
+          app.ctx.register_font_family(name, fonts)
+        end
+        # System font families: names from a cheap name-table scan (no
+        # font parsing at startup — see SystemPorts::Fonts), the stacks
+        # themselves deferred until a family is first picked. The ctx
+        # measure side and the draw side share one materialized stack
+        # per family through materialize_font's memo.
+        app.ctx.font_loader = ->(paths : Array(String)) : Egui::Fonts? {
+          materialize_font(paths)
+        }
+        Egui::SystemPorts::Fonts.installed_families.each do |name, path|
+          next if @@named_fonts.has_key?(name) ||
+                  @@deferred_fonts.has_key?(name)
+          register_deferred_font(name, [path])
+        end
         app.ctx.textures = SokolTextureRegistry.new
       end
 
@@ -587,9 +619,73 @@ module Egui
       # Swap the active font backend at runtime (e.g. a preview app
       # toggling between FreeType and the light-hint fallback). The new
       # backend's atlas is uploaded and bound on the next frame.
-      def self.select_fonts(font : AtlasFonts) : Nil
+      # `mono:` optionally installs a SECOND stack (Context#mono_fonts)
+      # for TextCmd family "monospace" — terminal grids, code. Nil
+      # (default) keeps mono text on the primary stack.
+      def self.select_fonts(font : AtlasFonts, mono : AtlasFonts? = nil) : Nil
         @@fonts = font
+        @@mono_fonts = mono
         @@app.try &.ctx.fonts = font
+        @@app.try &.ctx.mono_fonts = mono
+      end
+
+      # Register a NAMED font stack (`Context#font_families`): a widget
+      # group whose style sets `font_family: name` measures and draws
+      # through it. Callable before #run (the name lands in the class
+      # registry here and in the Context once the app exists). The
+      # names "monospace" and "system" are reserved — they install the
+      # mono/primary slots instead of an extra stack.
+      def self.register_font(name : String, fonts : AtlasFonts) : Nil
+        @@named_fonts[name] = fonts
+        @@app.try &.ctx.register_font_family(name, fonts)
+      end
+
+      # Register a system-scan family: the NAME lands in the catalogs
+      # now (Context#deferred_font_paths / #font_family_catalog and the
+      # backend's own registry); the stack parses on first use. The
+      # reserved names are not deferrable.
+      def self.register_deferred_font(name : String, paths : Array(String)) : Nil
+        return if name == "system" || name == "monospace"
+        @@deferred_fonts[name] = paths
+        @@app.try &.ctx.register_deferred_font(name, paths)
+      end
+
+      # Materialize a deferred family's stack through the standard
+      # backend chain, memoized per file (see @@materialized).
+      private def self.materialize_font(paths : Array(String)) : Egui::Backend::AtlasFonts?
+        key = paths.first? || return nil
+        unless @@materialized.has_key?(key)
+          @@materialized[key] = fonts_from_system(paths)
+        end
+        @@materialized[key]
+      end
+
+      # The stack a TextCmd's family resolves to (the backend twin of
+      # `Context#fonts_for`): nil or the reserved "system" → primary,
+      # "monospace" → the mono stack, a registered name → that stack,
+      # a deferred name → its materialized stack (loaded right here on
+      # first draw), anything else → primary (a typo degrades to the
+      # default).
+      private def self.fonts_for_cmd(cmd : Egui::TextCmd) : AtlasFonts?
+        case family = cmd.family
+        when nil         then @@fonts
+        when "monospace" then @@mono_fonts || @@fonts
+        when "system"    then @@fonts
+        else
+          if (stack = @@named_fonts[family]?)
+            stack
+          elsif (paths = @@deferred_fonts[family]?)
+            if (real = materialize_font(paths))
+              @@named_fonts[family] = real
+              real
+            else
+              @@deferred_fonts.delete(family)
+              @@fonts
+            end
+          else
+            @@fonts
+          end
+        end
       end
 
       # Last pointer position reported to egui (window-local points);
@@ -695,8 +791,15 @@ module Egui
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
         # measure() must see the draw-path ppem (see AtlasFonts#scale) —
         # set it before begin_frame so this frame's layout agrees with
-        # what paint_text will actually emit.
-        @@fonts.try &.scale = @@pixels_per_point
+        # what paint_text will actually emit. Every stack that can draw
+        # this frame, named ones included, plus the deferred stacks
+        # materialized so far (they reach @@named_fonts only once a
+        # TextCmd resolves to them — a family only MEASURED still needs
+        # the right scale).
+        [@@fonts, @@mono_fonts].concat(@@named_fonts.values)
+          .concat(@@materialized.values.compact).each do |f|
+          f.try &.scale = @@pixels_per_point
+        end
         fb_w = LibEguiCr.sapp_width
         fb_h = LibEguiCr.sapp_height
 
@@ -800,16 +903,20 @@ module Egui
         # render pass — sg_update_image is illegal inside a pass. An
         # overflowed atlas (font-size drags bake a glyph set per
         # fractional size) is wiped and re-baked here, so the pass never
-        # rasterizes and no glyph stays blank-cached.
-        if touch_fonts && (fonts = @@fonts)
-          touch_block = ->(f : Egui::Backend::AtlasFonts) do
-            commands.each do |cmd|
-              f.touch(cmd, @@pixels_per_point) if cmd.is_a?(Egui::TextCmd)
-            end
+        # rasterizes and no glyph stays blank-cached. Every stack in use
+        # is touched — each with the commands that resolve to it.
+        if touch_fonts
+          text_cmds = commands.select(Egui::TextCmd)
+          # Distinct stacks this frame's text resolves to (a family set
+          # on no command rasterizes nothing).
+          stacks = text_cmds.map { |cmd| fonts_for_cmd(cmd) }.uniq
+          stacks.each do |stack|
+            next unless stack
+            mine = text_cmds.select { |cmd| fonts_for_cmd(cmd) == stack }
+            mine.each { |cmd| stack.touch(cmd, @@pixels_per_point) }
+            mine.each { |cmd| stack.touch(cmd, @@pixels_per_point) } if stack.reset_if_full
+            stack.flush
           end
-          touch_block.call(fonts)
-          touch_block.call(fonts) if fonts.reset_if_full
-          fonts.flush
         end
 
         LibEguiCr.begin_pass(fb_w, fb_h)
@@ -1090,7 +1197,7 @@ module Egui
       end
 
       def self.paint_text(cmd : Egui::TextCmd) : Nil
-        fonts = @@fonts
+        fonts = fonts_for_cmd(cmd)
         return unless fonts
 
         apply_scissor(cmd.clip)

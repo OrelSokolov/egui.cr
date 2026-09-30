@@ -39,10 +39,14 @@ module Egui
     # visible at the jump).
     PAGE = 0.8
 
+    # `id:` pins the offset/content cells to a STABLE Id instead of the
+    # hosting Ui's child counter — for hosts that need to reach the
+    # scroll state directly (SelectBox's follow-the-active-row).
     def initialize(@max_height : Float64? = nil,
                    @scrollbar : Symbol = :overlay,
                    @vbar : Symbol = :right,
-                   @hbar : Symbol? = nil)
+                   @hbar : Symbol? = nil,
+                   @id : Id? = nil)
     end
 
     def classic? : Bool
@@ -53,7 +57,7 @@ module Egui
       style = ui.style
       memory = ui.ctx.memory
       input = ui.ctx.input
-      id = ui.next_widget_id
+      id = @id || ui.next_widget_id
 
       height = {@max_height || ui.available_height, ui.available_height}.min
       # The classic strips are reserved up front, so the viewport (and

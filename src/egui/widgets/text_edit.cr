@@ -38,7 +38,8 @@ module Egui
     MASK_CHAR = "●"
 
     def initialize(@text : String, @hint : String? = nil,
-                   @password : Bool = false, @focus_id : String? = nil)
+                   @password : Bool = false, @focus_id : String? = nil,
+                   @frame : Bool = true)
     end
 
     def ui(ui : Ui) : Response
@@ -54,7 +55,12 @@ module Egui
       ui.ctx.memory.use_id(scroll_id)
 
       cursor = ui.ctx.memory.data.get_int(id, @text.size).clamp(0, @text.size)
+      # A stale anchor cell (the buffer shrank since the selection was
+      # made — an app replaced it, a combo cleared its filter) must not
+      # survive past the current length: sel_max would index past the
+      # string and crash the first edit.
       anchor = ui.ctx.memory.data.get_int(anchor_id, -1)
+      anchor = {anchor, @text.size}.min if anchor > @text.size
       new_text = @text
       changed = false
 
@@ -167,9 +173,13 @@ module Egui
       # selection stroke color (upstream `visuals.selection.stroke`),
       # not a ring outside the frame — an outside ring both escapes the
       # widget bounds and gets scissored by the parent clip.
-      stroke_color = response.has_focus? ? visuals.selection_fill : visuals.button_stroke
-      stroke_w = response.has_focus? ? border : 1.0
-      ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
+      # `frame: false` (an embedded field — SelectBox's search entry):
+      # the host owns the frame, the edit draws content only.
+      if @frame
+        stroke_color = response.has_focus? ? visuals.selection_fill : visuals.button_stroke
+        stroke_w = response.has_focus? ? border : 1.0
+        ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
+      end
 
       inner = rect.min + inset
       color = if new_text.empty? && @hint

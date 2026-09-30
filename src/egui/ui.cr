@@ -329,6 +329,17 @@ module Egui
         .show(self) { |opt| on_select.call(opt) }
     end
 
+    # egui `egui::ComboBox` + search: a SelectBox — a searchable
+    # select for option lists too long to scan linearly (the font
+    # family catalog). See `widgets/select_box.cr`.
+    def select_box(id : String, selected : String, options : Array(String),
+                   width : Float64? = nil, label : String? = nil,
+                   max_height : Float64 = 220.0,
+                   &on_select : String ->) : Bool
+      SelectBox.new(id, selected, options, width, label, max_height)
+        .show(self) { |opt| on_select.call(opt) }
+    end
+
     # --- reactive bindings (see reactive.cr) -------------------------------
     #
     # The `Signal` forms of the value widgets above: display + write-back
@@ -415,8 +426,9 @@ module Egui
     def text_edit_singleline(buffer : String, hint : String? = nil,
                              password : Bool = false,
                              focus_id : String? = nil,
+                             frame : Bool = true,
                              &on_change : String ->) : Response
-      response = add(TextEdit.new(buffer, hint, password, focus_id))
+      response = add(TextEdit.new(buffer, hint, password, focus_id, frame))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end
@@ -533,8 +545,8 @@ module Egui
     end
 
     # egui `ui.grid(id) { |grid| … }` — aligned columns; see `Grid`.
-    def grid(id : String, striped : Bool = false, &block : Grid ->) : Rect
-      Grid.new(id, striped: striped).show(self) { |g| yield g }
+    def grid(id : String, &block : Grid ->) : Rect
+      Grid.new(id).show(self) { |g| yield g }
     end
 
     # Hierarchical list; see `TreeView`.
@@ -542,7 +554,7 @@ module Egui
       TreeView.new(id).show(self) { |tree| yield tree }
     end
 
-    # Header + striped body table; see `Table`.
+    # Header + body table; see `Table`.
     def table(id : String, headers : Array(String),
               fractions : Array(Float64)? = nil, &block : Grid ->) : Nil
       Table.new(id, headers, fractions).show(self) { |rows| yield rows }
@@ -572,7 +584,17 @@ module Egui
         cell = child_ui(rect)
       end
       cell.v_overflow = false
-      Egui::Bench.span(widget.class.name) { widget.ui(cell) }
+      # Same current_widget bookkeeping as #add — #interact records
+      # inspector meta from it, and widgets placed through #add_sized
+      # (the Inspector header's Export/✕ buttons) must not be the only
+      # unpickable widgets on screen.
+      parent = @ctx.current_widget
+      @ctx.current_widget = widget
+      begin
+        Egui::Bench.span(widget.class.name) { widget.ui(cell) }
+      ensure
+        @ctx.current_widget = parent
+      end
     end
 
     # egui `ui.scope` — a nested region with its own id space (children

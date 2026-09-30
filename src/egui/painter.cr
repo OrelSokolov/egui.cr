@@ -163,6 +163,10 @@ module Egui
     # Which layer subsequently pushed commands belong to (egui
     # `Painter::with_layer_id`): either a named Order or an explicit
     # numeric z (see `LayerId`).
+    def layer : Int32
+      @layer
+    end
+
     def layer=(order : Order)
       @layer = order.z
     end

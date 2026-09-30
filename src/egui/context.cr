@@ -48,27 +48,76 @@ module Egui
 
     # Named font families (upstream `FontDefinitions::families`): a
     # family name → font stack registry, so a GROUP of widgets can swap
-    # fonts through the style cascade (`font_family` key) instead of
-    # the app-global #fonts. The backend registers stacks via
-    # `Sokol.register_font`; the reserved names resolve to the built-in
-    # slots — "monospace" → #mono_font, everything unset → #fonts.
+    # fonts through the style cascade (`font_family` key). The backend
+    # registers stacks via `Sokol.register_font`; two names are
+    # reserved for the built-in slots — "system" → the primary #fonts
+    # (whatever the backend loaded: the system face, a preselected
+    # stack…), "monospace" → #mono_font.
     property font_families : Hash(String, Fonts) = {} of String => Fonts
 
     def register_font_family(name : String, fonts : Fonts) : Nil
       @font_families[name] = fonts
       @mono_fonts = fonts if name == "monospace"
+      @fonts = fonts if name == "system"
+    end
+
+    # Font families whose stack is NOT loaded yet: family name → font
+    # file paths (the system scan's output). Materialized into
+    # #font_families by #fonts_for on FIRST USE through #font_loader —
+    # startup pays for names only; the parse happens for the families
+    # actually picked. The reserved names are not deferrable (they are
+    # the built-in slots).
+    property deferred_font_paths : Hash(String, Array(String)) = {} of String => Array(String)
+
+    # The stack builder for #deferred_font_paths — the backend's
+    # from_system chain, installed at on_init. Nil headless: a
+    # deferred family degrades to the primary stack there.
+    property font_loader : Proc(Array(String), Fonts?)?
+
+    def register_deferred_font(name : String, paths : Array(String)) : Nil
+      return if name == "system" || name == "monospace"
+      @deferred_font_paths[name] = paths
     end
 
     # The stack a `family`-tagged text measures/draws through: nil or
     # an unknown name → the primary #fonts (a typo degrades to the
-    # default, CSS vibes), "monospace" → #mono_font.
+    # default, CSS vibes), "system" → the primary, "monospace" →
+    # #mono_font. A deferred family materializes HERE — the first
+    # resolution parses the files, swaps the placeholder out of
+    # #deferred_font_paths and never pays again.
     def fonts_for(family : String?) : Fonts
       return @fonts unless family
       case family
       when "monospace" then mono_font
+      when "system"    then @fonts
       else
-        @font_families[family]? || @fonts
+        if (fonts = @font_families[family]?)
+          fonts
+        elsif (paths = @deferred_font_paths[family]?)
+          real = @font_loader.try &.call(paths)
+          @deferred_font_paths.delete(family)
+          if real
+            @font_families[family] = real
+          else
+            @fonts # an unloadable family degrades to the primary
+          end
+        else
+          @fonts
+        end
       end
+    end
+
+    # The catalog of family names a `font_family` style key can be set
+    # to: every registered named stack, every deferred (not yet
+    # materialized) family, plus the reserved "system" (the primary —
+    # always resolvable, whatever the backend loaded) and "monospace"
+    # (resolvable even when no mono stack is installed — it degrades
+    # to the primary). Sorted; what a font picker offers. "unset the
+    # key" is how a picker returns to the theme slot
+    # (`Style#font_family`, nil by default → the primary).
+    def font_family_catalog : Array(String)
+      (@font_families.keys + @deferred_font_paths.keys +
+        ["system", "monospace"]).uniq.sort
     end
     property textures : TextureRegistry
     # Framebuffer pixels per UI point (retina: 2.0), set by the
@@ -451,6 +500,25 @@ module Egui
 
     def current_widget=(widget : Widget?) : Widget?
       @current_widget = widget
+    end
+
+    # Run the block with `widget` as the `current_widget` — the manual
+    # twin of what `Ui#add` does around `widget.ui`. Paint-in-place
+    # sites (menu rows, title-bar tab cards) wrap their direct
+    # `#interact` calls in this so the inspector records meta for them;
+    # with the inspector off it is a plain `yield` (zero cost).
+    def with_inspector_widget(widget : Widget, & : -> _)
+      if @inspector_enabled
+        parent = @current_widget
+        @current_widget = widget
+        begin
+          yield
+        ensure
+          @current_widget = parent
+        end
+      else
+        yield
+      end
     end
 
     # Did the app open a popup this frame (its own context menu)? The

@@ -1267,6 +1267,37 @@ describe "phase 2 widgets" do
     texts = draw.call([] of Egui::Event, 0.800)
     texts.should contain("tip")
   end
+
+  it "an inline tooltip does not leak an infinite clip into later widgets" do
+    ctx = Egui::Context.new
+    center = nil
+
+    # A panel-clipped button with a tooltip ABOVE a later label: while
+    # the tooltip shows, the label's text command must still carry the
+    # panel clip — show_tooltip used to reset the shared painter's clip
+    # to infinite, so everything painted after it escaped the panel.
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.side_panel(:left, "p", width: 100.0, resizable: false) do |ui|
+        ui.button("hover me").on_hover_text("tip")
+        ui.label("after")
+      end
+      ctx.central_panel { |c| c.label("center") }
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::TextCmd)
+        .find { |c| c.text == "after" }.not_nil!
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    center = ctx.memory.widget_rects.values.first.center
+    draw.call([Egui::Event.pointer_moved(center.not_nil!)], 0.232)
+    after = draw.call([] of Egui::Event, 0.800)
+    # the tooltip really showed in that frame (the leak is live) …
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("tip")
+    # … and the label below still carries the panel clip
+    after.clip.max.x.should be <= 100.0
+  end
 end
 
 describe "keyboard input (phase 3)" do
@@ -2178,7 +2209,7 @@ describe "textures & images (phase 6)" do
     ctx.end_frame
 
     images = ctx.painter.commands.select(Egui::ImageCmd)
-    images.size.should eq(2) # SV square + hue bar
+    images.size.should eq(3) # SV square + hue bar + alpha bar
     bar = images[1]
     bar.uv.min.x.should be < 0.01
     bar.uv.width.should be > 0.99
@@ -2282,6 +2313,32 @@ describe "hsv conversions (phase 6)" do
     draw.call([] of Egui::Event, 0.048)
     cached = ctx.memory.color_cache[color].not_nil!
     cached.h.should be_close(2.0 / 3.0, 0.01)
+  end
+
+  it "dragging the alpha bar changes only the alpha channel" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgba(255, 0, 0, 255)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      r = widget_ui(ctx).color_edit32(color) { |c| color = c }
+      ctx.end_frame
+      r.rect
+    end
+
+    rect = draw.call([] of Egui::Event, 0.016)
+    # alpha bar: below the square (180) + hue bar (6 + 16) + gap 6
+    bar_top = rect.top + 180.0 + 6.0 + 16.0 + 6.0
+    # click near the left edge: alpha → ~0
+    left = Egui::Pos2.new(rect.left + 2.0, bar_top + 8.0)
+    draw.call([Egui::Event.pointer_moved(left),
+      Egui::Event.pointer_pressed(left),
+      Egui::Event.pointer_released(left)], 0.032)
+
+    color.r.should eq(255) # RGB untouched
+    color.g.should eq(0)
+    color.b.should eq(0)
+    color.a.should be < 60 # nearly fully transparent
   end
 end
 
@@ -3603,7 +3660,7 @@ describe "TreeView" do
 end
 
 describe "Table" do
-  it "renders headers and striped body rows" do
+  it "renders headers and body rows with no row fills" do
     ctx = Egui::Context.new
     raw_frame(ctx)
     ctx.window("demo") do |ui|
@@ -3616,9 +3673,9 @@ describe "Table" do
 
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     {"File", "Size", "a.txt", "b.txt"}.each { |t| texts.should contain(t) }
-    # striped body: some RectCmd carries a fill (the row stripe)
-    rects = ctx.painter.commands.select(Egui::RectCmd)
-    rects.count(&.fill).should be > 1
+    # no row stripes: the only filled rects are window-level backgrounds
+    rects = ctx.painter.commands.select(Egui::RectCmd).select(&.fill)
+    rects.all? { |c| c.fill == ctx.style.visuals.window_fill }.should be_true
   end
 
   it "fits the available width — an auto-fit window stops growing" do

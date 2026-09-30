@@ -49,6 +49,120 @@
 > показываются в инспекторе как «нет стилизуемых свойств»; экспорт
 > правок в `sheet.rule(...)`-сниппет.
 
+## Инспектор для «рукописных» частей (СДЕЛАНО)
+
+Проблема: части UI, рисующиеся painter-вызовами напрямую (не через
+`Ui#add`), не имели Widget-экземпляра — `Context#interact` писал meta
+из `current_widget` (nil) — правый клик по ним ничего не выбирал, и
+стилевых ключей они не читали. Решение (`src/egui/widgets/styled_part.cr`):
+
+* `Widget#inspector_kind` — имя вида для meta (по умолчанию имя
+  класса; у part-двойников своё);
+* `Egui::StyledPart` — мета-двойник include Widget: kind, style_class,
+  `style_properties`, label + публичные ридеры каскада `#vars(ctx, id,
+  state)` (класс-правила + per-element override, публичная обёртка
+  защищённого `Widget#style_vars`);
+* `Context#with_inspector_widget(part) { interact … }` — ручной аналог
+  того, что `Ui#add` делает с `current_widget` (инспектор выключен →
+  plain yield, нулевая цена);
+* `Inspector::WidgetMeta#id` — id, под которым meta записана (спеки,
+  адресация).
+
+Этим механизмом закрыто:
+
+* **меню** (`containers/menu.cr`): `MenuItemPart` (`menu.item`) и
+  `MenuButtonPart` (`menu.button`) — background (hover-подсветка,
+  :active у bar-кнопки = меню открыто), text_color, font_size,
+  padding (box). Смысловые fallback-и — прежние Visuals-слоты
+  (`menu_highlight_fill`/`menu_highlight_text`).
+* **табы в заголовке окна** (`containers/title_bar_tabs.cr`):
+  `TitleBarTabs::TabPart` (`title_bar.tab`) — min_width, rounding,
+  pad_x, font_size, top_gap, background (база = активная карточка,
+  :hover = неактивная), text_color, text_idle, close_hover,
+  plus_hover. Card/X/+ пишут meta; константы Win11 — fallback-и.
+* **контейнерный Tabs** (`containers/tabs.cr`): per-card meta
+  (`Tabs::TabPart`, класс `tabs.tab`) и чтение оверлеев
+  hover/selected ЧЕРЕЗ per-Id каскад — раньше читался только класс,
+  и вкладка «Элемент» на карточку не действовала. Корень `tabs`
+  (tab_spacing, rule_color, background, merge_selected) — shadow-meta
+  под (неинтерактирующим) scroll-id, чтобы «Класс» знал свойства.
+* **табы шапки самой панели инспектора** (`inspector.cr`):
+  `Inspector::TabPart` (класс `inspector.tab`) — background
+  (база + :hover/:selected), text_color, underline_color. Раньше
+  ячейки были голыми `row.interact` — meta не писалась вовсе, правый
+  клик открывал ПУСТОЙ пик-попап. Заодно `Ui#add_sized` выровнен с
+  `Ui#add` по `current_widget` (Export/✕ в шапке — обычные `Button` —
+  тоже не писали meta).
+* **сайдбар** (`containers/sidebar.cr`): `Sidebar::TabPart`
+  (`sidebar.tab` — height, font_size, font_family, text_color,
+  padding, background + :hover/:selected) и `Sidebar::ClosePart`
+  (`sidebar.close` — background + :hover, text_color) на вложенных X.
+  Раньше interact строк писался как весь `Sidebar` (без свойств), и
+  оверлеи читались из класса напрямую, минуя per-Id каскад — вкладка
+  «Элемент» на строку не действовала.
+* **терминал** (`terminal/widget.cr`): класс `terminal` расширен с
+  одного `font_family` до font_size, background, text_color,
+  cursor_color, selection_overlay, scrollbar_color,
+  scrollbar_active_color — применяются на per-frame twin темы
+  (`Terminal::Theme#twin`), SGR-разрешение цветов идёт через него.
+* инспектор: fallback виджета (`StyleProp#fallback`) в display-значениях
+  теперь РАНЬШЕ theme-слота — иначе терминал показывал бы
+  `button_weak`/тему приложения вместо своих #16161e/14pt;
+* `font_family` редактируется НЕ свободным текстом, а выпадающим
+  списком загруженных в приложение гарнитур
+  (`Context#font_family_catalog` = зарезервированный "monospace" +
+  все стеки из `register_font_family`/`Sokol.register_font`); нулевой
+  пункт «(наследуется)» снимает ключ. Значение вне каталога (опечатка
+  из кода) честно показывается первым пунктом.
+
+Спеки: `spec/inspector_parts_spec.cr`.
+
+## Захардкожено, но могло бы быть в инспекторе — план
+
+Обзор «что в системе задано константами/темой, а не правилами».
+Формат: место → предлагаемый класс → ключи. Приоритет по частоте
+касания пользователем.
+
+1. **Скроллбары ScrollArea** (`containers/scroll_area.cr:29+`; BAR_W=8,
+   CLASSIC_W=16, thumb/track цвета, стрелки) — класс `scrollbar`
+   (+ `:hover`/`:active` у thumb): width, thumb_fill, track_fill,
+   rounding, arrows (bool). Пер-инстанс — `scroll_area { … }`-ключи на
+   контейнере. Скроллбар textarea (`widgets/textarea.cr` BAR_W=8)
+   — тот же класс.
+2. **Рамка и кнопки окна** (`containers/window_frame.cr`): у каждого
+   скина (Windows/XP/Ubuntu/MacOS) блоки констант — BTN_W/CAPTION_H,
+   палитры hover/press/close. Классы `window_frame.caption_button`
+   (+ :hover/:active), `window_frame.border`. Много ручной работы
+   (4 скина), но механика StyledPart уже готова.
+3. **ComboBox** (`containers/combo_box.cr`): кнопка + popup-строки
+   рисуются вручную — item height/inset, highlight, max_height.
+   Классы `combo` / `combo.item` (+ :hover/:selected).
+4. **TreeView** (`containers/tree_view.cr`): indent, chevron, иконки,
+   выделение строки. Класс `tree.row` (+ :hover/:selected),
+   `tree.arrow`.
+5. **Plot** (`containers/plot.cr`): палитра серий (5 цветов), цвета
+   осей/сетки, размер точек/толщина линий. Класс `plot` + `plot.line`.
+6. **DatePicker** (`widgets/date_picker.cr` CELL=30, шапка, выделение
+   дня) — класс `date_picker` / `date_picker.cell` (+ :selected).
+7. **Виджеты «без свойств»** (заявлены в шапке как осознанно
+   отложенные): TextEdit, TextArea (selection/caret цвета, padding),
+   NumberInput (кнопки-стрелки), DragValue, RadioButton, Segmented
+   (ячейки + разделители), HotkeyEdit, CollapsingHeader (стрелка,
+   indent) — стандартный свип `style_properties` + чтение через
+   `style_vars`, как уже сделано у Button/Checkbox.
+8. **Popup/контекстное меню-рамка** (`Context#popup`): rounding,
+   stroke, тень, padding — сейчас зашиты в painter. Класс `popup`.
+9. **Tooltips** — цвета/задержка; класс `tooltip`.
+10. **Page header** (`containers/page.cr` HEADER_H, BACK_D, TITLE_PT)
+    — класс `page.header`.
+11. **Скроллбар терминала** — геометрия (BAR_W=10, THUMB_MIN_H) ещё
+    константы; цвета уже стилизуемы через `terminal` (см. выше).
+
+Общий принцип для всех пунктов тот же, что в этом проходе: объявить
+ключи в `StyleProp`-декларациях (виджет или StyledPart), читать через
+`style_vars`/`part.vars`, fallback — сегодняшняя константа; инспектор
+подхватит сам, без отдельного кода UI.
+
 Рантайм-инспектор в духе Chrome DevTools для egui.cr: правый клик по
 виджету → «Inspect» → нижняя панель с редактором стилей на лету.
 

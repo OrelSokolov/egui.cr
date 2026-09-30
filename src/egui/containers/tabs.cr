@@ -50,6 +50,39 @@ module Egui
       ROOT_CLASS
     end
 
+    # The `tabs` root keys #ui reads (the strip itself). The per-card
+    # keys of `tabs.tab` are declared by TabPart — the strip records
+    # its own meta under the (non-interacting) scroll id so the Class
+    # tab knows these props too.
+    def style_properties : Array(StyleProp)
+      [StyleProp.new("tab_spacing", :number),
+       StyleProp.new("rule_color", :color),
+       StyleProp.new("background", :color, label: "strip fill"),
+       StyleProp.new("merge_selected", :bool, fallback: false)]
+    end
+
+    # The StyledPart behind one tab card (see widgets/styled_part.cr):
+    # carries the inspector meta for the card's interacts and declares
+    # the `tabs.tab` keys. State overlays (:hover/:selected) resolve
+    # per card id, so BOTH class rules and per-element inspector edits
+    # reach the card.
+    class TabPart < StyledPart
+      def initialize(label : String)
+        super("Tab", TAB_CLASS, [
+          StyleProp.new("height", :number),
+          StyleProp.new("font_size", :number),
+          StyleProp.new("font_family", :string),
+          StyleProp.new("text_color", :color),
+          StyleProp.new("padding", :box),
+          StyleProp.new("background", :color, states: true),
+          StyleProp.new("bevel_light", :color, states: true),
+          StyleProp.new("bevel_dark", :color, states: true),
+          StyleProp.new("underline_color", :color),
+          StyleProp.new("underline_width", :number),
+        ], label)
+      end
+    end
+
     getter selected : Int32
     getter? closable : Bool
     getter layout : Symbol
@@ -155,6 +188,15 @@ module Egui
       # Stable id under the strip's first child slot — the carousel
       # offset persists here across frames.
       scroll_id = ui.next_widget_id.child(SCROLL_SALT)
+
+      # Shadow meta for the ROOT class under the (never-interacting)
+      # scroll id: the Class tab learns the `tabs` props, while the
+      # card interacts below record TabPart meta (`tabs.tab`) — picking
+      # a card addresses the card, the root strip stays reachable
+      # through the class combo.
+      if ctx.inspector_enabled?
+        ctx.inspector.try &.record_meta(scroll_id, self)
+      end
 
       # Carousel offset: scroll the strip just enough that the ACTIVE
       # tab stays fully inside the visible window (and clamp to the
@@ -262,12 +304,14 @@ module Egui
 
         tab_resp : Response? = nil
         close_resp : Response? = nil
+        part = TabPart.new(title)
         unless hidden
           # Clamping is identity for tabs inside the strip; it only
           # bites on carousel straddlers (and a multiline tab wider
           # than the strip itself).
           hit = overflow ? clamp_to_strip.call(rect) : rect
-          tab_resp = ui.interact(hit, id, Sense.click)
+          tab_resp = ctx.with_inspector_widget(part) {
+            ui.interact(hit, id, Sense.click) }
 
           # Nested close button: interacts AFTER the tab so it is the
           # topmost widget under the pointer (hit-testing picks the
@@ -279,7 +323,8 @@ module Egui
               Vec2.new(icon, icon))
             # Clamped for the same reason as the tab's hit rect above.
             x_rect = clamp_to_strip.call(x_rect)
-            close_resp = ui.interact(x_rect, x_id, Sense.click)
+            close_resp = ctx.with_inspector_widget(part) {
+              ui.interact(x_rect, x_id, Sense.click) }
           end
         end
         x_hovered = close_resp.try(&.hovered?) || false
@@ -288,13 +333,14 @@ module Egui
           # State overlay on top of the base vars: hover the weak fill,
           # selected the accent underline + background (the tab does
           # not count as hovered while the pointer is over its X).
-          state_vars = if selected
-            sheet.resolve(TAB_CLASS, "selected")
+          # Resolved per card id — class rules AND per-element
+          # inspector overrides both land here.
+          state = if selected
+            "selected"
           elsif tab_resp.try(&.hovered?) && !x_hovered
-            sheet.resolve(TAB_CLASS, "hover")
-          else
-            tab
+            "hover"
           end
+          state_vars = part.vars(ui, id, state)
           if (fill = state_vars.color?("background"))
             ui.painter.rect(rect, 3.0, fill)
           end
@@ -333,7 +379,9 @@ module Egui
           if (cr = close_resp)
             x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
             if cr.hovered?
-              ui.painter.rect(cr.rect, 3.0, visuals.button_hovered)
+              fill = part.vars(ui, x_id.not_nil!, "hover")
+                .color?("background") || visuals.button_hovered
+              ui.painter.rect(cr.rect, 3.0, fill)
             end
             Icons.draw(ui.painter, :close, cr.rect, x_color)
           end

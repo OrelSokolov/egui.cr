@@ -269,8 +269,9 @@ handle+rail, spinner arc, hyperlink underline, color wheel).
       icon support.
 - [x] `src/egui/color.cr`: HSV↔sRGB (port from `crates/ecolor/src/color.rs`).
 - [x] `src/egui/widgets/color_picker.cr` ← `widgets/color_picker.rs`: hue
-      → lite version: SV square + hue bar + swatch (gradient textures cached in
-      Memory#texture_cache); alpha editing and the hue wheel come later if needed.
+      → lite version: SV square + hue bar + alpha slider + swatch (gradient
+      textures cached in Memory#texture_cache); the hue wheel comes later if
+      needed.
       wheel (arc cmds), SV square, alpha slider, current/new swatches;
       `ui.color_edit32(rgba) { |c| }`.
 - [x] Specs: registered texture id flows into ImageCmd; HSV roundtrip within

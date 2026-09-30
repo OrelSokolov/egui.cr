@@ -52,8 +52,39 @@ module Egui
 
   # Vertical padding inside menu rows — dropdown items and bar buttons
   # alike. Roomier than `button_padding.y` so rows breathe like a
-  # native menu.
+  # native menu. The default of the `padding` style box of the
+  # `menu.item` / `menu.button` classes.
   MENU_PAD_Y = 6.0
+
+  # The StyledPart stand-ins behind menu rows (see widgets/styled_part.cr):
+  # menu sites paint in place, so the part carries the inspector meta
+  # AND the style keys the row reads. Two classes in the sheet:
+  #
+  #   menu.item   — a dropdown/popup row: background (hover highlight),
+  #                 text_color, font_size, padding (box)
+  #   menu.button — a menu-BAR root entry: the same keys, its
+  #                 background has :hover AND :active (menu open)
+  class MenuItemPart < StyledPart
+    def initialize(label : String, class_path : String = "menu.item")
+      super("MenuItem", class_path, [
+        StyleProp.new("background", :color, states: true),
+        StyleProp.new("text_color", :color),
+        StyleProp.new("font_size", :number),
+        StyleProp.new("padding", :box),
+      ], label)
+    end
+  end
+
+  class MenuButtonPart < StyledPart
+    def initialize(label : String)
+      super("MenuButton", "menu.button", [
+        StyleProp.new("background", :color, states: true),
+        StyleProp.new("text_color", :color),
+        StyleProp.new("font_size", :number),
+        StyleProp.new("padding", :box),
+      ], label)
+    end
+  end
 
   class Context
     # egui `MenuBar::ui` — a native-looking strip pinned to the top of
@@ -103,8 +134,15 @@ module Egui
     # menu bar's full height so its highlight runs edge-to-edge with
     # the strip, like a native bar entry.
     def menu_button(label : String, &block : Ui ->) : Nil
-      font_size = style.font_size
+      part = MenuButtonPart.new(label)
       pad = style.spacing.button_padding
+      font_size = style.font_size
+      id = next_widget_id
+      vars = part.vars(self, id)
+      font_size = vars.f64("font_size", font_size)
+      unless (box = vars.box?("padding"))
+        box = StyleBox.new(MENU_PAD_Y, pad.x, MENU_PAD_Y, pad.x)
+      end
       text_size = fonts.measure(label, font_size)
 
       # In the menu bar the button stretches to the bar's full height
@@ -116,9 +154,9 @@ module Egui
         {text_size.y + 2 * MENU_PAD_Y, style.spacing.interact_size.y}.max :
         {available_height, text_size.y}.max
       rect = allocate_at_least(
-        Vec2.new(text_size.x + 2 * pad.x, height))
-      id = next_widget_id
-      response = interact(rect, id, Sense.click)
+        Vec2.new(text_size.x + 2 * box.left, height))
+      response = ctx.with_inspector_widget(part) {
+        interact(rect, id, Sense.click) }
 
       popup_key = "menu_#{id.value}"
       open_menu = ctx.memory.menu_open || ""
@@ -145,14 +183,23 @@ module Egui
       visuals = style.visuals
       highlighted = mine_open || response.hovered?
       if highlighted
-        painter.rect(rect, 3.0, visuals.menu_highlight_fill ||
-          (mine_open ? visuals.button_active : visuals.button_hovered))
+        # The highlight fill is the state-scoped `background` key: the
+        # :active overlay while the menu is open, :hover otherwise, the
+        # classic menu-highlight Visuals slots as the user-agent default.
+        state_vars = part.vars(self, id, mine_open ? "active" : "hover")
+        fill = state_vars.color?("background") ||
+               visuals.menu_highlight_fill ||
+               (mine_open ? visuals.button_active : visuals.button_hovered)
+        painter.rect(rect, 3.0, fill)
       end
       # Text goes highlight-colored only over the band, so a navy
       # highlight can carry white text like a native menu.
+      hl_vars = part.vars(self, id, highlighted ? "hover" : nil)
       text_color = highlighted ?
-        (visuals.menu_highlight_text || visuals.text_color) : visuals.text_color
-      painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
+        (hl_vars.color?("text_color") || visuals.menu_highlight_text ||
+         visuals.text_color) :
+        (vars.color?("text_color") || visuals.text_color)
+      painter.text(rect.left_center + Vec2.new(box.left, 0.0),
         label, font_size, text_color, family: style.font_family)
 
       if mine_open
@@ -203,8 +250,14 @@ module Egui
     private def menu_item_impl(label : String, action : HotkeyAction?,
                                icon : Symbol? = nil, hotkey : String? = nil,
                                &on_trigger : ->) : Nil
-      font_size = style.font_size
+      part = MenuItemPart.new(label)
+      id = next_widget_id
+      vars = part.vars(self, id)
+      font_size = vars.f64("font_size", style.font_size)
       pad = style.spacing.button_padding
+      unless (box = vars.box?("padding"))
+        box = StyleBox.new(MENU_PAD_Y, pad.x, MENU_PAD_Y, pad.x)
+      end
       fonts = self.fonts
       label_size = fonts.measure(label, font_size)
 
@@ -217,10 +270,10 @@ module Egui
       icon_size = has_icon ? label_size.y + style.spacing.icon_spacing : 0.0
       # Row height includes the menu vertical padding so the hover
       # highlight breathes around the label like a native menu row.
-      height = {label_size.y + 2 * MENU_PAD_Y,
+      height = {label_size.y + box.vertical,
         style.spacing.interact_size.y}.max
       shortcut_gap = shortcut ? 24.0 : 0.0
-      natural_w = 2 * pad.x + icon_size + label_size.x +
+      natural_w = box.horizontal + icon_size + label_size.x +
                   shortcut_gap + shortcut_size.x
       row_w = {available_width, natural_w}.max
 
@@ -228,7 +281,6 @@ module Egui
       # row pokes back out on both sides — the hover highlight and the
       # click area cover the menu frame edge-to-edge, like a native menu.
       wpad = style.spacing.window_padding.x
-      id = next_widget_id
       rect = Rect.from_min_size(Pos2.new(@cursor.x - wpad, @cursor.y),
         Vec2.new(row_w + 2 * wpad, height))
       @min_rect = @min_rect.union(
@@ -236,16 +288,25 @@ module Egui
       # Rows stack flush: no item_spacing gap between menu items, so
       # the hover highlight bands are contiguous like a native menu.
       @cursor = @layout.advance(@cursor, Vec2.new(row_w, height), Vec2.zero)
-      response = interact(rect, id, Sense.click)
+      response = ctx.with_inspector_widget(part) {
+        interact(rect, id, Sense.click) }
 
       visuals = style.visuals
       if response.hovered?
-        painter.rect(rect, 3.0,
-          visuals.menu_highlight_fill || visuals.button_hovered)
+        # The hover band is the state-scoped `background` key of the
+        # `menu.item` class — the menu-highlight Visuals slot as the
+        # user-agent default.
+        hover_vars = part.vars(self, id, "hover")
+        fill = hover_vars.color?("background") ||
+               visuals.menu_highlight_fill || visuals.button_hovered
+        painter.rect(rect, 3.0, fill)
       end
+      hl_vars = part.vars(self, id, response.hovered? ? "hover" : nil)
       text_color = response.hovered? ?
-        (visuals.menu_highlight_text || visuals.text_color) : visuals.text_color
-      content_x = rect.left + pad.x
+        (hl_vars.color?("text_color") || visuals.menu_highlight_text ||
+         visuals.text_color) :
+        (vars.color?("text_color") || visuals.text_color)
+      content_x = rect.left + box.left
       if has_icon
         icon_box = Rect.from_min_size(
           Pos2.new(content_x, rect.center.y - label_size.y / 2.0),
@@ -256,7 +317,7 @@ module Egui
       painter.text(Pos2.new(content_x, rect.left_center.y),
         label, font_size, text_color, family: style.font_family)
       if shortcut
-        painter.text(Pos2.new(rect.right - pad.x - shortcut_size.x,
+        painter.text(Pos2.new(rect.right - box.right - shortcut_size.x,
           rect.left_center.y), shortcut, font_size, text_color,
           family: style.font_family)
       end

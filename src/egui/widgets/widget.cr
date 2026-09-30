@@ -66,6 +66,13 @@ module Egui
       nil
     end
 
+    # The kind name shown in the inspector («Button», «Tab»…) — the
+    # class name by default; `StyledPart` stand-ins override it with
+    # their site-specific kind.
+    def inspector_kind : String
+      {{ @type.name.split("::").last }}
+    end
+
     # Customize this widget's style; nil fields keep the theme value:
     #
     #   Button.new("OK").style { |s| s.fill = Color32.rgb(180, 40, 40) }

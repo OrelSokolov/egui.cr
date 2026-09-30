@@ -19,6 +19,11 @@ module Egui
       # whenever the primary grid has scrollback.
       BAR_W = 10.0
       THUMB_MIN_H = 18.0
+      # The `terminal` class keys that map onto the Theme twin (see
+      # #ui) — anything else in the bag (fonts) never clones the theme.
+      COLOR_KEYS = {"background", "text_color", "cursor_color",
+                    "selection_overlay", "scrollbar_color",
+                    "scrollbar_active_color"}
 
       @cell_w : Float64 = 8.0
       @cell_h : Float64 = 16.0
@@ -29,11 +34,22 @@ module Egui
       # stylesheet rule swaps the terminal's face without touching the
       # app font); "monospace" unless overridden.
       @font_family : String = "monospace"
+      # The constructor font size — the `font_size` style key overrides
+      # it at frame time (kept separately so an unset rule reverts
+      # cleanly instead of sticking at the last resolved value).
+      @base_font_size : Float64
+      @font_size : Float64 = 14.0
+      # The theme the grid PAINTS through this frame: the app theme, or
+      # a per-frame twin with the `terminal { … }` color overrides
+      # (background/text_color/cursor_color/…) applied.
+      @eff_theme : Theme
 
       def initialize(@backend : Backend,
                      @theme : Theme = Theme.new,
-                     @font_size : Float64 = 14.0,
+                     @base_font_size : Float64 = 14.0,
                      @cursor_blinks : Bool = false)
+        @eff_theme = @theme
+        @font_size = @base_font_size
       end
 
       # Styled through the `terminal` class: `font_family` swaps the
@@ -46,16 +62,41 @@ module Egui
       end
 
       def style_properties : Array(StyleProp)
-        [StyleProp.new("font_family", :string, fallback: "monospace")]
+        t = Theme.new
+        [StyleProp.new("font_family", :string, fallback: "monospace"),
+         StyleProp.new("font_size", :number, fallback: @base_font_size),
+         StyleProp.new("background", :color, fallback: t.background),
+         StyleProp.new("text_color", :color, fallback: t.foreground),
+         StyleProp.new("cursor_color", :color, fallback: t.cursor),
+         StyleProp.new("selection_overlay", :color,
+           fallback: t.selection_overlay),
+         StyleProp.new("scrollbar_color", :color, fallback: t.scrollbar),
+         StyleProp.new("scrollbar_active_color", :color,
+           fallback: t.scrollbar_active)]
       end
 
       def ui(ui : Ui) : Response
         # The grid measures through the resolved family — the mono stack
         # unless a `terminal { font_family }` rule overrides it (the
         # override face must be monospace, or the cell math drifts).
+        # Every color key lands on a per-frame twin of the app theme,
+        # so `terminal { background }` etc. restyle the grid live
+        # without touching the app's Theme object.
         id = ui.next_widget_id
-        @font_family = style_vars(ui, id, "terminal")
-                         .str?("font_family") || "monospace"
+        vars = style_vars(ui, id, "terminal")
+        @font_family = vars.str?("font_family") || "monospace"
+        @font_size = vars.f64("font_size", @base_font_size)
+        if vars.any? { |k, _| COLOR_KEYS.includes?(k) }
+          @eff_theme = @theme.twin(
+            background: vars.color?("background"),
+            foreground: vars.color?("text_color"),
+            cursor: vars.color?("cursor_color"),
+            selection_overlay: vars.color?("selection_overlay"),
+            scrollbar: vars.color?("scrollbar_color"),
+            scrollbar_active: vars.color?("scrollbar_active_color"))
+        else
+          @eff_theme = @theme
+        end
         fonts = ui.ctx.fonts_for(@font_family)
         # Exact monospace advance (no rounding): text runs are drawn as
         # whole strings, so a rounded-off cell width makes the cursor
@@ -145,13 +186,13 @@ module Egui
       # cell's fg/bg — a default-fg cell then paints its glyphs in the
       # theme background over a foreground-colored background.
       private def effective_bg(cell : Cell) : Color32
-        cell.attrs?(Cell::REVERSE) ? cell.fg.resolve(@theme, fg: true)
-                                   : cell.bg.resolve(@theme, fg: false)
+        cell.attrs?(Cell::REVERSE) ? cell.fg.resolve(@eff_theme, fg: true)
+                                   : cell.bg.resolve(@eff_theme, fg: false)
       end
 
       private def effective_fg(cell : Cell) : Color32
-        cell.attrs?(Cell::REVERSE) ? cell.bg.resolve(@theme, fg: false)
-                                   : cell.fg.resolve(@theme, fg: true)
+        cell.attrs?(Cell::REVERSE) ? cell.bg.resolve(@eff_theme, fg: false)
+                                   : cell.fg.resolve(@eff_theme, fg: true)
       end
 
       # The thumb rect for the current scroll position: viewport
@@ -176,7 +217,7 @@ module Egui
         # dark, so the track shades DOWN and only the thumb carries
         # light.
         p.rect(track, fill: Color32.new(0, 0, 0, 70))
-        color = @bar_grabbed ? @theme.scrollbar_active : @theme.scrollbar
+        color = @bar_grabbed ? @eff_theme.scrollbar_active : @eff_theme.scrollbar
         p.rect(scrollbar_thumb(track, @backend.term), 3.0, fill: color)
       end
 
@@ -223,10 +264,10 @@ module Egui
         # through the grid only, while every panel around the terminal
         # keeps its own opaque fill (requires a per-pixel-transparent
         # window — Sokol.run(transparent: true)).
-        if (base_a = @theme.background.a) < 255
-          p.rect_replace(rect, @theme.background)
+        if (base_a = @eff_theme.background.a) < 255
+          p.rect_replace(rect, @eff_theme.background)
         else
-          p.rect(rect, fill: @theme.background)
+          p.rect(rect, fill: @eff_theme.background)
         end
 
         offset = term.display_offset
@@ -257,7 +298,7 @@ module Egui
             # Explicit cell backgrounds follow the theme background's
             # alpha (the terminal-opacity knob) instead of punching
             # opaque holes into a translucent terminal.
-            if (base_a = @theme.background.a) < 255 && bg.a == 255
+            if (base_a = @eff_theme.background.a) < 255 && bg.a == 255
               bg = Color32.new(bg.r, bg.g, bg.b, base_a)
             end
             run = 1
@@ -282,7 +323,7 @@ module Egui
               p.rect(Rect.from_min_size(
                        Pos2.new(@grid_origin.x + col * @cell_w, y),
                        Vec2.new(run * @cell_w, @cell_h)),
-                     fill: @theme.selection_overlay)
+                     fill: @eff_theme.selection_overlay)
               col += run
             else
               col += 1
@@ -338,7 +379,7 @@ module Egui
         return if @cursor_blinks && (ui.ctx.input.time % 1.06) >= 0.65
         x = @grid_origin.x + term.cursor_x * @cell_w
         y = @grid_origin.y + term.cursor_y * @cell_h
-        color = @theme.cursor
+        color = @eff_theme.cursor
         p = ui.painter
         case term.cursor_style
         in .block?

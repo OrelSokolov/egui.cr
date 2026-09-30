@@ -207,8 +207,66 @@ describe "inspector panel rendering smoke" do
     end
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("Export style")
-    texts.should contain("Копировать")
+    texts.should contain("Copy")
     # the textarea shows the snippet (its label row paints it)
     texts.join("\n").should contain("set_id_style")
+  end
+
+  it "font_family edits from the catalog via a combo (not free text)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    # the catalog: the reserved system/monospace + everything registered
+    ctx.register_font_family("testmono", ctx.fonts)
+    ctx.register_font_family("Adisplay", ctx.fonts)
+    ctx.font_family_catalog.should eq(["Adisplay", "monospace", "system", "testmono"])
+
+    center = nil
+    smoke_frame(ctx) do |c|
+      c.window("w") do |ui|
+        ui.add(Egui::Label.new("hi", id: "lbl"))
+      end
+    end
+    ctx.inspector.inspect_widget(Egui::Id.from("lbl"))
+
+    # the element tab's font_family row is a combo: the closed button
+    # shows the placeholder (nothing set), not a text cursor field
+    smoke_frame(ctx, time: 0.032) do |c|
+      c.window("w") { |ui| ui.add(Egui::Label.new("hi", id: "lbl")) }
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("(наследуется)")
+
+    # open it and pick "monospace" from the loaded catalog
+    btn = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("(наследуется)")).not_nil!
+    click = Egui::Pos2.new(btn.pos.x + 10.0, btn.pos.y)
+    smoke_frame(ctx, events: [Egui::Event.pointer_moved(click),
+      Egui::Event.pointer_pressed(click)], time: 0.048) do |c|
+      c.window("w") { |ui| ui.add(Egui::Label.new("hi", id: "lbl")) }
+    end
+    smoke_frame(ctx, events: [Egui::Event.pointer_released(click)], time: 0.064) do |c|
+      c.window("w") { |ui| ui.add(Egui::Label.new("hi", id: "lbl")) }
+    end
+    # the popup lists the catalog entries
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("monospace")
+    texts.should contain("testmono")
+    opt = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text == "monospace" }.not_nil!
+    pick = Egui::Pos2.new(opt.pos.x + 10.0, opt.pos.y)
+    smoke_frame(ctx, events: [Egui::Event.pointer_moved(pick),
+      Egui::Event.pointer_pressed(pick)], time: 0.080) do |c|
+      c.window("w") { |ui| ui.add(Egui::Label.new("hi", id: "lbl")) }
+    end
+    smoke_frame(ctx, events: [Egui::Event.pointer_released(pick)], time: 0.096) do |c|
+      c.window("w") { |ui| ui.add(Egui::Label.new("hi", id: "lbl")) }
+    end
+
+    # the pick landed as a per-element override and the label now draws
+    # through the mono stack
+    bag = ctx.id_style_overrides[Egui::Id.from("lbl")].not_nil![nil].not_nil!
+    bag["font_family"].should eq("monospace")
+    ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text == "hi" }.not_nil!.family.should eq("monospace")
   end
 end

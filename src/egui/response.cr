@@ -164,6 +164,13 @@ module Egui
           { {pos.y, screen.bottom - size.y}.min, screen.top }.max)
       end
 
+      # Save the ambient layer/clip and restore them afterwards: the
+      # painter is SHARED, so resetting the clip to infinite here would
+      # leak into every widget painted later in the frame — e.g. the
+      # sidebar rows below a hovered git icon would stop scissoring at
+      # the panel edge and their text would stick out past it.
+      saved_layer = painter.layer
+      saved_clip = painter.clip
       painter.layer = Order::Tooltip
       painter.clip = Rect.from_min_size(pos, size)
       painter.rect(Rect.from_min_size(pos, size), 4.0,
@@ -173,8 +180,8 @@ module Egui
       # would shift the glyphs up by half a line, under the top border.
       painter.text(Pos2.new(pos.x + margin.x, pos.y + margin.y + text_size.y / 2.0),
         text, font_size, style.visuals.text_color)
-      painter.layer = Order::Background
-      painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      painter.layer = saved_layer
+      painter.clip = saved_clip
     end
   end
 end

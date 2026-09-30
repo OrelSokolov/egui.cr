@@ -34,6 +34,8 @@ class GalleryApp < Egui::App
   @spin = 42
   @combo = "Second"
   @combo_none = ""
+  @font_family = "system"
+  @font_size = 16.0
   @modal_open = false
   @buffer = "edit me"
   # Long enough to overflow the field — demonstrates the max-width
@@ -91,7 +93,7 @@ class GalleryApp < Egui::App
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
+      "Widgets", ["Buttons", "Inputs", "Select box", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "System styles", "Cursors"], closable: true),
@@ -205,6 +207,7 @@ class GalleryApp < Egui::App
           case {@sections[@section].title, @sections[@section].tabs[@tab]}
           when {"Widgets", "Buttons"}   then buttons_gallery(scroll)
           when {"Widgets", "Inputs"}    then inputs_gallery(scroll)
+          when {"Widgets", "Select box"} then select_box_gallery(scroll, ctx)
           when {"Widgets", "Text"}      then text_gallery(scroll)
           when {"Widgets", "Textarea"}  then textarea_gallery(scroll)
           when {"Widgets", "Context menu"} then context_menu_gallery(scroll)
@@ -439,6 +442,41 @@ class GalleryApp < Egui::App
     ui.date_picker("gallery_date", @date) { |t| @date = t }
     ui.drag_value(@drag, speed: 0.1, suffix: " px",
       format: ->(v : Float64) { "%.1f" % v }) { |v| @drag = v }
+  end
+
+  # The SelectBox tab: a searchable select over the font family
+  # catalog — every family the app loaded plus the system scan's
+  # deferred families (a family parses on first pick, so a catalog of
+  # ~1500 names costs nothing until used). Picking swaps the preview
+  # labels' font live: system → the primary stack, a named family →
+  # its own stack.
+  private def select_box_gallery(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    ui.label("A select box with built-in search — click, type, pick:")
+    ui.horizontal do |row|
+      row.select_box("gallery_font", @font_family,
+        ctx.font_family_catalog, 240.0,
+        label: "(system default)") { |opt| @font_family = opt }
+      # font size for the preview, 10..32 px
+      row.select_box("gallery_size", @font_size.to_i.to_s,
+        (10..32).map(&.to_s), 70.0) { |opt| @font_size = opt.to_f }
+    end
+    ui.label("(the list scrolls; the filter narrows it as you type; " \
+             "the highlighted row is what Enter confirms; " \
+             "the placeholder row resets the selection)")
+    ui.separator
+
+    ui.label("Preview — the picked family and size applied live:")
+    preview = "The quick brown fox jumps over the lazy dog 0123 — #{@font_family}"
+    ui.add(Egui::Label.new(preview, wrap: true)
+      .style { |s| s.font_family = @font_family; s.font_size = @font_size })
+    ui.add(Egui::Label.new("1234567890 !?%&()[]{}")
+      .style { |s| s.font_family = @font_family; s.font_size = @font_size })
+    ui.separator
+
+    ui.label("A short static list works too (no filter needed " \
+             "to find anything):")
+    ui.select_box("gallery_small", @combo, COMBO_OPTIONS, 160.0,
+      label: "Select option") { |opt| @combo = opt }
   end
 
   private def text_gallery(ui : Egui::Ui) : Nil
