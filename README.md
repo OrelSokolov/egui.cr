@@ -4,6 +4,8 @@
 
 # egui-cr
 
+**[► WATCH DEMO](DEMO.md)** — screenshots of everything below.
+
 **Beautiful UI is already here.** A framework for beautiful UIs in
 Crystal — inspired by [egui](https://github.com/emilk/egui)'s
 architecture (Rust) and its ideas, not a port of it.
@@ -21,24 +23,6 @@ Everything between the backend and your app is pure Crystal — no
 libfreetype and no C font or icon code in shipped binaries; C
 accelerators exist only as a dev convenience behind
 `USE_C_EXTENSIONS=1` — see `.env.example`.
-
-## Dependencies
-
-Two Crystal shards — both our own pure-Crystal renderers, developed
-alongside egui-cr and battle-tested by it:
-
-- [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — the font
-  renderer: a Crystal port of FreeType's TrueType pipeline (the ftgrays
-  anti-aliasing rasterizer, the ttinterp bytecode hinter, an SFNT
-  loader). Pixel-exact hinted glyphs with zero libfreetype — every
-  label, editor and terminal glyph you see is rasterized by it.
-- [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — the SVG
-  renderer: a faithful Crystal port of NanoSVG (polygon fills,
-  gradients in any orientation, nested transforms, dash arrays, shape
-  and group opacity). All SVG icons and vector art bake through it.
-
-The one native dependency is the sokol_gfx backend above — everything
-else is pure Crystal.
 
 ## Build & run
 
