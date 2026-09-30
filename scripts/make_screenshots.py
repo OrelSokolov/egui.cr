@@ -221,6 +221,23 @@ at once — no per-widget setup.
 |---|---|
 | ![widgets dark]({outdir}/widgets-dark.png) | ![widgets styled]({outdir}/widgets-styled.png) |
 
+## Gradients & shadows
+
+The Bootstrap 2.0.4 buttons, rebuilt on `Painter#box_shadow` (CSS
+outset AND inset): gradient fills, inset sheen, pressed inset shadow,
+dropdown popups with drop shadows — and the same look through plain
+stylesheet `shadow.*` class rules.
+
+![box shadow]({outdir}/box-shadow.png)
+
+## Icon catalog
+
+Every icon of the bundled sets (lucide · bootstrap) — SVGs rasterized
+by [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr), searchable,
+live-recolorable.
+
+![icons]({outdir}/icons.png)
+
 ## Paint
 
 Drawing app on the same core — WinXP chrome, canvas with brush strokes
@@ -243,7 +260,8 @@ def main() -> None:
     outdir = args[0] if args else "screenshots"
     os.makedirs(outdir, exist_ok=True)
 
-    apps = ["notepad", "borderless", "widgets_gallery", "paint"]
+    apps = ["notepad", "borderless", "widgets_gallery", "paint",
+            "box_shadow", "icons_browser"]
     if "--no-build" not in flags:
         build(apps)
 
@@ -267,6 +285,15 @@ def main() -> None:
 
     # Paint — with a couple of synthetic strokes on the canvas.
     shoot("paint", "paint", "untitled - Paint", outdir, settle=2.0, draw=True)
+
+    # Gradients & shadows — the Bootstrap 2.0.4 button replica (gradient
+    # fills, inset sheen, pressed inset shadow, dropdown shadow).
+    shoot("box-shadow", "box_shadow",
+          "egui.cr — box-shadow (bootstrap 2.0.4)", outdir, settle=1.5)
+
+    # Icon catalog — the searchable lucide/bootstrap browser.
+    shoot("icons", "icons_browser",
+          "egui-cr — icons (lucide · bootstrap)", outdir, settle=2.5)
 
     # The gallery page embedding everything shot above.
     write_demo(outdir)

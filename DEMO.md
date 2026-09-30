@@ -39,6 +39,23 @@ at once — no per-widget setup.
 |---|---|
 | ![widgets dark](screenshots/widgets-dark.png) | ![widgets styled](screenshots/widgets-styled.png) |
 
+## Gradients & shadows
+
+The Bootstrap 2.0.4 buttons, rebuilt on `Painter#box_shadow` (CSS
+outset AND inset): gradient fills, inset sheen, pressed inset shadow,
+dropdown popups with drop shadows — and the same look through plain
+stylesheet `shadow.*` class rules.
+
+![box shadow](screenshots/box-shadow.png)
+
+## Icon catalog
+
+Every icon of the bundled sets (lucide · bootstrap) — SVGs rasterized
+by [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr), searchable,
+live-recolorable.
+
+![icons](screenshots/icons.png)
+
 ## Paint
 
 Drawing app on the same core — WinXP chrome, canvas with brush strokes
