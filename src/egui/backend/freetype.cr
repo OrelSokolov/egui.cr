@@ -1,8 +1,13 @@
-# Primary font backend: a direct Crystal binding of FreeType. FT_Load_Glyph
+# C-FFI FreeType backend — a DEV-build accelerator (behind
+# C_EXTENSIONS / USE_C_EXTENSIONS=1 in .env, see backend/text.cr).
+# FT_Load_Glyph
 # with FT_LOAD_DEFAULT | FT_LOAD_RENDER gives hinted 8-bit coverage bitmaps вЂ”
 # the TrueType/CFF hinters snap stem edges to the pixel grid properly, which
-# is what the light-hint heuristic in text.cr approximates. LightHintedFonts
-# remains as the fallback for systems without FreeType.
+# is what the light-hint heuristic in text.cr approximates. Release
+# builds run the pure-Crystal twin (CrystalFonts, backend/crystalfonts.cr
+# — the freetype-cr GitHub shard); output is identical, this is only
+# faster under debug codegen. LightHintedFonts remains as the stb
+# fallback.
 #
 # Everything here goes through real FreeType functions except the two big
 # opaque structs (FT_FaceRec, FT_GlyphSlotRec), which are too large to

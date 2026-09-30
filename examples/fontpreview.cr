@@ -11,6 +11,10 @@
 require "../src/egui"
 require "../src/egui/backend/sokol"
 require "../src/egui/backend/crystalfonts"
+# The C-FFI tab is part of the A/B toolset — fontpreview links
+# libfreetype unconditionally, even in release builds (it is the
+# diagnostic app; shipped apps don't).
+require "../src/egui/backend/freetype"
 
 class FontPreviewApp < Egui::App
   GROUPS = {

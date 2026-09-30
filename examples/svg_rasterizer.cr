@@ -1,7 +1,8 @@
-# SVG rasterizer comparison: NanoSVG C (the primary external
-# rasterizer, backend/nanosvg.cr via the C shim) vs the pure-Crystal
-# NanoSVG port (nanosvg_cr.cr → the ../nanosvg.cr shard). The port is
-# a faithful rewrite, so the interesting numbers are (a) do the two
+# SVG rasterizer comparison: NanoSVG C (backend/nanosvg.cr via the C
+# shim — a dev-build accelerator behind C_EXTENSIONS elsewhere, but
+# this benchmark links it directly) vs the pure-Crystal NanoSVG port
+# (nanosvg_cr.cr → the nanosvg shard, the primary rasterizer). The port
+# is a faithful rewrite, so the interesting numbers are (a) do the two
 # produce identical pixels and (b) what the Crystal speed costs.
 # Icons cover both paint modes: filled paths (bootstrap) and stroked
 # outlines (lucide).

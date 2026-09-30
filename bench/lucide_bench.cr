@@ -126,9 +126,10 @@ class LucideIconsApp < Egui::App
   end
 end
 
-# Real font stack, like Sokol#on_init picks one.
+# Real font stack, like Sokol#on_init picks one — forced to the pure
+# Crystal backends: the bench measures the shipped (release) stack.
 paths = Egui::SystemPorts::Fonts.search_paths
-font = Egui::Backend::FreetypeFonts.from_system(paths) ||
+font = Egui::Backend::CrystalFonts.from_system(paths) ||
        Egui::Backend::LightHintedFonts.from_system(paths)
 if font
   puts "fonts: #{font.class.name}"

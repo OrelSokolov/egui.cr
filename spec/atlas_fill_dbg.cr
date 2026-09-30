@@ -6,8 +6,7 @@
 require "../src/egui/backend/sokol"
 
 paths = Egui::SystemPorts::Fonts.search_paths
-fonts = Egui::Backend::FreetypeFonts.from_system(paths) ||
-        Egui::Backend::LightHintedFonts.from_system(paths)
+fonts = Egui::Backend::Sokol.fonts_from_system(paths)
 abort "no system font" unless fonts
 puts "backend: #{fonts.class}"
 

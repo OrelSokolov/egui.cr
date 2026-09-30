@@ -1,6 +1,7 @@
 # Sokol backend: sokol_app window + sokol_gfx (via sokol_gl) rendering + a
-# Crystal text stack (backend/text.cr + backend/freetype.cr: FreeType with
-# real hinting, stb light-hint fallback, shared glyph atlas). The
+# Crystal text stack (backend/crystalfonts.cr primary — the freetype-cr
+# pure-Crystal port; backend/freetype.cr C-FFI dev accelerator behind
+# C_EXTENSIONS; stb light-hint fallback; shared glyph atlas). The
 # eframe-equivalent run loop:
 #
 #   sapp events → RawInput → begin_frame → app.update → end_frame →
@@ -9,19 +10,20 @@
 
 require "../../egui"
 require "./text"
-require "./freetype"
-# DEV-build bake accelerator: without --release the Crystal port's
-# hot loops run 10-100x slower (no regalloc/inlining, bounds checks
-# on every array access), while the C shim is cc -O2 regardless of
-# Crystal's flags. Route the Svg texture bake through C while
-# iterating; release builds stay pure Crystal (byte-identical
-# output, so dev and release render the same).
-{% unless flag?(:release) %}
-  # TEMP: C-шim отключён — dev-сборка гоняет чистый Crystal NanoSVG
-  # (NanoSvgCr). Вернуть: раскомментировать три строки ниже.
-  # require "./nanosvg"
-  # rasterizer = ->Egui::Backend::NanoSvg.rasterize(String, Egui::Color32, Int32, Int32)
-  # Egui::Svg.external_rasterizer = rasterizer
+require "./crystalfonts"
+# DEV-build bake accelerators (fonts + SVG): without --release the
+# Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
+# bounds checks on every array access), while the C code is cc -O2
+# regardless of Crystal's flags. Enabled per-backend by C_EXTENSIONS
+# (USE_C_EXTENSIONS=1 in .env); release builds stay pure Crystal
+# (byte-identical output, so dev and release render the same).
+{% if Egui::Backend::C_EXTENSIONS %}
+  # Fonts: system libfreetype through the C FFI (backend/freetype.cr).
+  require "./freetype"
+  # SVG: the C NanoSVG shim (backend/nanosvg.cr).
+  require "./nanosvg"
+  rasterizer = ->Egui::Backend::NanoSvg.rasterize(String, Egui::Color32, Int32, Int32)
+  Egui::Svg.external_rasterizer = rasterizer
 {% end %}
 
 @[Link("egui_cr_sokol")]
@@ -556,8 +558,7 @@ module Egui
           app.ctx.fonts = preselected
         else
           font_paths = Egui::SystemPorts::Fonts.search_paths
-          if font = FreetypeFonts.from_system(font_paths) ||
-                    LightHintedFonts.from_system(font_paths)
+          if font = fonts_from_system(font_paths)
             @@fonts = font
             app.ctx.fonts = font
           else
@@ -566,6 +567,21 @@ module Egui
           end
         end
         app.ctx.textures = SokolTextureRegistry.new
+      end
+
+      # Default font-backend chain, shared by on_init, examples and
+      # benches: the freetype-cr port (pure Crystal, what release
+      # ships) with LightHintedFonts as the parse-failure fallback.
+      # Dev builds with C_EXTENSIONS enabled accelerate through the
+      # C-FFI FreeType first — same glyphs, faster bake under debug
+      # codegen.
+      def self.fonts_from_system(paths : Array(String)) : AtlasFonts?
+        {% if Egui::Backend::C_EXTENSIONS %}
+          FreetypeFonts.from_system(paths) || CrystalFonts.from_system(paths) ||
+            LightHintedFonts.from_system(paths)
+        {% else %}
+          CrystalFonts.from_system(paths) || LightHintedFonts.from_system(paths)
+        {% end %}
       end
 
       # Swap the active font backend at runtime (e.g. a preview app

@@ -23,7 +23,7 @@ egui-cr equivalents:
 | emath | `src/egui/math.cr` (Vec2/Pos2/Rect) |
 | ecolor | `src/egui/color.cr` (Color32) |
 | epaint (subset: paint list) | `src/egui/painter.cr` (RectCmd/TextCmd/NoopCmd) |
-| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `FreetypeFonts`/`LightHintedFonts` |
+| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `CrystalFonts` (primary; `FreetypeFonts` dev accelerator, `LightHintedFonts` fallback) |
 | egui core | `src/egui/{id,sense,input,memory,response,layout,style,ui,context,app}.cr`, `src/egui/widgets/*` |
 | egui-winit + renderer | `backend/sokol_shim.c` + `src/egui/backend/sokol.cr` (sokol_app events, sokol_gfx/sokol_gl rendering, fontstash text) |
 | eframe | `Egui::App` + `Egui::Backend::Sokol.run` |
@@ -285,7 +285,7 @@ straight from `update`, freezing the frame loop for the whole dialog.
   cancel→nil, non-blocking pump, and concurrent requests headlessly
   with fake work procs.
 
-## 10. Delta: Crystal text stack (two font backends)
+## 10. Delta: Crystal text stack (three font backends)
 
 Upstream 0.34 switched font rendering from `ab_glyph` to `skrifa` +
 `vello_cpu` with TrueType hinting on by default ("sharper text");
@@ -293,9 +293,18 @@ fontstash's stb_truetype path cannot hint at all, which made port text
 look blurry (measured: every glyph edge carried a ~1px gray shoulder,
 1px horizontal strokes rendered at ~53% intensity). The port replaces
 fontstash with a Crystal-side text stack — fontstash/fons are gone from
-the runtime path. Two backends share it:
+the runtime path. Three backends share it:
 
-- `src/egui/backend/freetype.cr` (`FreetypeFonts`) — **primary**: a
+- `src/egui/backend/crystalfonts.cr` (`CrystalFonts`) — **primary**: the
+  freetype-cr GitHub shard (OrelSokolov/freetype.cr) — a pure-Crystal
+  SFNT loader, TrueType bytecode hinter (ttinterp) and ftgrays
+  rasterizer, no libfreetype involved. Produces the same hinted 8-bit
+  coverage bitmaps the C library does; `spec/crystalfonts_smoke.cr`
+  diff-proves the parity per glyph/kerning/metric. This is what every
+  build runs on by default and the ONLY one release binaries carry.
+- `src/egui/backend/freetype.cr` (`FreetypeFonts`) — **dev-build
+  accelerator** (behind `C_EXTENSIONS`, i.e. `USE_C_EXTENSIONS=1` in
+  `.env`; never in `--release`): a
   direct Crystal binding of FreeType (`libfreetype`), rasterizing
   hinted 8-bit coverage bitmaps via `FT_Load_Glyph` with
   `FT_LOAD_DEFAULT | FT_LOAD_RENDER`. Real TrueType/CFF hinting instead
@@ -395,12 +404,16 @@ the runtime path. Two backends share it:
   blending), quads snapped to whole screen pixels, fractional advances
   + kerning (fontstash rounded advances to whole pixels, which made
   letter spacing uneven).
-- Backend selection (`backend/sokol.cr` `on_init`): `FreetypeFonts` →
-  `LightHintedFonts` → built-in `MonospaceFonts` (stub) — first that
-  loads a system font wins. Candidate font files come from the Fonts
-  system port (`src/egui/system_ports/fonts.cr`: per-platform lists
-  selected at compile time — win32/darwin/Linux). Build-time dep:
-  `pkg-config freetype2` (see crosspack.yml); runtime dep: libfreetype6.
+- Backend selection (`backend/sokol.cr` `fonts_from_system`):
+  `CrystalFonts` → `LightHintedFonts` → built-in `MonospaceFonts`
+  (stub) — first that loads a system font wins; dev builds with
+  `C_EXTENSIONS` try the C-FFI `FreetypeFonts` first (same glyphs,
+  faster bake under debug codegen). Candidate font files come from
+  the Fonts system port (`src/egui/system_ports/fonts.cr`:
+  per-platform lists selected at compile time — win32/darwin/Linux).
+  libfreetype is a build/run dep only when the dev accelerator (or
+  the fontpreview example) is in play; shipped binaries are pure
+  Crystal.
 - `backend/stb_truetype_shim.c`: the vendored `stb_truetype.h` compiled
   as its own translation unit (default malloc; fontstash compiles the
   same header `STBTT_STATIC` with a FONScontext-bound allocator, which

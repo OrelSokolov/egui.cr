@@ -338,8 +338,7 @@ def pick_monospace : Nil
     ]
   {% end %}
 
-  font = Egui::Backend::FreetypeFonts.from_system(candidates)
-  font ||= Egui::Backend::LightHintedFonts.from_system(candidates)
+  font = Egui::Backend::Sokol.fonts_from_system(candidates)
   Egui::Backend::Sokol.select_fonts(font) if font
 end
 

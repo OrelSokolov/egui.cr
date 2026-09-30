@@ -1,9 +1,12 @@
-# Pure-Crystal font backend: the freetype-cr port (this repo's sibling
-# ../freetype.cr) — SFNT parsing, the TrueType bytecode hinter (ttinterp)
-# and the ftgrays rasterizer, no libfreetype.so involved. Produces the
-# same hinted 8-bit coverage bitmaps FreetypeFonts gets from the C
+# Pure-Crystal font backend — the PRIMARY one for every build mode:
+# the freetype-cr GitHub shard (OrelSokolov/freetype.cr) — SFNT
+# parsing, the TrueType bytecode hinter (ttinterp) and the ftgrays
+# rasterizer, no libfreetype.so involved. Produces the same hinted
+# 8-bit coverage bitmaps the C-FFI FreetypeFonts gets from the C
 # library; spec/crystalfonts_smoke.cr diff-proves the parity, and the
-# fontpreview example carries it as a live-switchable tab.
+# fontpreview example carries it as a live-switchable tab. Dev builds
+# with C_EXTENSIONS enabled accelerate through the C FFI first; this
+# backend is what release binaries run on.
 #
 # The size convention matches FreetypeFonts exactly — `size` pixels of
 # (ascender - descender) height with the ascender/descender picked like

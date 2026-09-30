@@ -125,7 +125,10 @@ build:
         "*":
           verify: pkg-config --exists xi
 
-    freetype-dev:           # primary font backend (backend/freetype.cr)
+    freetype-dev:           # dev font accelerator (USE_C_EXTENSIONS=1
+                            # in .env) + fontpreview's C-FFI tab;
+                            # release builds are pure Crystal
+                            # (backend/freetype.cr)
       hosts:
         windows:               # fetched from ubawurinna/freetype-windows-binaries
           verify: cmd /c if not exist lib\freetype.lib exit 1 & if not exist bin\freetype.dll exit 1
@@ -245,7 +248,8 @@ deps:
       fedora: { "*": [libXi] }
       arch: { "*": [libxi] }
       windows: none             # raw Win32 input via sokol_app
-  libfreetype:             # primary font backend
+  libfreetype:             # dev accelerator (USE_C_EXTENSIONS) +
+                          # fontpreview tab; not needed by shipped exes
     targets:
       debian: { "*": [libfreetype6] }
       ubuntu: { "*": [libfreetype6] }

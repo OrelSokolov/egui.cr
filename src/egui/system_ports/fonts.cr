@@ -3,8 +3,10 @@
 # time (win32 / darwin / everything else reads as Linux/BSD), no native
 # calls needed, so the port stays headless-testable.
 #
-# The backend (backend/sokol.cr) feeds these to its font backends
-# (FreetypeFonts → LightHintedFonts); the first file that loads wins.
+# The backend (backend/sokol.cr#fonts_from_system) feeds these to the
+# font backends (CrystalFonts → LightHintedFonts; + the C-FFI
+# FreetypeFonts accelerator first in dev builds with C_EXTENSIONS);
+# the first file that loads wins.
 # Apps can pass their own bundled font before falling back to these.
 
 module Egui

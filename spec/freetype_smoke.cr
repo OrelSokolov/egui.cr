@@ -3,6 +3,9 @@
 # always renders hinted 8-bit coverage bitmaps — there is no smooth
 # mode toggle.)
 require "../src/egui/backend/sokol"
+# FreetypeFonts is the C-FFI dev accelerator — only linked into sokol
+# under C_EXTENSIONS, so the smoke spec requires it directly.
+require "../src/egui/backend/freetype"
 
 paths = Egui::SystemPorts::Fonts.search_paths
 font = Egui::Backend::FreetypeFonts.from_system(paths)

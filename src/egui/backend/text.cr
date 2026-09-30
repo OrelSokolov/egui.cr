@@ -1,23 +1,48 @@
 # Crystal text stack. This file holds the glyph-atlas infrastructure
-# shared by the two font backends, plus the fallback rasterizer:
+# shared by the font backends, plus the fallback rasterizer:
 #
 #   * AtlasFonts — the `Egui::Fonts` base: a shared 2048² RGBA atlas
 #     (white RGB, coverage alpha), a {glyph id, size} glyph cache and one
 #     walk (fractional advances + kerning) used by both measure and draw.
 #     Draw-side, glyph quads snap to whole screen pixels.
+#   * CrystalFonts (backend/crystalfonts.cr) — the primary backend: the
+#     freetype-cr GitHub shard (SFNT + ttinterp hinter + ftgrays
+#     rasterizer, pure Crystal). What release builds always run on.
+#   * FreetypeFonts (backend/freetype.cr) — a C-FFI binding of the system
+#     libfreetype: real hinted bitmaps, used as a DEV-build accelerator
+#     behind C_EXTENSIONS (debug codegen is 10-100x slower; the C library
+#     is fast regardless of Crystal's flags).
 #   * LightHintedFonts — fallback rasterizer: stb_truetype outlines
 #     (exposed by the shim) with a Crystal-side light hint on BOTH axes
 #     before 4x4 supersampled scanline conversion — an approximation of
 #     FreeType's full grid-fitting (snapped stems/bars + whole-pixel
-#     advances). Used when FreeType is unavailable.
-#   * FreetypeFonts (backend/freetype.cr) — the primary backend: a direct
-#     FreeType binding rasterizing hinted 8-bit coverage bitmaps.
+#     advances). Used when the freetype-cr port cannot parse the font.
 #
-# Both bake coverage with the contrast curve upstream uses for dark mode:
+# All bake coverage with the contrast curve upstream uses for dark mode:
 # alpha = 2c - c^2 (FontColorTransferFunction::TwoCoverageMinusCoverageSq).
 
 module Egui
   module Backend
+    # C-accelerators (C-FFI FreeType, the C NanoSVG shim): a dev-only
+    # convenience, off by default — a fresh clone builds a self-contained
+    # pure-Crystal UI with no libfreetype. Enabled by `USE_C_EXTENSIONS=1`
+    # in the repo root's .env (or in the build environment); --release
+    # NEVER uses them. Compile-time, so the C code is not even linked
+    # when off. (Must expand to a plain Bool literal: macro-`if` over a
+    # non-literal constant would read back as an always-truthy AST node
+    # from other files' `{% if %}`s.)
+    {% begin %}
+      {% cext = false %}
+      {% unless flag?(:release) %}
+        {% dotenv = read_file?(".env") || "" %}
+        {% env_val = env("USE_C_EXTENSIONS") || "" %}
+        # Line-anchored so the commented line in .env.example stays off.
+        {% cext = (env_val == "1") ||
+                   dotenv.starts_with?("USE_C_EXTENSIONS=1") ||
+                   dotenv.includes?("\nUSE_C_EXTENSIONS=1") %}
+      {% end %}
+      C_EXTENSIONS = {{ cext }}
+    {% end %}
     # A rasterized glyph: atlas rect + placement relative to the pen.
     struct Glyph
       getter u0, v0, u1, v1 : Float32 # atlas UVs
@@ -34,8 +59,9 @@ module Egui
     end
 
     # The `Egui::Fonts` implementation shared by the font backends:
-    # LightHintedFonts (this file, fallback) and FreetypeFonts
-    # (freetype.cr, primary). One RGBA atlas + glyph cache, one walk
+    # CrystalFonts (crystalfonts.cr, primary), FreetypeFonts
+    # (freetype.cr, C-FFI dev accelerator) and LightHintedFonts
+    # (this file, fallback). One RGBA atlas + glyph cache, one walk
     # (fractional advances + kerning) for both measure and draw; a
     # backend implements glyph production and metrics.
     abstract class AtlasFonts < Egui::Fonts
@@ -237,7 +263,7 @@ module Egui
     # stems to pixel columns, thickness to whole pixels, grid-fitted
     # advances) — approximating FreeType's full grid-fitting. See the
     # header comment and docs/ANALYSIS.md; for real hinting prefer
-    # FreetypeFonts.
+    # CrystalFonts (or the FreetypeFonts dev accelerator).
     class LightHintedFonts < AtlasFonts
 
       # One straight edge of the flattened outline, in bitmap pixels (y down).
