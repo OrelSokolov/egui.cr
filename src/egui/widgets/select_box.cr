@@ -135,10 +135,11 @@ module Egui
          ctx.memory.active_scroll_area? == id &&
          (dy = ctx.input.scroll.y) != 0.0
         idx = @options.index(@selected)
-        # scroll.y > 0 is wheel-up (previous), < 0 wheel-down (next) —
-        # the same sign convention as NumberInput's wheel stepping.
-        stepped = idx ? (idx + (dy < 0 ? 1 : -1)).clamp(0, @options.size - 1)
-                  : (dy < 0 ? 0 : nil)
+        # scroll.y > 0 is wheel-down (next), < 0 wheel-up (previous) —
+        # the app-wide sign (positive = content scrolls down), the same
+        # as ScrollArea / NumberInput.
+        stepped = idx ? (idx + (dy > 0 ? 1 : -1)).clamp(0, @options.size - 1)
+                  : (dy > 0 ? 0 : nil)
         if (value = stepped.try { |s| @options[s]? }) && value != @selected
           @selected = value
           on_select.call(value)

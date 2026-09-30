@@ -13446,6 +13446,12 @@ _SOKOL_PRIVATE bool _sapp_x11_window_visible(void) {
    title bar height). */
 void egui_cr_x11_pre_map_hook(Display* dpy, Window win);
 
+/* egui-cr patch hook (defined in backend/sokol_shim.c): a tap on every
+   raw XEvent before sokol's own dispatch — sokol drops the WM's
+   WM_PROTOCOLS/_NET_WM_SYNC_REQUEST ClientMessage, which the resize
+   synchronization in the shim needs to see. */
+void egui_cr_x11_event_hook(XEvent* event);
+
 _SOKOL_PRIVATE void _sapp_x11_show_window(void) {
     if (!_sapp_x11_window_visible()) {
         egui_cr_x11_pre_map_hook(_sapp.x11.display, _sapp.x11.window);
@@ -14062,6 +14068,8 @@ _SOKOL_PRIVATE void _sapp_x11_on_selectionrequest(XEvent* event) {
 }
 
 _SOKOL_PRIVATE void _sapp_x11_process_event(XEvent* event) {
+    /* egui-cr patch hook: raw event tap (see the declaration above). */
+    egui_cr_x11_event_hook(event);
     switch (event->type) {
         case GenericEvent:
             _sapp_x11_on_genericevent(event);
