@@ -157,14 +157,14 @@ module Egui
       {% end %}
 
       # One bounded evented scheduler pass per FRAME, deduped by the
-      # frame's input time across every session in the process: the
-      # first caller each frame pays the ~1 ms select, later callers
-      # (hidden-session pumps, other TermViews) ride on it — the frame
-      # cost stays flat as the tab count grows. Without it sapp_run's
-      # blocking C loop would never let the scheduler deliver PTY data
-      # to the reader fibers.
+      # frame's input time across every session in the process. Only
+      # needed by the LEGACY single-thread backend (sapp_run never
+      # yields, so PTY reader fibers would never run); with the detached
+      # render loop the scheduler is alive between frames and this is a
+      # no-op (Egui::Runtime.natural_scheduler?).
       def evented_pass(frame_time : Float64) : Nil
         {% unless flag?(:win32) %}
+          return if Egui::Runtime.natural_scheduler?
           return if frame_time == @@pass_time
           @@pass_time = frame_time
           t0 = Time.instant if Session.debug?

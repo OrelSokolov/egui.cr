@@ -5,6 +5,12 @@
 // here with designated initializers so Crystal never has to mirror the
 // full sokol structs.
 
+// pipe2/pthread extensions for the detached render loop below; must be
+// set before any system header.
+#if !defined(_GNU_SOURCE)
+#define _GNU_SOURCE
+#endif
+
 #define SOKOL_GLCORE
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
 #define SOKOL_IMPL
@@ -48,6 +54,54 @@ static int g_borderless;
 // chrome).
 static int g_transparent;
 
+// Detached-render-loop routing (see the section at the end of this
+// file): on Linux, paint/texture/window entry points called off the
+// render thread are forwarded to the packet builder / command mailbox.
+// Everywhere else (and before egui_cr_start) everything runs direct.
+#if defined(_SAPP_LINUX)
+typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
+static int sh_run_direct(void);
+static void egui_cr_pkt_pipe(int kind);
+static void egui_cr_pkt_pipe_pop(void);
+static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
+                           int stream, const void* data, size_t size);
+static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
+                                     int stream);
+// packet builder API (see the detached section)
+void egui_cr_pkt_begin(int fb_w, int fb_h);
+void egui_cr_pkt_publish(void);
+void egui_cr_pkt_scissor(float x, float y, float w, float h);
+void egui_cr_pkt_tex(uint32_t id, int nearest);
+void egui_cr_pkt_tex_on(void);
+void egui_cr_pkt_tex_off(void);
+void egui_cr_pkt_begin_quads(void);
+void egui_cr_pkt_end_quads(void);
+void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g, unsigned b,
+                   unsigned a);
+void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
+                    unsigned g, unsigned b, unsigned a);
+// window-management forwarding (command mailbox wrappers, defined in the
+// detached section; called from the routing prologues below)
+static void sh_post_window_size(int w, int h);
+static void sh_post_window_position(int x, int y);
+static void sh_post_decorations(int decorated);
+static void sh_post_window_opacity(float opacity);
+static void sh_post_window_minimize(void);
+static void sh_post_window_maximize(void);
+static void sh_post_window_restore(void);
+static void sh_post_screen_size(int* w, int* h);
+static int sh_post_window_position_get(int* x, int* y);
+static void sh_post_drag_start(void);
+static void sh_post_resize_start(int dir);
+static void sh_post_window_shape(const unsigned char* mask, int w, int h);
+static void sh_post_cursor(const char* name);
+static void sh_post_cursor_image(const unsigned char* rgba, int w, int h,
+                                 int hx, int hy);
+static void sh_post_clear_color(void);
+#else
+static int sh_run_direct(void) { return 1; }
+#endif
+
 // window management (defined in the section below)
 void egui_cr_set_decorations(int decorated);
 int egui_cr_window_position(int* x, int* y);
@@ -75,8 +129,106 @@ static void sh_init_cb(void) {
 #endif
     g_init();
 }
-static void sh_frame_cb(void)  {
+
+// ---- freeze watchdog (EGUI_WATCHDOG=1) -------------------------------
+// A detached thread watching frame callbacks while the app runs.
+// "stuck INSIDE"  = the frame callback never returned (blocked fiber,
+//                   blocking syscall on the frame path);
+// "stuck OUTSIDE" = the loop stopped calling frames at all — an
+//                   X11/GL/driver stall (e.g. the XWayland DRI3 Present
+//                   race worked around above). Logs the frame thread's
+//                   kernel wait channel, once per stall, then re-arms.
+#if defined(__linux__)
+#include <stdatomic.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <sys/syscall.h>
+#include <sys/prctl.h>
+
+static atomic_llong g_wd_frame_start_ns = 0;
+static atomic_llong g_wd_frame_done_ns  = 0;
+static int g_wd_enabled = -1;   /* -1 = unchecked, set on first frame */
+static int g_wd_frame_tid = 0;
+
+static long long egui_cr_wd_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (long long)ts.tv_sec * 1000000000ll + ts.tv_nsec;
+}
+
+static void egui_cr_wd_report(const char* where, long long since_ns) {
+    char wchan[64] = "?";
+    if (g_wd_frame_tid) {
+        char path[96];
+        snprintf(path, sizeof path, "/proc/self/task/%d/wchan", g_wd_frame_tid);
+        int fd = open(path, O_RDONLY);
+        if (fd >= 0) {
+            ssize_t n = read(fd, wchan, sizeof wchan - 1);
+            if (n < 0) n = 0;
+            wchan[n] = '\0';
+            for (ssize_t i = 0; i < n; i++)
+                if (wchan[i] == '\n') { wchan[i] = '\0'; break; }
+            close(fd);
+        }
+    }
+    char buf[256];
+    long long ms = (egui_cr_wd_now_ns() - since_ns) / 1000000ll;
+    int len = snprintf(buf, sizeof buf,
+        "[watchdog] UI stuck %s frame for %lld ms (frame thread wchan=%s)\n",
+        where, ms, wchan);
+    if (len > 0) (void)write(STDERR_FILENO, buf, len);
+}
+
+static void* egui_cr_wd_thread(void* unused) {
+    (void)unused;
+    long long reported_inside = 0, reported_outside = 0;
+    for (;;) {
+        struct timespec ts = {1, 0};
+        nanosleep(&ts, 0);
+        long long now = egui_cr_wd_now_ns();
+        long long start = atomic_load(&g_wd_frame_start_ns);
+        long long done  = atomic_load(&g_wd_frame_done_ns);
+        if (start != 0 && now - start > 3000000000ll && reported_inside != start) {
+            reported_inside = start;
+            egui_cr_wd_report("INSIDE", start);
+        }
+        if (done != 0 && now - done > 3000000000ll && reported_outside != done) {
+            reported_outside = done;
+            egui_cr_wd_report("OUTSIDE (no frame callbacks)", done);
+        }
+    }
+    return 0;
+}
+
+static void egui_cr_wd_on_frame_begin(void) {
+    if (g_wd_enabled < 0) {
+        g_wd_enabled = getenv("EGUI_WATCHDOG") ? 1 : 0;
+        if (g_wd_enabled) {
+            g_wd_frame_tid = (int)syscall(SYS_gettid);
+            /* Debug runs want gdb -p to work when the UI is frozen;
+             * yama ptrace_scope=1 blocks attaching to a non-child. */
+            prctl(PR_SET_PTRACER, PR_SET_PTRACER_ANY);
+            pthread_t t;
+            if (pthread_create(&t, 0, egui_cr_wd_thread, 0) == 0)
+                pthread_detach(t);
+        }
+    }
+    atomic_store(&g_wd_frame_start_ns, egui_cr_wd_now_ns());
+}
+
+static void egui_cr_wd_on_frame_end(void) {
+    atomic_store(&g_wd_frame_done_ns, egui_cr_wd_now_ns());
+    atomic_store(&g_wd_frame_start_ns, 0);
+}
+#else
+static void egui_cr_wd_on_frame_begin(void) { }
+static void egui_cr_wd_on_frame_end(void)   { }
+#endif
+
+static void sh_frame_cb(void) {
+    egui_cr_wd_on_frame_begin();
     g_frame();
+    egui_cr_wd_on_frame_end();
 #if defined(_SAPP_LINUX)
     // After g_frame the pass for THIS frame is committed (sg_commit in
     // egui_cr_end_pass); sokol swaps right after we return — the frame
@@ -100,6 +252,10 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
     g_init = init; g_frame = frame; g_event = event; g_cleanup = cleanup;
     g_borderless = borderless;
     g_transparent = transparent;
+    /* Debug/env override: EGUI_NOVSYNC=1 untethers the loop from the
+     * compositor's present feedback (bisects swap stalls under
+     * XWayland). */
+    if (getenv("EGUI_NOVSYNC")) swap_interval = 0;
 #if defined(_SAPP_LINUX)
     // XWayland DRI3 deadlock workaround. Under rapid input, sokol's X11
     // loop (Xlib XPending/XNextEvent on the app connection) races with
@@ -202,6 +358,7 @@ void egui_cr_set_clear_color(float r, float g, float b, float a) {
     g_clear[2] = b;
     g_clear[3] = a;
 #if defined(_SAPP_LINUX)
+    if (!sh_run_direct()) { sh_post_clear_color(); return; }
     sh_x11_sync_window_background(r, g, b);
 #endif
 }
@@ -352,7 +509,39 @@ static void sh_x11_sync_request_confirm(void) {
 }
 #endif
 
+// Legacy-path EGUI_SHOT capture (same PPM format as sh_shot): a few
+// early end_pass frames, for A/B against the detached replay path.
+static void sh_shot_legacy(void) {
+    static const char* dir;
+    static int idx;
+    static const int ticks[] = {15, 40, 80};
+    if (!dir) { dir = getenv("EGUI_SHOT"); if (!dir) dir = (const char*)-1; }
+    if ((intptr_t)dir == -1 || idx >= 3) return;
+    static uint32_t count;
+    count++;
+    if (count < (uint32_t)ticks[idx]) return;
+    int w = sapp_width(), h = sapp_height();
+    if (w <= 0 || h <= 0) return;
+    char* px = (char*)malloc((size_t)w * h * 3);
+    if (!px) { idx++; return; }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+    char path[512];
+    snprintf(path, sizeof path, "%s/legacy_%d.ppm", dir, ticks[idx]);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (int y = h - 1; y >= 0; y--)
+            fwrite(px + (size_t)y * w * 3, 1, (size_t)w * 3, f);
+        fclose(f);
+    }
+    free(px);
+    idx++;
+}
+
 void egui_cr_begin_pass(int w, int h) {
+    if (!sh_run_direct()) { egui_cr_pkt_begin(w, h); return; }
     (void)w; (void)h;
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
@@ -366,9 +555,11 @@ void egui_cr_begin_pass(int w, int h) {
 }
 
 void egui_cr_end_pass(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_publish(); return; }
     sgl_draw();
     sg_end_pass();
     sg_commit();
+    sh_shot_legacy();
 }
 
 // --- per-pixel window transparency -----------------------------------------
@@ -453,30 +644,55 @@ void egui_cr_set_transparent(void) {}
 // unaffected; anti-aliased edges and translucent fills come out correct
 // instead of fringing.
 static sgl_pipeline g_alpha_pip;
+static sgl_pipeline g_replace_pip; // defined with its section below
+static sgl_pipeline g_text_pip;
 
-void egui_cr_alpha_pipeline_push(void) {
-    if (!g_alpha_pip.id) {
-        g_alpha_pip = sgl_make_pipeline(&(sg_pipeline_desc){
-            .colors[0] = {
-                // RGBA write mask: sgl's implicit default is RGB-only,
-                // which would keep the alpha at the clear value.
-                .write_mask = SG_COLORMASK_RGBA,
-                .blend = {
-                    .enabled = true,
-                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                },
+// Create the three replay pipelines if not yet present (idempotent;
+// GL objects may only be made on the thread that owns the context —
+// the render-thread init calls this, the push paths only load).
+static void sh_ensure_pipelines(void);
+
+static sgl_pipeline sh_make_blend_pip(const char* label) {
+    return sgl_make_pipeline(&(sg_pipeline_desc){
+        .colors[0] = {
+            // RGBA write mask: sgl's implicit default is RGB-only,
+            // which would keep the alpha at the clear value.
+            .write_mask = SG_COLORMASK_RGBA,
+            .blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
             },
-            .label = "egui-cr-alpha-pip",
+        },
+        .label = label,
+    });
+}
+
+static void sh_ensure_pipelines(void) {
+    if (!g_alpha_pip.id)   g_alpha_pip = sh_make_blend_pip("egui-cr-alpha-pip");
+    if (!g_text_pip.id)    g_text_pip = sh_make_blend_pip("egui-cr-text-pip");
+    if (!g_replace_pip.id) {
+        g_replace_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = { .enabled = false },
+            },
+            .label = "egui-cr-replace-pip",
         });
     }
+}
+
+void egui_cr_alpha_pipeline_push(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_pipe(0); return; }
+    sh_ensure_pipelines();
     sgl_push_pipeline();
     sgl_load_pipeline(g_alpha_pip);
 }
 
 void egui_cr_alpha_pipeline_pop(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_pipe_pop(); return; }
     sgl_pop_pipeline();
 }
 
@@ -484,31 +700,23 @@ void egui_cr_alpha_pipeline_pop(void) {
 // overwrites dst rgb AND alpha — how a widget punches per-pixel
 // transparency into an opaque UI (the terminal grid) without anything
 // having to blend behind it.
-static sgl_pipeline g_replace_pip;
 
 void egui_cr_replace_pipeline_push(void) {
-    if (!g_replace_pip.id) {
-        g_replace_pip = sgl_make_pipeline(&(sg_pipeline_desc){
-            .colors[0] = {
-                // RGBA write mask: the whole point is overwriting the
-                // alpha — sgl's RGB-only default would mask it off.
-                .write_mask = SG_COLORMASK_RGBA,
-                .blend = { .enabled = false },
-            },
-            .label = "egui-cr-replace-pip",
-        });
-    }
+    if (!sh_run_direct()) { egui_cr_pkt_pipe(1); return; }
+    sh_ensure_pipelines();
     sgl_push_pipeline();
     sgl_load_pipeline(g_replace_pip);
 }
 
 void egui_cr_replace_pipeline_pop(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_pipe_pop(); return; }
     sgl_pop_pipeline();
 }
 
 // --- textures -------------------------------------------------------------
 
 static sg_sampler g_linear_sampler;
+static void sh_sampler_ensure(void); // defined with the R texture table
 // Point-sampled twin for pixel-art surfaces (the Paint canvas): created
 // lazily by egui_cr_sgl_texture_nearest.
 static sg_sampler g_nearest_sampler;
@@ -533,9 +741,12 @@ static int sh_texture_slot(uint32_t view_id) {
     return -1;
 }
 
-// Upload immutable RGBA8 data as a 2D texture; returns the sg_view id
-// (0 on failure). The sampler is created once and shared.
+// Upload immutable RGBA8 data as a 2D texture; returns a texture id
+// (0 on failure) — an sg_view id on the legacy path, a shim id on the
+// detached path (resolved through the render thread's texture table).
+// The sampler is created once and shared.
 uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
     if (!g_linear_sampler.id) {
         g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
             .min_filter = SG_FILTER_LINEAR,
@@ -568,7 +779,9 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
 // cannot be created with initial data (sokol validation:
 // WRITABLE_NO_DATA), so create empty and upload via update_texture.
 uint32_t egui_cr_make_stream_texture(int w, int h) {
-    if (w <= 0 || h <= 0 || g_texture_count >= EGUI_CR_MAX_TEXTURES) return 0;
+    if (w <= 0 || h <= 0) return 0;
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, NULL, 1);
+    if (g_texture_count >= EGUI_CR_MAX_TEXTURES) return 0;
     sg_image img = sg_make_image(&(sg_image_desc){
         .type = SG_IMAGETYPE_2D,
         .width = w,
@@ -592,6 +805,11 @@ uint32_t egui_cr_make_stream_texture(int w, int h) {
 
 // Push fresh RGBA8 pixels into a stream texture (same size as created).
 void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
+    if (!sh_run_direct()) {
+        if (view_id) sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, rgba8,
+                                    (size_t)w * h * 4);
+        return;
+    }
     int slot = sh_texture_slot(view_id);
     if (slot < 0 || !g_textures[slot].stream) return;
     sg_image_data data;
@@ -610,6 +828,10 @@ void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
 
 // Destroy a texture created by make_texture or make_stream_texture.
 void egui_cr_destroy_texture(uint32_t view_id) {
+    if (!sh_run_direct()) {
+        if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0);
+        return;
+    }
     int slot = sh_texture_slot(view_id);
     if (slot < 0) return;
     sg_destroy_view((sg_view){.id = view_id});
@@ -623,6 +845,8 @@ void egui_cr_destroy_texture(uint32_t view_id) {
 // then be enabled separately; disable it afterwards so later untextured
 // geometry falls back to the internal white texture.
 void egui_cr_sgl_texture(uint32_t view_id) {
+    if (!sh_run_direct()) { egui_cr_pkt_tex(view_id, 0); return; }
+    if (!g_linear_sampler.id) sh_sampler_ensure();
     sg_view view = {.id = view_id};
     sgl_texture(view, g_linear_sampler);
 }
@@ -630,6 +854,7 @@ void egui_cr_sgl_texture(uint32_t view_id) {
 // Same bind, point sampling — for canvases whose texels must stay crisp
 // under non-integer scaling.
 void egui_cr_sgl_texture_nearest(uint32_t view_id) {
+    if (!sh_run_direct()) { egui_cr_pkt_tex(view_id, 1); return; }
     if (!g_nearest_sampler.id) {
         g_nearest_sampler = sg_make_sampler(&(sg_sampler_desc){
             .min_filter = SG_FILTER_NEAREST,
@@ -640,8 +865,92 @@ void egui_cr_sgl_texture_nearest(uint32_t view_id) {
     sgl_texture(view, g_nearest_sampler);
 }
 
-void egui_cr_sgl_enable_texture(void) { sgl_enable_texture(); }
-void egui_cr_sgl_disable_texture(void) { sgl_disable_texture(); }
+void egui_cr_sgl_enable_texture(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_tex_on(); return; }
+    sgl_enable_texture();
+}
+void egui_cr_sgl_disable_texture(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_tex_off(); return; }
+    sgl_disable_texture();
+}
+
+// --- sgl call wrappers ---------------------------------------------------------
+//
+// Crystal binds these instead of the raw sokol_gl symbols: on the
+// detached path the per-frame setup (viewport/ortho/matrices) is done by
+// the replay and everything else becomes packet ops; on the legacy path
+// they are pass-throughs.
+#if defined(_SAPP_LINUX)
+void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
+    if (!sh_run_direct()) return; // set by the replay
+    sgl_viewport(x, y, w, h, origin_top_left);
+}
+void egui_cr_sgl_matrix_mode_projection(void) {
+    if (!sh_run_direct()) return;
+    sgl_matrix_mode_projection();
+}
+void egui_cr_sgl_matrix_mode_modelview(void) {
+    if (!sh_run_direct()) return;
+    sgl_matrix_mode_modelview();
+}
+void egui_cr_sgl_load_identity(void) {
+    if (!sh_run_direct()) return;
+    sgl_load_identity();
+}
+void egui_cr_sgl_ortho(float l, float r, float b, float t, float n, float f) {
+    if (!sh_run_direct()) return;
+    sgl_ortho(l, r, b, t, n, f);
+}
+void egui_cr_sgl_scissor_rectf(float x, float y, float w, float h,
+                               bool origin_top_left) {
+    if (!sh_run_direct()) { egui_cr_pkt_scissor(x, y, w, h); return; }
+    sgl_scissor_rectf(x, y, w, h, origin_top_left);
+}
+void egui_cr_sgl_begin_quads(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_begin_quads(); return; }
+    sgl_begin_quads();
+}
+void egui_cr_sgl_end(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_end_quads(); return; }
+    sgl_end();
+}
+void egui_cr_sgl_v2f_c4b(float x, float y, unsigned char r, unsigned char g,
+                         unsigned char b, unsigned char a) {
+    if (!sh_run_direct()) { egui_cr_pkt_v(x, y, r, g, b, a); return; }
+    sgl_v2f_c4b(x, y, r, g, b, a);
+}
+void egui_cr_sgl_v2f_t2f_c4b(float x, float y, float u, float v,
+                             unsigned char r, unsigned char g,
+                             unsigned char b, unsigned char a) {
+    if (!sh_run_direct()) { egui_cr_pkt_vt(x, y, u, v, r, g, b, a); return; }
+    sgl_v2f_t2f_c4b(x, y, u, v, r, g, b, a);
+}
+#else // legacy platforms: straight pass-throughs
+void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
+    sgl_viewport(x, y, w, h, origin_top_left);
+}
+void egui_cr_sgl_matrix_mode_projection(void) { sgl_matrix_mode_projection(); }
+void egui_cr_sgl_matrix_mode_modelview(void) { sgl_matrix_mode_modelview(); }
+void egui_cr_sgl_load_identity(void) { sgl_load_identity(); }
+void egui_cr_sgl_ortho(float l, float r, float b, float t, float n, float f) {
+    sgl_ortho(l, r, b, t, n, f);
+}
+void egui_cr_sgl_scissor_rectf(float x, float y, float w, float h,
+                               bool origin_top_left) {
+    sgl_scissor_rectf(x, y, w, h, origin_top_left);
+}
+void egui_cr_sgl_begin_quads(void) { sgl_begin_quads(); }
+void egui_cr_sgl_end(void) { sgl_end(); }
+void egui_cr_sgl_v2f_c4b(float x, float y, unsigned char r, unsigned char g,
+                         unsigned char b, unsigned char a) {
+    sgl_v2f_c4b(x, y, r, g, b, a);
+}
+void egui_cr_sgl_v2f_t2f_c4b(float x, float y, float u, float v,
+                             unsigned char r, unsigned char g,
+                             unsigned char b, unsigned char a) {
+    sgl_v2f_t2f_c4b(x, y, u, v, r, g, b, a);
+}
+#endif
 
 // Decode an image file (PNG/JPEG/...) via stb_image and upload it as
 // RGBA8; returns the sg_view id (0 on failure).
@@ -674,38 +983,20 @@ static sgl_pipeline g_text_pip;
 void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8);
 
 void egui_cr_text_pipeline_init(void) {
-    if (g_text_pip.id) return;
-    g_text_pip = sgl_make_pipeline(&(sg_pipeline_desc){
-        .colors[0] = {
-            // sgl's implicit default write mask is RGB-only — alpha
-            // writes masked off; enable them or the framebuffer alpha
-            // stays at whatever the clear left (fatal in a
-            // per-pixel-transparent window).
-            .write_mask = SG_COLORMASK_RGBA,
-            .blend = {
-                .enabled = true,
-                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                // Keep the backdrop alpha: out_a = a + dst_a*(1-a). With
-                // the GL defaults (ONE, ZERO) glyph pixels replace the
-                // destination alpha — invisible on an opaque window, but
-                // it punches holes in a transparent one.
-                .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-            },
-        },
-        .label = "egui-cr-text-pipeline",
-    });
+    sh_ensure_pipelines();
 }
 
 // sokol_gl pipeline stack wrappers: sgl_pipeline is a struct, easier to
 // keep the struct marshalling here than bind it in Crystal.
 void egui_cr_text_pipeline_push(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_pipe(2); return; }
+    sh_ensure_pipelines();
     sgl_push_pipeline();
     sgl_load_pipeline(g_text_pip);
 }
 
 void egui_cr_text_pipeline_pop(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_pipe_pop(); return; }
     sgl_pop_pipeline();
 }
 
@@ -728,6 +1019,7 @@ static struct {
 static int g_atlas_count = 0;
 
 uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
     if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
     // stream images cannot be created with initial data (sokol validation:
     // WRITABLE_NO_DATA) — create empty, then upload via sg_update_image.
@@ -751,6 +1043,13 @@ uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
 }
 
 void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
+    if (!sh_run_direct()) {
+        if (getenv("EGUI_FRAME_DEBUG"))
+            fprintf(stderr, "[tex] A queues atlas update id=%u\n", view_id);
+        sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, rgba8,
+                       (size_t)w * h * 4);
+        return;
+    }
     for (int i = 0; i < g_atlas_count; i++) {
         if (g_atlases[i].view_id == view_id) {
             sg_image_data data;
@@ -867,6 +1166,7 @@ static const cursor_fallback_t g_cursor_fallbacks[] = {
 };
 
 void egui_cr_set_cursor(const char* css_name) {
+    if (!sh_run_direct()) { sh_post_cursor(css_name); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -905,6 +1205,7 @@ void egui_cr_set_cursor(const char* css_name) {
 static Cursor g_custom_x_cursor;
 
 void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    if (!sh_run_direct()) { sh_post_cursor_image(rgba, w, h, hx, hy); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win || !rgba || w <= 0 || h <= 0) return;
@@ -1291,6 +1592,7 @@ static void sh_net_wm_state(Display* dpy, Window win, long action,
 }
 
 void egui_cr_set_window_size(int w, int h) {
+    if (!sh_run_direct()) { sh_post_window_size(w, h); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1299,6 +1601,7 @@ void egui_cr_set_window_size(int w, int h) {
 }
 
 void egui_cr_set_window_position(int x, int y) {
+    if (!sh_run_direct()) { sh_post_window_position(x, y); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1307,6 +1610,7 @@ void egui_cr_set_window_position(int x, int y) {
 }
 
 void egui_cr_window_minimize(void) {
+    if (!sh_run_direct()) { sh_post_window_minimize(); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1315,6 +1619,7 @@ void egui_cr_window_minimize(void) {
 }
 
 void egui_cr_window_maximize(void) {
+    if (!sh_run_direct()) { sh_post_window_maximize(); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1323,6 +1628,7 @@ void egui_cr_window_maximize(void) {
 }
 
 void egui_cr_window_restore(void) {
+    if (!sh_run_direct()) { sh_post_window_restore(); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1331,6 +1637,7 @@ void egui_cr_window_restore(void) {
 }
 
 void egui_cr_screen_size(int* w, int* h) {
+    if (!sh_run_direct()) { sh_post_screen_size(w, h); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     if (!dpy) { *w = 0; *h = 0; return; }
     *w = XDisplayWidth(dpy, DefaultScreen(dpy));
@@ -1451,6 +1758,7 @@ void egui_cr_screen_size(int* w, int* h) { *w = 0; *h = 0; }
 #if defined(_SAPP_LINUX)
 
 void egui_cr_set_decorations(int decorated) {
+    if (!sh_run_direct()) { sh_post_decorations(decorated); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1513,6 +1821,7 @@ void egui_cr_set_decorations(int decorated) { (void)decorated; }
 #if defined(_SAPP_LINUX)
 
 void egui_cr_set_window_opacity(float opacity) {
+    if (!sh_run_direct()) { sh_post_window_opacity(opacity); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1579,6 +1888,7 @@ void egui_cr_set_window_opacity(float opacity) { (void)opacity; }
 #if defined(_SAPP_LINUX)
 
 int egui_cr_window_position(int* x, int* y) {
+    if (!sh_run_direct()) return sh_post_window_position_get(x, y);
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     *x = 0; *y = 0;
@@ -1679,6 +1989,7 @@ static void sh_net_wm_moveresize(Display* dpy, Window win, long direction) {
 }
 
 void egui_cr_window_drag_start(void) {
+    if (!sh_run_direct()) { sh_post_drag_start(); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win) return;
@@ -1686,6 +1997,7 @@ void egui_cr_window_drag_start(void) {
 }
 
 void egui_cr_window_resize_start(int direction) {
+    if (!sh_run_direct()) { sh_post_resize_start(direction); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win || direction < 0 || direction > 7) return;
@@ -1784,6 +2096,7 @@ void egui_cr_mem_free(void* p) { free(p); }
 #include <X11/extensions/shape.h>
 
 void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
+    if (!sh_run_direct()) { sh_post_window_shape(mask, w, h); return; }
     Display* dpy = (Display*)sapp_x11_get_display();
     Window win = (Window)sapp_x11_get_window();
     if (!dpy || !win || !mask || w <= 0 || h <= 0) return;
@@ -2112,3 +2425,1035 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 }
 
 #endif
+
+// --- detached render loop (loop_redesign.md) ---------------------------------
+//
+// Two threads, strict ownership (the alacritty/kitty split):
+//
+//   main thread (A) — ALL Crystal (GC, scheduler, app.update, PTY
+//     fibers, tessellation). Never touches X11/GLX/GL.
+//   render thread (R) — a C pthread in this shim owning the X
+//     connection, the GLX context and the swap. Runs sokol's own loop
+//     with C-only callbacks: X events are flattened into a ring buffer
+//     (plus a wake-pipe byte for A's scheduler); frames come from a
+//     latest-wins FramePacket mailbox that A fills by tessellating the
+//     paint command list into a flat op stream; R replays the packet
+//     through sokol_gl and swaps.
+//
+// Effect: a blocking glXSwapBuffers (XWayland/mutter can stall ~1 s)
+// degrades from "the whole app is frozen" to "a frame is late" — input
+// accumulates in the ring, PTY fibers keep running, app.update keeps
+// producing packets, and R presents the freshest one when the
+// compositor lets go.
+//
+// Window-management calls from A (title, cursor, clipboard, move/resize,
+// …) go through a small command mailbox executed on R's connection;
+// clipboard get / position queries are synchronous (condvar reply).
+// Texture creation/updates become delta ops INSIDE the packet (GL work
+// happens only on R). Legacy single-thread mode (macOS/Win32, or
+// EGUI_RENDER_THREAD=0 on Linux) keeps the direct paths: every routed
+// function checks sh_detached() and falls through to the original body.
+#if defined(_SAPP_LINUX)
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <errno.h>
+
+static atomic_int g_detached = 0;     // 1 once egui_cr_start spawned R
+static atomic_int g_app_dead = 0;     // 1 once R's sokol loop ended
+// True on the render thread (used to keep mailbox-executed calls on the
+// direct path instead of re-posting into the mailbox).
+static __thread int sh_on_render_thread = 0;
+
+static int sh_detached(void) {
+    return atomic_load_explicit(&g_detached, memory_order_relaxed) != 0;
+}
+static int sh_run_direct(void) {
+    return !sh_detached() || sh_on_render_thread;
+}
+
+// EGUI_SHOT capture for the legacy (single-thread) path — same PPM
+// output as the render-thread sh_shot, driven from egui_cr_end_pass.
+static void sh_shot_legacy(void);
+
+// ---- wake pipe (R → A doorbell for Crystal's scheduler) --------------------
+// One byte per signal; tags distinguish init/quit from plain event
+// doorbells. Non-blocking: a full pipe just means A is behind and will
+// drain everything in one read anyway.
+#define SH_WAKE_EVENTS 1
+#define SH_WAKE_INIT   2
+#define SH_WAKE_QUIT   3
+#define SH_WAKE_PRESENT 4 // R completed a render tick (≈ one present)
+static int g_a_pipe[2] = {-1, -1};
+
+static void sh_wake_a(unsigned char tag) {
+    if (g_a_pipe[1] < 0) return;
+    char c = (char)tag;
+    ssize_t n = write(g_a_pipe[1], &c, 1);
+    (void)n;
+}
+
+// Called from any Crystal fiber (Context#request_repaint wake hook): the
+// main loop must leave its blocking pipe read and produce a frame.
+void egui_cr_wake_main(void) { sh_wake_a(SH_WAKE_EVENTS); }
+
+// ---- input event ring --------------------------------------------------------
+// The 9-field flat tuple sh_event_cb already produces, plus an optional
+// malloc'd payload (FILES_DROPPED path list). Overflow drops the OLDEST
+// record — latest pointer positions matter, and a 1 s swap stall
+// produces at most a few hundred events.
+typedef struct {
+    int type;
+    float mx, my, sx, sy;
+    unsigned mods, mouse_button, key_code, char_code;
+    void* payload;
+} sh_event_rec_t;
+
+typedef struct {
+    int count;
+    char* paths[8]; // max_dropped_files in the sapp_desc
+} sh_drop_payload_t;
+
+#define SH_RING_CAP 8192
+static sh_event_rec_t g_ring[SH_RING_CAP];
+static size_t g_ring_head = 0, g_ring_tail = 0; // head=write, tail=read
+static pthread_mutex_t g_ring_mx = PTHREAD_MUTEX_INITIALIZER;
+
+static void sh_drop_payload_free(sh_drop_payload_t* p) {
+    if (!p) return;
+    for (int i = 0; i < p->count; i++) free(p->paths[i]);
+    free(p);
+}
+
+static void sh_ring_push(const sh_event_rec_t* rec) {
+    pthread_mutex_lock(&g_ring_mx);
+    size_t next = (g_ring_head + 1) % SH_RING_CAP;
+    if (next == g_ring_tail) { // full — drop the oldest
+        sh_drop_payload_free((sh_drop_payload_t*)g_ring[g_ring_tail].payload);
+        g_ring[g_ring_tail].payload = NULL;
+        g_ring_tail = (g_ring_tail + 1) % SH_RING_CAP;
+        next = (g_ring_head + 1) % SH_RING_CAP;
+    }
+    g_ring[g_ring_head] = *rec;
+    g_ring_head = next;
+    pthread_mutex_unlock(&g_ring_mx);
+}
+
+// A-side: pop up to `cap` records into `out` (payloads become the
+// caller's — free each with egui_cr_drop_payload_free).
+int egui_cr_events_pop(sh_event_rec_t* out, int cap) {
+    int n = 0;
+    pthread_mutex_lock(&g_ring_mx);
+    while (n < cap && g_ring_tail != g_ring_head) {
+        out[n++] = g_ring[g_ring_tail];
+        g_ring[g_ring_tail].payload = NULL;
+        g_ring_tail = (g_ring_tail + 1) % SH_RING_CAP;
+    }
+    pthread_mutex_unlock(&g_ring_mx);
+    return n;
+}
+
+void egui_cr_drop_payload_free(void* payload) {
+    sh_drop_payload_free((sh_drop_payload_t*)payload);
+}
+
+static void sh_rt_event_cb(const sapp_event* ev) {
+    sh_event_rec_t rec;
+    memset(&rec, 0, sizeof rec);
+    rec.type = (int)ev->type;
+    rec.mx = ev->mouse_x;
+    rec.my = ev->mouse_y;
+    rec.sx = ev->scroll_x;
+    rec.sy = ev->scroll_y;
+    rec.mods = ev->modifiers;
+    rec.mouse_button = (unsigned)ev->mouse_button;
+    rec.key_code = (unsigned)ev->key_code;
+    rec.char_code = ev->char_code;
+    if (ev->type == SAPP_EVENTTYPE_FILES_DROPPED) {
+        int count = sapp_get_num_dropped_files();
+        if (count > 8) count = 8;
+        sh_drop_payload_t* p =
+            (sh_drop_payload_t*)calloc(1, sizeof(sh_drop_payload_t));
+        if (p) {
+            for (int i = 0; i < count; i++) {
+                const char* path = sapp_get_dropped_file_path(i);
+                p->paths[i] = path ? strdup(path) : NULL;
+            }
+            p->count = count;
+            rec.payload = p;
+        }
+    }
+    sh_ring_push(&rec);
+    sh_wake_a(SH_WAKE_EVENTS);
+}
+
+// ---- A → R window command mailbox -------------------------------------------
+// Every X-touching entry point on A posts a command instead; R executes
+// the queue at the top of each render tick (before the pass, on its own
+// connection). Synchronous queries (clipboard get, window position)
+// wait on a per-command condvar for R's reply.
+typedef enum {
+    SH_CMD_WINDOW_SIZE, SH_CMD_WINDOW_POS, SH_CMD_DECOR, SH_CMD_OPACITY,
+    SH_CMD_MINIMIZE, SH_CMD_MAXIMIZE, SH_CMD_RESTORE, SH_CMD_TOGGLE_FS,
+    SH_CMD_DRAG, SH_CMD_RESIZE, SH_CMD_SHAPE, SH_CMD_CURSOR,
+    SH_CMD_CURSOR_IMG, SH_CMD_TITLE, SH_CMD_CLIP_SET, SH_CMD_CLEAR_COLOR,
+    SH_CMD_QUIT,
+    // synchronous (condvar reply)
+    SH_CMD_CLIP_GET, SH_CMD_WIN_POS_GET, SH_CMD_SCREEN_SIZE,
+    SH_CMD_IS_FULLSCREEN,
+} sh_cmd_kind;
+
+typedef struct {
+    sh_cmd_kind kind;
+    int a, b, c, d;
+    float f;
+    void* ptr;      // malloc'd copy (string / rgba / mask), owned by the cmd
+    size_t size;
+    // sync reply (filled by R)
+    int sync;
+    int done;
+    int r_int, r_a, r_b;
+    char* r_str;    // strdup'd; the caller frees with egui_cr_mem_free
+    pthread_mutex_t mx;
+    pthread_cond_t cv;
+} sh_cmd_t;
+
+#define SH_CMD_CAP 128
+static sh_cmd_t g_cmds[SH_CMD_CAP];
+static int g_cmd_n = 0;
+static pthread_mutex_t g_cmd_mx = PTHREAD_MUTEX_INITIALIZER;
+
+static void sh_cmd_free(sh_cmd_t* c) {
+    free(c->ptr);
+    c->ptr = NULL;
+}
+
+// Post an async command; takes ownership of `ptr`.
+static void sh_cmd_post_async(sh_cmd_kind kind, int a, int b, int c, int d,
+                              float f, void* ptr, size_t size) {
+    sh_cmd_t cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.kind = kind; cmd.a = a; cmd.b = b; cmd.c = c; cmd.d = d;
+    cmd.f = f; cmd.ptr = ptr; cmd.size = size;
+    pthread_mutex_lock(&g_cmd_mx);
+    if (g_cmd_n >= SH_CMD_CAP) { // queue full: drop the request
+        sh_cmd_free(&cmd);
+    } else {
+        g_cmds[g_cmd_n++] = cmd;
+    }
+    pthread_mutex_unlock(&g_cmd_mx);
+}
+
+static char* sh_strdup_n(const char* s) { return s ? strdup(s) : NULL; }
+
+// Sync command round trip. Returns 0 on success, -1 on timeout / dead R
+// (the reply stays zeroed — callers treat that as failure).
+static int sh_cmd_roundtrip(sh_cmd_t* cmd) {
+    cmd->sync = 1;
+    pthread_mutex_init(&cmd->mx, NULL);
+    pthread_cond_init(&cmd->cv, NULL);
+    pthread_mutex_lock(&g_cmd_mx);
+    if (g_cmd_n >= SH_CMD_CAP) {
+        pthread_mutex_unlock(&g_cmd_mx);
+        sh_cmd_free(cmd);
+        pthread_mutex_destroy(&cmd->mx);
+        pthread_cond_destroy(&cmd->cv);
+        return -1;
+    }
+    g_cmds[g_cmd_n++] = *cmd;
+    pthread_mutex_unlock(&g_cmd_mx);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 2; // a healthy render tick is ~16 ms; 2 s covers a stall
+    int rc = 0;
+    pthread_mutex_lock(&cmd->mx);
+    while (!cmd->done && rc != ETIMEDOUT &&
+           !atomic_load_explicit(&g_app_dead, memory_order_relaxed)) {
+        rc = pthread_cond_timedwait(&cmd->cv, &cmd->mx, &ts);
+        if (rc == ETIMEDOUT) break;
+    }
+    int ok = cmd->done ? 0 : -1;
+    pthread_mutex_unlock(&cmd->mx);
+    pthread_mutex_destroy(&cmd->mx);
+    pthread_cond_destroy(&cmd->cv);
+    // On timeout the command may still sit in the queue / be in flight on
+    // R — its reply memory is intentionally leaked (catastrophic path).
+    if (!ok) sh_cmd_free(cmd);
+    return ok;
+}
+
+static void sh_cmd_reply(sh_cmd_t* c) {
+    pthread_mutex_lock(&c->mx);
+    c->done = 1;
+    pthread_cond_signal(&c->cv);
+    pthread_mutex_unlock(&c->mx);
+}
+
+static void sh_cmd_exec(sh_cmd_t* c) {
+    switch (c->kind) {
+    case SH_CMD_WINDOW_SIZE:  egui_cr_set_window_size(c->a, c->b); break;
+    case SH_CMD_WINDOW_POS:   egui_cr_set_window_position(c->a, c->b); break;
+    case SH_CMD_DECOR:        egui_cr_set_decorations(c->a); break;
+    case SH_CMD_OPACITY:      egui_cr_set_window_opacity(c->f); break;
+    case SH_CMD_MINIMIZE:     egui_cr_window_minimize(); break;
+    case SH_CMD_MAXIMIZE:     egui_cr_window_maximize(); break;
+    case SH_CMD_RESTORE:      egui_cr_window_restore(); break;
+    case SH_CMD_TOGGLE_FS:    sapp_toggle_fullscreen(); break;
+    case SH_CMD_DRAG:         egui_cr_window_drag_start(); break;
+    case SH_CMD_RESIZE:       egui_cr_window_resize_start(c->a); break;
+    case SH_CMD_SHAPE:        egui_cr_set_window_shape(c->ptr, c->a, c->b); break;
+    case SH_CMD_CURSOR:       egui_cr_set_cursor((const char*)c->ptr); break;
+    case SH_CMD_CURSOR_IMG:   egui_cr_set_cursor_image(c->ptr, c->a, c->b,
+                                                       c->c, c->d); break;
+    case SH_CMD_TITLE:        sapp_set_window_title((const char*)c->ptr); break;
+    case SH_CMD_CLIP_SET:     sapp_set_clipboard_string((const char*)c->ptr); break;
+    case SH_CMD_CLEAR_COLOR: {
+        float* rgba = (float*)c->ptr; // r,g,b,a — alpha unused by the X sync
+        sh_x11_sync_window_background(rgba[0], rgba[1], rgba[2]);
+        break;
+    }
+    case SH_CMD_QUIT:         sapp_quit(); break;
+    case SH_CMD_CLIP_GET: {
+        const char* s = sapp_get_clipboard_string();
+        c->r_str = sh_strdup_n(s && s[0] ? s : NULL);
+        sh_cmd_reply(c);
+        return; // sync: reply instead of free
+    }
+    case SH_CMD_WIN_POS_GET: {
+        int x = 0, y = 0;
+        c->r_int = egui_cr_window_position(&x, &y);
+        c->r_a = x; c->r_b = y;
+        sh_cmd_reply(c);
+        return;
+    }
+    case SH_CMD_SCREEN_SIZE: {
+        int w = 0, h = 0;
+        egui_cr_screen_size(&w, &h);
+        c->r_a = w; c->r_b = h;
+        sh_cmd_reply(c);
+        return;
+    }
+    case SH_CMD_IS_FULLSCREEN:
+        c->r_int = sapp_is_fullscreen();
+        sh_cmd_reply(c);
+        return;
+    }
+    sh_cmd_free(c);
+    if (c->sync) sh_cmd_reply(c); // unreachable for the async set
+}
+
+static void sh_cmds_run(void) {
+    sh_cmd_t batch[SH_CMD_CAP];
+    int n;
+    pthread_mutex_lock(&g_cmd_mx);
+    n = g_cmd_n;
+    memcpy(batch, g_cmds, sizeof(sh_cmd_t) * (size_t)n);
+    g_cmd_n = 0;
+    pthread_mutex_unlock(&g_cmd_mx);
+    for (int i = 0; i < n; i++) sh_cmd_exec(&batch[i]);
+}
+
+// ---- FramePacket: flat draw list + texture deltas ----------------------------
+//
+// A tessellates the paint command list into a flat opcode stream (the
+// same sgl calls the single-threaded path made, serialized) plus two
+// ordered texture-delta lists (pre-pass: create/update; post-pass:
+// destroy — a texture drawn by this packet dies only after the NEXT
+// packet's draws, never before its own). Latest-wins mailbox: A may
+// publish freely; R takes the freshest packet each tick and drops stale
+// ones (their pre-ops are superseded; their destroy-ops are spliced
+// forward so evictions never get lost).
+typedef struct {
+    sh_texop_kind kind;
+    uint32_t id;
+    int w, h;
+    int stream;  // CREATE: SG_USAGE stream (video surfaces)
+    void* data;  // CREATE/UPDATE: malloc'd RGBA8 copy (CREATE may be NULL)
+    size_t size;
+} sh_texop_t;
+
+enum {
+    SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
+    SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
+};
+
+typedef struct {
+    int fb_w, fb_h;
+    float ppp;
+    float clear[4];
+    uint32_t* ops; int ops_len, ops_cap;
+    sh_texop_t* pre;  int pre_n,  pre_cap;   // before the pass
+    sh_texop_t* post; int post_n, post_cap;  // after the next pass
+} sh_packet_t;
+
+static sh_packet_t* g_build;    // A-side builder (between publishes)
+static sh_packet_t* g_pkt;      // mailbox slot: latest, maybe unconsumed
+static sh_packet_t* g_pkt_last; // R-owned: replay source
+static pthread_mutex_t g_pkt_mx = PTHREAD_MUTEX_INITIALIZER;
+static float g_pkt_ppp = 1.0f;  // ppp for the packet being built (A)
+
+static void sh_packet_free(sh_packet_t* p) {
+    if (!p) return;
+    for (int i = 0; i < p->pre_n; i++) free(p->pre[i].data);
+    for (int i = 0; i < p->post_n; i++) free(p->post[i].data);
+    free(p->ops); free(p->pre); free(p->post);
+    free(p);
+}
+
+static void sh_build_ensure(void) {
+    if (!g_build) g_build = (sh_packet_t*)calloc(1, sizeof(sh_packet_t));
+}
+
+static void sh_grow(void** arr, int* cap, int need, size_t elem) {
+    if (*cap >= need) return;
+    int ncap = *cap ? *cap : 64;
+    while (ncap < need) ncap *= 2;
+    *arr = realloc(*arr, (size_t)ncap * elem);
+    *cap = ncap;
+}
+
+static void sh_push_words(const uint32_t* w, int n) {
+    sh_build_ensure();
+    sh_grow((void**)&g_build->ops, &g_build->ops_cap, g_build->ops_len + n,
+            sizeof(uint32_t));
+    memcpy(g_build->ops + g_build->ops_len, w, sizeof(uint32_t) * (size_t)n);
+    g_build->ops_len += n;
+}
+
+static uint32_t sh_f2u(float f) { union { float f; uint32_t u; } c; c.f = f; return c.u; }
+static float sh_u2f(uint32_t u) { union { float f; uint32_t u; } c; c.u = u; return c.f; }
+
+// Queue a texture delta into the current build (allocating it if no
+// frame is open — ops ride the next publish).
+static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
+                           int stream, const void* data, size_t size) {
+    sh_build_ensure();
+    sh_texop_t op;
+    memset(&op, 0, sizeof op);
+    op.kind = kind; op.id = id; op.w = w; op.h = h; op.stream = stream;
+    op.size = size;
+    if (data && size) {
+        op.data = malloc(size);
+        if (op.data) memcpy(op.data, data, size);
+    }
+    if (kind == SH_TEX_DESTROY) {
+        sh_grow((void**)&g_build->post, &g_build->post_cap, g_build->post_n + 1,
+                sizeof(sh_texop_t));
+        g_build->post[g_build->post_n++] = op;
+    } else {
+        sh_grow((void**)&g_build->pre, &g_build->pre_cap, g_build->pre_n + 1,
+                sizeof(sh_texop_t));
+        g_build->pre[g_build->pre_n++] = op;
+    }
+}
+
+// Detached make_texture: allocate a shim-side id and queue the upload.
+static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
+                                     int stream) {
+    if (w <= 0 || h <= 0) return 0;
+    static atomic_uint next_id;
+    static int next_init;
+    if (!next_init) { atomic_store(&next_id, 1); next_init = 1; }
+    uint32_t id = atomic_fetch_add(&next_id, 1);
+    sh_texop_queue(SH_TEX_CREATE, id, w, h, stream, rgba8,
+                   rgba8 ? (size_t)w * h * 4 : 0);
+    return id;
+}
+
+// --- packet builder API (A-side; called from Crystal paint code) --------------
+
+void egui_cr_pkt_begin(int fb_w, int fb_h) {
+    sh_build_ensure();
+    free(g_build->ops); // draw ops never carry past a publish; a fresh
+    g_build->ops = NULL; // frame resets them (texture ops accumulate)
+    g_build->ops_len = 0;
+    g_build->fb_w = fb_w;
+    g_build->fb_h = fb_h;
+    g_build->ppp = g_pkt_ppp > 0.0f ? g_pkt_ppp : 1.0f;
+    g_build->clear[0] = g_clear[0];
+    g_build->clear[1] = g_clear[1];
+    g_build->clear[2] = g_clear[2];
+    g_build->clear[3] = g_clear[3];
+}
+
+// Merge a superseded packet's texture ops (`src`, OLDER) into the
+// packet being published (`dst`, NEWER), keeping only one op per
+// texture id: a create/update must survive the drop (no later UPDATE
+// may come — the atlas can stay clean), but stale pixel copies must
+// not pile up while R is stalled (each atlas upload is a full 16 MB
+// buffer). On an id collision the NEWER dst op wins — the src one is
+// superseded data.
+static void sh_texops_splice(sh_texop_t** dst, int* dst_n, int* dst_cap,
+                             sh_texop_t* src, int src_n) {
+    for (int i = 0; i < src_n; i++) {
+        int at = -1;
+        for (int j = 0; j < *dst_n; j++)
+            if ((*dst)[j].id == src[i].id) { at = j; break; }
+        if (at < 0) {
+            sh_grow((void**)dst, dst_cap, *dst_n + 1, sizeof(sh_texop_t));
+            (*dst)[(*dst_n)++] = src[i];
+        } else {
+            free(src[i].data); // older copy — the newer dst op stays
+        }
+    }
+    free(src);
+}
+
+void egui_cr_pkt_publish(void) {
+    if (!g_build) return;
+    sh_packet_t* p = g_build;
+    g_build = NULL;
+    if (getenv("EGUI_FRAME_DEBUG"))
+        fprintf(stderr, "[pkt] publish ops=%d pre=%d post=%d fb=%dx%d\n",
+                p->ops_len, p->pre_n, p->post_n, p->fb_w, p->fb_h);
+    pthread_mutex_lock(&g_pkt_mx);
+    if (g_pkt) { // superseded unconsumed packet: keep its texture ops —
+        // creates/updates (pre) and evictions (post) must outlive the
+        // drop, deduped to the newest op per id
+        sh_texop_t* pre = g_pkt->pre; int pre_n = g_pkt->pre_n;
+        sh_texop_t* post = g_pkt->post; int post_n = g_pkt->post_n;
+        g_pkt->pre = NULL; g_pkt->pre_n = 0;
+        g_pkt->post = NULL; g_pkt->post_n = 0;
+        sh_packet_free(g_pkt);
+        sh_texops_splice(&p->pre, &p->pre_n, &p->pre_cap, pre, pre_n);
+        sh_texops_splice(&p->post, &p->post_n, &p->post_cap, post, post_n);
+    }
+    g_pkt = p;
+    pthread_mutex_unlock(&g_pkt_mx);
+    if (getenv("EGUI_FRAME_DEBUG") && p->pre_n)
+        fprintf(stderr, "[pkt] publish+splice pre=%d (first kind=%d id=%u)\n",
+                p->pre_n, p->pre_n ? p->pre[0].kind : -1,
+                p->pre_n ? p->pre[0].id : 0);
+}
+
+void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
+
+void egui_cr_pkt_scissor(float x, float y, float w, float h) {
+    uint32_t o[5] = { SH_OP_SCISSOR, sh_f2u(x), sh_f2u(y), sh_f2u(w), sh_f2u(h) };
+    sh_push_words(o, 5);
+}
+void egui_cr_pkt_pipe(int kind) { // 0 alpha, 1 replace, 2 text
+    uint32_t o[2] = { SH_OP_PIPE, (uint32_t)kind };
+    sh_push_words(o, 2);
+}
+void egui_cr_pkt_pipe_pop(void) {
+    uint32_t o[1] = { SH_OP_PIPE_POP };
+    sh_push_words(o, 1);
+}
+void egui_cr_pkt_tex(uint32_t id, int nearest) {
+    uint32_t o[3] = { SH_OP_TEX, id, (uint32_t)(nearest ? 1 : 0) };
+    sh_push_words(o, 3);
+}
+void egui_cr_pkt_tex_on(void)  { uint32_t o[1] = { SH_OP_TEX_ON }; sh_push_words(o, 1); }
+void egui_cr_pkt_tex_off(void) { uint32_t o[1] = { SH_OP_TEX_OFF }; sh_push_words(o, 1); }
+void egui_cr_pkt_begin_quads(void) { uint32_t o[1] = { SH_OP_BEGIN }; sh_push_words(o, 1); }
+void egui_cr_pkt_end_quads(void)    { uint32_t o[1] = { SH_OP_END }; sh_push_words(o, 1); }
+
+void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g, unsigned b,
+                   unsigned a) {
+    uint32_t o[4] = { SH_OP_V, sh_f2u(x), sh_f2u(y),
+                      (r & 255u) | ((g & 255u) << 8) | ((b & 255u) << 16) |
+                      ((a & 255u) << 24) };
+    sh_push_words(o, 4);
+}
+void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r, unsigned g,
+                    unsigned b, unsigned a) {
+    uint32_t o[6] = { SH_OP_VT, sh_f2u(x), sh_f2u(y), sh_f2u(u), sh_f2u(v),
+                      (r & 255u) | ((g & 255u) << 8) | ((b & 255u) << 16) |
+                      ((a & 255u) << 24) };
+    sh_push_words(o, 6);
+}
+
+// ---- R-side texture table -----------------------------------------------------
+// id → (sg_image, sg_view). Ids are allocated on A (atomic counter) and
+// created lazily here as packet pre-ops arrive; an UPDATE for a missing
+// id self-heals into a CREATE (a dropped packet must not kill an atlas).
+#define SH_MAX_TEX 4096
+typedef struct {
+    uint32_t id;
+    sg_image img;
+    sg_view view;
+    int w, h;
+} sh_tex_t;
+static sh_tex_t g_tex_tab[SH_MAX_TEX];
+static int g_tex_tab_n = 0;
+static sh_tex_t g_white_tex; // fallback for ids that failed to create
+
+static sh_tex_t* sh_tex_find(uint32_t id) {
+    for (int i = 0; i < g_tex_tab_n; i++)
+        if (g_tex_tab[i].id == id) return &g_tex_tab[i];
+    return NULL;
+}
+
+static void sh_sampler_ensure(void) {
+    if (!g_linear_sampler.id) {
+        g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
+            .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR });
+    }
+}
+
+static void sh_white_tex_ensure(void) {
+    if (g_white_tex.img.id) return;
+    unsigned char px[4] = { 255, 255, 255, 255 };
+    g_white_tex.img = sg_make_image(&(sg_image_desc){
+        .width = 1, .height = 1, .usage = {.immutable = true},
+        .data = {.mip_levels[0] = {.ptr = px, .size = 4}},
+    });
+    g_white_tex.view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = g_white_tex.img} });
+    g_white_tex.id = 0xFFFFFFFF;
+}
+
+static void sh_tex_upload(sh_tex_t* t, const void* data, size_t size) {
+    sg_image_data d;
+    memset(&d, 0, sizeof d);
+    d.mip_levels[0].ptr = data;
+    d.mip_levels[0].size = size;
+    sg_update_image(t->img, &d);
+    // _sg_gl_update_image rebinds textures behind the state cache's back
+    // (see egui_cr_atlas_update) — reset it or the next draw samples a
+    // stale slot.
+    sg_reset_state_cache();
+}
+
+// Returns 0 on failure (pool exhausted / GL object creation failed).
+static int sh_tex_create(uint32_t id, int w, int h, void* data, size_t size) {
+    sh_tex_t* t = sh_tex_find(id);
+    if (t) { // already created — treat as an update
+        if (data) sh_tex_upload(t, data, size);
+        return 1;
+    }
+    if (g_tex_tab_n >= SH_MAX_TEX) return 0;
+    // dynamic_update: atlases and stream surfaces are updated in place;
+    // immutable make_texture uploads are folded into the first update.
+    sg_image img = sg_make_image(&(sg_image_desc){
+        .width = w, .height = h,
+        .usage = {.dynamic_update = true},
+        .label = "egui-cr-packet-texture",
+    });
+    if (img.id == 0) return 0;
+    sg_view view = sg_make_view(&(sg_view_desc){
+        .texture = {.image = img}, .label = "egui-cr-packet-texture-view" });
+    if (view.id == 0) { sg_destroy_image(img); return 0; }
+    t = &g_tex_tab[g_tex_tab_n++];
+    t->id = id; t->img = img; t->view = view; t->w = w; t->h = h;
+    if (data) sh_tex_upload(t, data, size);
+    return 1;
+}
+
+static void sh_tex_run(const sh_texop_t* op) {
+    sh_tex_t* t = sh_tex_find(op->id);
+    if (getenv("EGUI_FRAME_DEBUG"))
+        fprintf(stderr, "[tex] run kind=%d id=%u %dx%d%s%s\n", op->kind, op->id,
+                op->w, op->h, op->data ? " data" : "",
+                t ? " (exists)" : " (new)");
+    switch (op->kind) {
+    case SH_TEX_CREATE:
+        if (t && op->data) sh_tex_upload(t, op->data, op->size);
+        else sh_tex_create(op->id, op->w, op->h, op->data, op->size);
+        break;
+    case SH_TEX_UPDATE:
+        if (!t) sh_tex_create(op->id, op->w, op->h, op->data, op->size);
+        else if (op->data) sh_tex_upload(t, op->data, op->size);
+        break;
+    case SH_TEX_DESTROY:
+        if (t) {
+            sg_destroy_view(t->view);
+            sg_destroy_image(t->img);
+            *t = g_tex_tab[g_tex_tab_n - 1];
+            g_tex_tab_n--;
+        }
+        break;
+    }
+}
+
+// ---- R-side replay ------------------------------------------------------------
+
+static void sh_ensure_pipelines(void);
+
+static void sh_replay(sh_packet_t* p) {
+    sh_ensure_pipelines();
+    sh_sampler_ensure();
+    sh_white_tex_ensure();
+    sg_begin_pass(&(sg_pass){
+        .swapchain = sglue_swapchain(),
+        .action = {
+            .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { p->clear[0], p->clear[1], p->clear[2], p->clear[3] },
+            },
+        },
+    });
+    float w = (float)p->fb_w / p->ppp;
+    float h = (float)p->fb_h / p->ppp;
+    sgl_viewport(0, 0, p->fb_w, p->fb_h, true);
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+
+    const uint32_t* op = p->ops;
+    const uint32_t* end = p->ops + p->ops_len;
+    while (op < end) {
+        switch (*op++) {
+        case SH_OP_SCISSOR:
+            sgl_scissor_rectf(sh_u2f(op[0]), sh_u2f(op[1]), sh_u2f(op[2]),
+                              sh_u2f(op[3]), true);
+            op += 4;
+            break;
+        case SH_OP_PIPE: {
+            sgl_pipeline pip = op[0] == 1 ? g_replace_pip
+                            : op[0] == 2 ? g_text_pip : g_alpha_pip;
+            sgl_push_pipeline();
+            sgl_load_pipeline(pip);
+            op += 1;
+            break;
+        }
+        case SH_OP_PIPE_POP: sgl_pop_pipeline(); break;
+        case SH_OP_TEX: {
+            sh_tex_t* t = sh_tex_find(op[0]);
+            sg_view view = t ? t->view : g_white_tex.view;
+            if (!t) {
+                sh_white_tex_ensure();
+                if (getenv("EGUI_FRAME_DEBUG"))
+                    fprintf(stderr, "[tex] OP_TEX unknown id=%u -> white\n", op[0]);
+            }
+            sgl_texture(view, op[1] ? g_nearest_sampler : g_linear_sampler);
+            op += 2;
+            break;
+        }
+        case SH_OP_TEX_ON:  sgl_enable_texture(); break;
+        case SH_OP_TEX_OFF: sgl_disable_texture(); break;
+        case SH_OP_BEGIN:   sgl_begin_quads(); break;
+        case SH_OP_END:     sgl_end(); break;
+        case SH_OP_V: {
+            uint32_t c = op[2];
+            sgl_v2f_c4b(sh_u2f(op[0]), sh_u2f(op[1]),
+                        c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF,
+                        (c >> 24) & 0xFF);
+            op += 3;
+            break;
+        }
+        case SH_OP_VT: {
+            uint32_t c = op[4];
+            sgl_v2f_t2f_c4b(sh_u2f(op[0]), sh_u2f(op[1]), sh_u2f(op[2]),
+                            sh_u2f(op[3]), c & 0xFF, (c >> 8) & 0xFF,
+                            (c >> 16) & 0xFF, (c >> 24) & 0xFF);
+            op += 5;
+            break;
+        }
+        default: // corrupted stream — drop the rest of the frame
+            op = end;
+            break;
+        }
+    }
+    sgl_draw();
+    sg_end_pass();
+    sg_commit();
+}
+
+// ---- R render tick (called from sokol's frame callback) ------------------------
+
+// Debug frame capture (EGUI_SHOT=dir): glReadPixels of the back buffer
+// right after a replay, written as PPM for the first few PRESENTED
+// frames — visual verification of the packet/replay path without a
+// screen grabber (XWayland windows can't be XGetImage'd). Thresholds
+// are present counts, not vsync ticks: an occluded XWayland window can
+// present as rarely as once a second.
+static int sh_shot_ticks[] = {3, 8, 20};
+static void sh_shot(sh_packet_t* p) {
+    static const char* dir;
+    static int idx;
+    if (!dir) { dir = getenv("EGUI_SHOT"); if (!dir) dir = (const char*)-1; }
+    if ((intptr_t)dir == -1 || idx >= 3) return;
+    int tick = sh_shot_ticks[idx];
+    static uint32_t replay_count;
+    replay_count++;
+    if (replay_count < (uint32_t)tick) return;
+    char* px = (char*)malloc((size_t)p->fb_w * p->fb_h * 3);
+    if (!px) { idx++; return; }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, p->fb_w, p->fb_h, GL_RGB, GL_UNSIGNED_BYTE, px);
+    char path[512];
+    snprintf(path, sizeof path, "%s/frame_%d.ppm", dir, tick);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P6\n%d %d\n255\n", p->fb_w, p->fb_h);
+        // flip vertically: GL origin is bottom-left
+        for (int y = p->fb_h - 1; y >= 0; y--)
+            fwrite(px + (size_t)y * p->fb_w * 3, 1, (size_t)p->fb_w * 3, f);
+        fclose(f);
+    }
+    free(px);
+    idx++;
+}
+
+static sh_texop_t* g_post_pending;
+static int g_post_pending_n;
+
+static void sh_rt_frame(void) {
+    sh_cmds_run(); // A→R window commands, on R's connection
+
+    pthread_mutex_lock(&g_pkt_mx);
+    sh_packet_t* fresh = g_pkt;
+    g_pkt = NULL;
+    pthread_mutex_unlock(&g_pkt_mx);
+
+    if (fresh) {
+        if (getenv("EGUI_FRAME_DEBUG"))
+            fprintf(stderr, "[pkt] render thread took packet ops=%d pre=%d\n",
+                    fresh->ops_len, fresh->pre_n);
+        // destroys deferred from the previous packet — its draws are done
+        if (g_post_pending_n > 0) {
+            for (int i = 0; i < g_post_pending_n; i++) {
+                sh_tex_run(&g_post_pending[i]);
+                free(g_post_pending[i].data);
+            }
+            free(g_post_pending);
+            g_post_pending = NULL;
+            g_post_pending_n = 0;
+        }
+        for (int i = 0; i < fresh->pre_n; i++) {
+            sh_tex_run(&fresh->pre[i]);
+            free(fresh->pre[i].data);
+            fresh->pre[i].data = NULL;
+        }
+        sh_packet_free(g_pkt_last); // replaced content
+        g_pkt_last = fresh;
+        // this packet's destroys run before the NEXT packet's draws
+        g_post_pending = fresh->post;
+        g_post_pending_n = fresh->post_n;
+        fresh->post = NULL;
+        fresh->post_n = 0;
+    }
+    if (g_pkt_last) {
+        sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
+        sh_shot(g_pkt_last);
+    }
+    // no packet yet (before the first Crystal frame): skip the pass —
+    // one uninitialized swap at startup, invisible next tick.
+}
+
+static void sh_rt_init_cb(void) {
+    sh_on_render_thread = 1;
+    if (g_borderless) egui_cr_set_decorations(0);
+    if (g_transparent) egui_cr_set_transparent();
+    egui_cr_gfx_init();     // sg_setup + sgl_setup — GL objects on R
+    egui_cr_text_pipeline_init();
+    sh_ensure_pipelines();
+    sh_wake_a(SH_WAKE_INIT);
+}
+
+static void sh_rt_frame_cb(void) {
+    egui_cr_wd_on_frame_begin();
+    sh_rt_frame();
+    egui_cr_wd_on_frame_end();
+    // Present-ack: sokol swaps right after this callback returns, so
+    // this byte lands ~one present later. It paces A's frame
+    // production to the actual present rate (the display's vsync) —
+    // the detached equivalent of the legacy loop being ticked by its
+    // own swap. During a swap stall the acks stop, and A's fallback
+    // timeout keeps logic running at a reduced rate instead.
+    sh_wake_a(SH_WAKE_PRESENT);
+}
+
+static void sh_rt_cleanup_cb(void) { }
+
+// ---- render thread entry / lifecycle -------------------------------------------
+
+static char* g_rt_title;
+static pthread_t g_render_thread;
+static int g_rt_w, g_rt_h, g_rt_swap;
+
+static void* sh_render_thread(void* unused) {
+    (void)unused;
+    sh_on_render_thread = 1;
+    sapp_desc desc = {
+        .init_cb = sh_rt_init_cb,
+        .frame_cb = sh_rt_frame_cb,
+        .event_cb = sh_rt_event_cb,
+        .cleanup_cb = sh_rt_cleanup_cb,
+        .width = g_rt_w,
+        .height = g_rt_h,
+        .window_title = g_rt_title,
+        .high_dpi = true,
+        .sample_count = g_transparent ? 1 : 4,
+        .swap_interval = g_rt_swap,
+        .enable_clipboard = true,
+        .enable_dragndrop = true,
+        .max_dropped_files = 8,
+        .max_dropped_file_path_length = 8192,
+        .logger.func = slog_func,
+    };
+    sapp_run(&desc);
+    atomic_store(&g_app_dead, 1);
+    sh_wake_a(SH_WAKE_QUIT);
+    return NULL;
+}
+
+// Spawn the render thread; returns A's wake-pipe fd (-1 on failure).
+// Crystal registers it with its scheduler (an evented read blocks the
+// main fiber only, letting PTY/dialog fibers run).
+int egui_cr_start(const char* title, int width, int height, int borderless,
+                  int transparent, int swap_interval) {
+    if (pipe2(g_a_pipe, O_NONBLOCK | O_CLOEXEC) != 0) return -1;
+    g_borderless = borderless;
+    g_transparent = transparent;
+    g_rt_w = width;
+    g_rt_h = height;
+    g_rt_swap = getenv("EGUI_NOVSYNC") ? 0 : swap_interval;
+    g_rt_title = title ? strdup(title) : strdup("egui-cr");
+    // Same XWayland DRI3 workaround as the legacy path below.
+    if (getenv("WAYLAND_DISPLAY") && getenv("DISPLAY") &&
+        !getenv("LIBGL_DRI3_DISABLE")) {
+        setenv("LIBGL_DRI3_DISABLE", "1", 1);
+    }
+    atomic_store(&g_app_dead, 0);
+    atomic_store(&g_detached, 1);
+    if (pthread_create(&g_render_thread, NULL, sh_render_thread, NULL) != 0) {
+        atomic_store(&g_detached, 0);
+        close(g_a_pipe[0]); close(g_a_pipe[1]);
+        g_a_pipe[0] = g_a_pipe[1] = -1;
+        return -1;
+    }
+    return g_a_pipe[0];
+}
+
+void egui_cr_join(void) {
+    if (atomic_exchange(&g_detached, 0)) {
+        pthread_join(g_render_thread, NULL);
+        if (g_a_pipe[0] >= 0) close(g_a_pipe[0]);
+        if (g_a_pipe[1] >= 0) close(g_a_pipe[1]);
+        g_a_pipe[0] = g_a_pipe[1] = -1;
+    }
+}
+
+// ---- A-side routed wrappers (sokol functions Crystal used to call raw) --------
+
+// window-management forwarding bodies (declared with the routing block
+// at the top of this file, called from the prologues above)
+static void* sh_copy(const void* p, size_t n) {
+    void* c = malloc(n);
+    if (c && p) memcpy(c, p, n);
+    return c;
+}
+
+void sh_post_window_size(int w, int h) {
+    sh_cmd_post_async(SH_CMD_WINDOW_SIZE, w, h, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_window_position(int x, int y) {
+    sh_cmd_post_async(SH_CMD_WINDOW_POS, x, y, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_decorations(int decorated) {
+    sh_cmd_post_async(SH_CMD_DECOR, decorated, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_window_opacity(float opacity) {
+    sh_cmd_post_async(SH_CMD_OPACITY, 0, 0, 0, 0, opacity, NULL, 0);
+}
+void sh_post_window_minimize(void) {
+    sh_cmd_post_async(SH_CMD_MINIMIZE, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_window_maximize(void) {
+    sh_cmd_post_async(SH_CMD_MAXIMIZE, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_window_restore(void) {
+    sh_cmd_post_async(SH_CMD_RESTORE, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_screen_size(int* w, int* h) {
+    sh_cmd_t cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.kind = SH_CMD_SCREEN_SIZE;
+    if (sh_cmd_roundtrip(&cmd) != 0) { *w = 0; *h = 0; return; }
+    *w = cmd.r_a; *h = cmd.r_b;
+}
+int sh_post_window_position_get(int* x, int* y) {
+    sh_cmd_t cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.kind = SH_CMD_WIN_POS_GET;
+    if (sh_cmd_roundtrip(&cmd) != 0) { *x = 0; *y = 0; return 0; }
+    *x = cmd.r_a; *y = cmd.r_b;
+    return cmd.r_int;
+}
+void sh_post_drag_start(void) {
+    sh_cmd_post_async(SH_CMD_DRAG, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_resize_start(int dir) {
+    sh_cmd_post_async(SH_CMD_RESIZE, dir, 0, 0, 0, 0.f, NULL, 0);
+}
+void sh_post_window_shape(const unsigned char* mask, int w, int h) {
+    if (!mask || w <= 0 || h <= 0) return;
+    sh_cmd_post_async(SH_CMD_SHAPE, w, h, 0, 0, 0.f,
+                      sh_copy(mask, (size_t)w * h), (size_t)w * h);
+}
+void sh_post_cursor(const char* name) {
+    if (!name) return;
+    sh_cmd_post_async(SH_CMD_CURSOR, 0, 0, 0, 0, 0.f, sh_strdup_n(name), 0);
+}
+void sh_post_cursor_image(const unsigned char* rgba, int w, int h, int hx,
+                          int hy) {
+    if (!rgba || w <= 0 || h <= 0) return;
+    sh_cmd_post_async(SH_CMD_CURSOR_IMG, w, h, hx, hy, 0.f,
+                      sh_copy(rgba, (size_t)w * h * 4), (size_t)w * h * 4);
+}
+void sh_post_clear_color(void) {
+    // g_clear was already stored by the caller — the R side only needs
+    // the X window-background sync.
+    float* rgba = (float*)malloc(4 * sizeof(float));
+    if (!rgba) return;
+    rgba[0] = g_clear[0]; rgba[1] = g_clear[1];
+    rgba[2] = g_clear[2]; rgba[3] = g_clear[3];
+    sh_cmd_post_async(SH_CMD_CLEAR_COLOR, 0, 0, 0, 0, 0.f, rgba,
+                      4 * sizeof(float));
+}
+
+void egui_cr_set_window_title(const char* title) {
+    if (sh_run_direct()) { sapp_set_window_title(title); return; }
+    sh_cmd_post_async(SH_CMD_TITLE, 0, 0, 0, 0, 0.f, sh_strdup_n(title), 0);
+}
+
+void egui_cr_clipboard_set(const char* text) {
+    if (sh_run_direct()) { sapp_set_clipboard_string(text); return; }
+    sh_cmd_post_async(SH_CMD_CLIP_SET, 0, 0, 0, 0, 0.f, sh_strdup_n(text), 0);
+}
+
+// malloc'd strdup (free with egui_cr_mem_free); NULL when empty/failed.
+char* egui_cr_clipboard_get(void) {
+    if (sh_run_direct()) {
+        const char* s = sapp_get_clipboard_string();
+        return sh_strdup_n(s && s[0] ? s : NULL);
+    }
+    sh_cmd_t cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.kind = SH_CMD_CLIP_GET;
+    if (sh_cmd_roundtrip(&cmd) != 0) return NULL;
+    char* s = cmd.r_str;
+    cmd.r_str = NULL;
+    return s;
+}
+
+void egui_cr_toggle_fullscreen(void) {
+    if (sh_run_direct()) { sapp_toggle_fullscreen(); return; }
+    sh_cmd_post_async(SH_CMD_TOGGLE_FS, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+
+int egui_cr_fullscreen_q(void) {
+    if (sh_run_direct()) return sapp_is_fullscreen();
+    sh_cmd_t cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.kind = SH_CMD_IS_FULLSCREEN;
+    if (sh_cmd_roundtrip(&cmd) != 0) return 0;
+    return cmd.r_int;
+}
+
+void egui_cr_request_quit(void) {
+    if (sh_run_direct()) { sapp_quit(); return; }
+    sh_cmd_post_async(SH_CMD_QUIT, 0, 0, 0, 0, 0.f, NULL, 0);
+}
+
+#endif // _SAPP_LINUX
