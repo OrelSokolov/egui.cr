@@ -15,7 +15,7 @@ module Egui
       style = effective_style(ui)
       sp = style.spacing
       font_size = style.font_size
-      text_size = ui.ctx.fonts.measure(@text, font_size)
+      text_size = ui.ctx.fonts_for(style.font_family).measure(@text, font_size)
 
       icon = sp.icon_width
       height = {icon, text_size.y}.max
@@ -39,7 +39,8 @@ module Egui
       end
 
       text_pos = Pos2.new(rect.left + icon + sp.icon_spacing, rect.center.y)
-      ui.painter.text(text_pos, @text, font_size, visuals.text_color)
+      ui.painter.text(text_pos, @text, font_size, visuals.text_color,
+        family: style.font_family)
 
       response.paint_focus_ring(9.0)
       response.mark_changed if response.clicked? && !@selected

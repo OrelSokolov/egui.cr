@@ -162,7 +162,7 @@ module Egui
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       font_size = style.font_size
-      fonts = ui.ctx.fonts
+      fonts = ui.ctx.fonts_for(style.font_family)
       memory = ui.ctx.memory
       input = ui.ctx.input
       id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
@@ -413,13 +413,13 @@ module Egui
                 visuals.text_color
               end
       ui.painter.paint_galley(inner.min - Vec2.new(0.0, offset), galley,
-        fonts, color)
+        fonts, color, style.font_family)
       # The hint is laid out as its own galley when the buffer is empty.
       if new_text.empty? && (hint = @hint)
         hint_galley = fonts.layout([TextRun.new(hint, font_size)],
           max_width: wrap_w)
         ui.painter.paint_galley(inner.min - Vec2.new(0.0, offset),
-          hint_galley, fonts, color)
+          hint_galley, fonts, color, style.font_family)
       end
 
       # Blinking caret (1s period) while focused. In virtual mode a

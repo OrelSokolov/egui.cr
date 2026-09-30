@@ -36,7 +36,7 @@ module Egui
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       font_size = style.font_size
-      fonts = ui.ctx.fonts
+      fonts = ui.ctx.fonts_for(style.font_family)
       memory = ui.ctx.memory
       input = ui.ctx.input
       id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
@@ -165,7 +165,7 @@ module Egui
 
       shown = editing ? buffer : display_text(new_value)
       ui.painter.text(field.left_center + Vec2.new(pad.x + border, 0.0),
-        shown, font_size, visuals.text_color)
+        shown, font_size, visuals.text_color, family: style.font_family)
 
       response = field_resp
       response.widget_value = new_value.to_f

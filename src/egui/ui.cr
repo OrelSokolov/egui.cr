@@ -64,6 +64,16 @@ module Egui
       @ctx.style
     end
 
+    # The font stack this Ui's text measures through: the theme's
+    # `font_family` resolved via `Context#fonts_for` (nil family = the
+    # primary stack). Widgets whose effective style carries a family
+    # (class rules / inline / inspector cascade) resolve their own
+    # `ctx.fonts_for(style.font_family)` instead — this helper is the
+    # "whatever the ambient theme says" default.
+    def fonts : Fonts
+      @ctx.fonts_for(style.font_family)
+    end
+
     def painter : Painter
       @ctx.painter
     end

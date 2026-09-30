@@ -33,6 +33,43 @@ module Egui
     # entire UI on the very next frame — an instant swap.
     getter theme : Theme
     property fonts : Fonts
+
+    # The monospace font stack (terminal grids, code) — nil means "same
+    # as #fonts". The backend installs a second stack via
+    # `Sokol.select_fonts(font, mono:)`; widgets that need mono METRICS
+    # read #mono_font, never this nullable property.
+    property mono_fonts : Fonts? = nil
+
+    # The font stack mono text measures/draws through: #mono_fonts when
+    # the backend installed one, #fonts otherwise.
+    def mono_font : Fonts
+      @mono_fonts || @fonts
+    end
+
+    # Named font families (upstream `FontDefinitions::families`): a
+    # family name → font stack registry, so a GROUP of widgets can swap
+    # fonts through the style cascade (`font_family` key) instead of
+    # the app-global #fonts. The backend registers stacks via
+    # `Sokol.register_font`; the reserved names resolve to the built-in
+    # slots — "monospace" → #mono_font, everything unset → #fonts.
+    property font_families : Hash(String, Fonts) = {} of String => Fonts
+
+    def register_font_family(name : String, fonts : Fonts) : Nil
+      @font_families[name] = fonts
+      @mono_fonts = fonts if name == "monospace"
+    end
+
+    # The stack a `family`-tagged text measures/draws through: nil or
+    # an unknown name → the primary #fonts (a typo degrades to the
+    # default, CSS vibes), "monospace" → #mono_font.
+    def fonts_for(family : String?) : Fonts
+      return @fonts unless family
+      case family
+      when "monospace" then mono_font
+      else
+        @font_families[family]? || @fonts
+      end
+    end
     property textures : TextureRegistry
     # Framebuffer pixels per UI point (retina: 2.0), set by the
     # backend each frame — 1.0 headless. Raster caches (Svg textures,
@@ -187,6 +224,12 @@ module Egui
       # pruning, and while @in_frame is still set (reactive setters
       # inside it keep their in-frame semantics).
       flush_central_panel_spanned
+      # Inspector overlays (pick menu, color popup, selection frame)
+      # run AFTER all app content — the deferred central panel included
+      # — so a widget's context menu opened there has already claimed
+      # the press and the inspector yields to it (its «Inspect …» row
+      # is that menu's last item, not a second popup).
+      @inspector.try &.after_update if @inspector_enabled
       @in_frame = false
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
       Egui::Bench.span("Painter#commands_in_layer_order") do
@@ -803,6 +846,133 @@ module Egui
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       clicked
+    end
+
+    # An embedded window — a MODAL window with chrome: what #modal is for
+    # content dialogs, this is for an app's dialog WINDOWS (Settings,
+    # Theme…): it dims the screen and blocks interaction below the
+    # Foreground layer (Memory#mark_modal) while floating as a titled,
+    # DRAGGABLE window with a ✕ — the caller keeps the open flag and
+    # drops it when this returns true.
+    #
+    # Centered on first appearance (from last frame's measured size, so
+    # the card never jumps when its content settles), auto-fits its
+    # content like #window without a resize grip (dialogs are
+    # content-sized), stays on screen (#constrain_floating). `title:`
+    # nil drops the title bar down to a slim drag handle.
+    #
+    # Returns true the frame the user asked to close it: the ✕, the
+    # scrim (when `close_on_scrim:`, the dimmed area IS the dismiss
+    # target) or Escape (`close_on_escape:`).
+    def embedded_window(id : String, title : String? = nil,
+                        width : Float64 = 460.0,
+                        close_on_escape : Bool = true,
+                        close_on_scrim : Bool = true,
+                        &block : Ui ->) : Bool
+      @memory.mark_modal
+      win_id = Id.from("embedded/#{id}")
+      layer = LayerId.new(Order::Foreground, win_id)
+      screen = @input.screen_rect
+      v = style.visuals
+      pad = style.spacing.window_padding
+      title_size = style.font_size * 1.25
+      title_h = title ? title_size + pad.y : 8.0
+
+      # Never wider than the screen (upstream `Area` constrain).
+      width = {width, screen.width}.min if screen.width > 0.0
+
+      # Keyboard dismiss first, so a focused child widget's own Escape
+      # handling still wins by consuming the key earlier in the frame.
+      close = close_on_escape && @input.consume_key(KeyCode::Escape)
+
+      # Dim everything below (same scrim as #modal).
+      @painter.layer = Order::Foreground
+      @painter.clip = screen
+      @painter.rect(screen, 0.0, v.modal_dim)
+
+      # The scrim as a click target ("click outside to dismiss"),
+      # declared BEFORE the card so the card's widgets hit-test above
+      # it in the same Foreground layer.
+      if close_on_scrim
+        scrim = interact(Id.from("embedded/#{id}/scrim"), screen,
+          Sense::Click, layer, screen)
+        close = true if scrim.clicked?
+      end
+
+      # Size: last frame's measured size; position: Areas state, the
+      # default centered from that size estimate.
+      size = @memory.layer_sizes[win_id]? || Vec2.new(width, 220.0)
+      default_pos = Pos2.new(screen.center.x - size.x / 2.0,
+        screen.center.y - size.y / 2.0)
+      pos = @memory.areas.pos_for(win_id, default_pos)
+      pos, size = constrain_floating(pos, Vec2.new(size.x, size.y),
+        WINDOW_MIN_SIZE.x)
+      @memory.areas.set_pos(win_id, pos)
+
+      # A click on blank card space dies on the card (registered after
+      # the scrim, so it wins over "click outside to dismiss").
+      card_rect = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      interact(Id.from("embedded/#{id}/card"), card_rect,
+        Sense::Click, layer, card_rect)
+
+      # Title bar: drag moves the window (Areas state), like #window.
+      if title
+        title_rect = Rect.from_min_size(pos, Vec2.new(size.x, title_h))
+        title_resp = interact(win_id.child(0_u64), title_rect,
+          Sense.click_and_drag, layer)
+        if title_resp.dragged?
+          @memory.areas.move_by(win_id, title_resp.drag_delta)
+          pos = @memory.areas.pos_for(win_id, default_pos)
+          pos, size = constrain_floating(pos, Vec2.new(size.x, size.y),
+            WINDOW_MIN_SIZE.x)
+          @memory.areas.set_pos(win_id, pos)
+        end
+      end
+
+      # The dialog shell is back-painted at the end (bg_index below);
+      # stroke at low alpha like #modal's card.
+      bg_index = @painter.add_noop
+      clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+      @painter.clip = clip
+
+      if title
+        # ✕ in the title bar's right corner.
+        close_size = title_h
+        close_rect = Rect.from_min_size(
+          Pos2.new(pos.x + size.x - close_size, pos.y),
+          Vec2.new(close_size, title_h))
+        close_resp = interact(Id.from("embedded/#{id}/close"), close_rect,
+          Sense::Click, layer, close_rect)
+        close = true if close_resp.clicked?
+
+        @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
+          title, title_size, v.title_color)
+        @painter.text(Pos2.new(close_rect.center.x, close_rect.center.y),
+          "✕", title_size, v.title_color)
+      end
+
+      content_min = pos + Vec2.new(pad.x, title_h + pad.y)
+      ui = Ui.new(self, win_id,
+        Rect.from_min_size(content_min, Vec2.new(size.x - 2 * pad.x, 1e6)))
+      ui.layer = layer
+      ui.clip = clip
+      yield ui
+
+      outer = Rect.new(
+        pos,
+        Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
+          ui.min_rect.bottom + pad.y))
+      @memory.layer_sizes[win_id] = outer.size
+      @painter.clip = outer
+      @painter.set(bg_index,
+        RectCmd.new(outer, outer, v.window_rounding, v.window_fill,
+          Color32.rgba(v.window_stroke.r, v.window_stroke.g,
+            v.window_stroke.b, 90), 1.0))
+      @painter.rect(Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
+        rounding: v.window_rounding, fill: v.title_bar_fill) if title
+      @painter.layer = Order::Background
+      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      close
     end
 
     # --- panels (egui containers/panel.rs) --------------------------------

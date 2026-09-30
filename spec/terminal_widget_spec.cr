@@ -98,6 +98,23 @@ describe Egui::Terminal::TermView do
     rows.should be > 10
   end
 
+  it "requests a repaint when the grid resizes" do
+    backend = FakeBackend.with_screen("$ ")
+    backend.dead = true # no alive-driven repaints: isolate the resize one
+    ctx = Egui::Context.new
+    3.times { term_frame(ctx, backend) } # initial resize settles (a request buys 2 frames)
+    ctx.needs_repaint?.should be_false
+
+    small = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 300.0))
+    ctx.begin_frame(Egui::RawInput.new(small, [] of Egui::Event, 0.10))
+    ctx.central_panel do |ui|
+      ui.terminal(backend)
+    end
+    ctx.end_frame
+    backend.resized.size.should eq(2) # the rect change resized the grid
+    ctx.needs_repaint?.should be_true  # and asked for another frame
+  end
+
   it "sends typed text to the backend" do
     backend = FakeBackend.with_screen("$ ")
     ctx = Egui::Context.new

@@ -95,6 +95,15 @@ describe Egui::Terminal::Terminal do
     row_text(t, 1).should eq("f")
   end
 
+  it "keeps wrapping normally after a deferred wrap (one char per cell, not per line)" do
+    t = term(cols: 4, rows: 4)
+    t.feed("abcdefgh")
+    row_text(t, 0).should eq("abcd")
+    row_text(t, 1).should eq("efgh")
+    t.cursor_x.should eq(3)
+    t.cursor_y.should eq(1)
+  end
+
   it "inserts and deletes lines within the scroll region" do
     t = term(cols: 4, rows: 4)
     t.feed("aa\r\nbb\r\ncc\r\ndd")
@@ -199,6 +208,97 @@ describe Egui::Terminal::Terminal do
     row_text(t, 0).should eq("prompt>") # prompt still on row 0
     t.feed(" ok")
     row_text(t, 0).should eq("prompt> ok")
+  end
+
+  it "keeps the line buffer bounded by rows + scrollback across resizes" do
+    t = term(cols: 4, rows: 4, scrollback: 3)
+    20.times { t.feed("line\r\n") }
+    t.grid.lines.size.should eq(7) # 4 visible + 3 scrollback
+    t.resize(4, 6)                 # growing reveals history, still capped
+    t.grid.lines.size.should be <= 9
+    t.resize(4, 2)                 # shrinking trims the oldest past the cap
+    t.grid.lines.size.should eq(5) # 2 visible + 3 scrollback
+    t.grid.scrollback_used.should eq(3)
+  end
+
+  it "keeps the cursor on its line when the shrink trims scrollback" do
+    t = term(cols: 4, rows: 4, scrollback: 2)
+    t.feed("aa\r\nbb\r\ncc\r\ndd") # cursor on the bottom row
+    t.resize(4, 2)                 # 6 lines -> cap 4: "aa" trimmed off the top
+    t.cursor_y.should eq(1)        # still the bottom row
+    row_text(t, 1).should eq("dd")
+  end
+
+  it "reflows on resize: narrowing wraps, widening restores" do
+    t = term(cols: 10, rows: 3)
+    t.feed("0123456789")
+    t.resize(5, 3)
+    # the wrapped first chunk scrolled into the scrollback (the window
+    # is bottom-anchored, like alacritty) — nothing was truncated
+    t.grid.lines.map { |l| l.map(&.char).join.rstrip }
+      .should eq(["01234", "56789", "", ""])
+    t.resize(10, 3)
+    row_text(t, 0).should eq("0123456789")
+    row_text(t, 1).should eq("")
+  end
+
+  it "keeps the cursor on its line across a reflow" do
+    t = term(cols: 10, rows: 4)
+    t.feed("aaaaaaaaaa\r\nbbbbbbbbbb\r\ncc")
+    t.cursor_y.should eq(2)
+    t.resize(5, 4) # both wrapped lines double: cursor line is now index 4
+    t.cursor_y.should eq(2)
+    row_text(t, 2).should eq("cc")
+    t.resize(10, 4) # rejoin: cursor line back at index 2
+    t.cursor_y.should eq(2)
+    row_text(t, 2).should eq("cc")
+  end
+
+  it "truncates without reflow on the alternate screen" do
+    t = term(cols: 10, rows: 3)
+    t.feed("\e[?1049h")
+    t.feed("0123456789")
+    t.resize(5, 3)
+    t.current_grid.line_text(0).should eq("01234")
+    t.resize(10, 3)
+    t.current_grid.line_text(0).should eq("01234") # gone — apps redraw on SIGWINCH
+  end
+
+  # Alacritty-model wrap marking: the autowrap flags its continuation
+  # row AT PRINT TIME, so a line wrapped while the window was narrow
+  # rejoins when it widens again — the drag-shredding bug (a scrollback
+  # cut into 1-char remainder fragments that never healed).
+  it "rejoins a line autowrapped at a narrower width" do
+    t = term(cols: 10, rows: 4)
+    t.feed("0123456789abc") # 10 fill row 0, the autowrap breaks "abc" out
+    row_text(t, 0).should eq("0123456789")
+    row_text(t, 1).should eq("abc")
+    t.grid.line(1).first.not_nil!.wrapped?.should be_true
+    t.resize(20, 4)
+    row_text(t, 0).should eq("0123456789abc") # one line again
+    row_text(t, 1).should eq("")
+  end
+
+  it "explicit newlines are not wrap continuations and never rejoin" do
+    t = term(cols: 10, rows: 4)
+    t.feed("aaaa\r\nbbbb") # \r\n is NOT an autowrap — two separate lines
+    t.resize(20, 4)
+    row_text(t, 0).should eq("aaaa")
+    row_text(t, 1).should eq("bbbb")
+  end
+
+  it "an interactive drag through every width converges to the clean layout" do
+    t = Egui::Terminal::Terminal.new(30, 6, 1000)
+    line = "x" * 75
+    t.feed((line + "\r\n").to_slice)
+    (29).downto(3) { |c| t.resize(c, 6) } # frame-rate drag: one resize per width
+    t.resize(25, 6)
+    # 75 chars at 25 cols = exactly 3 rows, no 1-char remainder fragments
+    t.grid.lines.count { |l| !l.all?(&.blank?) }.should eq(3)
+    texts = t.grid.lines.map { |l| String.build { |io|
+      l.each { |c| io << c.char unless c.continuation? || c.cp == 0 }
+    } }.reject(&.empty?)
+    texts.should eq(["x" * 25, "x" * 25, "x" * 25])
   end
 
   it "replies to window size queries (CSI 18 t)" do

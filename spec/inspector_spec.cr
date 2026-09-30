@@ -9,7 +9,6 @@ def insp_frame(ctx : Egui::Context, events : Array(Egui::Event) = [] of Egui::Ev
   ctx.begin_frame(raw)
   ctx.inspector.before_update
   yield ctx
-  ctx.inspector.after_update
   ctx.end_frame
 end
 
@@ -203,6 +202,54 @@ describe "widget inspector" do
       c.window("w") { |ui| ui.button("OK", id: "save") }
     end
     ctx.painter.commands.any?(Egui::RectCmd).should be_true
+  end
+
+  # The one-menu rule: a widget with its own context menu gets the
+  # «Inspect …» row appended as that menu's LAST item — never a second
+  # popup beside it. Reproduces the bin/terminal double-menu bug: the
+  # central panel renders DEFERRED (inside end_frame), so the pick
+  # decision must run after it to see the widget's own menu claim the
+  # press.
+  it "appends Inspect as the last item of the widget's own menu (no second popup)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    menu = Egui::ContextMenu.new.item("Copy") { }
+    center = nil
+
+    frame = ->(events : Array(Egui::Event), time : Float64) do
+      raw = Egui::RawInput.new(INSP_SCREEN, events, time)
+      ctx.begin_frame(raw)
+      ctx.inspector.before_update
+      ctx.central_panel do |ui|
+        resp = ui.button("OK", id: "save")
+        center = resp.rect.center
+        resp.context_menu(menu)
+      end
+      ctx.end_frame
+    end
+
+    frame.call([] of Egui::Event, 0.016)
+    events = [Egui::Event.pointer_moved(center.not_nil!),
+              Egui::Event.pointer_pressed(center.not_nil!,
+                Egui::PointerButton::Secondary)]
+    frame.call(events, 0.032)
+
+    # ONE popup: the widget's own menu, with Inspect as its last row
+    ctx.memory.open_popups.size.should eq(1)
+    ctx.popup_open?("inspector_pick").should be_false
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Copy")
+    texts.any?(&.starts_with?("Inspect Button")).should be_true
+
+    # Clicking the Inspect row selects the widget and reveals the panel
+    frame.call([] of Egui::Event, 0.048) # popup rows registered
+    row = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.starts_with?("Inspect Button")).not_nil!
+    frame.call([Egui::Event.pointer_pressed(row.pos),
+                Egui::Event.pointer_released(row.pos)], 0.064)
+    ctx.inspector.selected.should eq Egui::Id.from("save")
+    ctx.inspector.open?.should be_true
+    ctx.memory.open_popups.size.should eq(0)
   end
 
   it "shows non-stylable widgets honestly (RadioButton has no props)" do

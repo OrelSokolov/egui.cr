@@ -83,7 +83,7 @@ module Egui
   # builds its editors purely from these declarations.
   struct StyleProp
     getter key : String
-    # :color | :number | :box | :bool — picks the inspector editor.
+    # :color | :number | :box | :bool | :string — picks the inspector editor.
     getter kind : Symbol
     getter label : String
     # True when the key also makes sense as a `:hover`/`:active` state
@@ -105,10 +105,11 @@ module Egui
   # Ready-made declaration sets shared by several widgets (widgets
   # return their OWN array — treat the results as read-only).
   module StyleProps
-    # Text-carrying widgets: color + size.
+    # Text-carrying widgets: color + size + family.
     def self.textlike : Array(StyleProp)
       [StyleProp.new("text_color", :color),
-       StyleProp.new("font_size", :number)]
+       StyleProp.new("font_size", :number),
+       StyleProp.new("font_family", :string)]
     end
 
     # Widgets painted as a filled box (buttons & friends). ONE CSS-like
@@ -147,6 +148,11 @@ module Egui
 
     def f64(key : String, fallback : Float64) : Float64
       f64?(key) || fallback
+    end
+
+    # String values (font families, class names…).
+    def str?(key : String) : String?
+      self[key]?.as?(String)
     end
 
     # The four-sided box under `prefix` ("padding", "margin", …):
@@ -227,6 +233,9 @@ module Egui
       end
       if (f = f64?("font_size"))
         merged.font_size = f
+      end
+      if (f = str?("font_family"))
+        merged.font_family = f
       end
       merged
     end

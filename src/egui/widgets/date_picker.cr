@@ -28,8 +28,9 @@ module Egui
     def show(ui : Ui, &on_change : Time ->) : Response
       ctx = ui.ctx
       style = ui.style
+      fonts = ctx.fonts_for(style.font_family)
       text = @value.to_s(@format)
-      text_size = ctx.fonts.measure(text, style.font_size)
+      text_size = fonts.measure(text, style.font_size)
       pad = style.spacing.button_padding
       height = {text_size.y + 2 * pad.y, style.spacing.interact_size.y}.max
       rect = ui.allocate_at_least(Vec2.new(text_size.x + 2 * pad.x, height))
@@ -46,7 +47,7 @@ module Egui
       ui.painter.rect(rect, 4.0, painter_fill,
         visuals.button_stroke, 1.0)
       ui.painter.text(Pos2.new(rect.left + pad.x, rect.center.y),
-        text, style.font_size, visuals.text_color)
+        text, style.font_size, visuals.text_color, family: style.font_family)
       response.paint_focus_ring
 
       if response.clicked?
@@ -118,13 +119,14 @@ module Egui
       # would pack them to the left with item spacing instead).
       weekdays = {"Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"}
       color = visuals.fade_color(visuals.text_color)
+      fonts = ctx.fonts_for(style.font_family)
       7.times do |col|
         label = weekdays[col]
-        tw = ctx.fonts.measure(label, font_size).x
+        tw = fonts.measure(label, font_size).x
         ui.painter.text(
           Pos2.new(ui.cursor.x + col * CELL + (CELL - tw) / 2.0,
             ui.cursor.y + cell_h / 2.0),
-          label, font_size, color)
+          label, font_size, color, family: style.font_family)
       end
       ui.min_rect = ui.min_rect.union(
         Rect.from_min_size(Pos2.new(ui.cursor.x, ui.cursor.y),
@@ -157,10 +159,10 @@ module Egui
           color = visuals.text_color
           color = visuals.hyperlink_color if same_day?(date, today)
           label = day.to_s
-          tw = ctx.fonts.measure(label, font_size).x
+          tw = fonts.measure(label, font_size).x
           ui.painter.text(
             Pos2.new(cell.center.x - tw / 2.0, cell.center.y),
-            label, font_size, color)
+            label, font_size, color, family: style.font_family)
           if response.clicked?
             on_change.call(date)
             ctx.close_popup(@popup_id)
@@ -197,7 +199,7 @@ module Egui
         end
         ctx = row.ctx
         font_size = row.style.font_size
-        tw = ctx.fonts.measure(title, font_size).x
+        tw = ctx.fonts_for(row.style.font_family).measure(title, font_size).x
         row.cursor = Pos2.new(row.max_rect.center.x - tw / 2.0, row.cursor.y)
         row.label(title)
         aw = small_button_size(row, "›").x
@@ -216,7 +218,7 @@ module Egui
     # the interact height, so the narrow ‹ › glyphs stay comfortably
     # clickable (bare glyph padding made the arrows tiny).
     private def small_button_size(ui : Ui, text : String) : Vec2
-      tw = ui.ctx.fonts.measure(text, ui.style.font_size).x
+      tw = ui.fonts.measure(text, ui.style.font_size).x
       h = ui.style.spacing.interact_size.y
       Vec2.new({tw + 12.0, h}.max, h)
     end
@@ -224,7 +226,7 @@ module Egui
     private def small_button(ui : Ui, id : Id, text : String) : Bool
       ctx = ui.ctx
       style = ui.style
-      text_size = ctx.fonts.measure(text, style.font_size)
+      text_size = ui.fonts.measure(text, style.font_size)
       rect = ui.allocate_at_least(small_button_size(ui, text))
       response = ui.interact(rect, id, Sense.click)
       if response.hovered?
@@ -232,7 +234,8 @@ module Egui
       end
       ui.painter.text(
         Pos2.new(rect.center.x - text_size.x / 2.0, rect.center.y),
-        text, style.font_size, style.visuals.text_color)
+        text, style.font_size, style.visuals.text_color,
+        family: style.font_family)
       response.clicked?
     end
   end

@@ -234,9 +234,14 @@ ID-override — верхний слой; чистится вручную из и
   - правка пишет `ctx.set_id_style(id, key, v)`; «Reset» — по ключу и
     «Reset all»;
   - `style_properties` пуст → «Виджет не имеет стилизуемых свойств».
-- [x] Хуки рендера в `Sokol.on_frame`:
+- [x] Хуки рендера:
   `begin_frame → inspector.before_update → app.update →
-  inspector.after_update → end_frame`.
+  end_frame (→ inspector.after_update — после отложенного central
+  panel, чтобы pick-решение видело все контекстные меню кадра)`.
+  Один-меню-правило: у виджета с собственным контекстным меню пункт
+  «Inspect …» дописывается последним пунктом ЭТОГО меню
+  (`Response#context_menu` → `Inspector#render_menu_tail`); отдельное
+  pick-меню открывается только у виджетов без своего меню.
 
 ## Фаза 5 — демо `bin/inspector_demo` и свип
 

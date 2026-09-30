@@ -45,9 +45,10 @@ module Egui
       end
 
       if text = @text
-        text_size = ui.ctx.fonts.measure(text, style.font_size)
+        text_size = ui.ctx.fonts_for(style.font_family).measure(text, style.font_size)
         text_pos = Pos2.new(rect.center.x - text_size.x / 2.0, rect.center.y)
-        ui.painter.text(text_pos, text, style.font_size, visuals.text_color)
+        ui.painter.text(text_pos, text, style.font_size, visuals.text_color,
+          family: style.font_family)
       end
 
       ui.interact(rect, id, Sense.none)

@@ -35,6 +35,14 @@ module Egui
         @ctx.popup(menu_id, anchor) do |menu_ui|
           menu_ui.menu_popup_key = menu_id
           yield menu_ui
+          # One-menu rule: a widget gets exactly ONE context menu. While
+          # the inspector is enabled, its «Inspect …» entry rides along
+          # as this menu's LAST item instead of opening a second popup
+          # beside it (the class-based ContextMenu twin lands here too —
+          # it renders through this block).
+          if @ctx.inspector_enabled?
+            @ctx.inspector.try &.render_menu_tail(menu_ui, @id)
+          end
         end
       end
 
@@ -97,7 +105,7 @@ module Egui
     def menu_button(label : String, &block : Ui ->) : Nil
       font_size = style.font_size
       pad = style.spacing.button_padding
-      text_size = ctx.fonts.measure(label, font_size)
+      text_size = fonts.measure(label, font_size)
 
       # In the menu bar the button stretches to the bar's full height
       # so its highlight runs edge-to-edge; nested inside a popup
@@ -145,7 +153,7 @@ module Egui
       text_color = highlighted ?
         (visuals.menu_highlight_text || visuals.text_color) : visuals.text_color
       painter.text(rect.left_center + Vec2.new(pad.x, 0.0),
-        label, font_size, text_color)
+        label, font_size, text_color, family: style.font_family)
 
       if mine_open
         # Zero vertical pad: the frame starts right at the first item
@@ -197,10 +205,11 @@ module Egui
                                &on_trigger : ->) : Nil
       font_size = style.font_size
       pad = style.spacing.button_padding
-      label_size = ctx.fonts.measure(label, font_size)
+      fonts = self.fonts
+      label_size = fonts.measure(label, font_size)
 
       shortcut = action.try { |a| ctx.hotkeys.hotkey_for(a).try(&.to_s) } || hotkey
-      shortcut_size = shortcut ? ctx.fonts.measure(shortcut.not_nil!, font_size) : Vec2.zero
+      shortcut_size = shortcut ? fonts.measure(shortcut.not_nil!, font_size) : Vec2.zero
       # The icon column: a square the label height plus its gap — only
       # for icons the set actually has (unknown names draw nothing and
       # take no space).
@@ -245,10 +254,11 @@ module Egui
         content_x += icon_size
       end
       painter.text(Pos2.new(content_x, rect.left_center.y),
-        label, font_size, text_color)
+        label, font_size, text_color, family: style.font_family)
       if shortcut
         painter.text(Pos2.new(rect.right - pad.x - shortcut_size.x,
-          rect.left_center.y), shortcut, font_size, text_color)
+          rect.left_center.y), shortcut, font_size, text_color,
+          family: style.font_family)
       end
 
       # Trigger on click, or on the action firing while this menu is

@@ -737,8 +737,10 @@ module Egui
         Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
         app.update(app.ctx)
         # Inspector overlays (pick menu, color popup, selection frame)
-        # paint above the app, after its popups had their say.
-        app.ctx.inspector.after_update if app.ctx.inspector_enabled?
+        # run inside #end_frame — AFTER the deferred central panel, so a
+        # widget's context menu opened there has already claimed the
+        # press and the inspector yields to it (no second popup; the
+        # «Inspect …» row rides as that menu's last item instead).
         commands = app.ctx.end_frame
 
         @@last_commands = commands

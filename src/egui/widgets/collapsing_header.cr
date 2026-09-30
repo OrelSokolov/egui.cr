@@ -20,10 +20,11 @@ module Egui
 
       v = ui.style.visuals
       arrow = open ? "▾" : "▸"
+      family = ui.style.font_family
       ui.painter.text(Pos2.new(rect.min.x + 2.0, rect.center.y),
-        arrow, ui.style.font_size, v.text_color)
+        arrow, ui.style.font_size, v.text_color, family: family)
       ui.painter.text(Pos2.new(rect.min.x + 20.0, rect.center.y),
-        @text, ui.style.font_size, v.text_color)
+        @text, ui.style.font_size, v.text_color, family: family)
       ui.painter.rect(
         Rect.from_min_size(Pos2.new(rect.min.x, rect.max.y - 1.0),
           Vec2.new(rect.width, 1.0)),

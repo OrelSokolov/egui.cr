@@ -9,7 +9,6 @@ def smoke_frame(ctx : Egui::Context, events : Array(Egui::Event) = [] of Egui::E
   ctx.begin_frame(raw)
   ctx.inspector.before_update
   yield ctx
-  ctx.inspector.after_update
   ctx.end_frame
 end
 
@@ -100,6 +99,35 @@ describe "inspector panel rendering smoke" do
     smoke_frame(ctx, time: 0.112) do |c|
       c.window("w") { |ui| ui.button("OK", id: "save") }
     end
+  end
+
+  it "drops the selection when the panel closes (✕ / open=, F12)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    smoke_frame(ctx) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    ctx.inspector.selected.should eq Egui::Id.from("save")
+
+    # closing the panel (the ✕ path uses the same setter) clears the
+    # selection, so the orange outline stops painting
+    ctx.inspector.open = false
+    ctx.inspector.selected.should be_nil
+    smoke_frame(ctx, time: 0.032) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |r| r.stroke_color == Egui::Inspector::HIGHLIGHT_COLOR }.should be_false
+
+    # F12 closes the same way: select again, press F12 → no selection
+    ctx.inspector.inspect_widget(Egui::Id.from("save"))
+    smoke_frame(ctx, events: [Egui::Event.key_pressed(Egui::KeyCode::F12)],
+      time: 0.048) do |c|
+      c.window("w") { |ui| ui.button("OK", id: "save") }
+    end
+    ctx.inspector.open?.should be_false
+    ctx.inspector.selected.should be_nil
   end
 
   it "exports element overrides as set_id_style calls" do

@@ -25,6 +25,10 @@ module Egui
       @grid_origin : Pos2 = Pos2.zero
       @bar_rect : Rect? = nil
       @bar_grabbed : Bool = false
+      # Font family the grid draws through (a `terminal { font_family }`
+      # stylesheet rule swaps the terminal's face without touching the
+      # app font); "monospace" unless overridden.
+      @font_family : String = "monospace"
 
       def initialize(@backend : Backend,
                      @theme : Theme = Theme.new,
@@ -32,8 +36,27 @@ module Egui
                      @cursor_blinks : Bool = false)
       end
 
+      # Styled through the `terminal` class: `font_family` swaps the
+      # grid's font (register the face first —
+      # `Sokol.register_font("term", fonts)` or
+      # `ctx.register_font_family`). The default stays the monospace
+      # stack: the 'M'-advance cell math only holds on a mono face.
+      def style_class : String?
+        "terminal"
+      end
+
+      def style_properties : Array(StyleProp)
+        [StyleProp.new("font_family", :string, fallback: "monospace")]
+      end
+
       def ui(ui : Ui) : Response
-        fonts = ui.ctx.fonts
+        # The grid measures through the resolved family — the mono stack
+        # unless a `terminal { font_family }` rule overrides it (the
+        # override face must be monospace, or the cell math drifts).
+        id = ui.next_widget_id
+        @font_family = style_vars(ui, id, "terminal")
+                         .str?("font_family") || "monospace"
+        fonts = ui.ctx.fonts_for(@font_family)
         # Exact monospace advance (no rounding): text runs are drawn as
         # whole strings, so a rounded-off cell width makes the cursor
         # drift away from the text as the line grows.
@@ -64,7 +87,7 @@ module Egui
         interact_rect = bar_rect ?
                           Rect.new(rect.min, Pos2.new(bar_rect.min.x, rect.max.y)) :
                           rect
-        response = ui.interact(interact_rect, ui.next_widget_id,
+        response = ui.interact(interact_rect, id,
           Sense::Click | Sense::Drag | Sense::Focusable)
 
         # One evented scheduler pass for the whole frame (Session
@@ -78,7 +101,12 @@ module Egui
         grid_avail_w = rect.width - PAD * 2 - (bar_rect ? BAR_W : 0.0)
         cols = (grid_avail_w / @cell_w).floor.to_i.clamp(2, 500)
         rows = ((rect.height - PAD * 2) / @cell_h).floor.to_i.clamp(2, 250)
-        @backend.resize(cols, rows) if cols != term.cols || rows != term.rows
+        if cols != term.cols || rows != term.rows
+          @backend.resize(cols, rows)
+          # The grid changed and the child got SIGWINCH — its redraw
+          # reply must land in a fresh frame, not wait for input.
+          ui.ctx.request_repaint
+        end
 
         grid_w = cols * @cell_w
         @grid_origin = Pos2.new(
@@ -291,7 +319,7 @@ module Egui
             end
             color = effective_fg(cell)
             p.text(Pos2.new(@grid_origin.x + col * @cell_w, y),
-                   run, @font_size, color)
+                   run, @font_size, color, family: @font_family)
             col += run.size
           end
         end
@@ -331,7 +359,7 @@ module Egui
         code = @backend.exit_code
         note = code.nil? ? "[process exited]" : "[process exited: #{code}]"
         p.text(Pos2.new(rect.center.x, rect.center.y), note,
-               @font_size, Color32.new(255, 120, 120, 220))
+               @font_size, Color32.new(255, 120, 120, 220), family: @font_family)
       end
 
       # --- input ----------------------------------------------------------

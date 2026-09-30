@@ -115,7 +115,8 @@ module Egui
             StyleBox.new(bp.y, bp.x, bp.y, bp.x)
 
       font_size = style.font_size
-      text_size = ui.ctx.fonts.measure_cached(@text, font_size)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      text_size = fonts.measure_cached(@text, font_size)
       # An icon-only button (empty label) still needs a glyph-height
       # box: `measure("")` is zero and would collapse the icon to
       # nothing. Fall back to the estimated line height.
@@ -240,7 +241,8 @@ module Egui
       pos = Pos2.new(block_left + icon_w + icon_adv, rect.center.y)
       text_color = state_vars.color?("text_color") ||
                    style.visuals.text_color
-      ui.painter.text(pos, @text, font_size, text_color)
+      ui.painter.text(pos, @text, font_size, text_color,
+        family: style.font_family)
 
       response.paint_focus_ring
       response

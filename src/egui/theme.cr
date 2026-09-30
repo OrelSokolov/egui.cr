@@ -66,6 +66,9 @@ module Egui
     property separator_color : Color32?
     property hyperlink_color : Color32?
     property font_size : Float64?
+    # Named font family override (see `Style#font_family`); nil keeps
+    # the theme's family.
+    property font_family : String?
     property button_padding : Vec2?
 
     def initialize
@@ -101,6 +104,9 @@ module Egui
       end
       if (c = @font_size)
         merged.font_size = c
+      end
+      if (c = @font_family)
+        merged.font_family = c
       end
       if (c = @button_padding)
         merged.spacing.button_padding = c

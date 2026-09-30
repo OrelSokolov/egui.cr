@@ -55,7 +55,8 @@ module Egui
       # as soon as one exists.
       display = @selected.empty? ? @label : @selected
       display ||= ""
-      text_size = ui.ctx.fonts.measure(display, font_size)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      text_size = fonts.measure(display, font_size)
       glyph_h = text_size.y > 0.0 ? text_size.y : font_size * Fonts::LINE_H_FACTOR
 
       # Native dropdown geometry: the button is as wide as its widest
@@ -68,7 +69,7 @@ module Egui
       else
         widest = text_size.x
         @options.each do |option|
-          widest = {widest, ui.ctx.fonts.measure(option, font_size).x}.max
+          widest = {widest, fonts.measure(option, font_size).x}.max
         end
         width = widest + 2 * style.spacing.button_padding.x + arrow_zone
       end
@@ -133,7 +134,7 @@ module Egui
 
       # Text flush left, the chevron in its box.
       ui.painter.text(Pos2.new(rect.left + pad_x, rect.center.y),
-        display, font_size, text_color)
+        display, font_size, text_color, family: style.font_family)
       Icons.draw(ui.painter, :down, arrow_box, visuals.text_color, 2.0)
 
       # Toggle: a click while open closes (like MenuButton); without
@@ -157,7 +158,7 @@ module Egui
         items = @label ? [{@label.not_nil!, ""}] : [] of Tuple(String, String)
         @options.each { |option| items << {option, option} }
         items.each do |shown, value|
-          text_size = ui.ctx.fonts.measure(shown, font_size)
+          text_size = fonts.measure(shown, font_size)
           height = {text_size.y + 2 * style.spacing.button_padding.y,
             pop.style.spacing.interact_size.y}.max
           natural_w = 2 * style.spacing.button_padding.x + text_size.x
@@ -200,7 +201,7 @@ module Egui
           row_color = value.empty? ? visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color
           pop.painter.text(item_rect.left_center +
             Vec2.new(style.spacing.button_padding.x, 0.0),
-            shown, font_size, row_color)
+            shown, font_size, row_color, family: style.font_family)
           if item_resp.clicked?
             on_select.call(value)
             ui.ctx.close_popup(@id)

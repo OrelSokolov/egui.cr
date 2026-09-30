@@ -21,7 +21,7 @@ module Egui
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       font_size = style.font_size
-      fonts = ui.ctx.fonts
+      fonts = ui.ctx.fonts_for(style.font_family)
       hotkeys = ui.ctx.hotkeys
       input = ui.ctx.input
 
@@ -97,7 +97,7 @@ module Egui
                visuals.fade_color(visuals.text_color, 0.55)
       ui.painter.text(
         Pos2.new(rect.center.x - text_size.x / 2.0, rect.center.y),
-        shown, font_size, color)
+        shown, font_size, color, family: style.font_family)
 
       response
     end

@@ -36,9 +36,14 @@ module Egui
     getter text : String
     getter size : Float64
     getter color : Color32
+    # Named font family the text draws through
+    # (`Context#fonts_for`): nil = the primary stack (so every
+    # pre-existing command is unaffected), "monospace" → the mono
+    # stack, any registered name (`Sokol.register_font`) → that stack.
+    getter family : String?
 
     def initialize(@clip : Rect, @pos : Pos2, @text : String,
-                   @size : Float64, @color : Color32)
+                   @size : Float64, @color : Color32, @family : String? = nil)
     end
   end
 
@@ -236,15 +241,20 @@ module Egui
     # Draw text with `pos` as the LEFT-CENTER of the text bounding box
     # (upstream anchors at the galley's left edge + baseline; backends
     # convert using their font metrics — see backend/sokol/fontstash).
-    def text(pos : Pos2, text : String, size : Float64, color : Color32) : Nil
-      add(TextCmd.new(@clip, pos, text, size, color))
+    # `family:` draws through that named stack (`Context#fonts_for`);
+    # nil uses the primary one.
+    def text(pos : Pos2, text : String, size : Float64, color : Color32,
+             family : String? = nil) : Nil
+      add(TextCmd.new(@clip, pos, text, size, color, family))
     end
 
     # Paint a laid-out Galley with `pos` as its top-left corner
     # (upstream `Painter::galley`). Emits one TextCmd per row run —
     # that's where per-run colors come from — plus underline lines.
+    # `family:` is the stack the galley was laid out with, so the draw
+    # commands hit the same font the measurement used.
     def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
-                     default_color : Color32) : Nil
+                     default_color : Color32, family : String? = nil) : Nil
       # Cull rows outside the clip rect: a scrolled textarea with a
       # multi-megabyte galley must not tessellate (and rasterize) every
       # row of the buffer each frame — only the visible window. Rows
@@ -259,7 +269,7 @@ module Egui
         row.runs.each do |run|
           run_pos = Pos2.new(pos.x + run.x, row_center_y)
           color = run.color || default_color
-          text(run_pos, run.text, run.size, color)
+          text(run_pos, run.text, run.size, color, family)
           if run.underline?
             w = fonts.measure(run.text, run.size).x
             underline_y = pos.y + row.y + row.height - 2.0

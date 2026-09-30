@@ -20,6 +20,11 @@ module Egui
       STRIKE    = 128u16
       # Wide char continuation: not drawn, skipped by the cursor.
       CONTINUATION = 256u16
+      # Resize-reflow marker: this line is a wrapped continuation of
+      # the previous one (set on the continuation line's FIRST cell;
+      # stripped when the lines rejoin on a widening resize). Not an
+      # SGR attribute — paint ignores it.
+      WRAPPED = 512u16
 
       getter cp : UInt32
       getter fg : TermColor
@@ -59,6 +64,22 @@ module Egui
 
       def continuation? : Bool
         (@flags & CONTINUATION) != 0
+      end
+
+      def wrapped? : Bool
+        (@flags & WRAPPED) != 0
+      end
+
+      def with_wrapped : Cell
+        flagged = Cell.new(@cp, @fg, @bg, @flags | WRAPPED)
+        flagged.attach(@comb.not_nil!) if @comb
+        flagged
+      end
+
+      def without_wrapped : Cell
+        plain = Cell.new(@cp, @fg, @bg, @flags & ~WRAPPED)
+        plain.attach(@comb.not_nil!) if @comb
+        plain
       end
 
       def attrs?(flag : UInt16) : Bool

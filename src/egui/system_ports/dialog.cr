@@ -50,6 +50,21 @@ module Egui
       end
     end
 
+    module PickFolderDialog
+      # Start a non-blocking pick-a-DIRECTORY dialog. Returns
+      # immediately; `on_done` receives the chosen folder path, or nil
+      # on cancel / when no dialog tool is available, on a later frame.
+      # Same async contract as OpenFileDialog.show.
+      #
+      # * *title*     — dialog window title.
+      # * *directory* — where the dialog starts.
+      def self.show(title : String = "Choose folder",
+                    directory : String? = nil,
+                    &on_done : String? ->) : Nil
+        AsyncDialogs.start(->{ Dialogs.pick_folder(title, directory) }, on_done)
+      end
+    end
+
     # Fiber-backed request registry behind the async dialogs. The run
     # loop (`sapp_run`) never returns control to the Crystal scheduler,
     # so the backend pumps it from `on_frame`: one bounded scheduler
@@ -244,6 +259,41 @@ module Egui
             start = File.join(directory || Dir.current, default_name || "")
             args = ["--getsavefilename", start]
             args << filters.join(" ") unless filters.empty?
+            args.concat(["--title", title])
+            run("kdialog", args)
+          end
+        {% end %}
+      end
+
+      # Pick a directory (zenity `--directory`, kdialog
+      # `--getexistingdirectory`, AppleScript `choose folder`, WinForms
+      # FolderBrowserDialog on Windows): nil on cancel.
+      protected def self.pick_folder(title : String, directory : String?) : String?
+        {% if flag?(:win32) %}
+          script = String.build do |s|
+            s << "Add-Type -AssemblyName System.Windows.Forms\n"
+            s << "$d = New-Object System.Windows.Forms.FolderBrowserDialog\n"
+            s << "$d.Description = " << ps_sq(title) << "\n"
+            s << "$d.SelectedPath = " << ps_sq(directory) << "\n" if directory
+            s << "if ($d.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }\n"
+            s << "Write-Output $d.SelectedPath\n"
+          end
+          run_powershell(script)
+        {% elsif flag?(:darwin) %}
+          script = String.build do |sb|
+            sb << "POSIX path of (choose folder with prompt \"#{as_quote(title)}\""
+            sb << " default location (POSIX file \"#{as_quote(directory)}\")" if directory
+            sb << ")"
+          end
+          run("osascript", ["-e", script])
+        {% else %}
+          case tool
+          when "zenity"
+            args = ["--file-selection", "--directory", "--title=#{title}"]
+            args << "--filename=#{File.join(directory, "/")}" if directory
+            run("zenity", args)
+          when "kdialog"
+            args = ["--getexistingdirectory", directory || Dir.current]
             args.concat(["--title", title])
             run("kdialog", args)
           end

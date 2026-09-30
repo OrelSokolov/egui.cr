@@ -170,27 +170,33 @@ module Egui
         grid = current_grid
         cols = grid.cols
         if @wrap_pending
+          @wrap_pending = false
           if wrap_mode?
             @cursor_x = 0
             linefeed
-          else
-            @wrap_pending = false
+            mark_autowrap_row
           end
         end
         if width == 2 && @cursor_x >= cols - 1 && wrap_mode?
           @cursor_x = 0
           linefeed
+          mark_autowrap_row
         end
 
         line = grid.line(@cursor_y)
         if width == 2
-          line[@cursor_x] = Cell.new(cp, @pen_fg, @pen_bg, @pen_attrs)
+          line[@cursor_x] = make_cell(line, @cursor_x, cp, @pen_attrs)
           line[@cursor_x + 1] = Cell.new(0, @pen_fg, @pen_bg, Cell::CONTINUATION) if @cursor_x + 1 < cols
         elsif insert_mode?
-          line.insert(@cursor_x, Cell.new(cp, @pen_fg, @pen_bg, @pen_attrs))
+          line.insert(@cursor_x, make_cell(line, @cursor_x, cp, @pen_attrs))
+          # The WRAPPED marker rides column 0; a cell inserted there
+          # takes it over so the line stays a marked continuation.
+          if @cursor_x == 0 && line[1]?.try(&.wrapped?)
+            line[1] = line[1].not_nil!.without_wrapped
+          end
           line.pop
         else
-          line[@cursor_x] = Cell.new(cp, @pen_fg, @pen_bg, @pen_attrs)
+          line[@cursor_x] = make_cell(line, @cursor_x, cp, @pen_attrs)
         end
         @last_graphic = cp
 
@@ -213,6 +219,26 @@ module Egui
         set = @charset_active == 0 ? @charset_g0 : @charset_g1
         return cp unless set == :dec_graphics && cp < 0x80
         (DEC_GRAPHICS[cp.chr]? || cp).to_u32
+      end
+
+      # The row the autowrap just moved the cursor onto is a wrapped
+      # continuation of the previous one — flag it NOW, at print time
+      # (alacritty's model), not only in the resize reflow: a line
+      # wrapped by the margin while the window was narrow must rejoin
+      # when the window widens again. An explicit \r\n never passes
+      # through here, so printed newlines stay separate lines.
+      private def mark_autowrap_row : Nil
+        line = current_grid.line(@cursor_y)
+        line[0] = line[0].with_wrapped
+      end
+
+      # A printed cell; a write at column 0 KEEPS the line's WRAPPED
+      # marker (the flag lives on the first cell, see #mark_autowrap_row
+      # — overwriting the cell must not unmark the line).
+      private def make_cell(line : Array(Cell), x : Int32, cp : UInt32,
+                             attrs : UInt16) : Cell
+        cell = Cell.new(cp, @pen_fg, @pen_bg, attrs)
+        x == 0 && line[0].wrapped? ? cell.with_wrapped : cell
       end
 
       # --- C0 controls ---------------------------------------------------
@@ -656,19 +682,23 @@ module Egui
 
       def resize(cols : Int32, rows : Int32) : Nil
         return if cols <= 0 || rows <= 0 || (cols == self.cols && rows == self.rows)
-        old_rows = @grid.rows
-        old_scrollback = @grid.scrollback_used
-        @grid.resize(cols, rows)
-        @alt.resize(cols, rows)
-        # Rows gained: scrollback lines revealed ABOVE the content move
-        # the cursor down by the same count; with an empty history the
-        # cursor stays put (blank rows pad the bottom, xterm-style).
-        revealed = old_scrollback - @grid.scrollback_used
-        if rows > old_rows
-          @cursor_y = (@cursor_y + revealed).clamp(0, rows - 1)
-        else
-          @cursor_y = (@cursor_y - (old_rows - rows)).clamp(0, rows - 1)
-        end
+        active = current_grid
+        old_rows = active.rows
+        old_size = active.lines.size
+        # The cursor's absolute line index, tracked through the reflow
+        # (wrapped lines split and rejoin under it) and the window
+        # shift (the last `rows` lines stay visible); a line trimmed
+        # off the top by the scrollback cap drops it to the top row.
+        abs = old_size - old_rows + @cursor_y
+        line = if @alt_active
+                 @grid.resize(cols, rows, reflow: false)
+                 @alt.resize(cols, rows, reflow: false, track: abs) || abs
+               else
+                 tracked = @grid.resize(cols, rows, reflow: true, track: abs) || abs
+                 @alt.resize(cols, rows, reflow: false)
+                 tracked
+               end
+        @cursor_y = (line - (current_grid.lines.size - rows)).clamp(0, rows - 1)
         @cursor_x = @cursor_x.clamp(0, cols - 1)
         @region_top = 0
         @region_bottom = rows - 1

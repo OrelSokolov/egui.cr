@@ -45,7 +45,7 @@ module Egui
       style = effective_style(ui, id)
       visuals = style.visuals
       font_size = style.font_size
-      text_size = @text ? ui.ctx.fonts.measure(@text.not_nil!, font_size) : Vec2.zero
+      text_size = @text ? ui.ctx.fonts_for(style.font_family).measure(@text.not_nil!, font_size) : Vec2.zero
       class_vars = style_vars(ui, id, "toggle_button")
 
       # Sizing: synced (default) the tumbler rides the text height (the
@@ -86,7 +86,7 @@ module Egui
       if (text = @text)
         ui.painter.text(
           Pos2.new(track.right + style.spacing.icon_spacing, rect.center.y),
-          text, font_size, visuals.text_color)
+          text, font_size, visuals.text_color, family: style.font_family)
       end
 
       response.paint_focus_ring(track_h / 2.0)

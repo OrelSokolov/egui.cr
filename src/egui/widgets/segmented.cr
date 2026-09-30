@@ -19,7 +19,7 @@ module Egui
       font_size = style.font_size
       pad = style.spacing.button_padding
 
-      sizes = @labels.map { |l| ui.ctx.fonts.measure(l, font_size) }
+      sizes = @labels.map { |l| ui.ctx.fonts_for(style.font_family).measure(l, font_size) }
       height = {sizes.map(&.y).max + 2 * pad.y,
         style.spacing.interact_size.y}.max
 
@@ -48,7 +48,7 @@ module Egui
         text_size = sizes[i]
         ui.painter.text(
           Pos2.new(cell.left + (cell_w - text_size.x) / 2.0, cell.center.y),
-          label, font_size, visuals.text_color)
+          label, font_size, visuals.text_color, family: style.font_family)
 
         if response.clicked?
           response.widget_value = i.to_f64

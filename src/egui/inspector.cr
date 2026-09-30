@@ -18,11 +18,16 @@
 # whatever the declarations say, and shows "no stylable properties"
 # for widgets that declare none.
 #
-# Frame hooks (driven by the backend around app.update):
+# Frame hooks (driven by the backend / Context#end_frame):
 #
 #   begin_frame → #before_update   (docked panel + F12 + pick detect)
 #   app.update
-#   #after_update                   (pick menu, dock menu, color popup, highlight)
+#   Context#end_frame → #after_update  (pick menu, dock menu, color
+#                                      popup, highlight) — after ALL
+#                                      app content, the deferred central
+#                                      panel included, so the pick
+#                                      decision sees every context menu
+#                                      the app opened this frame.
 
 module Egui
   class Inspector
@@ -149,7 +154,7 @@ module Egui
     # hug its screen edge (right column or bottom strip), before the
     # app's own panels take their share.
     def before_update : Nil
-      @open = !@open if @ctx.input.consume_key(KeyCode::F12)
+      self.open = !@open if @ctx.input.consume_key(KeyCode::F12)
       if @ctx.input.secondary_pressed? && (pos = @ctx.input.secondary_pos) &&
          (hit = @ctx.memory.widget_at(pos))
         @pending_pick = {hit, pos}
@@ -157,8 +162,13 @@ module Egui
       render_panel if @open
     end
 
-    # After app.update: open the pick menu (yielding to any popup the
-    # app itself opened this frame — its context menus win), then the
+    # After app.update — called from Context#end_frame once ALL app
+    # content has rendered, including the DEFERRED central panel (a
+    # widget's context menu attached there opens its popup only at
+    # that point, so the pick decision below must run after it): open
+    # the pick menu only when NO popup answered the press — a widget
+    # with its own context menu gets the «Inspect …» row appended as
+    # that menu's last item instead (see #render_menu_tail). Then the
     # overlays that must paint above everything.
     def after_update : Nil
       if (pk = @pending_pick) && !@ctx.popup_opened_this_frame?
@@ -197,9 +207,12 @@ module Egui
     end
 
     # Panel visibility (F12 flips it). The backend's `inspector: :hidden`
-    # starts closed — enabled but invoked on demand.
+    # starts closed — enabled but invoked on demand. Closing the panel
+    # also drops the selection: the orange outline belongs to the tool,
+    # it must not outlive the tool being on screen.
     def open=(flag : Bool) : Bool
       @open = flag
+      self.selected = nil unless flag
       flag
     end
 
@@ -216,6 +229,20 @@ module Egui
     end
 
     # --- pick menu ----------------------------------------------------------
+
+    # The «Inspect …» row appended to a widget's OWN context menu — the
+    # one-menu rule: a widget never gets two context menus, so while
+    # the inspector is enabled its entry rides along as the LAST item
+    # of whatever menu the widget already opens (`Response#context_menu`)
+    # instead of opening a second popup beside it. The standalone pick
+    # menu below only exists for widgets WITHOUT a menu of their own.
+    def render_menu_tail(ui : Ui, id : Id) : Nil
+      return unless m = meta_for(id)
+      ui.separator
+      ui.menu_item("Inspect #{m.kind} · #{display_name(id, m)}") do
+        inspect_widget(id)
+      end
+    end
 
     private def render_pick_menu : Nil
       return unless @ctx.popup_open?(PICK_MENU)
@@ -408,7 +435,7 @@ module Egui
         # ✕ uses the Lucide X glyph, tinted like the neighboring
         # settings icon (`Icon.from_file` — compile-time embedded,
         # parsed once per tint).
-        @open = false if row.add_sized(Vec2.new(CLOSE_W, TAB_H),
+        self.open = false if row.add_sized(Vec2.new(CLOSE_W, TAB_H),
           Button.new("", id: "inspector_close")
             .icon(Icon.from_file(:lucide, :x,
               tint: row.style.visuals.text_color))).clicked?
@@ -651,6 +678,7 @@ module Egui
             when :color  then setter.call(prop.key, display_color_value(prop, vars, theme_state))
             when :number then setter.call(prop.key, display_number(prop, vars))
             when :bool   then setter.call(prop.key, display_bool(prop, vars))
+            when :string then setter.call(prop.key, display_string(prop, vars))
             when :box
               b = display_box(prop, vars)
               setter.call("#{prop.key}.top", b.top)
@@ -699,6 +727,13 @@ module Egui
               # sane, not just the read side.
               setter.call("#{prop.key}.#{side}", {nv, 0.0}.max)
             end
+          end
+        when :string
+          # Free-text editor (font family names); empty means "unset"
+          # for keys whose fallback is the theme slot.
+          value = display_string(prop, vars)
+          row.text_edit_singleline(value) do |text|
+            setter.call(prop.key, text)
           end
         end
       end
@@ -832,6 +867,14 @@ module Egui
       vars.bool?(prop.key) || prop.fallback.as?(Bool) || false
     end
 
+    # String props (font families): the merged vars → the theme slot
+    # (`Style#font_family`) → the widget's own default ("monospace" for
+    # the terminal grid). Empty string renders as an unset value.
+    private def display_string(prop : StyleProp, vars : StyleVars) : String
+      vars.str?(prop.key) || theme_string(prop.key) ||
+        prop.fallback.as?(String) || ""
+    end
+
     private def display_color_value(prop : StyleProp, vars : StyleVars,
                                     theme_state : String? = nil) : Color32
       vars.color?(prop.key) || theme_color(prop.key, theme_state) ||
@@ -876,6 +919,14 @@ module Egui
       case key
       when "font_size" then @ctx.style.font_size
       else                  nil
+      end
+    end
+
+    # The theme slot behind a string key (see #theme_color).
+    private def theme_string(key : String) : String?
+      case key
+      when "font_family" then @ctx.style.font_family
+      else                    nil
       end
     end
 

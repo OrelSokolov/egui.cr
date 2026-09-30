@@ -44,7 +44,7 @@ module Egui
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       font_size = style.font_size
-      fonts = ui.ctx.fonts
+      fonts = ui.ctx.fonts_for(style.font_family)
       id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
       anchor_id = id.child(0x5EED_u64)
       scroll_id = id.child(0x5C20_u64)
@@ -206,7 +206,8 @@ module Egui
       end
 
       ui.painter.paint_galley(
-        Pos2.new(inner.x - scroll, inner.y), galley, fonts, color)
+        Pos2.new(inner.x - scroll, inner.y), galley, fonts, color,
+        style.font_family)
 
       ui.painter.clip = outer_clip
 

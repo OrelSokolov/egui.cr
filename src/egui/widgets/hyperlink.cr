@@ -45,7 +45,8 @@ module Egui
       class_vars = style_vars(ui, id, "link")
       style = effective_style(ui, id, class_vars)
       font_size = style.font_size
-      text_size = ui.ctx.fonts.measure(@label, font_size)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      text_size = fonts.measure(@label, font_size)
 
       rect = ui.allocate_at_least(text_size)
       # Upstream: Link is Sense::click only — NOT focusable. There is no
@@ -70,8 +71,9 @@ module Egui
 
       rich = RichText.new(@label).color(color)
       rich = rich.underline if underline
-      galley = ui.ctx.fonts.layout(rich.runs(font_size, color))
-      ui.painter.paint_galley(rect.min, galley, ui.ctx.fonts, color)
+      galley = fonts.layout(rich.runs(font_size, color))
+      ui.painter.paint_galley(rect.min, galley, fonts, color,
+        style.font_family)
 
       Hyperlink.open_url(@url) if response.clicked?
       response

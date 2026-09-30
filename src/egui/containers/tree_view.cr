@@ -98,10 +98,11 @@ module Egui
 
       # Toggle arrow (or a dot for leaves), then the label.
       arrow = open.nil? ? "•" : (open ? "▾" : "▸")
+      family = ui.style.font_family
       ui.painter.text(Pos2.new(row.left + 2.0, row.center.y),
-        arrow, font_size, v.text_color)
+        arrow, font_size, v.text_color, family: family)
       ui.painter.text(Pos2.new(row.left + 20.0, row.center.y),
-        text, font_size, v.text_color)
+        text, font_size, v.text_color, family: family)
     end
   end
 end

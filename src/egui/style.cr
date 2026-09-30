@@ -195,6 +195,13 @@ module Egui
     property spacing : Spacing
     property visuals : Visuals
     property font_size : Float64
+    # Named font family (upstream `Style::override_font_id`'s family
+    # half): a key into `Context#font_families` — nil = the primary
+    # #fonts stack, "monospace" → #mono_font. Rides the style cascade
+    # (theme → class rules → inline → inspector), so a rule like
+    # `sheet.rule("terminal", StyleVars{"font_family" => "term"})`
+    # swaps the font of a whole widget group.
+    property font_family : String?
     # Wheel scroll speed in pixels per wheel notch. The sokol backend
     # reports ±1.0 per notch, so this multiplies the raw delta
     # (touchpads send small fractional deltas, scaled the same way).
@@ -206,6 +213,7 @@ module Egui
       @spacing = Spacing.new
       @visuals = Visuals.new
       @font_size = 16.0
+      @font_family = nil
       @scroll_speed = 60.0
     end
 
@@ -216,6 +224,7 @@ module Egui
       other.spacing = spacing.clone
       other.visuals = visuals.clone
       other.font_size = font_size
+      other.font_family = font_family
       other.scroll_speed = scroll_speed
       other
     end

@@ -99,9 +99,13 @@ module Egui
       # strip's own background shows through the gap).
       merge = root.f64("merge_selected", 0.0) > 0.0
       tab_font = tab.f64("font_size", style.font_size)
+      # `tabs.tab { font_family }` swaps the strip's font (the rule bag
+      # carries the key — same cascade as the size above).
+      tab_family = tab.str?("font_family") || style.font_family
+      tab_fonts = ctx.fonts_for(tab_family)
       tab_pad = tab.box("padding")
 
-      text_h = ctx.fonts.measure(@tabs.first, tab_font).y
+      text_h = tab_fonts.measure(@tabs.first, tab_font).y
       row_h = {tab.f64("height", style.spacing.interact_size.y),
                text_h + tab_pad.vertical}.max
 
@@ -111,7 +115,7 @@ module Egui
       icon = text_h * 0.66
       icon_gap = icon * 0.6
       widths = @tabs.map do |title|
-        w = ctx.fonts.measure(title, tab_font).x + tab_pad.horizontal
+        w = tab_fonts.measure(title, tab_font).x + tab_pad.horizontal
         closable? ? w + icon + icon_gap : w
       end
       total = widths.sum + tab_gap * {@tabs.size - 1, 0}.max
@@ -310,7 +314,7 @@ module Egui
           end
           text_color = state_vars.color("text_color", visuals.text_color)
           ui.painter.text(Pos2.new(rect.min.x + tab_pad.left, rect.center.y),
-            title, tab_font, text_color)
+            title, tab_font, text_color, family: tab_family)
 
           # The active tab's bottom border, on top of the baseline —
           # skipped when the overlay sets underline_width to 0 or less

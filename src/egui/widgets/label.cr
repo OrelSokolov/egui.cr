@@ -59,7 +59,8 @@ module Egui
       wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
       available = ui.available_width
       max_width = wrap && available > 0.0 ? available : nil
-      galley = ui.ctx.fonts.layout(runs, max_width)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      galley = fonts.layout(runs, max_width)
 
       rect = ui.allocate_at_least(galley.size)
       response = ui.interact(rect, id,
@@ -68,8 +69,8 @@ module Egui
       if @userselect
         paint_selectable(ui, response, id, rect, galley, style)
       else
-        ui.painter.paint_galley(rect.min, galley, ui.ctx.fonts,
-          style.visuals.text_color)
+        ui.painter.paint_galley(rect.min, galley, fonts,
+          style.visuals.text_color, style.font_family)
       end
 
       response
@@ -85,7 +86,7 @@ module Egui
                                  rect : Rect, galley : Galley,
                                  style : Style) : Nil
       ctx = ui.ctx
-      fonts = ctx.fonts
+      fonts = ctx.fonts_for(style.font_family)
       anchor_id = id.child(0x5EED_u64)
       # The anchor cell has no #interact of its own — mark it used or
       # end-frame pruning drops the selection every frame.
@@ -166,7 +167,8 @@ module Egui
           end
         end
       end
-      ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color)
+      ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
+        style.font_family)
     end
 
     # Byte index of the pointer inside the flattened row text: the row

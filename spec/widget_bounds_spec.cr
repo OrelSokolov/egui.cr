@@ -42,7 +42,6 @@ describe "widget bounds (an explicit size is a hard bound)" do
     ctx.begin_frame(raw)
     ctx.inspector.before_update
     ctx.window("w") { |ui| ui.button("OK", id: "save") }
-    ctx.inspector.after_update
     ctx.end_frame
 
     header_bottom = 10.0 + Egui::Inspector::TAB_H

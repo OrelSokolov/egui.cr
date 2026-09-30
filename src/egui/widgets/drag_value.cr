@@ -24,7 +24,7 @@ module Egui
       # Sizing uses the edit buffer when one is active.
       editing, buffer = edit_state(ui.ctx.memory, id)
       shown = editing ? buffer : display_text
-      text_size = ui.ctx.fonts.measure(shown, font_size)
+      text_size = ui.ctx.fonts_for(style.font_family).measure(shown, font_size)
 
       size = Vec2.new(
         {text_size.x, style.spacing.interact_size.x}.max,
@@ -62,7 +62,8 @@ module Egui
       ui.painter.rect(rect, 3.0, bg, visuals.button_stroke, 1.0) if bg
 
       ui.painter.text(rect.left_center, shown, font_size,
-        editing ? visuals.selection_fill : visuals.text_color)
+        editing ? visuals.selection_fill : visuals.text_color,
+        family: style.font_family)
 
       response.widget_value = new_value
       response.mark_changed if changed

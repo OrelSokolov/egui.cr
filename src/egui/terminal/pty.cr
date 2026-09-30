@@ -75,6 +75,12 @@ module Egui
       # session in the process (see #evented_pass).
       @@pass_time : Float64 = -1.0
 
+      # EGUI_FRAME_DEBUG also gates PTY-side logging (reader wakeups,
+      # evented-pass cost, session teardown) — see Backend::Sokol.
+      def self.debug? : Bool
+        ENV["EGUI_FRAME_DEBUG"]? != nil
+      end
+
       def initialize(shell : String? = nil, args : Array(String) = [] of String,
                      cwd : String? = nil, env : Hash(String, String)? = nil,
                      cols : Int32 = 80, rows : Int32 = 24,
@@ -134,6 +140,7 @@ module Egui
               0 # EIO once the child released the slave = session over
             end
             break if n.zero?
+            STDERR.puts "[pty #{@pty.address}] reader: #{n}B" if Session.debug?
             begin
               @channel.send(buf[0, n].dup)
               # Data arrived — wake the UI now (not only at session end)
@@ -160,8 +167,12 @@ module Egui
         {% unless flag?(:win32) %}
           return if frame_time == @@pass_time
           @@pass_time = frame_time
+          t0 = Time.instant if Session.debug?
           select
           when timeout(1.millisecond)
+          end
+          if (d = t0) && (ms = (Time.instant - d).total_milliseconds) > 5.0
+            STDERR.puts "[pty] evented_pass took #{"%.1f" % ms}ms (scheduler busy)"
           end
         {% end %}
       end
@@ -184,15 +195,22 @@ module Egui
             changed = true
           end
         {% else %}
+          chunks = 0
+          bytes = 0
           loop do
             select
             when chunk = @channel.receive?
               break if chunk.nil?
               @term.feed(chunk)
+              chunks += 1
+              bytes += chunk.size
               changed = true
             else
               break
             end
+          end
+          if changed && Session.debug?
+            STDERR.puts "[pty #{@pty.address}] pump: #{chunks} chunks / #{bytes}B"
           end
         {% end %}
         if changed && (outp = @term.drain_output)
@@ -238,6 +256,7 @@ module Egui
         @channel.close
         @exit_code = LibPty.wait(@pty, 1)
         @dead = true
+        STDERR.puts "[pty #{@pty.address}] finish: session over (exit=#{@exit_code})" if Session.debug?
         # Close the master fd HERE, not behind the shim's back: the
         # scheduler's poller indexes fd state by fd NUMBER, so a foreign
         # close(2) leaves a stale arena slot. The next pty reuses the

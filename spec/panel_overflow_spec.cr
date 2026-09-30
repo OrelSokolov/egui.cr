@@ -20,7 +20,6 @@ def insp_panel_frame(ctx : Egui::Context, events : Array(Egui::Event) = [] of Eg
   ctx.begin_frame(raw)
   ctx.inspector.before_update
   yield ctx
-  ctx.inspector.after_update
   ctx.end_frame
 end
 

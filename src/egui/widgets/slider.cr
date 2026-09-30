@@ -70,10 +70,10 @@ module Egui
 
       if text = @text
         label = "#{text}: #{format_value(new_value)}"
-        label_size = ui.ctx.fonts.measure(label, style.font_size)
+        label_size = ui.ctx.fonts_for(style.font_family).measure(label, style.font_size)
         label_pos = Pos2.new(rect.right + sp.icon_spacing, rect.center.y)
         ui.painter.text(label_pos, label, style.font_size,
-          visuals.text_color)
+          visuals.text_color, family: style.font_family)
         ui.min_rect = ui.min_rect.union(
           Rect.from_min_size(label_pos, label_size))
       end
@@ -85,7 +85,7 @@ module Egui
 
     private def label_width(ui : Ui, style : Style) : Float64
       return 0.0 unless text = @text
-      ui.ctx.fonts.measure("#{text}: #{format_value(@value)}",
+      ui.ctx.fonts_for(style.font_family).measure("#{text}: #{format_value(@value)}",
         style.font_size).x + style.spacing.icon_spacing
     end
 

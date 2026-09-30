@@ -114,6 +114,21 @@ per-platform one via `FreetypeFonts.from_system` and
 `Sokol.select_fonts`. With a proportional fallback the terminal still
 works, but columns drift.
 
+To swap the terminal's face independently of the app font, register a
+named family and point the `terminal` class at it (the widget reads the
+`font_family` key; the face must be monospace or the cell math drifts):
+
+```crystal
+fonts = Egui::Backend::CrystalFonts.new([File.read("/path/to/JetBrainsMono.ttf")])
+Egui::Backend::Sokol.register_font("term", fonts)
+ctx.stylesheet.rule("terminal", Egui::StyleVars{"font_family" => "term"})
+```
+
+The same `font_family` key works on any text widget's class, on the
+inline `.style { |s| s.font_family = … }` builder, and on the theme
+Style (`ctx.theme.style.font_family` — app-wide). The inspector edits
+it per element/class like every other style key.
+
 ## Config (user profiles)
 
 `Terminal::Config` persists named user profiles as JSON — window

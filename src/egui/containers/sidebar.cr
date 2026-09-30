@@ -99,6 +99,12 @@ module Egui
       sec_margin = sec.box("margin")
       sec_color = sec.color("text_color", visuals.fade_color(visuals.text_color))
       tab_font = tab.f64("font_size", style.font_size)
+      # `sidebar.tab { font_family }` swaps the tab strip's font, the
+      # section rules theirs (same cascade as the sizes above).
+      sec_family = sec.str?("font_family") || style.font_family
+      tab_family = tab.str?("font_family") || style.font_family
+      sec_fonts = ctx.fonts_for(sec_family)
+      tab_fonts = ctx.fonts_for(tab_family)
       tab_pad = tab.box("padding")
 
       response : Response? = nil
@@ -126,12 +132,12 @@ module Egui
           # title that does not fit is not painted at all.
           if rect.height + 0.5 >= title_h
             inner.painter.text(rect.left_center, section.title.upcase, sec_font,
-              sec_color)
+              sec_color, family: sec_family)
           end
 
           section.tabs.each_with_index do |title, ti|
             selected = si == @selected_section && ti == @selected_tab
-            text_size = ctx.fonts.measure(title, tab_font)
+            text_size = tab_fonts.measure(title, tab_font)
             # Padding grows the button around its text (CSS box model).
             size = Vec2.new(inner.available_width,
               {tab.f64("height", style.spacing.interact_size.y),
@@ -184,7 +190,7 @@ module Egui
               inner.painter.text(
                 Pos2.new(rect.min.x + tab_pad.left,
                   rect.min.y + tab_pad.top + text_size.y / 2.0),
-                title, tab_font, text_color)
+                title, tab_font, text_color, family: tab_family)
 
               if (cr = close_resp)
                 x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
