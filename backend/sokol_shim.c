@@ -3197,8 +3197,33 @@ static void sh_shot(sh_packet_t* p) {
 static sh_texop_t* g_post_pending;
 static int g_post_pending_n;
 
+// Window position cache: R refreshes it every few ticks (an
+// XTranslateCoordinates on its own connection) so A reads a slightly
+// stale position instead of a condvar roundtrip. Without the cache a
+// per-frame position query (the borderless example's status label)
+// serialized A to R's tick — and when presents stall (occluded
+// XWayland window) A froze for the full roundtrip timeout, 2 s per
+// frame.
+static atomic_int  sh_pos_x, sh_pos_y;
+static atomic_bool sh_pos_valid;
+
 static void sh_rt_frame(void) {
     sh_cmds_run(); // A→R window commands, on R's connection
+
+    // Position cache for A: refresh every ~15 ticks (~250 ms at 60 Hz)
+    // — a single X roundtrip, amortized. First success flips sh_pos_valid
+    // and A stops blocking on WIN_POS_GET roundtrips entirely.
+    static uint32_t pos_tick;
+    if ((pos_tick++ % 15) == 0) {
+        int x = 0, y = 0;
+        if (egui_cr_window_position(&x, &y)) {
+            atomic_store_explicit(&sh_pos_x, x, memory_order_relaxed);
+            atomic_store_explicit(&sh_pos_y, y, memory_order_relaxed);
+            atomic_store_explicit(&sh_pos_valid, 1, memory_order_relaxed);
+        } else if (getenv("EGUI_FRAME_DEBUG")) {
+            fprintf(stderr, "[pos] cache refresh failed on R\n");
+        }
+    }
 
     pthread_mutex_lock(&g_pkt_mx);
     sh_packet_t* fresh = g_pkt;
@@ -3373,6 +3398,12 @@ void sh_post_screen_size(int* w, int* h) {
     *w = cmd.r_a; *h = cmd.r_b;
 }
 int sh_post_window_position_get(int* x, int* y) {
+    if (atomic_load_explicit(&sh_pos_valid, memory_order_relaxed)) {
+        *x = atomic_load_explicit(&sh_pos_x, memory_order_relaxed);
+        *y = atomic_load_explicit(&sh_pos_y, memory_order_relaxed);
+        return 1;
+    }
+    // no sample yet (before R's first refresh): one blocking fetch
     sh_cmd_t cmd;
     memset(&cmd, 0, sizeof cmd);
     cmd.kind = SH_CMD_WIN_POS_GET;
