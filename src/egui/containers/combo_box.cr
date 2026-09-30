@@ -25,10 +25,14 @@ module Egui
     # (GTK3-style) instead of below it.
     # `width` overrides the natural size; `nil` (the default) fits the
     # button to the widest entry plus the arrow zone.
+    # `max_height` caps the open list — beyond it the popup scrolls its
+    # rows (wheel over the list, scrollbar thumb) and the keyboard walk
+    # follows the highlighted row.
     def initialize(@id : String, @selected : String,
                    @options : Array(String), @width : Float64? = nil,
                    @variant : Symbol = :button, @label : String? = nil,
-                   @overlay : Bool = false)
+                   @overlay : Bool = false,
+                   @max_height : Float64 = 220.0)
     end
 
     def variant(v : Symbol) : self
@@ -77,7 +81,57 @@ module Egui
         style.spacing.interact_size.y}.max
       rect = ui.allocate_at_least(Vec2.new(width, height))
       id = ui.next_widget_id
-      response = ui.interact(rect, id, Sense.click)
+      # Focusable like an editable select (SelectBox's field): while
+      # focused, Up/Down walk the options and Enter confirms — the
+      # arrows are locked so focus navigation can't steal them.
+      response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+      ctx = ui.ctx
+      focused = ctx.memory.focus.has_focus?(id)
+      response.request_focus if response.clicked? && !focused
+      ctx.memory.focus.lock_arrows(vertical: true) if focused
+      picked = false
+
+      # The keyboard-walked row (Up/Down; Enter confirms it) — index
+      # into @options (the placeholder zero row is mouse-only). The
+      # first press on a CLOSED combo opens the list (GTK-style) with
+      # the walk parked on the current selection. Marked used EVERY
+      # frame: the frame that OPENS the list writes it before the
+      # popup exists, and end-frame pruning would drop the write.
+      active_id = Id.from("#{@id}/active")
+      ctx.memory.use_id(active_id)
+      enter_value : String? = nil
+      if focused &&
+         (ctx.input.key_pressed?(KeyCode::Down) || ctx.input.key_pressed?(KeyCode::Up))
+        opened_now = false
+        unless ctx.popup_open?(@id)
+          ctx.open_popup(@id)
+          ctx.memory.data.set_int(active_id, @options.index(@selected) || 0)
+          opened_now = true
+        end
+        if ctx.input.consume_key(KeyCode::Down)
+          ctx.input.consume_key(KeyCode::Up)
+          base = ctx.memory.data.get_int(active_id, 0)
+          ctx.memory.data.set_int(active_id,
+            {base + 1, @options.size - 1}.min) unless opened_now
+        elsif ctx.input.consume_key(KeyCode::Up)
+          base = ctx.memory.data.get_int(active_id, 1)
+          ctx.memory.data.set_int(active_id, {base - 1, 0}.max) unless opened_now
+        end
+      end
+      if ctx.popup_open?(@id) && focused
+        idx = ctx.memory.data.get_int(active_id, 0)
+                         .clamp(0, {@options.size - 1, 0}.max)
+        enter_value = @options[idx]?
+      end
+      # Enter confirms the walked row.
+      if focused && ctx.input.key_pressed?(KeyCode::Enter) &&
+         (value = enter_value)
+        ctx.input.consume_key(KeyCode::Enter)
+        on_select.call(value)
+        @selected = value
+        ctx.close_popup(@id)
+        picked = true
+      end
 
       # Wheel over the closed combo steps the selection: wheel-down is
       # next, wheel-up is previous (clamped at the ends — no wrap).
@@ -90,10 +144,11 @@ module Egui
          ui.ctx.memory.active_scroll_area? == id &&
          (dy = ui.ctx.input.scroll.y) != 0.0
         idx = @options.index(@selected)
-        # scroll.y > 0 is wheel-up (previous), < 0 wheel-down (next) —
-        # the same sign convention as NumberInput's wheel stepping.
-        stepped = idx ? (idx + (dy < 0 ? 1 : -1)).clamp(0, @options.size - 1)
-                  : (dy < 0 ? 0 : nil)
+        # scroll.y > 0 is wheel-down (next), < 0 wheel-up (previous) —
+        # the app-wide sign (positive = content scrolls down), the same
+        # as ScrollArea / NumberInput.
+        stepped = idx ? (idx + (dy > 0 ? 1 : -1)).clamp(0, @options.size - 1)
+                  : (dy > 0 ? 0 : nil)
         if (value = stepped.try { |s| @options[s]? }) && value != @selected
           @selected = value
           display = value
@@ -167,67 +222,102 @@ module Egui
           ui.ctx.close_popup(@id)
         else
           ui.ctx.open_popup(@id)
+          # Park the keyboard walk on the current selection (a later
+          # Up/Down continues from there).
+          ctx.memory.data.set_int(active_id, @options.index(@selected) || 0)
         end
       end
 
-      picked = false
       # GTK3-style `overlay` opens the list right on top of the button;
       # otherwise it hangs below (flipping above near the screen edge).
+      # Zero HORIZONTAL padding (SelectBox's full-bleed convention): the
+      # rows span the frame edge to edge inside the scroll viewport and
+      # their bands read as one solid block; a little vertical padding
+      # keeps the first/last row off the frame stroke.
       anchor = @overlay ? rect.min : ui.ctx.dropdown_anchor(@id, rect)
-      ui.ctx.popup(@id, anchor, width: rect.width, min_width: rect.width) do |pop|
+      ui.ctx.popup(@id, anchor, width: rect.width, min_width: rect.width,
+        pad: Vec2.new(0.0, 4.0)) do |pop|
         # The placeholder leads the list as the zero option — picking
         # it reports "" (nothing selected) back through `on_select`.
         items = @label ? [{@label.not_nil!, ""}] : [] of Tuple(String, String)
         @options.each { |option| items << {option, option} }
-        items.each do |shown, value|
-          text_size = fonts.measure(shown, font_size)
-          height = {text_size.y + 2 * style.spacing.button_padding.y,
-            pop.style.spacing.interact_size.y}.max
-          natural_w = 2 * style.spacing.button_padding.x + text_size.x
-          # Rows track the popup's ACTUAL width (pop.max_rect), not the
-          # button that opened it: the frame can be wider than the
-          # button (a stale layer_sizes measurement from a previous
-          # open, the min_width floor), and button-based bands would
-          # come out narrower than the frame behind them.
-          row_w = {pop.max_rect.width, natural_w}.max
 
-          # Full-bleed row like a menu item: the popup Ui is inset by
-          # window_padding, so the row pokes back out on both sides and
-          # the highlight covers the frame edge-to-edge. The floored
-          # row width feeds min_rect so the frame stays at least as
-          # wide as the button that opened it.
-          item_id = pop.next_widget_id
-          item_rect = Rect.from_min_size(
-            Pos2.new(pop.cursor.x - pop.style.spacing.window_padding.x,
-                     pop.cursor.y),
-            Vec2.new(row_w + 2 * pop.style.spacing.window_padding.x, height))
-          pop.min_rect = pop.min_rect.union(
-            Rect.from_min_size(pop.cursor, Vec2.new(row_w, height)))
-          # Stack flush — the spacing is padding INSIDE each row, not a
-          # margin gap between rows, so the hover / selection bands are
-          # contiguous like a native dropdown.
-          pop.cursor = pop.layout.advance(pop.cursor,
-            Vec2.new(row_w, height), Vec2.zero)
-          item_resp = pop.interact(item_rect, item_id, Sense.click)
-          # Menu-item look (see Menu): rows are bare at rest — the
-          # popup frame IS their background — so the list reads as one
-          # solid block; only the hovered row and the real selection
-          # get a full-width band. The placeholder zero row never
-          # counts as "selected": an empty selection highlights
-          # nothing.
-          if !value.empty? && value == @selected
-            pop.painter.rect(item_rect, 3.0, visuals.button_hovered)
-          elsif item_resp.hovered?
-            pop.painter.rect(item_rect, 3.0, visuals.button_hovered)
+        row_h = {glyph_h + 2 * style.spacing.button_padding.y,
+          pop.style.spacing.interact_size.y}.max
+        # The list shrinks to its rows and only scrolls past
+        # `max_height` — the ScrollArea has no auto-shrink, so the cap
+        # is computed from the measured row height.
+        list_h = {(items.size * row_h).round, @max_height}.min
+
+        # Follow the highlighted row — ONLY when it moved (the keyboard
+        # walk, a reopen). Re-running every frame would fight the
+        # wheel: a candidate parked above the fold would snap the
+        # offset back right after every user scroll (see SelectBox).
+        list_id = Id.from("#{@id}/list")
+        followed_id = Id.from("#{@id}/followed")
+        if enter_value && (idx = items.index { |_, v| v == enter_value })
+          ctx.memory.use_id(followed_id)
+          content = ctx.memory.data.get_vec2(list_id.child(0), Egui::Vec2.zero)
+          followed = ctx.memory.data.get_int(followed_id, -1)
+          # The first frame after an open has no content measurement
+          # yet (max_off = 0) — don't mark followed, retry next frame.
+          if content.y > list_h && idx != followed
+            row_top = idx * row_h
+            row_bottom = row_top + row_h
+            max_off = content.y - list_h
+            off = ctx.memory.data.get_vec2(list_id, Egui::Vec2.zero).y
+              .clamp(0.0, max_off)
+            off = row_top if row_top < off
+            off = row_bottom - list_h if row_bottom > off + list_h
+            ctx.memory.data.set_vec2(list_id,
+              Vec2.new(0.0, off.clamp(0.0, max_off)))
+            ctx.memory.data.set_int(followed_id, idx)
           end
-          row_color = value.empty? ? visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color
-          pop.painter.text(item_rect.left_center +
-            Vec2.new(style.spacing.button_padding.x, 0.0),
-            shown, font_size, row_color, family: style.font_family)
-          if item_resp.clicked?
-            on_select.call(value)
-            ui.ctx.close_popup(@id)
-            picked = true
+        end
+        ScrollArea.new(list_h, id: list_id).show(pop) do |list|
+          items.each do |shown, value|
+            text_size = fonts.measure(shown, font_size)
+            height = {text_size.y + 2 * style.spacing.button_padding.y,
+              list.style.spacing.interact_size.y}.max
+            natural_w = 2 * style.spacing.button_padding.x + text_size.x
+            # Rows span the viewport; a row wider than it still feeds
+            # min_rect so the popup's frame measurement stays honest,
+            # but the extra width just clips (the combo's own width
+            # already fits the widest option by construction).
+            row_w = {list.available_width, natural_w}.max
+            item_id = list.next_widget_id
+            item_rect = Rect.from_min_size(list.cursor,
+              Vec2.new(list.available_width, height))
+            list.min_rect = list.min_rect.union(
+              Rect.from_min_size(list.cursor, Vec2.new(row_w, height)))
+            # Stack flush — the spacing is padding INSIDE each row, not
+            # a margin gap between rows, so the hover / selection bands
+            # are contiguous like a native dropdown.
+            list.cursor = list.layout.advance(list.cursor,
+              Vec2.new(row_w, height), Vec2.zero)
+            item_resp = list.interact(item_rect, item_id, Sense.click)
+            # Band priority (SelectBox's): the hover band beats the
+            # Enter candidate (the pointer is explicit intent), the
+            # Enter candidate beats the current selection (it is what a
+            # confirm would apply). The placeholder zero row never
+            # counts as "selected": an empty selection highlights
+            # nothing.
+            if item_resp.hovered?
+              list.painter.rect(item_rect, 3.0, visuals.button_hovered)
+            elsif !value.empty? && value == enter_value
+              list.painter.rect(item_rect, 3.0, visuals.selection_fill)
+            elsif !value.empty? && value == @selected
+              list.painter.rect(item_rect, 3.0, visuals.button_hovered)
+            end
+            row_color = value.empty? ? visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color
+            list.painter.text(item_rect.left_center +
+              Vec2.new(style.spacing.button_padding.x, 0.0),
+              shown, font_size, row_color, family: style.font_family)
+            if item_resp.clicked?
+              on_select.call(value)
+              ui.ctx.close_popup(@id)
+              picked = true
+            end
           end
         end
       end

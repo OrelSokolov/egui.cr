@@ -111,12 +111,22 @@ void egui_cr_set_transparent(void);
 // visuals (per-pixel window transparency).
 int egui_cr_glx_want_argb(void);
 
+#if defined(_SAPP_LINUX)
+// forward: X11 resize synchronization (defined with the other X11
+// helpers below, after the sokol headers).
+static void sh_x11_sync_request_init(void);
+static void sh_x11_sync_request_confirm(void);
+#endif
+
 static void sh_init_cb(void) {
     // X11 borderless is applied before the window is mapped (the
     // egui_cr_x11_pre_map_hook sokol patch); other platforms undecorate
     // here, once the window exists.
     if (g_borderless) egui_cr_set_decorations(0);
     if (g_transparent) egui_cr_set_transparent();
+#if defined(_SAPP_LINUX)
+    sh_x11_sync_request_init();
+#endif
     g_init();
 }
 
@@ -219,6 +229,13 @@ static void sh_frame_cb(void) {
     egui_cr_wd_on_frame_begin();
     g_frame();
     egui_cr_wd_on_frame_end();
+#if defined(_SAPP_LINUX)
+    // After g_frame the pass for THIS frame is committed (sg_commit in
+    // egui_cr_end_pass); sokol swaps right after we return — the frame
+    // at the current size is on its way out, so the pending resize can
+    // be released (see sh_x11_sync_request_confirm).
+    sh_x11_sync_request_confirm();
+#endif
 }
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
@@ -394,6 +411,101 @@ static void sh_x11_sync_window_background(float r, float g, float b) {
         sh_bg_pixel = px;
         sh_bg_set = 1;
     }
+}
+
+// --- _NET_WM_SYNC_REQUEST (EWMH resize synchronization) ---------------------
+//
+// Without it an X11 resize is unsynchronized with rendering: the WM
+// grows the X window at its own pace while the client learns the new
+// size one frame late — every step of an interactive resize leaves a
+// composited frame where the newly exposed strip has no backing buffer
+// (only the window background pixel, see sh_x11_sync_window_background
+// — fully transparent for transparent windows, hence the resize
+// flicker of bin/terminal and bin/splash). The EWMH protocol lets the
+// client throttle the WM instead (classic, non-extended flavor — what
+// mutter/kwin drive; see mutter's meta-sync-counter.c):
+//
+//   1. the client creates an XSync counter and publishes its xid in
+//      the _NET_WM_SYNC_REQUEST_COUNTER property of the toplevel
+//      window (ONE value: two values would select the "extended"
+//      flavor with its odd/even frame-drawn bookkeeping);
+//   2. during an interactive resize the WM applies the new size to the
+//      X window and sends a WM_PROTOCOLS/_NET_WM_SYNC_REQUEST
+//      ClientMessage carrying the serial the counter must reach;
+//   3. after presenting a frame at the new size the client sets the
+//      counter to that serial (XSyncSetCounter — no round trip);
+//   4. the WM watches an XSyncAlarm on the counter and does not apply
+//      the NEXT resize step until the serial is reached — the window
+//      only ever grows once a frame of the current size exists.
+//
+// sokol owns the X event loop and drops the WM's ClientMessage, so the
+// vendored sokol_app.h taps every raw XEvent through
+// egui_cr_x11_event_hook (the same patch pattern as the pre-map hook);
+// the hook only records the requested serial. WMs without sync support
+// ignore the property and none of this ever fires.
+#include <X11/extensions/sync.h>
+
+static XSyncCounter sh_sync_counter = None;
+static XSyncValue sh_sync_set;            // counter value we last wrote
+static unsigned long long sh_sync_target; // serial the WM asked for
+static int sh_sync_target_seen;
+
+static void sh_x11_sync_request_init(void) {
+    Display* dpy = (Display*)sapp_x11_get_display();
+    Window win = (Window)sapp_x11_get_window();
+    if (!dpy || !win) return;
+    Atom counter_atom = XInternAtom(dpy, "_NET_WM_SYNC_REQUEST_COUNTER", False);
+    if (counter_atom == None) return;
+    int major = 3, minor = 0; // 3.0: alarms; anything ≥3.1 also fine
+    if (!XSyncInitialize(dpy, &major, &minor)) return;
+    XSyncValue zero;
+    XSyncIntToValue(&zero, 0);
+    sh_sync_counter = XSyncCreateCounter(dpy, zero);
+    if (sh_sync_counter == None) return;
+    sh_sync_set = zero;
+    long counter = (long)sh_sync_counter;
+    XChangeProperty(dpy, win, counter_atom, XA_CARDINAL, 32,
+                    PropModeReplace, (unsigned char*)&counter, 1);
+}
+
+// egui_cr_x11_event_hook (vendor/sokol/sokol_app.h patch): the WM's
+// _NET_WM_SYNC_REQUEST notice arrives as a WM_PROTOCOLS ClientMessage
+// on the toplevel window — record its serial for #confirm below.
+void egui_cr_x11_event_hook(XEvent* event) {
+    if (!sh_sync_counter || event->type != ClientMessage) return;
+    XClientMessageEvent* cm = &event->xclient;
+    Display* dpy = (Display*)sapp_x11_get_display();
+    if (!dpy) return;
+    static Atom protocols, sync_request;
+    if (!protocols) {
+        protocols = XInternAtom(dpy, "WM_PROTOCOLS", False);
+        sync_request = XInternAtom(dpy, "_NET_WM_SYNC_REQUEST", False);
+        if (!protocols || !sync_request) return;
+    }
+    if (cm->message_type != protocols ||
+        (Atom)cm->data.l[0] != sync_request) return;
+    sh_sync_target = (unsigned long long)(uint32_t)cm->data.l[2] |
+                     ((unsigned long long)(uint32_t)cm->data.l[3] << 32);
+    sh_sync_target_seen = 1;
+}
+
+// End of frame_cb: this frame's pass is committed (egui_cr_end_pass →
+// sg_commit) and sokol swaps right after — a frame at the CURRENT size
+// is on its way out, so the pending resize can be released. XSync-
+// SetCounter is fire-and-forget; skipped entirely when no request is
+// outstanding (zero cost on idle frames).
+static void sh_x11_sync_request_confirm(void) {
+    if (!sh_sync_counter || !sh_sync_target_seen) return;
+    unsigned long long set = (unsigned long long)(uint32_t)XSyncValueLow32(sh_sync_set) |
+                             ((unsigned long long)(uint32_t)XSyncValueHigh32(sh_sync_set) << 32);
+    if (sh_sync_target == set) return;
+    XSyncValue value;
+    XSyncIntsToValue(&value, (int)(uint32_t)sh_sync_target,
+                     (int)(uint32_t)(sh_sync_target >> 32));
+    Display* dpy = (Display*)sapp_x11_get_display();
+    if (!dpy) return;
+    XSyncSetCounter(dpy, sh_sync_counter, value);
+    sh_sync_set = value;
 }
 #endif
 

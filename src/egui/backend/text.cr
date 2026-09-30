@@ -65,10 +65,17 @@ module Egui
     # (fractional advances + kerning) for both measure and draw; a
     # backend implements glyph production and metrics.
     abstract class AtlasFonts < Egui::Fonts
-      protected getter atlas : GlyphAtlas
+      # The atlas this stack bakes into: its OWN (default — specs,
+      # standalone tools) or a SHARED one owned by the backend registry
+      # (sokol.cr: one GPU texture for every stack the registry creates,
+      # so a font picker flipping through hundreds of families cannot
+      # exhaust the shim's atlas cap or VRAM).
+      getter atlas : GlyphAtlas
+      @atlas_epoch : UInt32
 
-      def initialize
-        @atlas = GlyphAtlas.new(ATLAS_SIZE)
+      def initialize(atlas : GlyphAtlas? = nil)
+        @atlas = atlas || GlyphAtlas.new(ATLAS_SIZE)
+        @atlas_epoch = @atlas.epoch
         @glyphs = {} of {Int32, Int32} => Glyph # {glyph id, size*10} -> glyph
         @needs_reset = false
       end
@@ -182,6 +189,14 @@ module Egui
       end
 
       def glyph(gid : Int32, size : Float64) : Glyph
+        # A reset of a SHARED atlas (another stack overflowed it — see
+        # sokol.cr's registry-level reset) bumped its epoch: every cached
+        # UV of ours now points at overwritten slots. Drop the whole
+        # glyph cache; live glyphs re-bake on demand below.
+        if @atlas_epoch != @atlas.epoch
+          @atlas_epoch = @atlas.epoch
+          @glyphs.clear
+        end
         @glyphs[{gid, size_key(size)}] ||= build_glyph(gid, size)
       end
 
@@ -200,13 +215,30 @@ module Egui
       # demand, so dropped letters come back instead of staying blank
       # forever (dropped glyphs are cached as blanks otherwise). Call
       # before `flush`, outside a render pass; a true result means the
-      # caller should re-`touch` this frame's text commands.
+      # caller should re-`touch` this frame's text commands. For stacks
+      # on a SHARED atlas the registry resets the atlas itself and calls
+      # #clear_overflow_flag instead (one wipe covers every stack; the
+      # epoch bump invalidates the caches lazily in #glyph).
       def reset_if_full : Bool
         return false unless @needs_reset
         @needs_reset = false
         @atlas.reset
+        @atlas_epoch = @atlas.epoch
         @glyphs.clear
         true
+      end
+
+      # Did a frame's baking overflow the atlas? (Registry-level reset
+      # in sokol.cr polls this across every live stack.)
+      def needs_reset? : Bool
+        @needs_reset
+      end
+
+      # Acknowledge an overflow WITHOUT touching the atlas: the registry
+      # already reset the SHARED atlas this stack bakes into — the epoch
+      # mismatch invalidates the glyph cache lazily in #glyph.
+      def clear_overflow_flag : Nil
+        @needs_reset = false
       end
 
       # Coverage bytes of a baked glyph's atlas slot (specs/tests);
@@ -274,11 +306,12 @@ module Egui
         end
       end
 
-      def self.from_system(paths : Array(String)) : LightHintedFonts?
+      def self.from_system(paths : Array(String),
+                           atlas : GlyphAtlas? = nil) : LightHintedFonts?
         paths.each do |path|
           next unless File.exists?(path)
           data = File.read(path)
-          font = new(data)
+          font = new(data, atlas)
           return font if font.loaded?
         end
         nil
@@ -290,8 +323,8 @@ module Egui
       @cap_units : Float64 = 0.0    # cap height, font units (blue zones)
       @xheight_units : Float64 = 0.0
 
-      def initialize(@font_data : String)
-        super()
+      def initialize(@font_data : String, atlas : GlyphAtlas? = nil)
+        super(atlas)
         # The heuristic keeps glyphs at their design positions (no
         # positional snap — see the X-hinting notes), which next to
         # FreeType's hinted advances reads tight; open the tracking up
@@ -977,10 +1010,15 @@ module Egui
     # glyph coverage — the draw path multiplies by the text color.
     # Baked glyphs are never freed individually; when the shelves run
     # out (font-size drags bake a set per fractional size), `reset`
-    # empties everything for a full re-bake.
+    # empties everything for a full re-bake. The registry may share ONE
+    # atlas between many stacks (see AtlasFonts#initialize); `epoch`
+    # lets each stack detect a foreign reset and drop its stale UVs.
     class GlyphAtlas
       getter size : Int32
       getter view_id = 0_u32
+      # Bumped by every #reset: stacks sharing this atlas compare their
+      # remembered epoch in AtlasFonts#glyph and invalidate on a drift.
+      getter epoch = 0_u32
       @rgba : Bytes
       @dirty = false
       @shelf_x = 0
@@ -1027,13 +1065,15 @@ module Egui
       # Empty the atlas: shelf state back to the origin, pixels zeroed.
       # Keeps the GPU texture/view id — the next `flush` re-uploads the
       # whole buffer. (fontstash's reset-and-rebake, invoked by
-      # AtlasFonts#reset_if_full when the packer runs out of space.)
+      # AtlasFonts#reset_if_full when the packer runs out of space, or
+      # by the backend registry when ANY sharing stack overflowed.)
       def reset : Nil
         @shelf_x = 0
         @shelf_y = 0
         @shelf_h = 0
         @rgba.fill(0_u8)
         @dirty = true
+        @epoch += 1_u32
       end
 
       # Create/update this atlas's GPU texture. Outside of a render

@@ -4381,7 +4381,10 @@ describe "floating containers are constrained to the screen" do
     shrunk = ctx.memory.widget_rects.values.first
     popup = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
     popup.width.should be > shrunk.width
-    rows = ctx.memory.widget_rects.values.select { |r| r.top > shrunk.bottom }
+    # Rows only — the popup's ScrollArea also registers its overlay
+    # scrollbar track (BAR_W wide) as an interactive rect.
+    rows = ctx.memory.widget_rects.values
+      .select { |r| r.top > shrunk.bottom && r.width > Egui::ScrollArea::BAR_W }
     rows.should_not be_empty
     inner = popup.width - 2 * ctx.style.spacing.window_padding.x
     rows.each { |r| r.width.should be >= inner - 0.5 }

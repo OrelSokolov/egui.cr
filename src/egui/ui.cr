@@ -320,13 +320,15 @@ module Egui
     # strip, `:plain` rigid single button, `:field` input field + select
     # button); `label:` is a placeholder for the empty selection that
     # also leads the list as the zero option (picking it reports "");
-    # `overlay:` opens the list on top of the button, GTK3-style.
+    # `overlay:` opens the list on top of the button, GTK3-style;
+    # `max_height:` caps the open list — beyond it the list scrolls.
     def combo_box(id : String, selected : String, options : Array(String),
                   width : Float64? = nil, variant : Symbol = :button,
                   label : String? = nil, overlay : Bool = false,
+                  max_height : Float64 = 220.0,
                   &on_select : String ->) : Bool
-      ComboBox.new(id, selected, options, width, variant, label, overlay)
-        .show(self) { |opt| on_select.call(opt) }
+      ComboBox.new(id, selected, options, width, variant, label, overlay,
+        max_height).show(self) { |opt| on_select.call(opt) }
     end
 
     # egui `egui::ComboBox` + search: a SelectBox — a searchable
@@ -415,9 +417,10 @@ module Egui
 
     def combo_box(id : String, sig : Signal(String), options : Array(String),
                   width : Float64? = nil, variant : Symbol = :button,
-                  label : String? = nil, overlay : Bool = false) : Bool
-      ComboBox.new(id, sig.value, options, width, variant, label, overlay)
-        .show(self) { |opt| sig.value = opt }
+                  label : String? = nil, overlay : Bool = false,
+                  max_height : Float64 = 220.0) : Bool
+      ComboBox.new(id, sig.value, options, width, variant, label, overlay,
+        max_height).show(self) { |opt| sig.value = opt }
     end
 
     # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
