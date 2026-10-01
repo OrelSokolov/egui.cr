@@ -199,14 +199,36 @@ mailbox, синхронные запросы через condvar с таймау�
   старыми CREATE — глифы пропадали/белые квадраты.
 - **`evented_pass`/`AsyncDialogs.pump` не удалены, а нейтрализованы.**
   `pump` переименован в `pump_pass`, при natural-планировщике — no-op
-  (доставка on_done прямо в фибре); legacy-путь (win32/mac,
-  `EGUI_RENDER_THREAD=0`) продолжает их использовать. `evented_pass` —
-  no-op при natural_scheduler.
+  (доставка on_done прямо в фибре); legacy-путь (macOS,
+  `EGUI_RENDER_THREAD=0` на Linux/Win32) продолжает их использовать.
+  `evented_pass` — no-op при natural_scheduler.
 - **Откат на старый путь** — env `EGUI_RENDER_THREAD=0`: тот же бинарь
   работает однопоточно (бисекция регрессий, платформы без нового цикла).
 - Телеметрия (шаг 1): `EGUI_FRAME_DEBUG` (кадровые логи, `[loop] glx_swap
   took N ms`), `EGUI_WATCHDOG`, `EGUI_NOVSYNC`, `EGUI_SHOT=dir` —
   PPM-захват кадров через glReadPixels.
+
+Портирование на Win32: detached-цикл больше не Linux-only. Ядро секции
+шима собрано на портативных примитивах — поток (pthread / CreateThread),
+mutex+condvar с timed wait (pthread / SRWLOCK + CONDITION_VARIABLE),
+relaxed-атомики (C11 stdatomic / Interlocked-интринсики: stdatomic в MSVC
+требует /experimental:c11atomics), doorbell (pipe2 / TCP-loopback-пара из
+WSA_FLAG_OVERLAPPED-сокетов — анонимные пайпы Windows не умеют overlapped
+IO, а планировщик Crystal на win32 — IOCP по сокетам). Рендер-поток
+владеет окном и WGL-контекстом (штатная модель sokol_win32: окно и message
+loop живут на создавшем их потоке); window-management вызовы из A идут тем
+же командным mailbox. macOS остаётся на legacy-пути: AppKit требует
+главный поток процесса, на котором живёт планировщик Crystal (инверсия
+потоков — отдельный проект).
+
+Тогда же закрыт «чёрный кадр» старта: sokol мапит окно до init_cb
+(`_sapp_frame` зовёт init внутри первого тика), а до первого пакета R
+презентовал неинициализированный framebuffer. Теперь R до первого пакета
+каждый тик делает clear-пасс в цвет темы (`sh_clear_pass`); legacy-путь
+презентует фон сразу после gfx-инициализации (`egui_cr_present_clear`:
+SwapBuffers на Win32, flushDrawing на macOS; на X11 — background pixel
+окна ставится в pre-map hook). Цвет фона постится в бэкенд до создания
+окна (`Sokol.run` → ранняя `set_clear_color` из темы приложения).
 
 Проверка. Все спеки `spec/*_spec.cr` зелёные. Прогон terminal при скрытом
 окне (каждый present стаблится ~1 с): за 25 с — 1548 публикаций кадров
@@ -216,3 +238,6 @@ mailbox, синхронные запросы через condvar с таймау�
 hello/terminal сверены покадрово с legacy-путём (EGUI_SHOT): текст, атлас,
 таб-титул промпта — без регрессий. Интерактивный ввод во время стабла
 отдельно не проверялся (в окружении нет инструмента инъекции ввода).
+Win32-ветки шима проверены компиляцией (mingw-w64), кристаллическая
+сторона — cross-compile (`--target x86_64-pc-windows-msvc`); запуск на
+Windows — на машине с MSVC (Rakefile#msvc).
