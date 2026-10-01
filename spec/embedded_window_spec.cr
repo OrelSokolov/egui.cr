@@ -1,6 +1,15 @@
 require "../src/egui"
 require "./core_spec" # raw_frame helper + SCREEN
 
+# The card shell of an embedded window/modal: the largest RectCmd that
+# is not the full-screen scrim (the scrim spans the whole 800×600
+# screen; the shell of a taller-than-screen dialog is taller than it).
+private def card_shell(ctx)
+  ctx.painter.commands.select(Egui::RectCmd)
+    .reject { |c| c.rect.width >= 800.0 }
+    .max_by { |c| c.rect.width * c.rect.height }.rect
+end
+
 describe "Context#embedded_window" do
   it "blocks interaction below like a modal, its own widgets work" do
     ctx = Egui::Context.new
@@ -112,5 +121,70 @@ describe "Context#embedded_window" do
 
     after = ctx.memory.widget_rects[Egui::Id.from("embedded/d").child(0_u64)].not_nil!
     after.left.should be > title_rect.not_nil!.left + 50.0
+  end
+
+  it "re-centers on the measured size once the content settles" do
+    ctx = Egui::Context.new
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      ctx.embedded_window("d", title: "Dialog", width: 400.0) do |ui|
+        20.times { |i| ui.label("line #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call(0.016)
+    first = card_shell(ctx)
+    # frame 1 centers on the 220px height estimate, so a tall card sits
+    # below the true center of the 800×600 screen
+    (first.center.y - 300.0).abs.should be > 30.0
+
+    draw.call(0.032)
+    settled = card_shell(ctx)
+    (settled.center.y - 300.0).abs.should be <= 2.0
+    settled.top.should be < first.top # moved up to true center
+  end
+
+  it "pins a taller-than-screen dialog at the top" do
+    ctx = Egui::Context.new
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      ctx.embedded_window("d", title: "Dialog", width: 400.0) do |ui|
+        60.times { |i| ui.label("line #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    2.times { |i| draw.call(0.016 * (i + 1)) }
+    shell = card_shell(ctx)
+    shell.height.should be > 600.0
+    shell.top.should be < 5.0 # clamped at the screen top, not centered off-screen
+  end
+
+  it "keeps a dragged position instead of re-centering" do
+    ctx = Egui::Context.new
+    title_id = Egui::Id.from("embedded/d").child(0_u64)
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.embedded_window("d", title: "Dialog", width: 400.0) do |ui|
+        20.times { |i| ui.label("line #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([] of Egui::Event, 0.032)
+    center = ctx.memory.widget_rects[title_id].not_nil!.center
+    draw.call([Egui::Event.pointer_moved(center)], 0.048)
+    draw.call([Egui::Event.pointer_moved(center),
+               Egui::Event.pointer_pressed(center)], 0.064)
+    moved = Egui::Pos2.new(center.x + 80.0, center.y)
+    draw.call([Egui::Event.pointer_moved(moved)], 0.080)
+    draw.call([Egui::Event.pointer_released(moved)], 0.096)
+    dragged_left = ctx.memory.widget_rects[title_id].not_nil!.left
+
+    draw.call([] of Egui::Event, 0.112)
+    after = ctx.memory.widget_rects[title_id].not_nil!.left
+    (after - dragged_left).abs.should be <= 2.0 # no snap back to center
   end
 end

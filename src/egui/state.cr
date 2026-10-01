@@ -106,6 +106,7 @@ module Egui
     def initialize
       @positions = {} of Id => Pos2
       @order = [] of LayerId
+      @user_moved = Set(Id).new
     end
 
     def pos_for(id : Id, default : Pos2) : Pos2
@@ -117,7 +118,15 @@ module Egui
     end
 
     def move_by(id : Id, delta : Vec2) : Nil
+      @user_moved << id
       @positions[id] = pos_for(id, Pos2.zero) + delta
+    end
+
+    # Has the user ever dragged this window away? Until then the owner
+    # may keep re-centering it (embedded windows re-center on their
+    # measured size); after a drag the stored position wins.
+    def user_moved?(id : Id) : Bool
+      @user_moved.includes?(id)
     end
 
     def bring_to_top(layer : LayerId) : Nil

@@ -930,11 +930,14 @@ module Egui
     # DRAGGABLE window with a ✕ — the caller keeps the open flag and
     # drops it when this returns true.
     #
-    # Centered on first appearance (from last frame's measured size, so
-    # the card never jumps when its content settles), auto-fits its
-    # content like #window without a resize grip (dialogs are
-    # content-sized), stays on screen (#constrain_floating). `title:`
-    # nil drops the title bar down to a slim drag handle.
+    # Centered on the measured size every frame until the user drags the
+    # window (the very first frame of a session uses a height estimate,
+    # so the card settles once when its content is first measured),
+    # auto-fits its content like #window without a resize grip (dialogs
+    # are content-sized), stays on screen (#constrain_floating — the top
+    # never goes above the screen, so a dialog taller than the screen
+    # pins at the top). `title:` nil drops the title bar down to a slim
+    # drag handle.
     #
     # Returns true the frame the user asked to close it: the ✕, the
     # scrim (when `close_on_scrim:`, the dimmed area IS the dismiss
@@ -974,14 +977,18 @@ module Egui
         close = true if scrim.clicked?
       end
 
-      # Size: last frame's measured size; position: Areas state, the
-      # default centered from that size estimate.
+      # Size: last frame's measured size. Until the user drags the
+      # window it re-centers on that measured size every frame; after a
+      # drag the stored Areas position wins.
       size = @memory.layer_sizes[win_id]? || Vec2.new(width, 220.0)
       default_pos = Pos2.new(screen.center.x - size.x / 2.0,
         screen.center.y - size.y / 2.0)
-      pos = @memory.areas.pos_for(win_id, default_pos)
+      pos = @memory.areas.user_moved?(win_id) ?
+        @memory.areas.pos_for(win_id, default_pos) : default_pos
+      # constrain_y: a centered card taller than the screen pins at the
+      # top instead of centering its top edge off-screen.
       pos, size = constrain_floating(pos, Vec2.new(size.x, size.y),
-        WINDOW_MIN_SIZE.x)
+        WINDOW_MIN_SIZE.x, constrain_y: true)
       @memory.areas.set_pos(win_id, pos)
 
       # A click on blank card space dies on the card (registered after
