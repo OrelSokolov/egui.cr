@@ -17,6 +17,11 @@ module Egui
   class RichLabel
     include Widget
 
+    # Inline-code chip: a soft gray rounded rect behind `code` spans
+    # (GitHub-light tint), painted by `paint_galley` from the run's
+    # `background`.
+    INLINE_CODE_BG = Color32.rgba(0xE9, 0xED, 0xF0, 255)
+
     getter rich : RichText
     getter wrap : Bool?
     getter? userselect : Bool
@@ -56,8 +61,17 @@ module Egui
       visuals = style.visuals
       runs = @rich.styled_runs(style.font_size, visuals.text_color,
         visuals.hyperlink_color)
-      # Inline code fallback: without a mono stack the span is drawn
-      # in the same proportional font — retint it so it still reads.
+      # Inline code = monospace runs in a rounded chip; without a
+      # mono stack they also retint weaker (the font alone can't
+      # distinguish them).
+      runs = runs.map do |r|
+        if r.family == "monospace"
+          TextRun.new(r.text, r.size, r.color, r.underline?, r.family,
+            r.bold?, r.italic?, r.strikethrough?, INLINE_CODE_BG)
+        else
+          r
+        end
+      end
       runs = RichText.fade_code_runs(runs, visuals) if ui.ctx.mono_fonts.nil?
       links = @rich.link_spans
 

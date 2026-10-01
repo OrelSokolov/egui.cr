@@ -288,6 +288,15 @@ module Egui
           color = run.color || default_color
           run_family = run.family || family
           run_fonts = run.family && resolve ? resolve.not_nil!.call(run.family) : fonts
+          # Chip behind a backgrounded run (inline code): a rounded
+          # rect under the text, slightly padded around the glyphs.
+          if (bg = run.background)
+            w = run_fonts.measure(run.text, run.size).x
+            rect(Rect.from_min_size(
+              Pos2.new(run_pos.x - 2.0, row_top + 1.0),
+              Vec2.new(w + 4.0, row.height - 2.0)),
+              3.0, bg)
+          end
           text(run_pos, run.text, run.size, color, run_family,
             run.bold?, run.italic?)
           if run.underline?

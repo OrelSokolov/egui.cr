@@ -11,9 +11,9 @@ require "../src/egui/backend/sokol"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
-# Monospace stack for inline/code-block text (the terminal example's
-# candidate list): without it `code` draws in the proportional font
-# and only the weaker tint distinguishes it.
+# Monospace stack for inline/code-block text, registered as the
+# "monospace" FAMILY (the primary font stays the system one — prose
+# renders proportionally, code in a real mono face).
 def pick_monospace : Nil
   candidates = [
     "JetBrainsMonoNerdFontMono-Regular.ttf",
@@ -33,7 +33,7 @@ def pick_monospace : Nil
     ]
   {% end %}
   font = Egui::Backend::Sokol.fonts_from_system(candidates)
-  Egui::Backend::Sokol.select_fonts(font) if font
+  Egui::Backend::Sokol.register_font("monospace", font) if font
 end
 
 pick_monospace
@@ -80,5 +80,7 @@ class MarkdownApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(MarkdownApp.new, title: "egui-cr — markdown",
+app = MarkdownApp.new
+app.theme = Egui::Theme.light # a markdown reader reads best light
+Egui::Backend::Sokol.run(app, title: "egui-cr — markdown",
   inspector: :hidden)

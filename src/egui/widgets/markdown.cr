@@ -20,6 +20,11 @@ module Egui
 
     # HTML-ish heading scale over the style's font size; all bold.
     HEADING_SCALES = {1.6, 1.35, 1.15, 1.0, 0.9, 0.85}
+    # Fenced-code background (GitHub light tint).
+    CODE_BG = Color32.rgba(0xF7, 0xF8, 0xFA, 255)
+    # Horizontal rules carry at least this much breathing room above
+    # and below the line.
+    HR_PAD = 5.0
 
     # One parsed block. `text` carries the STRIPPED content (markers
     # removed); heading `level` is 1-6, list items keep their number
@@ -282,6 +287,8 @@ module Egui
       case block.kind
       when :heading
         scale = HEADING_SCALES[block.level - 1]? || 1.0
+        # H1 carries 20px of top padding — section separation.
+        ui.cursor = Pos2.new(ui.cursor.x, ui.cursor.y + 20.0) if block.level == 1
         top = ui.cursor
         ui.add(text_label(
           RichText.new(block.text).size(style.font_size * scale).bold))
@@ -295,7 +302,7 @@ module Egui
       when :paragraph
         ui.add(text_label(block.text))
       when :hr
-        ui.add(Separator.new)
+        render_hr(ui, style)
       when :list_item
         render_list_item(ui, block, style)
       when :quote
@@ -348,6 +355,19 @@ module Egui
       ui.min_rect = ui.min_rect.union(child.min_rect)
       ui.cursor = Pos2.new(top.x,
         child.min_rect.bottom + ui.style.spacing.item_spacing.y)
+    end
+
+    # A horizontal rule with at least HR_PAD of breathing room above
+    # and below the line (on top of the regular item spacing).
+    private def render_hr(ui : Ui, style : Style) : Nil
+      top = ui.cursor
+      y = top.y + HR_PAD
+      rect = ui.allocate_at_least(
+        Vec2.new(ui.available_width, HR_PAD * 2.0 + 1.0))
+      y = {y, rect.top + HR_PAD}.max
+      ui.painter.line(Pos2.new(rect.left, y),
+        Pos2.new(rect.right, y), 1.0,
+        style.visuals.fade_color(style.visuals.text_color, 0.45))
     end
 
     # A list item hangs: the bullet sits in its own left column, the
@@ -411,8 +431,7 @@ module Egui
       pad = 8.0
       size = Vec2.new(galley.size.x + pad * 2.0, galley.size.y + pad * 2.0)
       rect = ui.allocate_at_least(size)
-      ui.painter.rect(rect, 4.0,
-        style.visuals.fade_color(style.visuals.text_color, 0.12))
+      ui.painter.rect(rect, 4.0, CODE_BG)
       inner = ui.child_ui(Rect.from_min_size(
         Pos2.new(rect.left + pad, rect.top + pad), galley.size))
       inner.add(Label.new(rich, wrap: false))

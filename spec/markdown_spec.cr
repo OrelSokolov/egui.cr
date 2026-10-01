@@ -169,8 +169,8 @@ describe "Markdown widget" do
     texts.first.family.should eq("monospace")
 
     rects = ctx.painter.commands.select(Egui::RectCmd)
-    code_bg = ctx.style.visuals.fade_color(ctx.style.visuals.text_color, 0.12)
-    rects.count(&.fill.==(code_bg)).should eq(1) # the code block background
+    rects.count(&.fill.==(Egui::Markdown::CODE_BG))
+      .should eq(1) # the code block background
   end
 
   it "renders headings bold and scaled, rules as separator lines" do
@@ -261,6 +261,22 @@ describe "Markdown widget" do
     lines.size.should eq(2)
   end
 
+  it "gives H1 20px of top padding" do
+    y_of = [] of Float64
+    ["# H", "## H"].each do |src|
+      ctx = Egui::Context.new
+      md_frame(ctx) do |c|
+        c.central_panel do |ui|
+          ui.markdown(src)
+        end
+      end
+      y_of << ctx.painter.commands.select(Egui::TextCmd).first.pos.y
+    end
+    # same panel, same start cursor: the H1 sits ≥ 20px lower than
+    # an H2 would (the heading row heights differ by a few px more)
+    (y_of[0] - y_of[1]).should be >= 20.0
+  end
+
   it "hangs list items: text starts right of the bullet column" do
     ctx = Egui::Context.new
     md_frame(ctx) do |c|
@@ -278,6 +294,40 @@ describe "Markdown widget" do
     # wrapped lines align to the text column, not to the bullet
     wrapped = texts.select { |t| t.pos.y > body.pos.y + 5.0 }
     wrapped.all? { |t| t.pos.x >= body.pos.x - 0.5 }.should be_true
+  end
+
+  it "paints an inline-code chip (rounded gray rect behind the run)" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("use `map` here")
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    code = texts.find(&.text.==("map")).not_nil!
+    chip = ctx.painter.commands.select(Egui::RectCmd)
+      .find(&.fill.==(Egui::RichLabel::INLINE_CODE_BG)).not_nil!
+    chip.rounding.should be > 0.0
+    # the chip surrounds the code run (padded by ±2px)
+    chip.rect.left.should be <= code.pos.x
+    chip.rect.right.should be >= code.pos.x + 20.0
+  end
+
+  it "gives horizontal rules at least 5px of padding above" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("text\n\n---")
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    text = texts.find(&.text.==("text")).not_nil!
+    text_bottom = text.pos.y + ctx.style.font_size * 1.3 / 2
+    rule = ctx.painter.commands.select(Egui::LineCmd)
+      .find { |l| l.p1.y == l.p2.y }.not_nil!
+    (rule.p1.y - text_bottom).should be >= 5.0
   end
 
   it "renders tables as aligned columns with a header rule" do

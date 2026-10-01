@@ -232,15 +232,16 @@ module Egui
           if last && last.size == run.size && last.color == run.color &&
              last.underline? == run.underline? &&
              last.strikethrough? == run.strikethrough? &&
+             last.background == run.background &&
              last.family == run.family &&
              last.bold? == run.bold? && last.italic? == run.italic?
             runs[-1] = Galley::RowRun.new(last.text + text, last.x,
               run.size, run.color, run.underline?, run.family,
-              run.bold?, run.italic?, run.strikethrough?)
+              run.bold?, run.italic?, run.strikethrough?, run.background)
           else
             runs << Galley::RowRun.new(text, x, run.size, run.color,
               run.underline?, run.family, run.bold?, run.italic?,
-              run.strikethrough?)
+              run.strikethrough?, run.background)
           end
           x += width
         end

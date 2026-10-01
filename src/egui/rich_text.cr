@@ -129,7 +129,7 @@ module Egui
            (r.color.nil? || r.color == visuals.text_color)
           TextRun.new(r.text, r.size,
             visuals.fade_color(visuals.text_color, 0.72), r.underline?,
-            r.family, r.bold?, r.italic?, r.strikethrough?)
+            r.family, r.bold?, r.italic?, r.strikethrough?, r.background)
         else
           r
         end
