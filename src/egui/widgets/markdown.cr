@@ -29,7 +29,9 @@ module Egui
     # rows joined by \n and \x1F (unit separator): first row = header.
     class Block
       getter kind : Symbol
-      getter text : String
+      # List items append lazy-continuation lines to their text, so
+      # `text` is mutable.
+      property text : String
       getter level : Int32
       getter? ordered : Bool
       getter number : Int32
@@ -224,16 +226,31 @@ module Egui
         end
 
         # List items: `- `/`* `/`+ ` bullets or `1. `/`1) ` numbers.
-        # Flat (nesting by indentation is not tracked — v1); a blank
-        # line or any other block ends the list.
+        # LAZY CONTINUATION: plain lines following an item (until a
+        # blank line — the next paragraph — or another block kind)
+        # soft-wrap into that item's text, so the whole "paragraph"
+        # of the item renders with the hanging indent. An indented
+        # marker opens a nested level (every 2 leading spaces).
         if (m = stripped.match(/^([-*+]|(\d+)[.)])\s+(.*)$/))
           flush_paragraph.call
-          while i < lines.size &&
-                (item = lines[i].strip.match(/^([-*+]|(\d+)[.)])\s+(.*)$/))
-            ordered = !item[2]?.nil?
-            number = ordered ? item[2].to_i : 0
-            blocks << Block.new(:list_item, item[3], 0, ordered, number)
-            i += 1
+          while i < lines.size
+            line = lines[i]
+            cur = line.strip
+            if cur.empty?
+              break # blank line ends the list (next paragraph)
+            elsif (item = cur.match(/^([-*+]|(\d+)[.)])\s+(.*)$/))
+              level = {line[/^\s*/].size // 2, 0}.max
+              ordered = !item[2]?.nil?
+              number = ordered ? item[2].to_i : 0
+              blocks << Block.new(:list_item, item[3], level, ordered, number)
+              i += 1
+            elsif (last = blocks.last?) && last.kind == :list_item &&
+                  plain_text_line?(cur)
+              last.text = last.text.empty? ? cur : "#{last.text} #{cur}"
+              i += 1
+            else
+              break # another block kind takes over
+            end
           end
           next
         end
@@ -249,6 +266,14 @@ module Egui
     private def self.split_table_row(line : String) : Array(String)
       cells = line.strip.sub(/^\|/, "").sub(/\|$/, "").split('|')
       cells.map(&.strip)
+    end
+
+    # A line that continues the current LIST ITEM (lazy continuation):
+    # plain prose — not another block kind's opener.
+    private def self.plain_text_line?(stripped : String) : Bool
+      return false if stripped.starts_with?(/\A(#|```|>|\||!\[|<p |<img)/)
+      return false if stripped.matches?(/^(-{3,}|\*{3,}|_{3,})$/)
+      true
     end
 
     # --- rendering -----------------------------------------------------
@@ -332,7 +357,9 @@ module Egui
     # block, not as loose lines.
     private def render_list_item(ui : Ui, block : Block, style : Style) : Nil
       marker = block.ordered? ? "#{block.number}." : "•"
-      indent = style.spacing.indent * 0.5
+      # The item's own block indent + one step per nesting level.
+      indent = style.spacing.indent * 0.5 +
+               block.level * style.spacing.indent * 0.75
       fonts = ui.ctx.fonts_for(style.font_family)
       marker_w = fonts.measure(marker, style.font_size).x
       bullet_w = marker_w + style.spacing.item_spacing.x * 2.0

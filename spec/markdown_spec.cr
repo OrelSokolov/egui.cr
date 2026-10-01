@@ -102,6 +102,52 @@ describe "Markdown.parse" do
     rows = blocks.first.text.split('\n').map(&.split("\x1F"))
     rows.should eq([["os", "status"], ["linux", "✓"], ["win", "✓"]])
   end
+
+  it "soft-wraps lazy continuation lines into the list item" do
+    blocks = Egui::Markdown.parse(<<-MD)
+      - item text that
+        continues on the next source line
+      - second item
+      MD
+    blocks.map(&.kind).should eq([:list_item, :list_item])
+    blocks.first.text.should eq(
+      "item text that continues on the next source line")
+    blocks[1].text.should eq("second item")
+  end
+
+  it "ends the list at a blank line (next paragraph stays separate)" do
+    blocks = Egui::Markdown.parse("- item\n  continued\n\nplain paragraph")
+    blocks.map(&.kind).should eq([:list_item, :paragraph])
+  end
+
+  it "nests list items by leading indent (2 spaces per level)" do
+    blocks = Egui::Markdown.parse(<<-MD)
+      - outer
+        - inner
+          - deepest
+      - back
+      MD
+    blocks.map(&.level).should eq([0, 1, 2, 0])
+  end
+
+  it "renders wrapped list-item lines indented right of the bullet" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("- a lazy continuation item whose text\n" \
+                    "  joined from two source lines and is long enough " \
+                    "to wrap in this narrow panel for sure")
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    bullet = texts.find(&.text.==("•")).not_nil!
+    body = texts.find(&.text.starts_with?("a lazy")).not_nil!
+    body.pos.x.should be > bullet.pos.x + 3.0
+    wrapped = texts.select { |t| t.pos.y > body.pos.y + 5.0 }
+    wrapped.should_not be_empty
+    wrapped.all? { |t| t.pos.x >= body.pos.x - 0.5 }.should be_true
+  end
 end
 
 describe "Markdown widget" do
