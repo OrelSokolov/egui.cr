@@ -84,10 +84,11 @@ module Egui
         @bold, @italic, @strikethrough)]
     end
 
-    # A link span parsed out of the markup: byte range within the
+    # A link span parsed out of the markup: CHAR range within the
     # STRIPPED text (what the runs spell out — markers removed, spans
     # concatenated) plus the URL. `RichLabel` hit-tests pointer
-    # positions against these ranges.
+    # positions against these ranges — char units, matching how the
+    # galley flattens row text (multibyte glyphs count as one).
     struct LinkSpan
       getter from : Int32
       getter to : Int32
@@ -177,7 +178,7 @@ module Egui
             i += 1
           end
         when BACKTICK
-          close = src.index('`', i + 1)
+          close = src.byte_index('`', i + 1)
           if close
             flush.call
             runs << TextRun.new(src.byte_slice(i + 1, close - i - 1),
@@ -227,9 +228,9 @@ module Egui
           # standalone-image block gets a real Image widget on the
           # markdown side). Not a link — no underline.
           if i + 1 < total && bytes[i + 1] == LBRACKET &&
-             (close_br = src.index(']', i + 2)) &&
+             (close_br = src.byte_index(']', i + 2)) &&
              close_br + 1 < total && bytes[close_br + 1] == LPAREN &&
-             (close_par = src.index(')', close_br + 2))
+             (close_par = src.byte_index(')', close_br + 2))
             flush.call
             runs << TextRun.new(
               src.byte_slice(i + 2, close_br - i - 2), size, color,
@@ -240,17 +241,17 @@ module Egui
             i += 1
           end
         when LBRACKET
-          close_br = src.index(']', i + 1)
+          close_br = src.byte_index(']', i + 1)
           if close_br && close_br + 1 < total &&
              bytes[close_br + 1] == LPAREN &&
-             (close_par = src.index(')', close_br + 2))
+             (close_par = src.byte_index(')', close_br + 2))
             flush.call
             label = src.byte_slice(i + 1, close_br - i - 1)
             url = src.byte_slice(close_br + 2, close_par - close_br - 2)
-            from = runs.sum(&.text.bytesize)
+            from = runs.sum(&.text.size)
             runs << TextRun.new(label, size, link_color, true, family,
               bold, italic, strike)
-            links << LinkSpan.new(from, from + label.bytesize, url)
+            links << LinkSpan.new(from, from + label.size, url)
             i = close_par + 1
           else
             plain << "["

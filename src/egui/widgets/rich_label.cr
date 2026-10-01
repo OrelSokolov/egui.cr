@@ -195,20 +195,20 @@ module Egui
         style.font_family, resolve)
     end
 
-    # The link span under `pos`, if any: byte index in the flattened
+    # The link span under `pos`, if any: char index in the flattened
     # row text first (same geometry as the caret), then a range check
-    # against the spans. Wrap-broken rows keep every source byte, so
+    # against the spans. Wrap-broken rows keep every source char, so
     # the flattened text matches the spans' offsets.
     private def link_at(galley : Galley, rect : Rect, pos : Pos2,
                         fonts : Fonts, links : Array(RichText::LinkSpan))
       return nil if galley.rows.empty? || links.empty?
       return nil unless pos.x >= rect.left && pos.x <= rect.right &&
                        pos.y >= rect.top && pos.y <= rect.bottom
-      index = caret_at(galley, row_byte_starts(galley), rect, pos, fonts)
+      index = caret_at(galley, row_char_starts(galley), rect, pos, fonts)
       links.find { |l| index >= l.from && index < l.to }
     end
 
-    private def row_byte_starts(galley : Galley) : Array(Int32)
+    private def row_char_starts(galley : Galley) : Array(Int32)
       starts = [] of Int32
       start = 0
       galley.rows.each do |row|
@@ -218,9 +218,10 @@ module Egui
       starts
     end
 
-    # Byte index of the pointer inside the flattened row text: the row
+    # Char index of the pointer inside the flattened row text: the row
     # under the pointer (y), then the nearest x boundary within it —
-    # Label's caret geometry, verbatim.
+    # Label's caret geometry, verbatim. Char units, matching the
+    # spans (multibyte glyphs count as one).
     private def caret_at(galley : Galley, row_starts : Array(Int32),
                          rect : Rect, pos : Pos2, fonts : Fonts) : Int32
       return 0 if galley.rows.empty?

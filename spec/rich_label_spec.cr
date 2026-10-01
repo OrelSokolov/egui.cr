@@ -76,9 +76,30 @@ describe "RichText inline markup" do
     rich.link_spans.size.should eq(1)
     span = rich.link_spans.first
     span.url.should eq("https://example.com")
-    # byte range within the STRIPPED text: "see " is 4 bytes
+    # char range within the STRIPPED text: "see " is 4 chars
     span.from.should eq(4)
     span.to.should eq(8)
+  end
+
+  it "measures link spans in chars, not bytes (multibyte paragraphs)" do
+    white = Egui::Color32.rgba(255, 255, 255, 255)
+    blue = Egui::Color32.rgba(102, 170, 255, 255)
+
+    # README line 7 verbatim inside bold: "►" is 3 bytes but 1 char —
+    # a byte-based span would shift by 2 and miss the hit test.
+    rich = Egui::RichText.new("**[► WATCH DEMO](DEMO.md)** tail")
+    rich.styled_runs(16.0, white, blue)
+    span = rich.link_spans.first
+    span.from.should eq(0)
+    span.to.should eq("► WATCH DEMO".size) # 12 chars, not 14 bytes
+
+    # README line 14 shape: multibyte "—" BEFORE the link shifts byte
+    # offsets but not char offsets.
+    rich2 = Egui::RichText.new("Crystal — inspired by [egui](https://github.com/emilk/egui)'s")
+    rich2.styled_runs(16.0, white, blue)
+    span2 = rich2.link_spans.first
+    span2.from.should eq("Crystal — inspired by ".size) # 22 chars
+    span2.to.should eq(span2.from + 4)
   end
 
   it "parses ~~strikethrough~~ (a lone ~ stays prose)" do
@@ -170,6 +191,29 @@ describe "RichLabel widget" do
     ctx.cursor_icon.should eq(Egui::CursorIcon::Default)
 
     draw.call([Egui::Event.pointer_moved(pos.not_nil!)], 0.032)
+    ctx.cursor_icon.should eq(Egui::CursorIcon::Pointer)
+  end
+
+  it "hit-tests links in multibyte paragraphs (README demo line)" do
+    ctx = Egui::Context.new
+    link_pos = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) {
+      rich_frame(ctx, events, time) do |c|
+        c.central_panel do |ui|
+          ui.add(Egui::RichLabel.new(
+            "**[► WATCH DEMO](DEMO.md)** — screenshots of everything below."))
+        end
+      end
+      unless link_pos
+        cmd = ctx.painter.commands.select(Egui::TextCmd)
+          .find(&.text.==("► WATCH DEMO"))
+        link_pos = cmd.try(&.pos)
+      end
+    }
+    draw.call([] of Egui::Event, 0.016)
+    link_pos.should_not be_nil
+
+    draw.call([Egui::Event.pointer_moved(link_pos.not_nil!)], 0.032)
     ctx.cursor_icon.should eq(Egui::CursorIcon::Pointer)
   end
 
