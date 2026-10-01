@@ -41,6 +41,9 @@ lib LibPty
   # The read end as a plain fd (-1 on ring-buffer platforms). The shim
   # owns the fd until `release_fd` hands the close over to Crystal.
   fun fd = egui_cr_pty_fd(pty : Pty) : Int32
+  # The child's pid, -1 = none/failed. Valid until reap frees the
+  # session — cache it at spawn, don't call later.
+  fun pid = egui_cr_pty_pid(pty : Pty) : Int32
   # Hand the fd's close to Crystal: after this, `IO#close` (not reap)
   # closes it — reap skips the close(2).
   fun release_fd = egui_cr_pty_release_fd(pty : Pty)
@@ -60,6 +63,10 @@ module Egui
       class Error < Exception; end
 
       getter term : Terminal
+      # Child process pid, cached at spawn (the shim frees the session
+      # on reap). nil when the platform didn't provide one. Used by
+      # hosts for process-tree memory accounting.
+      getter pid : Int32?
       property on_output : Proc(Nil)? = nil
 
       @pty : LibPty::Pty
@@ -103,6 +110,8 @@ module Egui
         end
         raise Error.new("pty spawn failed for #{shell}") if pty.null?
         @pty = pty
+        pid = LibPty.pid(@pty)
+        @pid = pid >= 0 ? pid : nil
 
         {% unless flag?(:win32) %}
           # Default IO::FileDescriptor is evented (epoll/kqueue) — the

@@ -351,6 +351,12 @@ int egui_cr_pty_fd(EguiCrPty *p)
     return -1;
 }
 
+/* The child's pid (process-tree RSS accounting); -1 = none/failed. */
+int egui_cr_pty_pid(EguiCrPty *p)
+{
+    return p ? (int)GetProcessId(p->h_proc) : -1;
+}
+
 /* Unix-only concept (see the Unix side); no fd to hand over here. */
 void egui_cr_pty_release_fd(EguiCrPty *p)
 {
@@ -560,6 +566,13 @@ int egui_cr_pty_alive(EguiCrPty *p)
 int egui_cr_pty_fd(EguiCrPty *p)
 {
     return p ? p->master : -1;
+}
+
+/* The child's pid (process-tree RSS accounting); -1 = none. Valid
+ * until reap frees the session — cache it on the Crystal side. */
+int egui_cr_pty_pid(EguiCrPty *p)
+{
+    return p ? p->pid : -1;
 }
 
 /* Hand the master fd's close over to the caller (Crystal): reap will
