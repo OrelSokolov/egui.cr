@@ -23,8 +23,10 @@ module Egui
 
     # One parsed block. `text` carries the STRIPPED content (markers
     # removed); heading `level` is 1-6, list items keep their number
-    # (`ordered` false → bullet), an image block's text is the URL and
-    # `alt` its alt text.
+    # (`ordered` false → bullet), an image block's text is the URL,
+    # `alt` its alt text, `width_px` an explicit `<img width=…>` size
+    # and `align` its horizontal alignment. A table's `text` holds the
+    # rows joined by \n and \x1F (unit separator): first row = header.
     class Block
       getter kind : Symbol
       getter text : String
@@ -32,14 +34,23 @@ module Egui
       getter? ordered : Bool
       getter number : Int32
       getter alt : String
+      getter width_px : Float64?
+      getter align : Symbol
 
       def initialize(@kind : Symbol, @text : String = "", @level : Int32 = 0,
                      @ordered : Bool = false, @number : Int32 = 0,
-                     @alt : String = "")
+                     @alt : String = "", @width_px : Float64? = nil,
+                     @align : Symbol = :left)
       end
     end
 
     getter source : String
+
+    # Link click interceptor for a markdown viewer: receives the RAW
+    # markdown target (url or relative path). Nil = the default —
+    # http(s) through the browser, anything else resolved against
+    # #base_dir and opened by the OS double-click handler.
+    property on_link : (String ->)?
 
     # Root relative image paths resolve against (nil = paths stay as
     # written — cwd-relative).
@@ -156,6 +167,62 @@ module Egui
           next
         end
 
+        # Minimal HTML: `<p align=…>…<img …>…</p>` (README logos) and
+        # a bare `<img …>` line — the img tag's src/width/alt and the
+        # wrapping p's align drive the image block.
+        if stripped.starts_with?("<p ") || stripped.starts_with?("<img")
+          flush_paragraph.call
+          html = lines[i].strip
+          # a <p …> wrapper may span lines until </p>
+          if stripped.starts_with?("<p") && !html.includes?("</p>")
+            i += 1
+            while i < lines.size
+              html += " " + lines[i].strip
+              break if lines[i].includes?("</p>")
+              i += 1
+            end
+          end
+          if (img = html.match(/<img\b([^>]*)>/))
+            attrs = img[1]
+            src = attrs[/\bsrc\s*=\s*"([^"]*)"/, 1]? ||
+                  attrs[/\bsrc\s*=\s*'([^']*)'/, 1]?
+            if src
+              width = attrs[/\bwidth\s*=\s*"(\d+)/, 1]?.try(&.to_f)
+              alt = attrs[/\balt\s*=\s*"([^"]*)"/, 1]? ||
+                    attrs[/\balt\s*=\s*'([^']*)'/, 1]? || ""
+              align = if html =~ /align\s*=\s*"?center/i
+                        :center
+                      elsif html =~ /align\s*=\s*"?right/i
+                        :right
+                      else
+                        :left
+                      end
+              blocks << Block.new(:image, src, alt: alt,
+                width_px: width, align: align)
+            end
+          end
+          i += 1
+          next
+        end
+
+        # GFM table: a `| a | b |` header followed by a `| --- | --- |`
+        # separator row (and optional alignment colons, ignored — v1
+        # left-aligns) and body rows.
+        if stripped.starts_with?("|") && i + 1 < lines.size &&
+           lines[i + 1].strip.match(/^\|?[\s:|-]+\|?$/) &&
+           lines[i + 1].includes?("-")
+          flush_paragraph.call
+          rows = [split_table_row(stripped)]
+          i += 2
+          while i < lines.size && lines[i].strip.starts_with?("|")
+            rows << split_table_row(lines[i].strip)
+            i += 1
+          end
+          blocks << Block.new(:table,
+            rows.map { |r| r.join("\x1F") }.join("\n"))
+          next
+        end
+
         # List items: `- `/`* `/`+ ` bullets or `1. `/`1) ` numbers.
         # Flat (nesting by indentation is not tracked — v1); a blank
         # line or any other block ends the list.
@@ -178,16 +245,30 @@ module Egui
       blocks
     end
 
+    # `| a | b |` (leading/trailing pipes optional) → cells.
+    private def self.split_table_row(line : String) : Array(String)
+      cells = line.strip.sub(/^\|/, "").sub(/\|$/, "").split('|')
+      cells.map(&.strip)
+    end
+
     # --- rendering -----------------------------------------------------
 
     private def render_block(ui : Ui, block : Block, style : Style) : Nil
       case block.kind
       when :heading
         scale = HEADING_SCALES[block.level - 1]? || 1.0
-        ui.add(RichLabel.new(
+        top = ui.cursor
+        ui.add(text_label(
           RichText.new(block.text).size(style.font_size * scale).bold))
+        # GitHub-style: H1/H2 carry a rule under the heading text.
+        if block.level <= 2
+          y = ui.cursor.y - style.spacing.item_spacing.y
+          ui.painter.line(Pos2.new(top.x, y),
+            Pos2.new({top.x + ui.available_width, top.x}.max, y), 1.0,
+            style.visuals.fade_color(style.visuals.text_color, 0.45))
+        end
       when :paragraph
-        ui.add(RichLabel.new(block.text))
+        ui.add(text_label(block.text))
       when :hr
         ui.add(Separator.new)
       when :list_item
@@ -198,6 +279,38 @@ module Egui
         render_code(ui, block, style)
       when :image
         render_image(ui, block, style)
+      when :table
+        render_table(ui, block, style)
+      end
+    end
+
+    # Every text block goes through here: a RichLabel with this
+    # widget's link handler wired in.
+    private def text_label(text : String, wrap : Bool? = true) : RichLabel
+      label = RichLabel.new(text, wrap: wrap)
+      label.link_handler = ->open_link(String)
+      label
+    end
+
+    private def text_label(rich : RichText, wrap : Bool? = true) : RichLabel
+      label = RichLabel.new(rich, wrap: wrap)
+      label.link_handler = ->open_link(String)
+      label
+    end
+
+    # Link activation: the app's #on_link wins; the default routes
+    # http(s) to the browser and resolves everything else against
+    # #base_dir for the OS "open with default application" handler —
+    # relative doc links (`[WATCH DEMO](DEMO.md)`) land on real files.
+    private def open_link(target : String) : Nil
+      if (handler = @on_link)
+        handler.call(target)
+      elsif target.starts_with?("http://") || target.starts_with?("https://")
+        Hyperlink.open_url(target)
+      else
+        path = @base_dir ? File.expand_path(target, @base_dir.not_nil!)
+                         : File.expand_path(target)
+        SystemPorts::FileOpen.show(path)
       end
     end
 
@@ -212,14 +325,35 @@ module Egui
         child.min_rect.bottom + ui.style.spacing.item_spacing.y)
     end
 
+    # A list item hangs: the bullet sits in its own left column, the
+    # text in another — wrapped lines stay aligned to the text column
+    # and never run under the bullet (hanging indent, GitHub-style).
+    # The whole item is indented from the margin so lists read as a
+    # block, not as loose lines.
     private def render_list_item(ui : Ui, block : Block, style : Style) : Nil
       marker = block.ordered? ? "#{block.number}." : "•"
-      top = ui.cursor
-      row = ui.child_ui(Rect.from_min_size(top,
-        Vec2.new(ui.available_width, 1e6)), layout: Layout.left_to_right)
-      row.add(Label.new(marker, userselect: false))
-      row.add(RichLabel.new(block.text, wrap: true))
-      advance_past(ui, row, top)
+      indent = style.spacing.indent * 0.5
+      fonts = ui.ctx.fonts_for(style.font_family)
+      marker_w = fonts.measure(marker, style.font_size).x
+      bullet_w = marker_w + style.spacing.item_spacing.x * 2.0
+
+      top = Pos2.new(ui.cursor.x + indent, ui.cursor.y)
+      avail = {ui.available_width - indent, bullet_w + 20.0}.max
+
+      bullet = ui.child_ui(Rect.from_min_size(top,
+        Vec2.new(bullet_w, 1e6)))
+      bullet.add(Label.new(marker, userselect: false))
+
+      text = ui.child_ui(Rect.from_min_size(
+        Pos2.new(top.x + bullet_w, top.y),
+        Vec2.new({avail - bullet_w, 20.0}.max, 1e6)))
+      text.add(text_label(block.text, true))
+
+      bottom = {bullet.min_rect.bottom, text.min_rect.bottom}.max
+      ui.min_rect = ui.min_rect.union(
+        Rect.new(top, Pos2.new({top.x + avail, top.x}.max, bottom)))
+      ui.cursor = Pos2.new(ui.cursor.x,
+        bottom + style.spacing.item_spacing.y)
     end
 
     private def render_quote(ui : Ui, block : Block, style : Style) : Nil
@@ -228,8 +362,7 @@ module Egui
       inner = ui.child_ui(Rect.from_min_size(
         Pos2.new(top.x + indent, top.y),
         Vec2.new({ui.available_width - indent, 1.0}.max, 1e6)))
-      inner.add(RichLabel.new(
-        RichText.new(block.text).weak(style.visuals)))
+      inner.add(text_label(RichText.new(block.text).weak(style.visuals)))
       advance_past(ui, inner, top)
       # Accent bar down the quote's left edge.
       bottom = inner.min_rect.bottom - style.spacing.item_spacing.y
@@ -258,18 +391,96 @@ module Egui
       inner.add(Label.new(rich, wrap: false))
     end
 
+    # GFM table: header row bold with a rule under it (GitHub style),
+    # body rows below. Column widths = the widest cell per column
+    # (markup-stripped measurement, single line — cells don't wrap in
+    # v1), scaled down proportionally when the table overflows the
+    # available width.
+    private def render_table(ui : Ui, block : Block, style : Style) : Nil
+      rows = block.text.split('\n').map(&.split("\x1F"))
+      return if rows.empty?
+      fonts = ui.ctx.fonts_for(style.font_family)
+      measure = ->(text : String, bold : Bool) {
+        rich = RichText.new(text)
+        rich.bold if bold
+        runs = rich.styled_runs(style.font_size, style.visuals.text_color,
+          style.visuals.hyperlink_color)
+        w = 0.0
+        runs.each { |r| w += fonts.measure(r.text, r.size).x }
+        w
+      }
+
+      cols = rows.map(&.size).max
+      widths = Array.new(cols, 0.0)
+      rows.each_with_index do |row, ri|
+        row.each_with_index do |cell, ci|
+          w = measure.call(cell, ri.zero?) + 8.0
+          widths[ci] = {widths[ci], w}.max
+        end
+      end
+      # Scale down to fit (keep the proportions).
+      total = widths.sum + (cols - 1) * 6.0
+      avail = ui.available_width
+      if total > avail && total > 0
+        widths = widths.map { |w| w * avail / total }
+      end
+
+      top = ui.cursor
+      grid_id = ui.next_widget_id.value.to_s
+      Grid.new(grid_id, widths: widths).show(ui) do |grid|
+        rows.each_with_index do |row, ri|
+          row.each_with_index do |cell, ci|
+            rich = RichText.new(cell)
+            rich.bold if ri.zero?
+            grid.add(text_label(rich, false))
+          end
+          grid.end_row
+          # Rule under the header row.
+          if ri.zero?
+            y = ui.cursor.y
+            ui.painter.line(Pos2.new(top.x, y),
+              Pos2.new({top.x + widths.sum + (cols - 1) * 6.0,
+                        top.x + avail}.min, y), 1.0,
+              style.visuals.fade_color(style.visuals.text_color, 0.45))
+          end
+        end
+      end
+    end
+
     # Standalone image block: the texture loads through
     # `Context#load_image` (cached per path), sized by a header-only
     # probe (`TextureRegistry#image_size`) and scaled DOWN to the
     # available width (never up — small icons keep their pixels).
-    # An unloadable/remote image degrades to a weak alt-text label.
+    # An explicit `<img width=…>` clamps further; `align` shifts the
+    # block. An unloadable/remote image degrades to a weak alt label.
     private def render_image(ui : Ui, block : Block, style : Style) : Nil
       path = resolve_image_path(block.text)
       texture = ui.ctx.load_image(path)
+      avail = ui.available_width
       if texture > 0 && (sz = ui.ctx.textures.image_size(path)) &&
          sz.x > 0 && sz.y > 0
-        scale = {ui.available_width / sz.x, 1.0}.min
-        ui.add(Image.new(texture, Vec2.new(sz.x * scale, sz.y * scale)))
+        draw_w = sz.x
+        # explicit <img width=…> clamps; then fit the available width
+        # (never upscale)
+        if (want = block.width_px) && want < draw_w
+          draw_w = want
+        end
+        draw_w = {draw_w, avail}.min
+        scale = draw_w / sz.x
+        size = Vec2.new(sz.x * scale, sz.y * scale)
+        x = case block.align
+            when :center then ui.cursor.x + {(avail - size.x) / 2.0, 0.0}.max
+            when :right  then ui.cursor.x + {avail - size.x, 0.0}.max
+            else              ui.cursor.x
+            end
+        top = Pos2.new(x, ui.cursor.y)
+        cell = ui.child_ui(Rect.from_min_size(top, size))
+        cell.add(Image.new(texture, size))
+        bottom = {cell.min_rect.bottom, top.y + size.y}.max
+        ui.min_rect = ui.min_rect.union(
+          Rect.new(ui.cursor, Pos2.new({top.x + size.x, ui.cursor.x}.max, bottom)))
+        ui.cursor = Pos2.new(ui.cursor.x,
+          bottom + style.spacing.item_spacing.y)
       else
         alt = block.alt.empty? ? block.text : block.alt
         ui.add(RichLabel.new(

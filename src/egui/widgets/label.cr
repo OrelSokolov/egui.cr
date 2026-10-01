@@ -39,6 +39,18 @@ module Egui
       @id_name = id
     end
 
+    # Text-decoration chainables (the `Hyperlink#underline` parity):
+    # a line under / through the WHOLE label's text.
+    def underline : Label
+      @rich.underline
+      self
+    end
+
+    def strikethrough : Label
+      @rich.strikethrough
+      self
+    end
+
     def style_properties : Array(StyleProp)
       StyleProps.textlike
     end
@@ -51,6 +63,9 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
       runs = @rich.runs(style.font_size, style.visuals.text_color)
+      # Code blocks share the inline-code fallback: without a mono
+      # stack they draw in the proportional font — retint them.
+      runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
       # Default (nil): wrap only where the label owns the rest of the
       # line — a vertical layout (upstream `TextWrapMode::Wrap`); a
       # label inside a horizontal row stays inline (`Extend`). A zero

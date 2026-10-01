@@ -81,6 +81,20 @@ describe "RichText inline markup" do
     span.to.should eq(8)
   end
 
+  it "parses ~~strikethrough~~ (a lone ~ stays prose)" do
+    runs = rich_runs("a ~~b~~ c ~ d")
+    runs.map(&.text).should eq(["a ", "b", " c ~ d"])
+    runs[1].strikethrough?.should be_true
+    runs[2].strikethrough?.should be_false
+  end
+
+  it "keeps ~~nesting~~ inside emphasis" do
+    runs = rich_runs("**gone ~~gone~~ still**")
+    runs[0].bold?.should be_true
+    runs[1].bold?.should be_true
+    runs[1].strikethrough?.should be_true
+  end
+
   it "renders an inline image as its alt text, not a link" do
     runs = rich_runs("an ![icon](img.png) in prose")
     runs.map(&.text).should eq(["an ", "icon", " in prose"])
@@ -101,6 +115,44 @@ describe "RichLabel widget" do
     texts.map(&.text).should eq(["plain ", "bold", " ", "code"])
     texts[1].bold?.should be_true
     texts[3].family.should eq("monospace")
+  end
+
+  it "paints a strikethrough line through the run" do
+    ctx = Egui::Context.new
+    rich_frame(ctx, [] of Egui::Event, 0.016) do |c|
+      c.central_panel do |ui|
+        ui.add(Egui::RichLabel.new("kept ~~dropped~~ kept"))
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    texts.map(&.text).should eq(["kept ", "dropped", " kept"])
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    # a horizontal line roughly through the row's middle
+    run = texts[1]
+    lines.any? { |l|
+      l.p1.y == l.p2.y &&
+        l.p1.y > run.pos.y - 4.0 && l.p1.y < run.pos.y + 4.0
+    }.should be_true
+  end
+
+  it "supports base decorations through Label#underline / #strikethrough" do
+    ctx = Egui::Context.new
+    rich_frame(ctx, [] of Egui::Event, 0.016) do |c|
+      c.central_panel do |ui|
+        l1 = Egui::Label.new("under"); l1.underline; ui.add(l1)
+        l2 = Egui::Label.new("struck"); l2.strikethrough; ui.add(l2)
+      end
+    end
+
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    lines.size.should eq(2) # one underline + one strike line
+    # strike sits lower than the text center, underline near the bottom
+    under, struck = texts[0], texts[1]
+    y1, y2 = lines.map(&.p1.y).sort
+    y1.should be < struck.pos.y # strike crosses the middle
+    y2.should be > under.pos.y  # underline sits below center
   end
 
   it "shows the pointer cursor over a link span" do

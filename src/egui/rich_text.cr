@@ -19,11 +19,12 @@ module Egui
     getter? bold : Bool
     getter? italic : Bool
     getter? code : Bool
+    getter? strikethrough : Bool
 
     def initialize(@text : String, @size : Float64? = nil,
                    @color : Color32? = nil, @underline : Bool = false,
                    @bold : Bool = false, @italic : Bool = false,
-                   @code : Bool = false)
+                   @code : Bool = false, @strikethrough : Bool = false)
     end
 
     def size(s : Float64) : RichText
@@ -38,6 +39,12 @@ module Egui
 
     def underline : RichText
       @underline = true
+      self
+    end
+
+    # Line through the middle of the text (markdown `~~text~~`).
+    def strikethrough : RichText
+      @strikethrough = true
       self
     end
 
@@ -74,7 +81,7 @@ module Egui
     def runs(default_size : Float64, default_color : Color32) : Array(TextRun)
       [TextRun.new(@text, @size || default_size,
         @color || default_color, @underline, @code ? "monospace" : nil,
-        @bold, @italic)]
+        @bold, @italic, @strikethrough)]
     end
 
     # A link span parsed out of the markup: byte range within the
@@ -93,8 +100,8 @@ module Egui
     getter link_spans : Array(LinkSpan) = [] of LinkSpan
 
     # Parse inline markup into per-span runs over the base style:
-    # `**bold**`, `*italic*`, `***both***`, `` `code` `` and
-    # `[label](url)` (hyperlink-colored + underlined). Unclosed
+    # `**bold**`, `*italic*`, `***both***`, `~~strike~~`, `` `code` ``
+    # and `[label](url)` (hyperlink-colored + underlined). Unclosed
     # markers render literally; emphasis nests by recursion; code
     # spans are literal (no markup inside backticks); backslash
     # escapes the next marker character. `#link_spans` carries the
@@ -109,10 +116,31 @@ module Egui
       runs
     end
 
+    # When no monospace stack is installed (`Context#mono_fonts` nil),
+    # monospace runs draw in the SAME proportional font and inline
+    # code stops reading as code — retint them weaker so the span
+    # stays visible. Runs are immutable; this rebuilds the affected
+    # ones (explicitly colored runs keep their color). No-op for
+    # non-monospace runs.
+    def self.fade_code_runs(runs : Array(TextRun),
+                            visuals : Visuals) : Array(TextRun)
+      runs.map do |r|
+        if r.family == "monospace" &&
+           (r.color.nil? || r.color == visuals.text_color)
+          TextRun.new(r.text, r.size,
+            visuals.fade_color(visuals.text_color, 0.72), r.underline?,
+            r.family, r.bold?, r.italic?, r.strikethrough?)
+        else
+          r
+        end
+      end
+    end
+
     # byte classes for the scanner
     private BACKSLASH = 0x5C_u8
     private BACKTICK  = 0x60_u8
     private STAR      = 0x2A_u8
+    private TILDE     = 0x7E_u8
     private LBRACKET  = 0x5B_u8
     private RBRACKET  = 0x5D_u8
     private LPAREN    = 0x28_u8
@@ -122,14 +150,15 @@ module Egui
     private def parse_inline(src : String, runs : Array(TextRun),
                              links : Array(LinkSpan), size : Float64,
                              color : Color32, bold : Bool, italic : Bool,
-                             family : String?, link_color : Color32) : Nil
+                             family : String?, link_color : Color32,
+                             strike : Bool = false) : Nil
       plain = String::Builder.new
 
       flush = ->{
         s = plain.to_s
         plain = String::Builder.new
         runs << TextRun.new(s, size, color, false, family, bold,
-          italic) unless s.empty?
+          italic, strike) unless s.empty?
       }
 
       bytes = src.to_unsafe
@@ -139,7 +168,8 @@ module Egui
         case bytes[i]
         when BACKSLASH
           nxt_i = i + 1 < total ? bytes[i + 1] : nil
-          if nxt_i && nxt_i.in?(STAR, BACKTICK, BACKSLASH, LBRACKET, RBRACKET)
+          if nxt_i && nxt_i.in?(STAR, BACKTICK, TILDE, BACKSLASH, LBRACKET,
+                               RBRACKET)
             plain << nxt_i.unsafe_chr
             i += 2
           else
@@ -151,11 +181,27 @@ module Egui
           if close
             flush.call
             runs << TextRun.new(src.byte_slice(i + 1, close - i - 1),
-              size, color, false, "monospace", bold, italic)
+              size, color, false, "monospace", bold, italic, strike)
             i = close + 1
           else
             plain << "`"
             i += 1
+          end
+        when TILDE
+          # ~~strike~~ — `~` alone is prose (subtitle scores, ranges).
+          tildes = 1
+          while i + tildes < total && bytes[i + tildes] == TILDE
+            tildes += 1
+          end
+          if tildes >= 2 && (close = find_run_close(src, i + tildes, TILDE, 2))
+            flush.call
+            inner = src.byte_slice(i + 2, close - i - 2)
+            parse_inline(inner, runs, links, size, color, bold, italic,
+              family, link_color, true)
+            i = close + 2
+          else
+            tildes.times { plain << "~" }
+            i += tildes
           end
         when STAR
           stars = 1
@@ -168,7 +214,8 @@ module Egui
             flush.call
             inner = src.byte_slice(i + stars, close - i - stars)
             parse_inline(inner, runs, links, size, color,
-              bold || em_bold, italic || em_italic, family, link_color)
+              bold || em_bold, italic || em_italic, family, link_color,
+              strike)
             i = close + stars
           else
             stars.times { plain << "*" }
@@ -186,7 +233,7 @@ module Egui
             flush.call
             runs << TextRun.new(
               src.byte_slice(i + 2, close_br - i - 2), size, color,
-              false, family, bold, italic)
+              false, family, bold, italic, strike)
             i = close_par + 1
           else
             plain << "!"
@@ -202,7 +249,7 @@ module Egui
             url = src.byte_slice(close_br + 2, close_par - close_br - 2)
             from = runs.sum(&.text.bytesize)
             runs << TextRun.new(label, size, link_color, true, family,
-              bold, italic)
+              bold, italic, strike)
             links << LinkSpan.new(from, from + label.bytesize, url)
             i = close_par + 1
           else
@@ -215,7 +262,8 @@ module Egui
           # `!` breaks the run: it may open an inline image.
           j = i + 1
           while j < total
-            break if bytes[j].in?(BACKSLASH, BACKTICK, STAR, LBRACKET, BANG)
+            break if bytes[j].in?(BACKSLASH, BACKTICK, STAR, TILDE,
+                                  LBRACKET, BANG)
             j += 1
           end
           plain << src.byte_slice(i, j - i)
@@ -230,12 +278,20 @@ module Egui
     # Returns the byte index of the run's first asterisk.
     private def find_star_close(src : String, from : Int32,
                                 stars : Int32) : Int32?
+      find_run_close(src, from, STAR, stars)
+    end
+
+    # Closing marker for any run-delimited emphasis: a run of at
+    # least `min` consecutive `byte`s (asterisks, tildes), skipping
+    # escaped ones — the byte index of the run's first byte.
+    private def find_run_close(src : String, from : Int32, byte : UInt8,
+                               min : Int32) : Int32?
       bytes = src.to_unsafe
       i = from
       while i < src.bytesize
-        if bytes[i] == STAR
+        if bytes[i] == byte
           run = 1
-          while i + run < src.bytesize && bytes[i + run] == STAR
+          while i + run < src.bytesize && bytes[i + run] == byte
             run += 1
           end
           bs = 0
@@ -244,7 +300,7 @@ module Egui
             bs += 1
             j -= 1
           end
-          return i if run >= stars && bs.even?
+          return i if run >= min && bs.even?
           i += run
         else
           i += 1

@@ -20,6 +20,10 @@ module Egui
     getter rich : RichText
     getter wrap : Bool?
     getter? userselect : Bool
+    # Link click interceptor: when set, it receives the raw target
+    # (markdown viewers navigate themselves); nil opens through the
+    # OS (`Hyperlink.open_url`).
+    property link_handler : (String ->)?
 
     def initialize(text : String, size : Float64? = nil,
                    wrap : Bool? = nil, userselect : Bool = true,
@@ -52,6 +56,9 @@ module Egui
       visuals = style.visuals
       runs = @rich.styled_runs(style.font_size, visuals.text_color,
         visuals.hyperlink_color)
+      # Inline code fallback: without a mono stack the span is drawn
+      # in the same proportional font — retint it so it still reads.
+      runs = RichText.fade_code_runs(runs, visuals) if ui.ctx.mono_fonts.nil?
       links = @rich.link_spans
 
       wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
@@ -137,10 +144,15 @@ module Egui
 
       # A click (press+release without a drag) on a link span opens
       # it — after selection math, so a drag through a link still
-      # selects text.
+      # selects text. An app-set #link_handler intercepts the raw
+      # target (markdown viewers navigate themselves).
       if response.clicked? && (pos = ctx.input.pointer_pos) &&
          (span = link_at(galley, rect, pos, fonts, links))
-        Hyperlink.open_url(span.url)
+        if (handler = @link_handler)
+          handler.call(span.url)
+        else
+          Hyperlink.open_url(span.url)
+        end
       end
 
       ctx.memory.data.set_int(id, cursor)

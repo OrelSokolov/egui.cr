@@ -76,6 +76,32 @@ describe "Markdown.parse" do
     blocks.map(&.kind).should eq([:paragraph])
     blocks.first.text.should eq("see ![icon](img.png) here")
   end
+
+  it "parses an HTML <p align><img width></p> block" do
+    blocks = Egui::Markdown.parse(<<-HTML)
+      <p align="center">
+        <img src="assets/icon.png" width="160" alt="egui-cr logo">
+      </p>
+      HTML
+    blocks.map(&.kind).should eq([:image])
+    img = blocks.first
+    img.text.should eq("assets/icon.png")
+    img.alt.should eq("egui-cr logo")
+    img.width_px.should eq(160.0)
+    img.align.should eq(:center)
+  end
+
+  it "parses GFM tables (header + separator + rows)" do
+    blocks = Egui::Markdown.parse(<<-MD)
+      | os | status |
+      | --- | :---: |
+      | linux | ✓ |
+      | win | ✓ |
+      MD
+    blocks.map(&.kind).should eq([:table])
+    rows = blocks.first.text.split('\n').map(&.split("\x1F"))
+    rows.should eq([["os", "status"], ["linux", "✓"], ["win", "✓"]])
+  end
 end
 
 describe "Markdown widget" do
@@ -173,5 +199,76 @@ describe "Markdown widget" do
     texts.join.should contain("[image: missing shot]")
     # no ImageCmd — nothing to draw without a real texture size
     ctx.painter.commands.select(Egui::ImageCmd).should be_empty
+  end
+
+  it "underlines H1/H2 with a rule below the heading" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("# Big\n\n## Medium\n\n### Small")
+      end
+    end
+
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+      .select { |l| l.p1.y == l.p2.y } # horizontal
+    # two heading rules (+ nothing else horizontal for H3)
+    lines.size.should eq(2)
+  end
+
+  it "hangs list items: text starts right of the bullet column" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("- a long list item text that certainly wraps onto " \
+                    "several lines because the panel is narrow and the " \
+                    "text just keeps going and going and going")
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    bullet = texts.find(&.text.==("•")).not_nil!
+    body = texts.find(&.text.starts_with?("a long")).not_nil!
+    body.pos.x.should be > bullet.pos.x + 3.0
+    # wrapped lines align to the text column, not to the bullet
+    wrapped = texts.select { |t| t.pos.y > body.pos.y + 5.0 }
+    wrapped.all? { |t| t.pos.x >= body.pos.x - 0.5 }.should be_true
+  end
+
+  it "renders tables as aligned columns with a header rule" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("| name | status |\n| --- | --- |\n| linux | ✓ |")
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    {"name", "status", "linux", "✓"}.each do |cell|
+      texts.should contain(cell)
+    end
+    # the header rule under the header row
+    ctx.painter.commands.select(Egui::LineCmd)
+      .any? { |l| l.p1.y == l.p2.y }.should be_true
+  end
+
+  it "routes link clicks through #on_link with the raw target" do
+    ctx = Egui::Context.new
+    clicked = [] of String
+    pos = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) {
+      ctx.begin_frame(Egui::RawInput.new(MD_SCREEN, events, time))
+      ctx.central_panel do |ui|
+        widget = Egui::Markdown.new("**[WATCH DEMO](DEMO.md)**", base_dir: "/tmp")
+        widget.on_link = ->(t : String) { clicked << t }
+        pos = ui.add(widget).rect.center
+      end
+      ctx.end_frame
+    }
+    draw.call([] of Egui::Event, 0.016)
+    draw.call([Egui::Event.pointer_moved(pos.not_nil!)], 0.032)
+    draw.call([Egui::Event.pointer_pressed(pos.not_nil!)], 0.048)
+    draw.call([Egui::Event.pointer_released(pos.not_nil!)], 0.064)
+
+    clicked.should eq(["DEMO.md"])
   end
 end

@@ -11,6 +11,33 @@ require "../src/egui/backend/sokol"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
+# Monospace stack for inline/code-block text (the terminal example's
+# candidate list): without it `code` draws in the proportional font
+# and only the weaker tint distinguishes it.
+def pick_monospace : Nil
+  candidates = [
+    "JetBrainsMonoNerdFontMono-Regular.ttf",
+    "JetBrainsMono-Regular.ttf",
+  ]
+  {% if flag?(:win32) %}
+    candidates += ["C:\\Windows\\Fonts\\consola.ttf",
+                   "C:\\Windows\\Fonts\\lucon.ttf"]
+  {% else %}
+    candidates += [
+      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+      "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+      "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+      "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
+      "/System/Library/Fonts/SFNSMono.ttf",
+    ]
+  {% end %}
+  font = Egui::Backend::Sokol.fonts_from_system(candidates)
+  Egui::Backend::Sokol.select_fonts(font) if font
+end
+
+pick_monospace
+
 FALLBACK = <<-'MD'
   # Markdown demo
 

@@ -296,6 +296,12 @@ module Egui
             line(Pos2.new(run_pos.x, underline_y),
               Pos2.new(run_pos.x + w, underline_y), 1.0, color)
           end
+          if run.strikethrough?
+            w = run_fonts.measure(run.text, run.size).x
+            strike_y = pos.y + row.y + row.height * 0.58
+            line(Pos2.new(run_pos.x, strike_y),
+              Pos2.new(run_pos.x + w, strike_y), 1.0, color)
+          end
         end
       end
     end
