@@ -1,16 +1,27 @@
 # Sokol backend: sokol_app window + sokol_gfx (via sokol_gl) rendering + a
 # Crystal text stack (backend/crystalfonts.cr primary — the freetype-cr
 # pure-Crystal port; backend/freetype.cr C-FFI dev accelerator behind
-# C_EXTENSIONS; stb light-hint fallback; shared glyph atlas). The
+# C_EXTENSIONS; shared glyph atlas). The
 # eframe-equivalent run loop:
 #
 #   sapp events → RawInput → begin_frame → app.update → end_frame →
 #   rasterize glyphs + upload atlas → paint list → sgl quads + text quads
 #   → sgl_draw → sg_commit
+#
+# On Linux and Win32 the loop is detached (loop_redesign.md): the sokol
+# window/GL/swap runs on a C render thread while this side keeps the
+# Crystal scheduler and produces FramePackets (see #run_detached); macOS
+# stays on the single-threaded legacy loop.
 
 require "../../egui"
 require "./text"
 require "./crystalfonts"
+# Win32 detached loop: the doorbell's A-side end is an overlapped socket
+# (see run_detached) — Socket comes from the stdlib, egui itself never
+# needs it elsewhere.
+{% if flag?(:win32) %}
+  require "socket"
+{% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
 # bounds checks on every array access), while the C code is cc -O2
@@ -66,18 +77,24 @@ lib LibEguiCr
   fun end_pass = egui_cr_end_pass
   fun set_clear_color = egui_cr_set_clear_color(r : Float32, g : Float32,
                                                 b : Float32, a : Float32)
+  fun present_clear = egui_cr_present_clear
 
-  # detached render loop (shim, Linux): spawn the render thread and get
-  # the main-thread wake-pipe fd; events arrive through a ring
+  # detached render loop (shim, Linux + Win32): spawn the render thread
+  # and get the main-thread doorbell handle (a pipe fd on Linux, an
+  # overlapped socket on Win32); events arrive through a ring
   # (#events_pop), frames leave through the packet builder
   # (#begin_pass/#end_pass route there automatically).
-  {% if flag?(:linux) %}
+  {% if flag?(:linux) || flag?(:win32) %}
     fun start = egui_cr_start(title : UInt8*, width : Int32, height : Int32,
                               borderless : Int32, transparent : Int32,
-                              swap_interval : Int32) : Int32
+                              swap_interval : Int32) : Int64
     fun join = egui_cr_join
     fun wake_main = egui_cr_wake_main
     fun set_ppp = egui_cr_set_ppp(ppp : Float32)
+    # Non-blocking drain of the doorbell into buf (up to cap bytes);
+    # returns the byte count — same contract for the pipe and the socket.
+    fun doorbell_drain = egui_cr_doorbell_drain(handle : Int64, buf : UInt8*,
+                                                cap : Int32) : Int32
 
     # One input event as the render thread flattened it (backend/
     # sokol_shim.c sh_event_rec_t). `payload` carries the dropped-files
@@ -162,26 +179,6 @@ lib LibEguiCr
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
   fun sgl_disable_texture = egui_cr_sgl_disable_texture
   fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
-
-  # stb_truetype exposure (Crystal text stack, see backend/text.cr)
-  struct StbVertex
-    x, y, cx, cy, cx1, cy1 : Int16
-    type : UInt8
-    padding : UInt8
-  end
-
-  fun font_info_new = egui_cr_font_info_new(data : UInt8*, font_index : Int32) : Void*
-  fun font_vmetrics = egui_cr_font_vmetrics(info : Void*, ascent : Int32*,
-                                            descent : Int32*, linegap : Int32*)
-  fun font_find_glyph = egui_cr_font_find_glyph(info : Void*, unicode : Int32) : Int32
-  fun glyph_hmetrics = egui_cr_glyph_hmetrics(info : Void*, glyph : Int32,
-                                              advance : Int32*, lsb : Int32*)
-  fun glyph_kern = egui_cr_glyph_kern(info : Void*, g1 : Int32, g2 : Int32) : Int32
-  fun scale_for_pixel_height = egui_cr_scale_for_pixel_height(info : Void*,
-                                                              pixels : Float32) : Float32
-  fun glyph_shape = egui_cr_glyph_shape(info : Void*, glyph : Int32,
-                                        count : Int32*) : StbVertex*
-  fun glyph_shape_free = egui_cr_glyph_shape_free(info : Void*, vertices : StbVertex*)
 
   # text pipeline + glyph atlas (Crystal text stack). Atlases are
   # per-instance: atlas_create returns its own view, atlas_update
@@ -608,6 +605,18 @@ module Egui
           end
         {% end %}
 
+        # Backdrop from the first tick: push the initial theme's panel
+        # fill to the backend before the window exists, so the freshly
+        # mapped window shows the theme's color (X11: the pre-map
+        # background pixel; detached: the render thread's pre-packet
+        # clear pass; Win32/macOS legacy: egui_cr_present_clear) instead
+        # of an uninitialized black framebuffer during font loading and
+        # the first-frame glyph bake.
+        bg = app.ctx.style.visuals.panel_fill
+        LibEguiCr.set_clear_color(
+          bg.r.to_f32 / 255.0f32, bg.g.to_f32 / 255.0f32,
+          bg.b.to_f32 / 255.0f32, bg.a.to_f32 / 255.0f32)
+
         init = -> { on_init }
         frame = -> { on_frame }
         event = ->(t : Int32, mx : Float32, my : Float32, sx : Float32, sy : Float32, mods : UInt32, btn : UInt32, key : UInt32, chr : UInt32) {
@@ -619,11 +628,14 @@ module Egui
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
 
-        # Linux: the detached render loop (loop_redesign.md) — sokol's
-        # X/GLX/swap cycle runs on a C pthread while THIS thread keeps
-        # the Crystal scheduler, producing FramePackets. Disable with
-        # EGUI_RENDER_THREAD=0 (bisecting / regression hunting).
-        {% if flag?(:linux) %}
+        # Linux/Win32: the detached render loop (loop_redesign.md) —
+        # sokol's window/GL/swap cycle runs on a C thread while THIS
+        # thread keeps the Crystal scheduler, producing FramePackets.
+        # Disable with EGUI_RENDER_THREAD=0 (bisecting / regression
+        # hunting). macOS stays on the legacy loop: AppKit requires the
+        # process main thread, which is where the Crystal scheduler
+        # lives (see loop_redesign.md §8).
+        {% if flag?(:linux) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
             run_detached(title, width, height, decorations, transparent,
               vsync)
@@ -636,9 +648,9 @@ module Egui
           vsync ? 1 : 0)
       end
 
-      {% if flag?(:linux) %}
-        # The main-thread half of the detached loop: block on the wake
-        # pipe (an evented read — the scheduler keeps serving PTY
+      {% if flag?(:linux) || flag?(:win32) %}
+        # The main-thread half of the detached loop: block on the
+        # doorbell (an evented read — the scheduler keeps serving PTY
         # readers and dialog fibers while we wait), translate input from
         # the event ring, and produce frames into the packet mailbox
         # whenever input / repaint requests / texture evictions demand
@@ -648,13 +660,22 @@ module Egui
                                       height : Int32, decorations : Bool,
                                       transparent : Bool,
                                       vsync : Bool) : Nil
-          fd = LibEguiCr.start(title.to_unsafe, width, height,
+          handle = LibEguiCr.start(title.to_unsafe, width, height,
             decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
-          return if fd < 0
+          return if handle < 0
           Egui::Runtime.natural_scheduler = true
           Egui::Runtime.wake = ->{ LibEguiCr.wake_main }
 
-          pipe = IO::FileDescriptor.new(fd)
+          # The doorbell's A-side end: a pipe fd on Linux, an
+          # overlapped-capable socket on Win32 (see egui_cr_start in the
+          # shim) — both block evented with read_timeout, both drain
+          # through egui_cr_doorbell_drain.
+          {% if flag?(:win32) %}
+            pipe = Socket.new(handle.to_u64!, Socket::Family::INET,
+              Socket::Type::STREAM, Socket::Protocol::TCP)
+          {% else %}
+            pipe = IO::FileDescriptor.new(handle.to_i32)
+          {% end %}
           doorbell = Bytes.new(256)
           records = Pointer(LibEguiCr::EventRecord).malloc(64)
 
@@ -690,7 +711,7 @@ module Egui
               # no ack in the fallback window — produce anyway below
             end
             # Keep doorbells from filling the pipe during busy runs.
-            break if drain_doorbells_raw(fd, doorbell)
+            break if drain_doorbells_raw(handle, doorbell)
             drain_events(records)
             if frame_pending?(app)
               last_produce = Time.instant
@@ -704,10 +725,9 @@ module Egui
           LibEguiCr.join
         end
 
-        # One non-blocking drain of the wake pipe; returns the highest
-        # tag seen this pass (nil when the pipe was empty).
-        private def self.drain_pipe_once(pipe : IO::FileDescriptor,
-                                         buf : Bytes) : Symbol?
+        # One blocking read of the doorbell; returns the highest tag seen
+        # this pass (nil when nothing arrived / the handle closed).
+        private def self.drain_pipe_once(pipe : IO, buf : Bytes) : Symbol?
           n = pipe.read(buf)
           return nil if n.zero?
           tag = nil
@@ -720,13 +740,13 @@ module Egui
           tag
         end
 
-        # Raw nonblocking read loop: while producing frames back-to-back
+        # Raw non-blocking drain loop: while producing frames back-to-back
         # the blocking #read never runs, so doorbell bytes would pile up
         # and eventually silence R's writes.
-        private def self.drain_doorbells_raw(fd : Int32, buf : Bytes) : Bool
+        private def self.drain_doorbells_raw(handle : Int64, buf : Bytes) : Bool
           quit = false
           loop do
-            n = LibC.read(fd, buf, buf.size)
+            n = LibEguiCr.doorbell_drain(handle, buf, buf.size)
             break if n <= 0
             quit = true if buf[0, n].includes?(3_u8)
           end
@@ -853,6 +873,12 @@ module Egui
         unless skip_gl
           LibEguiCr.gfx_init
           LibEguiCr.text_pipeline_init
+          # Present the backdrop before anything heavy runs (font
+          # parsing, first app update + glyph bake): the mapped window
+          # must not sit on an uninitialized framebuffer for the whole
+          # startup. No-op on the detached path — the render thread
+          # clears every pre-packet tick.
+          LibEguiCr.present_clear
         end
         # Window icon first thing after the window exists (taskbar and
         # caption pick it up before the first paint).
@@ -861,10 +887,10 @@ module Egui
         end
         app = @@app.not_nil!
         # Font backend: prefer FreeType (real hinting), fall back to the
-        # stb light-hint rasterizer, then to the built-in monospace stub.
-        # Candidates come from the Fonts system port (per-platform).
-        # A font installed via select_fonts BEFORE run (e.g. an app's
-        # monospace face) wins — don't clobber it with the default.
+        # built-in monospace stub. Candidates come from the Fonts system
+        # port (per-platform). A font installed via select_fonts BEFORE
+        # run (e.g. an app's monospace face) wins — don't clobber it
+        # with the default.
         if (preselected = @@fonts)
           app.ctx.fonts = preselected
         else
@@ -899,20 +925,17 @@ module Egui
 
       # Default font-backend chain, shared by on_init, examples and
       # benches: the freetype-cr port (pure Crystal, what release
-      # ships) with LightHintedFonts as the parse-failure fallback.
-      # Dev builds with C_EXTENSIONS enabled accelerate through the
-      # C-FFI FreeType first — same glyphs, faster bake under debug
+      # ships). Dev builds with C_EXTENSIONS enabled accelerate through
+      # the C-FFI FreeType first — same glyphs, faster bake under debug
       # codegen. `atlas` = the registry's shared glyph atlas (nil —
       # default — bakes into a private atlas: specs, standalone tools).
       def self.fonts_from_system(paths : Array(String),
                                  atlas : GlyphAtlas? = nil) : AtlasFonts?
         {% if Egui::Backend::C_EXTENSIONS %}
           FreetypeFonts.from_system(paths, atlas) ||
-            CrystalFonts.from_system(paths, atlas) ||
-            LightHintedFonts.from_system(paths, atlas)
+            CrystalFonts.from_system(paths, atlas)
         {% else %}
-          CrystalFonts.from_system(paths, atlas) ||
-            LightHintedFonts.from_system(paths, atlas)
+          CrystalFonts.from_system(paths, atlas)
         {% end %}
       end
 
@@ -933,7 +956,7 @@ module Egui
       end
 
       # Swap the active font backend at runtime (e.g. a preview app
-      # toggling between FreeType and the light-hint fallback). The new
+      # toggling between the C FreeType and the Crystal port). The new
       # backend's atlas is uploaded and bound on the next frame.
       # `mono:` optionally installs a SECOND stack (Context#mono_fonts)
       # for TextCmd family "monospace" — terminal grids, code. Nil

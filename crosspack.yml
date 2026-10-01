@@ -197,8 +197,8 @@ package:
     egui-cr demo application: an immediate-mode GUI for Crystal,
     inspired by the egui (Rust) architecture and its ideas (not a port),
     rendered through sokol_gfx with a
-    Crystal-native text stack (FreeType-hinted glyphs, stb light-hint
-    fallback).
+    Crystal-native text stack (the freetype-cr port: FreeType-hinted
+    glyphs, no libfreetype).
     The widgets_gallery example shows every widget
     (buttons, checkboxes, sliders, combos, text edits, menus, modals)
     laid out on the panel system with a scrollable widget list.

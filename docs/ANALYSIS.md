@@ -23,7 +23,7 @@ egui-cr equivalents:
 | emath | `src/egui/math.cr` (Vec2/Pos2/Rect) |
 | ecolor | `src/egui/color.cr` (Color32) |
 | epaint (subset: paint list) | `src/egui/painter.cr` (RectCmd/TextCmd/NoopCmd) |
-| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `CrystalFonts` (primary; `FreetypeFonts` dev accelerator, `LightHintedFonts` fallback) |
+| epaint Fonts/Galley | `src/egui/fonts.cr` + backend `CrystalFonts` (primary; `FreetypeFonts` dev accelerator) |
 | egui core | `src/egui/{id,sense,input,memory,response,layout,style,ui,context,app}.cr`, `src/egui/widgets/*` |
 | egui-winit + renderer | `backend/sokol_shim.c` + `src/egui/backend/sokol.cr` (sokol_app events, sokol_gfx/sokol_gl rendering, fontstash text) |
 | eframe | `Egui::App` + `Egui::Backend::Sokol.run` |
@@ -313,79 +313,12 @@ the runtime path. Three backends share it:
   partially mirrored with field offsets verified via `offsetof(3)`;
   everything else goes through real FreeType functions. Sizes are
   requested via `FT_Request_Size` (NOMINAL, 26.6) as `size` pixels of
-  (ascender − descender) height — the same convention the stb backend
-  and fontstash's FreeType path used, so widget layout does not shift
+  (ascender − descender) height — the same convention fontstash's
+  FreeType path used, so widget layout does not shift
   between backends. `FT_Face`'s size is stateful: `set_size` runs
   before every call that depends on it. Vertical metrics are computed
   linearly from font units, because FreeType's scaled ascender/descender
   are rounded to whole pixels (DejaVu: 13/−4 = 17px at size 16).
-- `src/egui/backend/text.cr` (`LightHintedFonts`, fallback for systems
-  without FreeType): stb_truetype outline → **two-axis light hint** →
-  rasterize → atlas. The goal is to approximate FreeType's full
-  grid-fitting as closely as a heuristic can (verified glyph-by-glyph
-  against the FreeType backend's output at 16px):
-  - *Hinting*: straight outline edges perpendicular to an axis (the
-    crossbars of e/H/A for Y; the stems of l/I/н for X) are collected,
-    clustered in pixel space (≤0.5px) and snapped to whole pixel
-    rows/columns. Pairs of edges forming one stroke are quantized as a
-    unit — edge to the nearest pixel, thickness to `round(t)` whole
-    pixels (min 1), the same rounding FreeType's grid-fitter applies
-    (a ~1.2px DejaVu stem renders as a solid 1px column, like FT, not
-    a 2px band or a half-intensity smear). The second edge of a stroke
-    is found by ray-casting into the polygon when it is a curve.
-    Coordinates pass through the resulting piecewise-linear maps with a
-    pinned baseline anchor (0→0, Y only) and identity outside the
-    anchor range, so hinted glyphs never shift relative to unhinted
-    neighbours. Curve-only flanks ('о', 'е' sides) stay unhinted on
-    that axis — that is where the heuristic visibly trails FT.
-  - *Hinting (X)*: paired stem edges quantize ONLY the thickness —
-    the stem stays at its natural position (leading edge untouched,
-    trailing edge = natural width, min 1px solid, +0.15px darkening).
-    Positional snapping of stem edges was tried and removed: the pen
-    is fractional, so an integer snap in glyph-local coordinates never
-    lands on a screen pixel column — it only displaced parts of the
-    glyph by up to 0.5px (piecewise-linear map ⇒ shear: 'a' leaned
-    right, 'b' left, and the pair read as merged). The edge-pair
-    window is scaled (`win = 0.13·size`, between a DejaVu stem
-    ~0.09·size and a counter ~0.15·size): a fixed ~2.5px window
-    stopped pairing stems above ~20px, so at 24/32px both stem edges
-    quantized independently and the stem collapsed to a thin column.
-    Unpaired straight edges get no X anchor at all (no shear source).
-    The +0.15px darkening matches DejaVu's bytecode which widens
-    stems on-grid (design 2.05 → FT renders ~2.3px at 24px). Verified
-    against FT dumps at 16/24/32px (Е stems: 1.4 / 2+0.3 / 3.0 vs FT
-    1.4 / 2+0.3 / 2.8).
-  - *Known gap*: advances are linear from font units while FreeType's
-    hinted advances are decided per-glyph by the font's bytecode
-    (±1px), so string widths drift between the two backends by a few
-    percent, changing sign with size (measured on a 25-glyph string:
-    +6.1% at 12px, −3.4% at 16, +1.0% at 32). Not reproducible by a
-    heuristic; within each backend layout stays self-consistent
-    (measure == draw).
-  - *Tracking*: `LightHintedFonts#letter_spacing` adds a flat
-    +0.22px between letters (`AtlasFonts#walk` applies it between
-    glyphs only, never after the last, so `measure` widths stay
-    exact; tuned by eye against the FreeType tab). The heuristic
-    keeps glyphs at design positions while FreeType's hinted advances
-    open the FT tab up, so without it the fallback reads tight next
-    to it.
-  - *Hinting (Y, blue zones)*: horizontal edges (crossbars) quantize to
-    whole pixel rows; the outline's top/bottom extremes snap into the
-    nearest zone — baseline / x-height / cap height, measured once from
-    reference glyph outlines ('I', 'x') since stb exposes no such
-    metrics — so round glyphs ('0'-'9', 'о', 'е') drop their ±0.5px
-    overshoot and match FreeType's heights instead of rendering 1-2px
-    taller with faint edge rows.
-  - *Advances/kerning*: fractional — glyph POSITIONS are snapped to
-    whole pixels at draw time (round(pen + bearing), like upstream
-    egui), not the advances: rounding each advance accumulates error
-    down a run (sum(round) ≠ round(sum)) and long words drift by
-    several pixels. The remaining ~2% width gap vs FreeType is the
-    DejaVu bytecode widening its advances at small sizes — replicating
-    that requires executing font instructions, which is what FreeType
-    is for.
-  - *Rasterizer*: curves flattened adaptively, nonzero-winding scanline
-    with 4×4 supersampling.
 - Shared infrastructure (`AtlasFonts`, `Glyph`, `GlyphAtlas` in
   `text.cr`): 1024² RGBA atlas (white RGB, coverage alpha), shelf packer
   with 1px borders against LINEAR bleed, stream texture updated before
@@ -405,28 +338,25 @@ the runtime path. Three backends share it:
   + kerning (fontstash rounded advances to whole pixels, which made
   letter spacing uneven).
 - Backend selection (`backend/sokol.cr` `fonts_from_system`):
-  `CrystalFonts` → `LightHintedFonts` → built-in `MonospaceFonts`
-  (stub) — first that loads a system font wins; dev builds with
-  `C_EXTENSIONS` try the C-FFI `FreetypeFonts` first (same glyphs,
-  faster bake under debug codegen). Candidate font files come from
-  the Fonts system port (`src/egui/system_ports/fonts.cr`:
+  `CrystalFonts` → built-in `MonospaceFonts` (stub) — the port is the
+  only real stack and wins whenever it can parse a system font; dev
+  builds with `C_EXTENSIONS` try the C-FFI `FreetypeFonts` first (same
+  glyphs, faster bake under debug codegen). Candidate font files come
+  from the Fonts system port (`src/egui/system_ports/fonts.cr`:
   per-platform lists selected at compile time — win32/darwin/Linux).
   libfreetype is a build/run dep only when the dev accelerator (or
   the fontpreview example) is in play; shipped binaries are pure
   Crystal.
-- `backend/stb_truetype_shim.c`: the vendored `stb_truetype.h` compiled
-  as its own translation unit (default malloc; fontstash compiles the
-  same header `STBTT_STATIC` with a FONScontext-bound allocator, which
-  is why the exposure cannot live in `sokol_shim.c`). Exposes font
-  info/vmetrics/glyph lookup/hmetrics/kern/`stbtt_GetGlyphShape`.
 - `bin/fontpreview` (`examples/fontpreview.cr`): full Latin + Cyrillic
   alphabets, digits, punctuation at sizes 12–32 — the visual test bed,
-  with two live-switchable tabs (FreeType vs light-hint, both font
-  backends loaded and swapped via `Sokol.select_fonts`; automation:
-  `echo 0|1 > /tmp/fontpreview.tab`). Verified by pixel analysis with
-  the FreeType backend: crossbars of e/A/Е/Б render full-row at even
-  weight with 1px stems, baselines stay uniform, Cyrillic descenders
-  (д ц щ у) intact.
+  with two live-switchable backend tabs (C FreeType vs the Crystal
+  port, both loaded and swapped via `Sokol.select_fonts`) and a font
+  cut switcher (Regular / Bold / Italic / Bold Italic of the active
+  family, each cut loaded from its own file through the active
+  backend; automation: `echo 0|1 > /tmp/fontpreview.tab`). Verified
+  by pixel analysis with the FreeType backend: crossbars of e/A/Е/Б
+  render full-row at even weight with 1px stems, baselines stay
+  uniform, Cyrillic descenders (д ц щ у) intact.
 
 ## 11. Delta: floating containers constrained to the screen
 

@@ -3,11 +3,10 @@
 # FT_Load_Glyph
 # with FT_LOAD_DEFAULT | FT_LOAD_RENDER gives hinted 8-bit coverage bitmaps вЂ”
 # the TrueType/CFF hinters snap stem edges to the pixel grid properly, which
-# is what the light-hint heuristic in text.cr approximates. Release
-# builds run the pure-Crystal twin (CrystalFonts, backend/crystalfonts.cr
-# — the freetype-cr GitHub shard); output is identical, this is only
-# faster under debug codegen. LightHintedFonts remains as the stb
-# fallback.
+# is fast regardless of Crystal's flags). Release builds run the
+# pure-Crystal twin (CrystalFonts, backend/crystalfonts.cr — the
+# freetype-cr GitHub shard); output is identical, this is only
+# faster under debug codegen.
 #
 # Everything here goes through real FreeType functions except the two big
 # opaque structs (FT_FaceRec, FT_GlyphSlotRec), which are too large to
@@ -200,7 +199,7 @@ module Egui
 
       # {ascender, descender} in px (descender negative), cached per size.
       # Computed linearly from the font units вЂ” the same convention as
-      # LightHintedFonts (size pixels of ascender-descender height) вЂ”
+      # CrystalFonts (size pixels of ascender-descender height) вЂ”
       # because FT's scaled metrics are rounded to whole pixels (DejaVu:
       # 13/-4 = 17px at size 16), which would shift widget layout.
       def metrics_at(size : Float64) : {Float64, Float64}
@@ -255,7 +254,7 @@ module Egui
 
       # Copy the 8-bit coverage out of the FT_Bitmap (pitch = row stride,
       # negative pitch = bottom-up rows), applying the same contrast curve
-      # as the light-hint backend: alpha = 2c - c^2.
+      # as CrystalFonts: alpha = 2c - c^2.
       private def bitmap_coverage(bmp : LibFreetype::Bitmap) : Bytes
         w, h, pitch = bmp.width, bmp.rows, bmp.pitch
         stride = pitch.abs

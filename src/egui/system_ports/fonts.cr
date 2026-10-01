@@ -4,10 +4,10 @@
 # calls needed, so the port stays headless-testable.
 #
 # The backend (backend/sokol.cr#fonts_from_system) feeds these to the
-# font backends (CrystalFonts → LightHintedFonts; + the C-FFI
-# FreetypeFonts accelerator first in dev builds with C_EXTENSIONS);
-# the first file that loads wins.
-# Apps can pass their own bundled font before falling back to these.
+# font backends (CrystalFonts; + the C-FFI FreetypeFonts accelerator
+# first in dev builds with C_EXTENSIONS); the first file that loads
+# wins. Apps can pass their own bundled font before falling back to
+# these.
 
 module Egui
   module SystemPorts

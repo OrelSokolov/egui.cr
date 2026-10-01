@@ -55,10 +55,11 @@ static int g_borderless;
 static int g_transparent;
 
 // Detached-render-loop routing (see the section at the end of this
-// file): on Linux, paint/texture/window entry points called off the
-// render thread are forwarded to the packet builder / command mailbox.
-// Everywhere else (and before egui_cr_start) everything runs direct.
-#if defined(_SAPP_LINUX)
+// file): on Linux and Win32, paint/texture/window entry points called
+// off the render thread are forwarded to the packet builder / command
+// mailbox. Everywhere else (and before egui_cr_start) everything runs
+// direct.
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
 static int sh_run_direct(void);
 static void egui_cr_pkt_pipe(int kind);
@@ -511,6 +512,21 @@ static void sh_x11_sync_request_confirm(void) {
 
 // Legacy-path EGUI_SHOT capture (same PPM format as sh_shot): a few
 // early end_pass frames, for A/B against the detached replay path.
+// Win32: sokol's GL backend declares the GL entry points as its own
+// static loader pointers but not the GL 1.1 enums — declare the few
+// constants the capture helpers use. The GL3
+// glBindFramebuffer(GL_READ_FRAMEBUFFER, …) is skipped there — the
+// default framebuffer is the read target anyway.
+#if defined(_SAPP_WIN32)
+#define GL_PACK_ALIGNMENT 0x0D05
+#define GL_RGB            0x1907
+#define GL_UNSIGNED_BYTE  0x1401
+// glReadPixels is GL 1.1 (exported by opengl32.dll, which Crystal links)
+// but sokol's private Win32 loader doesn't declare it — MSVC would take
+// it as an implicit-declaration warning; declare it properly instead.
+extern void glReadPixels(int x, int y, int w, int h, unsigned format,
+                         unsigned type, void* data);
+#endif
 static void sh_shot_legacy(void) {
     static const char* dir;
     static int idx;
@@ -524,7 +540,9 @@ static void sh_shot_legacy(void) {
     if (w <= 0 || h <= 0) return;
     char* px = (char*)malloc((size_t)w * h * 3);
     if (!px) { idx++; return; }
+    #if !defined(_SAPP_WIN32)
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    #endif
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
     char path[512];
@@ -560,6 +578,24 @@ void egui_cr_end_pass(void) {
     sg_end_pass();
     sg_commit();
     sh_shot_legacy();
+}
+
+// A pass that only clears the framebuffer to g_clear — the backdrop the
+// window should show from its very first presented tick, before Crystal
+// has produced any draw ops (font parsing and the first app update +
+// glyph bake are the visible part of a second on large apps).
+static void sh_clear_pass(void) {
+    sg_begin_pass(&(sg_pass){
+        .swapchain = sglue_swapchain(),
+        .action = {
+            .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { g_clear[0], g_clear[1], g_clear[2], g_clear[3] },
+            },
+        },
+    });
+    sg_end_pass();
+    sg_commit();
 }
 
 // --- per-pixel window transparency -----------------------------------------
@@ -633,6 +669,47 @@ void egui_cr_set_transparent(void) {
 
 // X11: handled by the visual choice alone (see above).
 void egui_cr_set_transparent(void) {}
+
+#endif
+
+// Present the backdrop color once, right after gfx init and BEFORE the
+// heavy startup work (font parsing, first app update + glyph bake).
+// sokol swaps no earlier than the END of the first frame callback, so
+// without this the freshly mapped window shows an uninitialized (black)
+// framebuffer for the whole startup. Detached path: a no-op — the
+// render thread clears every pre-packet tick instead (sh_rt_frame).
+#if defined(_WIN32)
+
+void egui_cr_present_clear(void) {
+    if (!sh_run_direct()) return;
+    sh_clear_pass();
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return;
+    // CS_OWNDC (sokol's window class): this IS the DC the WGL context
+    // was created on, so swapping here presents the cleared buffer.
+    HDC dc = GetDC(hwnd);
+    if (dc) { SwapBuffers(dc); ReleaseDC(hwnd, dc); }
+}
+
+#elif defined(__APPLE__)
+
+void egui_cr_present_clear(void) {
+    if (!sh_run_direct()) return;
+    sh_clear_pass();
+    NSWindow* win = (NSWindow*)sapp_macos_get_window();
+    NSOpenGLView* view = win ? (NSOpenGLView*)win.contentView : NULL;
+    NSOpenGLContext* ctx = view ? view.openGLContext : NULL;
+    if (ctx) { [ctx makeCurrentContext]; [ctx flushDrawing]; }
+}
+
+#else
+
+// X11: no mid-init swap — sokol presents through its own GLXWindow, and
+// touching glXSwapBuffers from outside its loop is fragile. The pre-map
+// hook (egui_cr_x11_pre_map_hook) sets the X window background pixel to
+// the clear color instead: that is what the compositor shows from the
+// first exposure until the first GL present.
+void egui_cr_present_clear(void) {}
 
 #endif
 
@@ -880,7 +957,7 @@ void egui_cr_sgl_disable_texture(void) {
 // detached path the per-frame setup (viewport/ortho/matrices) is done by
 // the replay and everything else becomes packet ops; on the legacy path
 // they are pass-throughs.
-#if defined(_SAPP_LINUX)
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     if (!sh_run_direct()) return; // set by the replay
     sgl_viewport(x, y, w, h, origin_top_left);
@@ -925,7 +1002,7 @@ void egui_cr_sgl_v2f_t2f_c4b(float x, float y, float u, float v,
     if (!sh_run_direct()) { egui_cr_pkt_vt(x, y, u, v, r, g, b, a); return; }
     sgl_v2f_t2f_c4b(x, y, u, v, r, g, b, a);
 }
-#else // legacy platforms: straight pass-throughs
+#else /* not a detached platform (macOS): straight pass-throughs */
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     sgl_viewport(x, y, w, h, origin_top_left);
 }
@@ -1005,8 +1082,8 @@ void egui_cr_text_pipeline_pop(void) {
 
 // --- glyph atlases: per-instance --------------------------------------------
 //
-// Multiple font backends coexist (fontpreview switches FreeType /
-// light-hint live): each atlas_create returns its OWN image+view pair,
+// Multiple font backends coexist (fontpreview switches the FreeType C /
+// Crystal backends live): each atlas_create returns its OWN image+view pair,
 // and atlas_update addresses them by view id through a small registry.
 // Atlases live for the process lifetime (a handful at most), so no
 // destroy path is needed.
@@ -1310,6 +1387,7 @@ static const win_cursor_t g_win_cursors[] = {
 };
 
 void egui_cr_set_cursor(const char* css_name) {
+    if (!sh_run_direct()) { sh_post_cursor(css_name); return; }
     // The subclass must be in place BEFORE the first SetCursor, or the
     // first mouse move resets it to the class arrow.
     sh_win_install_cursor_proc();
@@ -1336,6 +1414,7 @@ void egui_cr_set_cursor(const char* css_name) {
 static HCURSOR g_win_custom;
 
 void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, int hy) {
+    if (!sh_run_direct()) { sh_post_cursor_image(rgba, w, h, hx, hy); return; }
     // The subclass must be in place BEFORE the first SetCursor, or the
     // first mouse move resets it to the class arrow.
     sh_win_install_cursor_proc();
@@ -1571,8 +1650,14 @@ static void sh_x11_set_motif_hints(Display* dpy, Window win, int decorated) {
 // _NET_FRAME_EXTENTS stays 37px and the client gets resized to
 // accommodate a title bar it no longer has.
 void egui_cr_x11_pre_map_hook(Display* dpy, Window win) {
-    if (!g_borderless || !dpy || !win) return;
-    sh_x11_set_motif_hints(dpy, win, 0);
+    if (!dpy || !win) return;
+    // The backdrop the compositor shows from the very first exposure:
+    // sokol swaps no earlier than the end of the first frame callback,
+    // and the young window's undefined content reads as black. Keep the
+    // X background pixel in sync with the current clear color (set
+    // before the window exists — see Sokol#run's early set_clear_color).
+    sh_x11_sync_window_background(g_clear[0], g_clear[1], g_clear[2]);
+    if (g_borderless) sh_x11_set_motif_hints(dpy, win, 0);
     XFlush(dpy);
 }
 
@@ -1652,22 +1737,34 @@ void egui_cr_screen_size(int* w, int* h) {
 #include <windows.h>
 
 void egui_cr_set_window_size(int w, int h) {
+    if (!sh_run_direct()) { sh_post_window_size(w, h); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return;
     SetWindowPos(hwnd, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER);
 }
 
 void egui_cr_set_window_position(int x, int y) {
+    if (!sh_run_direct()) { sh_post_window_position(x, y); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return;
     SetWindowPos(hwnd, NULL, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER);
 }
 
-void egui_cr_window_minimize(void) { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MINIMIZE); }
-void egui_cr_window_maximize(void) { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE); }
-void egui_cr_window_restore(void)  { ShowWindow((HWND)sapp_win32_get_hwnd(), SW_RESTORE); }
+void egui_cr_window_minimize(void) {
+    if (!sh_run_direct()) { sh_post_window_minimize(); return; }
+    ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MINIMIZE);
+}
+void egui_cr_window_maximize(void) {
+    if (!sh_run_direct()) { sh_post_window_maximize(); return; }
+    ShowWindow((HWND)sapp_win32_get_hwnd(), SW_MAXIMIZE);
+}
+void egui_cr_window_restore(void) {
+    if (!sh_run_direct()) { sh_post_window_restore(); return; }
+    ShowWindow((HWND)sapp_win32_get_hwnd(), SW_RESTORE);
+}
 
 void egui_cr_screen_size(int* w, int* h) {
+    if (!sh_run_direct()) { sh_post_screen_size(w, h); return; }
     *w = GetSystemMetrics(SM_CXSCREEN);
     *h = GetSystemMetrics(SM_CYSCREEN);
 }
@@ -1774,6 +1871,7 @@ void egui_cr_set_decorations(int decorated) {
 #include <windows.h>
 
 void egui_cr_set_decorations(int decorated) {
+    if (!sh_run_direct()) { sh_post_decorations(decorated); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return;
     const LONG_PTR chrome = WS_CAPTION | WS_THICKFRAME | WS_SYSMENU |
@@ -1850,6 +1948,7 @@ void egui_cr_set_window_opacity(float opacity) {
 #include <windows.h>
 
 void egui_cr_set_window_opacity(float opacity) {
+    if (!sh_run_direct()) { sh_post_window_opacity(opacity); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return;
     if (!(opacity >= 0.0f && opacity <= 1.0f)) opacity = 1.0f; // NaN too
@@ -1911,6 +2010,7 @@ int egui_cr_window_position(int* x, int* y) {
 
 int egui_cr_window_position(int* x, int* y) {
     *x = 0; *y = 0;
+    if (!sh_run_direct()) return sh_post_window_position_get(x, y);
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return 0;
     RECT r;
@@ -2018,6 +2118,7 @@ static const WPARAM sh_win_ht[8] = {
 };
 
 void egui_cr_window_drag_start(void) {
+    if (!sh_run_direct()) { sh_post_drag_start(); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd) return;
     ReleaseCapture();
@@ -2025,6 +2126,7 @@ void egui_cr_window_drag_start(void) {
 }
 
 void egui_cr_window_resize_start(int direction) {
+    if (!sh_run_direct()) { sh_post_resize_start(direction); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd || direction < 0 || direction > 7) return;
     ReleaseCapture();
@@ -2150,6 +2252,7 @@ void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
 #include <windows.h>
 
 void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
+    if (!sh_run_direct()) { sh_post_window_shape(mask, w, h); return; }
     HWND hwnd = (HWND)sapp_win32_get_hwnd();
     if (!hwnd || !mask || w <= 0 || h <= 0) return;
     // count scanline runs first, then build an RGNDATA of RECTs
@@ -2230,7 +2333,11 @@ void egui_cr_set_window_shape(const unsigned char* mask, int w, int h) {
 #endif
 #include <windows.h>
 #include <objbase.h>
+#if defined(__MINGW32__)
+#include <shobjidl.h> // mingw-w64 ships the pre-split umbrella header
+#else
 #include <shobjidl_core.h>
+#endif
 #include <stdlib.h>
 #include <string.h>
 
@@ -2431,14 +2538,15 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 // Two threads, strict ownership (the alacritty/kitty split):
 //
 //   main thread (A) — ALL Crystal (GC, scheduler, app.update, PTY
-//     fibers, tessellation). Never touches X11/GLX/GL.
-//   render thread (R) — a C pthread in this shim owning the X
-//     connection, the GLX context and the swap. Runs sokol's own loop
-//     with C-only callbacks: X events are flattened into a ring buffer
-//     (plus a wake-pipe byte for A's scheduler); frames come from a
-//     latest-wins FramePacket mailbox that A fills by tessellating the
-//     paint command list into a flat op stream; R replays the packet
-//     through sokol_gl and swaps.
+//     fibers, tessellation). Never touches the window system or GL.
+//   render thread (R) — a C thread in this shim owning the window, the
+//     GL context and the swap (X connection + GLX on Linux; the window's
+//     message thread + WGL on Win32). Runs sokol's own loop with C-only
+//     callbacks: window events are flattened into a ring buffer (plus a
+//     doorbell byte for A's scheduler); frames come from a latest-wins
+//     FramePacket mailbox that A fills by tessellating the paint command
+//     list into a flat op stream; R replays the packet through sokol_gl
+//     and swaps.
 //
 // Effect: a blocking glXSwapBuffers (XWayland/mutter can stall ~1 s)
 // degrades from "the whole app is frozen" to "a frame is late" — input
@@ -2447,12 +2555,26 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 // compositor lets go.
 //
 // Window-management calls from A (title, cursor, clipboard, move/resize,
-// …) go through a small command mailbox executed on R's connection;
-// clipboard get / position queries are synchronous (condvar reply).
-// Texture creation/updates become delta ops INSIDE the packet (GL work
-// happens only on R). Legacy single-thread mode (macOS/Win32, or
-// EGUI_RENDER_THREAD=0 on Linux) keeps the direct paths: every routed
-// function checks sh_detached() and falls through to the original body.
+// …) go through a small command mailbox executed on R's thread (the X
+// connection on Linux / the window's message thread on Win32); clipboard
+// get / position queries are synchronous (condvar reply). Texture
+// creation/updates become delta ops INSIDE the packet (GL work happens
+// only on R). Legacy single-thread mode (macOS, or EGUI_RENDER_THREAD=0
+// on Linux/Win32) keeps the direct paths: every routed function checks
+// sh_detached() and falls through to the original body.
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
+
+// --- portable primitives (thread / sync / atomics / doorbell) -----------------
+//
+// The loop needs: a thread for R, a mutex + condvar with a timed wait
+// (the sync-mailbox roundtrips), relaxed atomics, and a one-byte doorbell
+// R→A that A's Crystal scheduler can block on (evented). Linux maps those
+// onto pthread + pipe. Win32: SRWLOCK + CONDITION_VARIABLE + CreateThread;
+// the atomics onto Interlocked intrinsics (MSVC's C11 <stdatomic.h> needs
+// /experimental:c11atomics); the doorbell onto a TCP loopback socket pair
+// — anonymous pipes don't do overlapped IO, and Crystal's win32 scheduler
+// (IOCP) adopts existing sockets only when they were created with
+// WSA_FLAG_OVERLAPPED (see Socket's fd-constructor note in stdlib).
 #if defined(_SAPP_LINUX)
 
 #include <pthread.h>
@@ -2461,15 +2583,116 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 #include <fcntl.h>
 #include <poll.h>
 #include <errno.h>
+#include <time.h>
 
-static atomic_int g_detached = 0;     // 1 once egui_cr_start spawned R
-static atomic_int g_app_dead = 0;     // 1 once R's sokol loop ended
+#define SH_THREAD_LOCAL __thread
+#define SH_MUTEX_STATIC_INIT PTHREAD_MUTEX_INITIALIZER
+typedef _Atomic int sh_atom_i;
+static int sh_ai_load(sh_atom_i* v) {
+    return atomic_load_explicit(v, memory_order_relaxed);
+}
+static int sh_ai_xchg(sh_atom_i* v, int x) {
+    return atomic_exchange(v, x);
+}
+static int sh_ai_xadd(sh_atom_i* v, int x) {
+    return atomic_fetch_add(v, x);
+}
+static void sh_ai_store(sh_atom_i* v, int x) {
+    atomic_store_explicit(v, x, memory_order_relaxed);
+}
+typedef pthread_mutex_t sh_mutex;
+typedef pthread_cond_t sh_cond;
+static void sh_mx_lock(sh_mutex* m)   { pthread_mutex_lock(m); }
+static void sh_mx_unlock(sh_mutex* m) { pthread_mutex_unlock(m); }
+static void sh_cv_init(sh_cond* c)    { pthread_cond_init(c, NULL); }
+static void sh_cv_signal(sh_cond* c)  { pthread_cond_signal(c); }
+static double sh_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+// Wait on c (m held) until the monotonic *deadline*; 0 = signalled,
+// -1 = timeout. pthread wants an absolute CLOCK_REALTIME abstime, so the
+// remaining time is converted onto that clock first.
+static int sh_cv_wait_until(sh_cond* c, sh_mutex* m, double deadline) {
+    double left = deadline - sh_now();
+    if (left <= 0.0) return -1;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    double at = (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9 + left;
+    ts.tv_sec = (time_t)at;
+    ts.tv_nsec = (long)((at - (double)ts.tv_sec) * 1e9);
+    return pthread_cond_timedwait(c, m, &ts) == 0 ? 0 : -1;
+}
+typedef pthread_t sh_thread;
+static int sh_thread_create(sh_thread* t, void* (*fn)(void*)) {
+    return pthread_create(t, NULL, fn, NULL) == 0 ? 0 : -1;
+}
+static void sh_thread_join(sh_thread t) { pthread_join(t, NULL); }
+
+#else // _SAPP_WIN32
+
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#include <windows.h>
+
+#define SH_THREAD_LOCAL __declspec(thread)
+#define SH_MUTEX_STATIC_INIT SRWLOCK_INIT
+typedef long sh_atom_i; // Interlocked* intrinsics: aligned 32-bit longs
+static int sh_ai_load(sh_atom_i* v) {
+    return (int)*v; // relaxed load: plain read of an aligned 32-bit value
+}
+static int sh_ai_xchg(sh_atom_i* v, int x) {
+    return (int)_InterlockedExchange(v, (long)x);
+}
+static int sh_ai_xadd(sh_atom_i* v, int x) {
+    return (int)_InterlockedExchangeAdd(v, (long)x);
+}
+static void sh_ai_store(sh_atom_i* v, int x) { (void)sh_ai_xchg(v, x); }
+typedef SRWLOCK sh_mutex;
+typedef CONDITION_VARIABLE sh_cond;
+static void sh_mx_lock(sh_mutex* m)   { AcquireSRWLockExclusive(m); }
+static void sh_mx_unlock(sh_mutex* m) { ReleaseSRWLockExclusive(m); }
+static void sh_cv_init(sh_cond* c)    { InitializeConditionVariable(c); }
+static void sh_cv_signal(sh_cond* c)  { WakeConditionVariable(c); }
+static double sh_now(void) {
+    LARGE_INTEGER f, c;
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (double)c.QuadPart / (double)f.QuadPart;
+}
+static int sh_cv_wait_until(sh_cond* c, sh_mutex* m, double deadline) {
+    double left = deadline - sh_now();
+    if (left <= 0.0) return -1;
+    DWORD ms = (DWORD)(left * 1000.0 + 0.5);
+    return SleepConditionVariableSRW(c, m, ms, 0) ? 0 : -1;
+}
+typedef HANDLE sh_thread;
+static void* (*sh_thread_fn)(void*); // the one thread spawned: R
+static DWORD WINAPI sh_thread_trampoline(LPVOID param) {
+    sh_thread_fn(param);
+    return 0;
+}
+static int sh_thread_create(sh_thread* t, void* (*fn)(void*)) {
+    sh_thread_fn = fn;
+    *t = CreateThread(NULL, 0, sh_thread_trampoline, NULL, 0, NULL);
+    return *t ? 0 : -1;
+}
+static void sh_thread_join(sh_thread t) {
+    WaitForSingleObject(t, INFINITE);
+    CloseHandle(t);
+}
+
+#endif // platform primitives
+
+static sh_atom_i g_detached = 0;      // 1 once egui_cr_start spawned R
+static sh_atom_i g_app_dead = 0;      // 1 once R's sokol loop ended
 // True on the render thread (used to keep mailbox-executed calls on the
 // direct path instead of re-posting into the mailbox).
-static __thread int sh_on_render_thread = 0;
+static SH_THREAD_LOCAL int sh_on_render_thread = 0;
 
 static int sh_detached(void) {
-    return atomic_load_explicit(&g_detached, memory_order_relaxed) != 0;
+    return sh_ai_load(&g_detached) != 0;
 }
 static int sh_run_direct(void) {
     return !sh_detached() || sh_on_render_thread;
@@ -2479,26 +2702,128 @@ static int sh_run_direct(void) {
 // output as the render-thread sh_shot, driven from egui_cr_end_pass.
 static void sh_shot_legacy(void);
 
-// ---- wake pipe (R → A doorbell for Crystal's scheduler) --------------------
+// ---- wake doorbell (R → A for Crystal's scheduler) --------------------------
 // One byte per signal; tags distinguish init/quit from plain event
-// doorbells. Non-blocking: a full pipe just means A is behind and will
-// drain everything in one read anyway.
+// doorbells. Non-blocking writes: a full pipe/socket just means A is
+// behind and will drain everything in one read anyway.
 #define SH_WAKE_EVENTS 1
 #define SH_WAKE_INIT   2
 #define SH_WAKE_QUIT   3
 #define SH_WAKE_PRESENT 4 // R completed a render tick (≈ one present)
-static int g_a_pipe[2] = {-1, -1};
 
+#if defined(_SAPP_LINUX)
+static int g_a_pipe[2] = {-1, -1}; // [0] = A's read end, [1] = R's write
 static void sh_wake_a(unsigned char tag) {
     if (g_a_pipe[1] < 0) return;
     char c = (char)tag;
     ssize_t n = write(g_a_pipe[1], &c, 1);
     (void)n;
 }
-
 // Called from any Crystal fiber (Context#request_repaint wake hook): the
-// main loop must leave its blocking pipe read and produce a frame.
+// main loop must leave its blocking doorbell read and produce a frame.
 void egui_cr_wake_main(void) { sh_wake_a(SH_WAKE_EVENTS); }
+
+// Open the doorbell. Returns A's end (a nonblocking pipe fd), -1 on
+// failure. R's write end lands in g_a_pipe[1].
+static intptr_t sh_doorbell_open(void) {
+    if (pipe2(g_a_pipe, O_NONBLOCK | O_CLOEXEC) != 0) return -1;
+    return g_a_pipe[0];
+}
+static void sh_doorbell_close_a(intptr_t a_end) {
+    if (a_end >= 0) close((int)a_end);
+    if (g_a_pipe[1] >= 0) close(g_a_pipe[1]);
+    g_a_pipe[0] = g_a_pipe[1] = -1;
+}
+// Non-blocking drain of A's end: up to cap bytes into buf, returns the
+// total drained (0 when nothing is pending).
+static int sh_doorbell_drain(intptr_t a_end, unsigned char* buf, int cap) {
+    int total = 0;
+    while (total < cap) {
+        ssize_t n = read((int)a_end, buf + total, (size_t)(cap - total));
+        if (n <= 0) break;
+        total += (int)n;
+    }
+    return total;
+}
+#else // _SAPP_WIN32: TCP loopback pair
+
+static SOCKET g_r_sock = INVALID_SOCKET; // R's write end
+static void sh_wake_a(unsigned char tag) {
+    if (g_r_sock == INVALID_SOCKET) return;
+    char c = (char)tag;
+    int n = send(g_r_sock, &c, 1, 0);
+    (void)n;
+}
+// Called from any Crystal fiber (Context#request_repaint wake hook): the
+// main loop must leave its blocking doorbell read and produce a frame.
+void egui_cr_wake_main(void) { sh_wake_a(SH_WAKE_EVENTS); }
+
+// An overlapped-capable loopback TCP pair (WSA_FLAG_OVERLAPPED — Crystal's
+// IOCP scheduler adopts existing sockets only in that mode). Anonymous
+// pipes don't do overlapped IO at all. Returns A's end, -1 on failure.
+static intptr_t sh_doorbell_open(void) {
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
+    SOCKET srv = WSASocketW(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof addr);
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    addr.sin_port = 0;
+    int one = 1;
+    if (srv == INVALID_SOCKET ||
+        setsockopt(srv, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof one) != 0 ||
+        bind(srv, (struct sockaddr*)&addr, sizeof addr) != 0 ||
+        listen(srv, 1) != 0) {
+        if (srv != INVALID_SOCKET) closesocket(srv);
+        return -1;
+    }
+    struct sockaddr_in bound;
+    int bound_len = (int)sizeof bound;
+    if (getsockname(srv, (struct sockaddr*)&bound, &bound_len) != 0) {
+        closesocket(srv);
+        return -1;
+    }
+    SOCKET a = WSASocketW(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);
+    if (a == INVALID_SOCKET ||
+        connect(a, (struct sockaddr*)&bound, sizeof bound) != 0) {
+        if (a != INVALID_SOCKET) closesocket(a);
+        closesocket(srv);
+        return -1;
+    }
+    // R's end may be a plain socket: only A's end goes through Crystal's
+    // IOCP event loop (blocking mode set by Socket's fd constructor).
+    SOCKET r = accept(srv, NULL, NULL);
+    closesocket(srv);
+    if (r == INVALID_SOCKET) {
+        closesocket(a);
+        return -1;
+    }
+    g_r_sock = r;
+    return (intptr_t)a;
+}
+static void sh_doorbell_close_a(intptr_t a_end) {
+    if (a_end >= 0) closesocket((SOCKET)a_end);
+    if (g_r_sock != INVALID_SOCKET) { closesocket(g_r_sock); g_r_sock = INVALID_SOCKET; }
+}
+// The socket stays in blocking mode for A's evented reads; peek the
+// pending byte count (FIONREAD) and recv exactly that — a blocking recv
+// of known-available bytes returns immediately, which is the nonblocking
+// drain this needs.
+static int sh_doorbell_drain(intptr_t a_end, unsigned char* buf, int cap) {
+    int total = 0;
+    while (total < cap) {
+        u_long avail = 0;
+        if (ioctlsocket((SOCKET)a_end, FIONREAD, &avail) != 0 || avail == 0) break;
+        int want = (int)avail;
+        if (want > cap - total) want = cap - total;
+        int n = recv((SOCKET)a_end, (char*)buf + total, want, 0);
+        if (n <= 0) break;
+        total += n;
+    }
+    return total;
+}
+#endif // doorbell platform
 
 // ---- input event ring --------------------------------------------------------
 // The 9-field flat tuple sh_event_cb already produces, plus an optional
@@ -2520,7 +2845,7 @@ typedef struct {
 #define SH_RING_CAP 8192
 static sh_event_rec_t g_ring[SH_RING_CAP];
 static size_t g_ring_head = 0, g_ring_tail = 0; // head=write, tail=read
-static pthread_mutex_t g_ring_mx = PTHREAD_MUTEX_INITIALIZER;
+static sh_mutex g_ring_mx = SH_MUTEX_STATIC_INIT;
 
 static void sh_drop_payload_free(sh_drop_payload_t* p) {
     if (!p) return;
@@ -2529,7 +2854,7 @@ static void sh_drop_payload_free(sh_drop_payload_t* p) {
 }
 
 static void sh_ring_push(const sh_event_rec_t* rec) {
-    pthread_mutex_lock(&g_ring_mx);
+    sh_mx_lock(&g_ring_mx);
     size_t next = (g_ring_head + 1) % SH_RING_CAP;
     if (next == g_ring_tail) { // full — drop the oldest
         sh_drop_payload_free((sh_drop_payload_t*)g_ring[g_ring_tail].payload);
@@ -2539,20 +2864,20 @@ static void sh_ring_push(const sh_event_rec_t* rec) {
     }
     g_ring[g_ring_head] = *rec;
     g_ring_head = next;
-    pthread_mutex_unlock(&g_ring_mx);
+    sh_mx_unlock(&g_ring_mx);
 }
 
 // A-side: pop up to `cap` records into `out` (payloads become the
 // caller's — free each with egui_cr_drop_payload_free).
 int egui_cr_events_pop(sh_event_rec_t* out, int cap) {
     int n = 0;
-    pthread_mutex_lock(&g_ring_mx);
+    sh_mx_lock(&g_ring_mx);
     while (n < cap && g_ring_tail != g_ring_head) {
         out[n++] = g_ring[g_ring_tail];
         g_ring[g_ring_tail].payload = NULL;
         g_ring_tail = (g_ring_tail + 1) % SH_RING_CAP;
     }
-    pthread_mutex_unlock(&g_ring_mx);
+    sh_mx_unlock(&g_ring_mx);
     return n;
 }
 
@@ -2617,14 +2942,14 @@ typedef struct {
     int done;
     int r_int, r_a, r_b;
     char* r_str;    // strdup'd; the caller frees with egui_cr_mem_free
-    pthread_mutex_t mx;
-    pthread_cond_t cv;
+    sh_mutex mx;
+    sh_cond cv;
 } sh_cmd_t;
 
 #define SH_CMD_CAP 128
 static sh_cmd_t g_cmds[SH_CMD_CAP];
 static int g_cmd_n = 0;
-static pthread_mutex_t g_cmd_mx = PTHREAD_MUTEX_INITIALIZER;
+static sh_mutex g_cmd_mx = SH_MUTEX_STATIC_INIT;
 
 static void sh_cmd_free(sh_cmd_t* c) {
     free(c->ptr);
@@ -2638,13 +2963,13 @@ static void sh_cmd_post_async(sh_cmd_kind kind, int a, int b, int c, int d,
     memset(&cmd, 0, sizeof cmd);
     cmd.kind = kind; cmd.a = a; cmd.b = b; cmd.c = c; cmd.d = d;
     cmd.f = f; cmd.ptr = ptr; cmd.size = size;
-    pthread_mutex_lock(&g_cmd_mx);
+    sh_mx_lock(&g_cmd_mx);
     if (g_cmd_n >= SH_CMD_CAP) { // queue full: drop the request
         sh_cmd_free(&cmd);
     } else {
         g_cmds[g_cmd_n++] = cmd;
     }
-    pthread_mutex_unlock(&g_cmd_mx);
+    sh_mx_unlock(&g_cmd_mx);
 }
 
 static char* sh_strdup_n(const char* s) { return s ? strdup(s) : NULL; }
@@ -2653,44 +2978,35 @@ static char* sh_strdup_n(const char* s) { return s ? strdup(s) : NULL; }
 // (the reply stays zeroed — callers treat that as failure).
 static int sh_cmd_roundtrip(sh_cmd_t* cmd) {
     cmd->sync = 1;
-    pthread_mutex_init(&cmd->mx, NULL);
-    pthread_cond_init(&cmd->cv, NULL);
-    pthread_mutex_lock(&g_cmd_mx);
+    sh_cv_init(&cmd->cv);
+    sh_mx_lock(&g_cmd_mx);
     if (g_cmd_n >= SH_CMD_CAP) {
-        pthread_mutex_unlock(&g_cmd_mx);
+        sh_mx_unlock(&g_cmd_mx);
         sh_cmd_free(cmd);
-        pthread_mutex_destroy(&cmd->mx);
-        pthread_cond_destroy(&cmd->cv);
         return -1;
     }
     g_cmds[g_cmd_n++] = *cmd;
-    pthread_mutex_unlock(&g_cmd_mx);
+    sh_mx_unlock(&g_cmd_mx);
 
-    struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    ts.tv_sec += 2; // a healthy render tick is ~16 ms; 2 s covers a stall
-    int rc = 0;
-    pthread_mutex_lock(&cmd->mx);
-    while (!cmd->done && rc != ETIMEDOUT &&
-           !atomic_load_explicit(&g_app_dead, memory_order_relaxed)) {
-        rc = pthread_cond_timedwait(&cmd->cv, &cmd->mx, &ts);
-        if (rc == ETIMEDOUT) break;
+    double deadline = sh_now() + 2.0; // a healthy tick is ~16 ms; 2 s covers a stall
+    int ok = -1;
+    sh_mx_lock(&cmd->mx);
+    while (!cmd->done && sh_ai_load(&g_app_dead) == 0) {
+        if (sh_cv_wait_until(&cmd->cv, &cmd->mx, deadline) != 0) break;
     }
-    int ok = cmd->done ? 0 : -1;
-    pthread_mutex_unlock(&cmd->mx);
-    pthread_mutex_destroy(&cmd->mx);
-    pthread_cond_destroy(&cmd->cv);
+    if (cmd->done) ok = 0;
+    sh_mx_unlock(&cmd->mx);
     // On timeout the command may still sit in the queue / be in flight on
     // R — its reply memory is intentionally leaked (catastrophic path).
-    if (!ok) sh_cmd_free(cmd);
+    if (ok == 0) sh_cmd_free(cmd);
     return ok;
 }
 
 static void sh_cmd_reply(sh_cmd_t* c) {
-    pthread_mutex_lock(&c->mx);
+    sh_mx_lock(&c->mx);
     c->done = 1;
-    pthread_cond_signal(&c->cv);
-    pthread_mutex_unlock(&c->mx);
+    sh_cv_signal(&c->cv);
+    sh_mx_unlock(&c->mx);
 }
 
 static void sh_cmd_exec(sh_cmd_t* c) {
@@ -2713,7 +3029,11 @@ static void sh_cmd_exec(sh_cmd_t* c) {
     case SH_CMD_CLIP_SET:     sapp_set_clipboard_string((const char*)c->ptr); break;
     case SH_CMD_CLEAR_COLOR: {
         float* rgba = (float*)c->ptr; // r,g,b,a — alpha unused by the X sync
+        #if defined(_SAPP_LINUX)
         sh_x11_sync_window_background(rgba[0], rgba[1], rgba[2]);
+        #else
+        (void)rgba; // no server-side window background on Win32
+        #endif
         break;
     }
     case SH_CMD_QUIT:         sapp_quit(); break;
@@ -2749,11 +3069,11 @@ static void sh_cmd_exec(sh_cmd_t* c) {
 static void sh_cmds_run(void) {
     sh_cmd_t batch[SH_CMD_CAP];
     int n;
-    pthread_mutex_lock(&g_cmd_mx);
+    sh_mx_lock(&g_cmd_mx);
     n = g_cmd_n;
     memcpy(batch, g_cmds, sizeof(sh_cmd_t) * (size_t)n);
     g_cmd_n = 0;
-    pthread_mutex_unlock(&g_cmd_mx);
+    sh_mx_unlock(&g_cmd_mx);
     for (int i = 0; i < n; i++) sh_cmd_exec(&batch[i]);
 }
 
@@ -2793,7 +3113,7 @@ typedef struct {
 static sh_packet_t* g_build;    // A-side builder (between publishes)
 static sh_packet_t* g_pkt;      // mailbox slot: latest, maybe unconsumed
 static sh_packet_t* g_pkt_last; // R-owned: replay source
-static pthread_mutex_t g_pkt_mx = PTHREAD_MUTEX_INITIALIZER;
+static sh_mutex g_pkt_mx = SH_MUTEX_STATIC_INIT;
 static float g_pkt_ppp = 1.0f;  // ppp for the packet being built (A)
 
 static void sh_packet_free(sh_packet_t* p) {
@@ -2855,10 +3175,10 @@ static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
                                      int stream) {
     if (w <= 0 || h <= 0) return 0;
-    static atomic_uint next_id;
+    static sh_atom_i next_id;
     static int next_init;
-    if (!next_init) { atomic_store(&next_id, 1); next_init = 1; }
-    uint32_t id = atomic_fetch_add(&next_id, 1);
+    if (!next_init) { sh_ai_store(&next_id, 1); next_init = 1; }
+    uint32_t id = (uint32_t)sh_ai_xadd(&next_id, 1);
     sh_texop_queue(SH_TEX_CREATE, id, w, h, stream, rgba8,
                    rgba8 ? (size_t)w * h * 4 : 0);
     return id;
@@ -2910,7 +3230,7 @@ void egui_cr_pkt_publish(void) {
     if (getenv("EGUI_FRAME_DEBUG"))
         fprintf(stderr, "[pkt] publish ops=%d pre=%d post=%d fb=%dx%d\n",
                 p->ops_len, p->pre_n, p->post_n, p->fb_w, p->fb_h);
-    pthread_mutex_lock(&g_pkt_mx);
+    sh_mx_lock(&g_pkt_mx);
     if (g_pkt) { // superseded unconsumed packet: keep its texture ops —
         // creates/updates (pre) and evictions (post) must outlive the
         // drop, deduped to the newest op per id
@@ -2923,7 +3243,7 @@ void egui_cr_pkt_publish(void) {
         sh_texops_splice(&p->post, &p->post_n, &p->post_cap, post, post_n);
     }
     g_pkt = p;
-    pthread_mutex_unlock(&g_pkt_mx);
+    sh_mx_unlock(&g_pkt_mx);
     if (getenv("EGUI_FRAME_DEBUG") && p->pre_n)
         fprintf(stderr, "[pkt] publish+splice pre=%d (first kind=%d id=%u)\n",
                 p->pre_n, p->pre_n ? p->pre[0].kind : -1,
@@ -3177,7 +3497,9 @@ static void sh_shot(sh_packet_t* p) {
     if (replay_count < (uint32_t)tick) return;
     char* px = (char*)malloc((size_t)p->fb_w * p->fb_h * 3);
     if (!px) { idx++; return; }
+    #if !defined(_SAPP_WIN32)
     glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    #endif
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, p->fb_w, p->fb_h, GL_RGB, GL_UNSIGNED_BYTE, px);
     char path[512];
@@ -3197,38 +3519,37 @@ static void sh_shot(sh_packet_t* p) {
 static sh_texop_t* g_post_pending;
 static int g_post_pending_n;
 
-// Window position cache: R refreshes it every few ticks (an
-// XTranslateCoordinates on its own connection) so A reads a slightly
-// stale position instead of a condvar roundtrip. Without the cache a
-// per-frame position query (the borderless example's status label)
-// serialized A to R's tick — and when presents stall (occluded
-// XWayland window) A froze for the full roundtrip timeout, 2 s per
-// frame.
-static atomic_int  sh_pos_x, sh_pos_y;
-static atomic_bool sh_pos_valid;
+// Window position cache: R refreshes it every few ticks (on its own
+// connection / window thread) so A reads a slightly stale position
+// instead of a condvar roundtrip. Without the cache a per-frame position
+// query (the borderless example's status label) serialized A to R's tick
+// — and when presents stall (an occluded XWayland window) A froze for
+// the full roundtrip timeout, 2 s per frame.
+static sh_atom_i sh_pos_x, sh_pos_y;
+static sh_atom_i sh_pos_valid;
 
 static void sh_rt_frame(void) {
     sh_cmds_run(); // A→R window commands, on R's connection
 
     // Position cache for A: refresh every ~15 ticks (~250 ms at 60 Hz)
-    // — a single X roundtrip, amortized. First success flips sh_pos_valid
+    // — a single roundtrip, amortized. First success flips sh_pos_valid
     // and A stops blocking on WIN_POS_GET roundtrips entirely.
     static uint32_t pos_tick;
     if ((pos_tick++ % 15) == 0) {
         int x = 0, y = 0;
         if (egui_cr_window_position(&x, &y)) {
-            atomic_store_explicit(&sh_pos_x, x, memory_order_relaxed);
-            atomic_store_explicit(&sh_pos_y, y, memory_order_relaxed);
-            atomic_store_explicit(&sh_pos_valid, 1, memory_order_relaxed);
+            sh_ai_store(&sh_pos_x, x);
+            sh_ai_store(&sh_pos_y, y);
+            sh_ai_store(&sh_pos_valid, 1);
         } else if (getenv("EGUI_FRAME_DEBUG")) {
             fprintf(stderr, "[pos] cache refresh failed on R\n");
         }
     }
 
-    pthread_mutex_lock(&g_pkt_mx);
+    sh_mx_lock(&g_pkt_mx);
     sh_packet_t* fresh = g_pkt;
     g_pkt = NULL;
-    pthread_mutex_unlock(&g_pkt_mx);
+    sh_mx_unlock(&g_pkt_mx);
 
     if (fresh) {
         if (getenv("EGUI_FRAME_DEBUG"))
@@ -3260,9 +3581,12 @@ static void sh_rt_frame(void) {
     if (g_pkt_last) {
         sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
         sh_shot(g_pkt_last);
+    } else {
+        // No packet yet (before the first Crystal frame): present the
+        // backdrop color each tick — the young window must not sit on an
+        // uninitialized (black) framebuffer while fonts load.
+        sh_clear_pass();
     }
-    // no packet yet (before the first Crystal frame): skip the pass —
-    // one uninitialized swap at startup, invisible next tick.
 }
 
 static void sh_rt_init_cb(void) {
@@ -3293,7 +3617,7 @@ static void sh_rt_cleanup_cb(void) { }
 // ---- render thread entry / lifecycle -------------------------------------------
 
 static char* g_rt_title;
-static pthread_t g_render_thread;
+static sh_thread g_render_thread;
 static int g_rt_w, g_rt_h, g_rt_swap;
 
 static void* sh_render_thread(void* unused) {
@@ -3316,47 +3640,54 @@ static void* sh_render_thread(void* unused) {
         .max_dropped_file_path_length = 8192,
         .logger.func = slog_func,
     };
-    sapp_run(&desc);
-    atomic_store(&g_app_dead, 1);
+    sapp_run(&desc); // on Win32 this owns the window's message thread
+    sh_ai_store(&g_app_dead, 1);
     sh_wake_a(SH_WAKE_QUIT);
     return NULL;
 }
 
-// Spawn the render thread; returns A's wake-pipe fd (-1 on failure).
+// Spawn the render thread; returns A's doorbell end (-1 on failure).
 // Crystal registers it with its scheduler (an evented read blocks the
 // main fiber only, letting PTY/dialog fibers run).
-int egui_cr_start(const char* title, int width, int height, int borderless,
-                  int transparent, int swap_interval) {
-    if (pipe2(g_a_pipe, O_NONBLOCK | O_CLOEXEC) != 0) return -1;
+intptr_t egui_cr_start(const char* title, int width, int height, int borderless,
+                       int transparent, int swap_interval) {
+    intptr_t a_end = sh_doorbell_open();
+    if (a_end < 0) return -1;
     g_borderless = borderless;
     g_transparent = transparent;
     g_rt_w = width;
     g_rt_h = height;
     g_rt_swap = getenv("EGUI_NOVSYNC") ? 0 : swap_interval;
     g_rt_title = title ? strdup(title) : strdup("egui-cr");
+#if defined(_SAPP_LINUX)
     // Same XWayland DRI3 workaround as the legacy path below.
     if (getenv("WAYLAND_DISPLAY") && getenv("DISPLAY") &&
         !getenv("LIBGL_DRI3_DISABLE")) {
         setenv("LIBGL_DRI3_DISABLE", "1", 1);
     }
-    atomic_store(&g_app_dead, 0);
-    atomic_store(&g_detached, 1);
-    if (pthread_create(&g_render_thread, NULL, sh_render_thread, NULL) != 0) {
-        atomic_store(&g_detached, 0);
-        close(g_a_pipe[0]); close(g_a_pipe[1]);
-        g_a_pipe[0] = g_a_pipe[1] = -1;
+#endif
+    sh_ai_store(&g_app_dead, 0);
+    sh_ai_store(&g_detached, 1);
+    if (sh_thread_create(&g_render_thread, sh_render_thread) != 0) {
+        sh_ai_store(&g_detached, 0);
+        sh_doorbell_close_a(a_end);
         return -1;
     }
-    return g_a_pipe[0];
+    return a_end;
 }
 
 void egui_cr_join(void) {
-    if (atomic_exchange(&g_detached, 0)) {
-        pthread_join(g_render_thread, NULL);
-        if (g_a_pipe[0] >= 0) close(g_a_pipe[0]);
-        if (g_a_pipe[1] >= 0) close(g_a_pipe[1]);
-        g_a_pipe[0] = g_a_pipe[1] = -1;
+    if (sh_ai_xchg(&g_detached, 0) != 0) {
+        sh_thread_join(g_render_thread);
+        sh_doorbell_close_a(-1); // close R's end; A's end is Crystal's IO
     }
+}
+
+// A-side non-blocking doorbell drain (see sh_doorbell_drain): up to cap
+// bytes into buf, returns the total drained. Exposed so the same Crystal
+// loop works over the pipe (Linux) and socket (Win32) doorbell.
+int egui_cr_doorbell_drain(intptr_t a_end, unsigned char* buf, int cap) {
+    return sh_doorbell_drain(a_end, buf, cap);
 }
 
 // ---- A-side routed wrappers (sokol functions Crystal used to call raw) --------
@@ -3398,9 +3729,9 @@ void sh_post_screen_size(int* w, int* h) {
     *w = cmd.r_a; *h = cmd.r_b;
 }
 int sh_post_window_position_get(int* x, int* y) {
-    if (atomic_load_explicit(&sh_pos_valid, memory_order_relaxed)) {
-        *x = atomic_load_explicit(&sh_pos_x, memory_order_relaxed);
-        *y = atomic_load_explicit(&sh_pos_y, memory_order_relaxed);
+    if (sh_ai_load(&sh_pos_valid)) {
+        *x = sh_ai_load(&sh_pos_x);
+        *y = sh_ai_load(&sh_pos_y);
         return 1;
     }
     // no sample yet (before R's first refresh): one blocking fetch
@@ -3487,4 +3818,4 @@ void egui_cr_request_quit(void) {
     sh_cmd_post_async(SH_CMD_QUIT, 0, 0, 0, 0, 0.f, NULL, 0);
 }
 
-#endif // _SAPP_LINUX
+#endif // _SAPP_LINUX || _SAPP_WIN32

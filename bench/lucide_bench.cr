@@ -7,7 +7,7 @@
 #   crystal build bench/lucide_bench.cr -o bin/lucide_bench \
 #     --link-flags "-L$(pwd)/lib" && ./bin/lucide_bench
 #
-# The real font backend (FreeType, light-hint fallback) is mandatory:
+# The real font backend (the freetype-cr port) is mandatory:
 # the headless monospace estimate would make measure() free and the
 # bench would measure a different program than the one shipping.
 # LUCIDE_NO_CULL=1 stress mode is honored like in the example.
@@ -129,8 +129,7 @@ end
 # Real font stack, like Sokol#on_init picks one — forced to the pure
 # Crystal backends: the bench measures the shipped (release) stack.
 paths = Egui::SystemPorts::Fonts.search_paths
-font = Egui::Backend::CrystalFonts.from_system(paths) ||
-       Egui::Backend::LightHintedFonts.from_system(paths)
+font = Egui::Backend::CrystalFonts.from_system(paths)
 if font
   puts "fonts: #{font.class.name}"
 else

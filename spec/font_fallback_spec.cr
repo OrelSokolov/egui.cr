@@ -1,7 +1,6 @@
 # TextCmd's family field + Context#fonts_for (pure headless — the font
 # CHAIN itself lives in spec/font_chain_smoke.cr, a runnable script,
-# because instantiating an AtlasFonts subclass here would pull the
-# C-shim LightHintedFonts into the virtual Fonts dispatch and link the
+# because instantiating an AtlasFonts subclass here would link the
 # native lib into `crystal spec`).
 
 require "spec"

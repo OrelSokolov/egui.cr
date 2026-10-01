@@ -2,8 +2,8 @@
 # runnable smoke script: several stacks baking into ONE GlyphAtlas, the
 # epoch invalidation on a foreign reset, and the per-stack overflow
 # flags. Runnable script, not a *_spec.cr, for the same reason as
-# font_chain_smoke.cr — instantiating an AtlasFonts subclass would pull
-# the C-shim LightHintedFonts into the virtual Fonts dispatch.
+# font_chain_smoke.cr — instantiating an AtlasFonts subclass would
+# link the native lib.
 #
 # Run: crystal run spec/shared_atlas_smoke.cr
 

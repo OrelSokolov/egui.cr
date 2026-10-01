@@ -7,7 +7,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -44,7 +44,6 @@ SHIM_HEADERS = {
     vendor/stb_image.h
     vendor/sokol/util/sokol_fontstash.h
   ],
-  "stb_truetype_shim" => %w[vendor/fontstash/stb_truetype.h],
   "nanosvg_shim" => %w[
     vendor/nanosvg/nanosvg.h
     vendor/nanosvg/nanosvgrast.h
@@ -59,7 +58,6 @@ SHIM_HEADERS.each do |shim, headers|
     if WINDOWS
       includes = case shim
         when "sokol_shim"        then "/Ivendor\\sokol /Ivendor\\fontstash /Ivendor"
-        when "stb_truetype_shim" then "/Ivendor\\fontstash"
         when "nanosvg_shim"      then "/Ivendor\\nanosvg"
         else ""
       end
@@ -75,7 +73,6 @@ SHIM_HEADERS.each do |shim, headers|
       args = case shim
         when "sokol_shim"
           "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor"
-        when "stb_truetype_shim" then "-Ivendor/fontstash"
         when "nanosvg_shim"      then "-Ivendor/nanosvg"
         else ""
       end
@@ -87,6 +84,9 @@ end
 shim_objs = SHIM_HEADERS.keys.map { |shim| "lib/#{shim}#{OBJ_EXT}" }
 file NATIVE_LIB => shim_objs do
   FileUtils.mkdir_p("lib")
+  # Recreate from scratch: `ar rcs` only adds/replaces members, so a
+  # dropped shim would linger in an existing archive forever.
+  FileUtils.rm_f(NATIVE_LIB)
   if WINDOWS
     # FreeType import lib + dll (scripts/fetch_freetype.bat is a no-op
     # once lib/freetype.lib and bin/freetype.dll are in place).

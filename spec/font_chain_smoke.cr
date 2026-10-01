@@ -1,7 +1,6 @@
 # The CrystalFonts fallback chain, as a runnable smoke script (the
 # crystalfonts_smoke.cr pattern — instantiating an AtlasFonts subclass
-# in a *_spec.cr would drag the C-shim LightHintedFonts into the
-# virtual Fonts dispatch and link the native lib into `crystal spec`).
+# in a *_spec.cr would link the native lib into `crystal spec`).
 #
 # Run: crystal run spec/font_chain_smoke.cr
 
