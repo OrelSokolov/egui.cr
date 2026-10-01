@@ -264,6 +264,15 @@ module Egui
       add(Separator.new)
     end
 
+    # Rendered markdown (headings, lists, quotes, code blocks, rules,
+    # images — inline `**bold**`/`*italic*`/`` `code` ``/links through
+    # RichLabel). `base_dir` roots relative image paths. See
+    # `Egui::Markdown`.
+    def markdown(source : String, base_dir : String? = nil,
+                 id : String? = nil) : Response
+      add(Markdown.new(source, base_dir: base_dir, id: id))
+    end
+
     def progress_bar(fraction : Float64, text : String? = nil,
                      animate : Bool = false) : Response
       add(ProgressBar.new(fraction, text: text, animate: animate))

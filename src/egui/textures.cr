@@ -21,6 +21,13 @@ module Egui
     # Load an image file (PNG/JPEG/…) from disk; 0 = failure.
     abstract def load(path : String) : UInt64
 
+    # Pixel dimensions of an image file, header-only probe (nil =
+    # unknown / unreadable — the headless dummy). Layout-side sizing
+    # before/without a #load.
+    def image_size(path : String) : Vec2?
+      nil
+    end
+
     # Create an EMPTY updatable RGBA8 texture for pixels that change
     # every frame (decoded video, camera frames); 0 = failure. Content
     # is undefined until the first #update.

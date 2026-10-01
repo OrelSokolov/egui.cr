@@ -41,9 +41,14 @@ module Egui
     # pre-existing command is unaffected), "monospace" → the mono
     # stack, any registered name (`Sokol.register_font`) → that stack.
     getter family : String?
+    # Synthetic styles (no separate faces): bold double-strikes the
+    # glyphs, italic shears them — see backend `paint_text`.
+    getter? bold : Bool
+    getter? italic : Bool
 
     def initialize(@clip : Rect, @pos : Pos2, @text : String,
-                   @size : Float64, @color : Color32, @family : String? = nil)
+                   @size : Float64, @color : Color32, @family : String? = nil,
+                   @bold : Bool = false, @italic : Bool = false)
     end
   end
 
@@ -246,20 +251,27 @@ module Egui
     # (upstream anchors at the galley's left edge + baseline; backends
     # convert using their font metrics — see backend/sokol/fontstash).
     # `family:` draws through that named stack (`Context#fonts_for`);
-    # nil uses the primary one.
+    # nil uses the primary one. `bold:`/`italic:` are synthetic styles
+    # applied by the backend (double strike / shear).
     def text(pos : Pos2, text : String, size : Float64, color : Color32,
-             family : String? = nil) : Nil
+             family : String? = nil, bold : Bool = false,
+             italic : Bool = false) : Nil
       return if text.empty? # nothing to rasterize (Fonts#fit gave up)
-      add(TextCmd.new(@clip, pos, text, size, color, family))
+      add(TextCmd.new(@clip, pos, text, size, color, family, bold, italic))
     end
 
     # Paint a laid-out Galley with `pos` as its top-left corner
     # (upstream `Painter::galley`). Emits one TextCmd per row run —
     # that's where per-run colors come from — plus underline lines.
     # `family:` is the stack the galley was laid out with, so the draw
-    # commands hit the same font the measurement used.
+    # commands hit the same font the measurement used; a run carrying
+    # its OWN family (inline code) overrides it per run — `resolve`
+    # (a `Context#fonts_for` closure) supplies that stack for the
+    # underline width measurement, exactly like `Fonts#layout` did for
+    # the wrap.
     def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
-                     default_color : Color32, family : String? = nil) : Nil
+                     default_color : Color32, family : String? = nil,
+                     resolve : ((String?) -> Fonts)? = nil) : Nil
       # Cull rows outside the clip rect: a scrolled textarea with a
       # multi-megabyte galley must not tessellate (and rasterize) every
       # row of the buffer each frame — only the visible window. Rows
@@ -274,12 +286,37 @@ module Egui
         row.runs.each do |run|
           run_pos = Pos2.new(pos.x + run.x, row_center_y)
           color = run.color || default_color
-          text(run_pos, run.text, run.size, color, family)
+          run_family = run.family || family
+          run_fonts = run.family && resolve ? resolve.not_nil!.call(run.family) : fonts
+          # Chip behind a backgrounded run (inline code): a rounded
+          # rect under the text, padded around the glyphs the way
+          # GitHub does (`code { padding: 0.2em 0.4em; border-radius:
+          # 6px }`) — the padding scales with the run's font size.
+          # Height clamps to the row box so the chip never bleeds
+          # into neighboring lines or blocks.
+          if (bg = run.background)
+            w = run_fonts.measure(run.text, run.size).x
+            pad_x = run.size * 0.4
+            chip_h = {run.size * 1.4, row.height}.min
+            rect(Rect.from_min_size(
+              Pos2.new(run_pos.x - pad_x,
+                row_top + row.height / 2.0 - chip_h / 2.0),
+              Vec2.new(w + pad_x * 2.0, chip_h)),
+              6.0, bg)
+          end
+          text(run_pos, run.text, run.size, color, run_family,
+            run.bold?, run.italic?)
           if run.underline?
-            w = fonts.measure(run.text, run.size).x
+            w = run_fonts.measure(run.text, run.size).x
             underline_y = pos.y + row.y + row.height - 2.0
             line(Pos2.new(run_pos.x, underline_y),
               Pos2.new(run_pos.x + w, underline_y), 1.0, color)
+          end
+          if run.strikethrough?
+            w = run_fonts.measure(run.text, run.size).x
+            strike_y = pos.y + row.y + row.height * 0.58
+            line(Pos2.new(run_pos.x, strike_y),
+              Pos2.new(run_pos.x + w, strike_y), 1.0, color)
           end
         end
       end

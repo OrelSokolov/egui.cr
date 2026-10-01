@@ -39,6 +39,18 @@ module Egui
       @id_name = id
     end
 
+    # Text-decoration chainables (the `Hyperlink#underline` parity):
+    # a line under / through the WHOLE label's text.
+    def underline : Label
+      @rich.underline
+      self
+    end
+
+    def strikethrough : Label
+      @rich.strikethrough
+      self
+    end
+
     def style_properties : Array(StyleProp)
       StyleProps.textlike
     end
@@ -51,6 +63,9 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
       runs = @rich.runs(style.font_size, style.visuals.text_color)
+      # Code blocks share the inline-code fallback: without a mono
+      # stack they draw in the proportional font — retint them.
+      runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
       # Default (nil): wrap only where the label owns the rest of the
       # line — a vertical layout (upstream `TextWrapMode::Wrap`); a
       # label inside a horizontal row stays inline (`Extend`). A zero
@@ -60,7 +75,11 @@ module Egui
       available = ui.available_width
       max_width = wrap && available > 0.0 ? available : nil
       fonts = ui.ctx.fonts_for(style.font_family)
-      galley = fonts.layout(runs, max_width)
+      # Runs may carry their own family (RichText#code — code blocks):
+      # resolve those through ctx.fonts_for for BOTH measuring and
+      # drawing, like RichLabel does for its markup spans.
+      resolve = ->(family : String?) { ui.ctx.fonts_for(family) }
+      galley = fonts.layout(runs, max_width, resolve)
 
       rect = ui.allocate_at_least(galley.size)
       response = ui.interact(rect, id,
@@ -70,7 +89,7 @@ module Egui
         paint_selectable(ui, response, id, rect, galley, style)
       else
         ui.painter.paint_galley(rect.min, galley, fonts,
-          style.visuals.text_color, style.font_family)
+          style.visuals.text_color, style.font_family, resolve)
       end
 
       response
@@ -168,7 +187,7 @@ module Egui
         end
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        style.font_family)
+        style.font_family, ->(family : String?) { ctx.fonts_for(family) })
     end
 
     # Byte index of the pointer inside the flattened row text: the row
