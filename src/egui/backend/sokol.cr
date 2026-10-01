@@ -1789,13 +1789,27 @@ module Egui
       def self.paint_line(cmd : Egui::LineCmd) : Nil
         apply_scissor(cmd.clip)
 
-        d = cmd.p2 - cmd.p1
+        p1 = cmd.p1
+        p2 = cmd.p2
+        # Snap axis-aligned lines to the pixel grid: a width-1 line
+        # centered on a pixel boundary antialiases across two rows
+        # (looks 2px); centered on k+0.5 it covers exactly one.
+        if (p2.y - p1.y).abs < 1e-9 # horizontal
+          y = p1.y.floor + 0.5
+          p1 = Egui::Pos2.new(p1.x, y)
+          p2 = Egui::Pos2.new(p2.x, y)
+        elsif (p2.x - p1.x).abs < 1e-9 # vertical
+          x = p1.x.floor + 0.5
+          p1 = Egui::Pos2.new(x, p1.y)
+          p2 = Egui::Pos2.new(x, p2.y)
+        end
+        d = p2 - p1
         len = d.length
         return if len < 1e-9
         # perpendicular unit vector scaled to half the stroke width
         n = Egui::Vec2.new(-d.y / len, d.x / len) * (cmd.width / 2.0)
         LibEguiCr.sgl_begin_quads
-        quad_pts(cmd.p1 - n, cmd.p2 - n, cmd.p2 + n, cmd.p1 + n, cmd.color)
+        quad_pts(p1 - n, p2 - n, p2 + n, p1 + n, cmd.color)
         LibEguiCr.sgl_end
       end
 
