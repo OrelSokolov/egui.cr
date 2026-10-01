@@ -199,25 +199,26 @@ module Egui
       end
 
       # Content: optional icon + centered text. The icon→text gap
-      # drops in icon-only buttons (see `icon_adv` above), and the
-      # whole icon+text block centers as one — an icon-only button
-      # centers its glyph instead of packing it left (the Inspector's
-      # ✕ must sit in the middle of its square cell).
-      icon_adv = @text.empty? ? 0.0 : style.spacing.icon_spacing
+      # exists only between a real icon and a non-empty label — without
+      # an icon there is nothing to gap, and a phantom advance would
+      # push the text off-center (block_w would exceed the measured
+      # text by icon_spacing, and the pen starts icon_spacing right of
+      # block_left). Icon-only buttons likewise gap nothing.
       has_icon = ((tex = @image_texture) && !tex.zero?) ||
                  @icon_svg.is_a?(Svg) ||
                  ((name = @icon) && Icons::NAMES.includes?(name))
       icon_w = has_icon ? glyph_h : 0.0
+      icon_adv = has_icon && !@text.empty? ? style.spacing.icon_spacing : 0.0
       # A host may clamp the rect below the natural size (the max-size
       # rule at a region edge — e.g. a "➕ Agent" button overflowing
       # the sidebar): truncate the label to what fits so the text
       # stays INSIDE the button instead of spilling past its fill.
-      icon_room = has_icon ? icon_w + icon_adv : 0.0
+      icon_room = icon_w + icon_adv
       max_text_w = {rect.width - pad.horizontal - icon_room, 0.0}.max
       label = @text.empty? ? @text : fonts.fit(@text, font_size, max_text_w)
       label_size = label.same?(@text) ? text_size :
                    fonts.measure_cached(label, font_size)
-      block_w = icon_w + (@text.empty? ? 0.0 : icon_adv) + label_size.x
+      block_w = icon_w + icon_adv + label_size.x
       # Center the block in the content box (rect minus padding); when
       # the cell is TIGHTER than the natural size (#add_sized
       # hard-clamps to the region's max rect — e.g. a fixed-size icon
