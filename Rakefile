@@ -7,7 +7,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc.
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
