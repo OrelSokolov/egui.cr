@@ -20,8 +20,9 @@ module Egui
 
     # HTML-ish heading scale over the style's font size; all bold.
     HEADING_SCALES = {1.6, 1.35, 1.15, 1.0, 0.9, 0.85}
-    # Fenced-code background (GitHub light tint).
-    CODE_BG = Color32.rgba(0xF7, 0xF8, 0xFA, 255)
+    # Fenced-code background (non-inline blocks; the inline chip is
+    # RichLabel::INLINE_CODE_BG).
+    CODE_BG = Color32.rgba(0xF0, 0xF1, 0xF3, 255)
     # Horizontal rules carry at least this much breathing room above
     # and below the line.
     HR_PAD = 5.0
