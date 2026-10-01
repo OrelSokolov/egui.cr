@@ -25,6 +25,9 @@ module Egui
     # Horizontal rules carry at least this much breathing room above
     # and below the line.
     HR_PAD = 5.0
+    # Default horizontal reading padding (the text never touches the
+    # window edges); override per widget with `pad_x:`.
+    DEFAULT_PAD_X = 10.0
 
     # One parsed block. `text` carries the STRIPPED content (markers
     # removed); heading `level` is 1-6, list items keep their number
@@ -62,9 +65,10 @@ module Egui
     # Root relative image paths resolve against (nil = paths stay as
     # written — cwd-relative).
     def initialize(@source : String, base_dir : String? = nil,
-                   id : String? = nil)
+                   id : String? = nil, pad_x : Float64 = DEFAULT_PAD_X)
       @base_dir = base_dir
       @id_name = id
+      @pad_x = pad_x
     end
 
     def style_properties : Array(StyleProp)
@@ -80,10 +84,13 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
 
+      # Horizontal reading padding: the text never touches the window
+      # edges (10px each side, overridable per widget).
       origin = ui.cursor
       width = ui.available_width
       body = ui.child_ui(
-        Rect.from_min_size(origin, Vec2.new({width, 1.0}.max, 1e6)), id)
+        Rect.from_min_size(Pos2.new(origin.x + @pad_x, origin.y),
+          Vec2.new({width - @pad_x * 2.0, 1.0}.max, 1e6)), id)
       Markdown.parse(@source).each { |b| render_block(body, b, style) }
 
       ui.min_rect = ui.min_rect.union(body.min_rect)

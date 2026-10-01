@@ -261,8 +261,18 @@ describe "Markdown widget" do
     lines.size.should eq(2)
   end
 
-  it "gives H1 20px of top padding" do
-    y_of = [] of Float64
+  it "pads the text 10px from the panel's left edge" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("paragraph text")
+      end
+    end
+    text = ctx.painter.commands.select(Egui::TextCmd).first
+    text.pos.x.should be >= Egui::Markdown::DEFAULT_PAD_X
+  end
+
+  it "gives H1 20px of top padding" do    y_of = [] of Float64
     ["# H", "## H"].each do |src|
       ctx = Egui::Context.new
       md_frame(ctx) do |c|
