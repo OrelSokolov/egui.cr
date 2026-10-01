@@ -418,59 +418,14 @@ module Egui
       inner.add(Label.new(rich, wrap: false))
     end
 
-    # GFM table: header row bold with a rule under it (GitHub style),
-    # body rows below. Column widths = the widest cell per column
-    # (markup-stripped measurement, single line — cells don't wrap in
-    # v1), scaled down proportionally when the table overflows the
-    # available width.
+    # GFM table: delegated to TableTextRenderer (min/max column
+    # auto-layout, wrapped cells, full borders); header row bold.
     private def render_table(ui : Ui, block : Block, style : Style) : Nil
       rows = block.text.split('\n').map(&.split("\x1F"))
-      return if rows.empty?
-      fonts = ui.ctx.fonts_for(style.font_family)
-      measure = ->(text : String, bold : Bool) {
+      TableTextRenderer.new(rows).render(ui, style) do |text, header|
         rich = RichText.new(text)
-        rich.bold if bold
-        runs = rich.styled_runs(style.font_size, style.visuals.text_color,
-          style.visuals.hyperlink_color)
-        w = 0.0
-        runs.each { |r| w += fonts.measure(r.text, r.size).x }
-        w
-      }
-
-      cols = rows.map(&.size).max
-      widths = Array.new(cols, 0.0)
-      rows.each_with_index do |row, ri|
-        row.each_with_index do |cell, ci|
-          w = measure.call(cell, ri.zero?) + 8.0
-          widths[ci] = {widths[ci], w}.max
-        end
-      end
-      # Scale down to fit (keep the proportions).
-      total = widths.sum + (cols - 1) * 6.0
-      avail = ui.available_width
-      if total > avail && total > 0
-        widths = widths.map { |w| w * avail / total }
-      end
-
-      top = ui.cursor
-      grid_id = ui.next_widget_id.value.to_s
-      Grid.new(grid_id, widths: widths).show(ui) do |grid|
-        rows.each_with_index do |row, ri|
-          row.each_with_index do |cell, ci|
-            rich = RichText.new(cell)
-            rich.bold if ri.zero?
-            grid.add(text_label(rich, false))
-          end
-          grid.end_row
-          # Rule under the header row.
-          if ri.zero?
-            y = ui.cursor.y
-            ui.painter.line(Pos2.new(top.x, y),
-              Pos2.new({top.x + widths.sum + (cols - 1) * 6.0,
-                        top.x + avail}.min, y), 1.0,
-              style.visuals.fade_color(style.visuals.text_color, 0.45))
-          end
-        end
+        rich.bold if header
+        text_label(rich, true)
       end
     end
 

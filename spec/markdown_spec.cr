@@ -297,6 +297,49 @@ describe "Markdown widget" do
       .any? { |l| l.p1.y == l.p2.y }.should be_true
   end
 
+  it "wraps long cells inside their column (table text layout)" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown(<<-MD)
+          | short | a very long cell text that cannot fit its column |
+          | --- | --- |
+          | x | y |
+          MD
+      end
+    end
+
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+    long_bits = texts.select { |t| t.text.includes?("long") ||
+      t.text.includes?("column") }
+    long_bits.size.should be >= 2 # the cell wrapped into several lines
+    # wrapped lines share the column's x (the wrap point), i.e. their
+    # x is the same, and to the right of the first column
+    xs = long_bits.map(&.pos.x)
+    (xs.max - xs.min).should be < 2.0
+  end
+
+  it "draws full table borders: outer stroke + inner grid lines" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("| a | b |\n| --- | --- |\n| c | d |")
+      end
+    end
+
+    # 2 rows × 2 cols → 1 horizontal + 1 vertical inner line, plus a
+    # stroked outer rect
+    h = ctx.painter.commands.select(Egui::LineCmd)
+      .count { |l| l.p1.y == l.p2.y }
+    v = ctx.painter.commands.select(Egui::LineCmd)
+      .count { |l| l.p1.x == l.p2.x }
+    h.should be >= 1
+    v.should be >= 1
+    stroked = ctx.painter.commands.select(Egui::RectCmd)
+      .any?(&.stroke_color)
+    stroked.should be_true
+  end
+
   it "routes link clicks through #on_link with the raw target" do
     ctx = Egui::Context.new
     clicked = [] of String
