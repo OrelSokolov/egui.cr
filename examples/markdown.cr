@@ -11,32 +11,45 @@ require "../src/egui/backend/sokol"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
-# Monospace stack for inline/code-block text, registered as the
-# "monospace" FAMILY (the primary font stays the system one — prose
-# renders proportionally, code in a real mono face).
-def pick_monospace : Nil
-  candidates = [
+# Demo fonts: NotoSans (prose) + LiberationMono (code) shipped in
+# assets/fonts (both SIL OFL). NotoSans becomes the PRIMARY stack;
+# LiberationMono the "monospace" family. Both fall back to system
+# faces when the files are missing.
+def pick_fonts : Nil
+  fonts_dir = File.join(REPO_ROOT, "assets", "fonts")
+
+  noto = Egui::Backend::Sokol.fonts_from_system([
+    File.join(fonts_dir, "NotoSans-Regular.ttf"),
+  ])
+  if noto
+    Egui::Backend::Sokol.select_fonts(noto)
+  else
+    STDERR.puts "markdown demo: NotoSans-Regular.ttf not found — system font"
+  end
+
+  mono_candidates = [
+    File.join(fonts_dir, "LiberationMono-Regular.ttf"),
     "JetBrainsMonoNerdFontMono-Regular.ttf",
     "JetBrainsMono-Regular.ttf",
   ]
   {% if flag?(:win32) %}
-    candidates += ["C:\\Windows\\Fonts\\consola.ttf",
-                   "C:\\Windows\\Fonts\\lucon.ttf"]
+    mono_candidates += ["C:\\Windows\\Fonts\\consola.ttf",
+                        "C:\\Windows\\Fonts\\lucon.ttf"]
   {% else %}
-    candidates += [
-      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    mono_candidates += [
       "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
+      "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
       "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
       "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
       "/usr/share/fonts/truetype/ubuntu/UbuntuMono-R.ttf",
       "/System/Library/Fonts/SFNSMono.ttf",
     ]
   {% end %}
-  font = Egui::Backend::Sokol.fonts_from_system(candidates)
-  Egui::Backend::Sokol.register_font("monospace", font) if font
+  mono = Egui::Backend::Sokol.fonts_from_system(mono_candidates)
+  Egui::Backend::Sokol.register_font("monospace", mono) if mono
 end
 
-pick_monospace
+pick_fonts
 
 FALLBACK = <<-'MD'
   # Markdown demo
