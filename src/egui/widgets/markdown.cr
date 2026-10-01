@@ -453,6 +453,9 @@ module Egui
       resolve = ->(family : String?) { ui.ctx.fonts_for(family) }
       fonts = ui.ctx.fonts_for(style.font_family)
       rich = RichText.new(block.text).code
+      # 14px monospace at the default 16px body (0.875 — the same
+      # ratio as inline code chips).
+      rich = rich.size(style.font_size * 0.875)
       galley = fonts.layout(
         rich.runs(style.font_size, style.visuals.text_color), nil, resolve)
 
