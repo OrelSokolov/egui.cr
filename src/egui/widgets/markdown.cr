@@ -29,6 +29,9 @@ module Egui
     # Default horizontal reading padding (the text never touches the
     # window edges); override per widget with `pad_x:`.
     DEFAULT_PAD_X = 10.0
+    # Default page background — white, a reader page. nil via
+    # `background: nil` disables it (transparent over the panel).
+    DEFAULT_BG = Color32.rgba(255, 255, 255, 255)
 
     # One parsed block. `text` carries the STRIPPED content (markers
     # removed); heading `level` is 1-6, list items keep their number
@@ -65,8 +68,12 @@ module Egui
 
     # Root relative image paths resolve against (nil = paths stay as
     # written — cwd-relative).
+    # Page background behind the rendered blocks (nil = transparent).
+    property background : Color32?
+
     def initialize(@source : String, base_dir : String? = nil,
-                   id : String? = nil, pad_x : Float64 = DEFAULT_PAD_X)
+                   id : String? = nil, pad_x : Float64 = DEFAULT_PAD_X,
+                   @background : Color32? = DEFAULT_BG)
       @base_dir = base_dir
       @id_name = id
       @pad_x = pad_x
@@ -89,6 +96,10 @@ module Egui
       # edges (10px each side, overridable per widget).
       origin = ui.cursor
       width = ui.available_width
+      # White page background, reserved up front and back-patched
+      # once the content extent is known (Painter#set) so it lands
+      # UNDER every block command. nil = no background.
+      bg_index = ui.painter.add_noop if @background
       body = ui.child_ui(
         Rect.from_min_size(Pos2.new(origin.x + @pad_x, origin.y),
           Vec2.new({width - @pad_x * 2.0, 1.0}.max, 1e6)), id)
@@ -96,6 +107,13 @@ module Egui
 
       ui.min_rect = ui.min_rect.union(body.min_rect)
       ui.cursor = Pos2.new(origin.x, body.cursor.y)
+      if (bg = @background) && bg_index
+        ui.painter.set(bg_index, RectCmd.new(
+          clip: ui.clip,
+          rect: Rect.from_min_size(origin,
+            Vec2.new(width, body.min_rect.bottom - origin.y)),
+          rounding: 0.0, fill: bg, stroke_color: nil, stroke_width: 0.0))
+      end
       ui.interact(body.min_rect, id, Sense.none)
     end
 

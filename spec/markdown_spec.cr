@@ -272,6 +272,22 @@ describe "Markdown widget" do
     text.pos.x.should be >= Egui::Markdown::DEFAULT_PAD_X
   end
 
+  it "paints a white page background under the blocks" do
+    ctx = Egui::Context.new
+    md_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.markdown("paragraph text")
+      end
+    end
+    cmds = ctx.painter.commands
+    bg_at = cmds.index { |c|
+      c.is_a?(Egui::RectCmd) && c.fill == Egui::Markdown::DEFAULT_BG
+    }
+    text_at = cmds.index { |c| c.is_a?(Egui::TextCmd) }
+    bg_at.should_not be_nil
+    bg_at.not_nil!.should be < text_at.not_nil!
+  end
+
   it "gives H1 20px of top padding" do    y_of = [] of Float64
     ["# H", "## H"].each do |src|
       ctx = Egui::Context.new
