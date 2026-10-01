@@ -19,7 +19,8 @@ module Egui
     include Widget
 
     # HTML-ish heading scale over the style's font size; all bold.
-    HEADING_SCALES = {1.6, 1.35, 1.15, 1.0, 0.9, 0.85}
+    # h1/h2 are GitHub's 2em/1.5em — 32/24px at the default 16px body.
+    HEADING_SCALES = {2.0, 1.5, 1.15, 1.0, 0.9, 0.85}
     # Fenced-code background (non-inline blocks; the inline chip is
     # RichLabel::INLINE_CODE_BG).
     CODE_BG = Color32.rgba(0xF0, 0xF1, 0xF3, 255)

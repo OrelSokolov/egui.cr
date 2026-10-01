@@ -185,7 +185,8 @@ describe "Markdown widget" do
     texts.size.should eq(1)
     texts.first.text.should eq("Head")
     texts.first.bold?.should be_true
-    texts.first.size.should be > ctx.style.font_size
+    # h1 = 2x body (32px at the default 16px), GitHub-style
+    texts.first.size.should be_close(ctx.style.font_size * 2.0, 0.01)
 
     ctx.painter.commands.select(Egui::LineCmd)
       .any? { |l| l.p1.y == l.p2.y }.should be_true # the horizontal rule
