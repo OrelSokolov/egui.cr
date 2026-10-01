@@ -963,6 +963,14 @@ uint32_t egui_cr_load_image(const char* path) {
     return view_id;
 }
 
+// Header-only image probe (stbi_info): pixel dimensions without
+// decoding the pixels — layout-side sizing before/without a load.
+// Returns 1 on success and fills w/h, 0 on failure.
+int egui_cr_image_info(const char* path, int* w, int* h) {
+    int n;
+    return stbi_info(path, w, h, &n);
+}
+
 // Decode an image file into a CPU-side straight-alpha RGBA8 buffer —
 // the `CustomCursorImage` source (the GPU texture from
 // egui_cr_load_image can't be read back). malloc'd, exactly w*h*4

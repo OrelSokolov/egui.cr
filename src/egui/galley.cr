@@ -4,14 +4,22 @@
 
 module Egui
   # One styled chunk of text (upstream `LayoutJob` section + format).
+  # `family` routes the chunk through another font stack (`nil` = the
+  # stack the galley is laid out with); `bold`/`italic` are synthetic
+  # (no separate faces — see backend `paint_text`).
   class TextRun
     getter text : String
     getter size : Float64
     getter color : Color32?
     getter? underline : Bool
+    getter family : String?
+    getter? bold : Bool
+    getter? italic : Bool
 
     def initialize(@text : String, @size : Float64,
-                   @color : Color32? = nil, @underline : Bool = false)
+                   @color : Color32? = nil, @underline : Bool = false,
+                   @family : String? = nil, @bold : Bool = false,
+                   @italic : Bool = false)
     end
   end
 
@@ -23,9 +31,14 @@ module Egui
       getter size : Float64
       getter color : Color32?
       getter? underline : Bool
+      getter family : String?
+      getter? bold : Bool
+      getter? italic : Bool
 
       def initialize(@text : String, @x : Float64, @size : Float64,
-                     @color : Color32?, @underline : Bool)
+                     @color : Color32?, @underline : Bool,
+                     @family : String? = nil, @bold : Bool = false,
+                     @italic : Bool = false)
       end
     end
 

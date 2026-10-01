@@ -118,6 +118,8 @@ lib LibEguiCr
   fun window_resize_start = egui_cr_window_resize_start(direction : Int32)
   fun image_alpha_mask = egui_cr_image_alpha_mask(path : UInt8*, w : Int32*,
                                                   h : Int32*) : UInt8*
+  fun image_info = egui_cr_image_info(path : UInt8*, w : Int32*,
+                                      h : Int32*) : Int32
   fun set_window_shape = egui_cr_set_window_shape(mask : UInt8*, w : Int32,
                                                   h : Int32)
   fun mem_free = egui_cr_mem_free(p : Void*)
@@ -1673,6 +1675,13 @@ module Egui
         color = cmd.color
         x_origin = cmd.pos.x * ppp
         inv = (1.0 / ppp).to_f32 # emit in points; the viewport scales back
+        # Synthetic bold (no separate face): the glyph batch is drawn
+        # twice, the second pass nudged right — the classic double
+        # strike; strokes read heavier after the coverage blend.
+        embolden = cmd.bold? ? {draw_size / 32.0, 1.0}.max : 0.0
+        # Synthetic italic: shear the quads around the baseline, top
+        # leaning right (≈12°, the standard oblique angle).
+        shear = cmd.italic? ? 0.21 : 0.0
         # letter_spacing is absolute px — widen it with the draw size so
         # the tracking reads the same at 2x as at 1x.
         saved_spacing = fonts.letter_spacing
@@ -1687,10 +1696,17 @@ module Egui
           y0 = baseline - g.ytop.to_f32
           x1 = x0 + g.w.to_f32
           y1 = y0 + g.h.to_f32
-          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
+          # Italic shear: x grows with height above the baseline.
+          s0 = (shear * (baseline - y0)).to_f32
+          s1 = (shear * (baseline - y1)).to_f32
+          2.times do |pass|
+            dx = pass.zero? ? 0.0 : embolden.to_f32
+            LibEguiCr.sgl_v2f_t2f_c4b((x0 + s0 + dx) * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
+            LibEguiCr.sgl_v2f_t2f_c4b((x1 + s0 + dx) * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
+            LibEguiCr.sgl_v2f_t2f_c4b((x1 + s1 + dx) * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
+            LibEguiCr.sgl_v2f_t2f_c4b((x0 + s1 + dx) * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
+            break if pass.zero? && embolden <= 0.0
+          end
         end
         LibEguiCr.sgl_end
         LibEguiCr.text_pipeline_pop
@@ -2036,6 +2052,16 @@ module Egui
 
         def load(path : String) : UInt64
           LibEguiCr.load_image(path.to_unsafe).to_u64
+        end
+
+        # Header-only probe (stbi_info shim) — pixel size for layout
+        # without decoding the whole image.
+        def image_size(path : String) : Egui::Vec2?
+          w, h = 0, 0
+          if LibEguiCr.image_info(path.to_unsafe, pointerof(w),
+                                  pointerof(h)) == 1 && w > 0 && h > 0
+            Egui::Vec2.new(w.to_f, h.to_f)
+          end
         end
 
         def create_stream(width : Int32, height : Int32) : UInt64
