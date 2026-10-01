@@ -289,13 +289,17 @@ module Egui
           run_family = run.family || family
           run_fonts = run.family && resolve ? resolve.not_nil!.call(run.family) : fonts
           # Chip behind a backgrounded run (inline code): a rounded
-          # rect under the text, slightly padded around the glyphs.
+          # rect under the text, padded around the glyphs the way
+          # GitHub does (`code { padding: 0.2em 0.4em; border-radius:
+          # 6px }`) — the padding scales with the run's font size.
           if (bg = run.background)
             w = run_fonts.measure(run.text, run.size).x
+            pad_x = run.size * 0.4
+            pad_y = run.size * 0.2
             rect(Rect.from_min_size(
-              Pos2.new(run_pos.x - 2.0, row_top + 1.0),
-              Vec2.new(w + 4.0, row.height - 2.0)),
-              3.0, bg)
+              Pos2.new(run_pos.x - pad_x, row_top + row.height / 2.0 - run.size / 2.0 - pad_y),
+              Vec2.new(w + pad_x * 2.0, run.size + pad_y * 2.0)),
+              6.0, bg)
           end
           text(run_pos, run.text, run.size, color, run_family,
             run.bold?, run.italic?)

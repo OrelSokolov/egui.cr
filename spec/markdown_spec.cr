@@ -335,9 +335,14 @@ describe "Markdown widget" do
     chip = ctx.painter.commands.select(Egui::RectCmd)
       .find(&.fill.==(Egui::RichLabel::INLINE_CODE_BG)).not_nil!
     chip.rounding.should be > 0.0
-    # the chip surrounds the code run (padded by ±2px)
-    chip.rect.left.should be <= code.pos.x
-    chip.rect.right.should be >= code.pos.x + 20.0
+    # GitHub's chip: padding 0.2em 0.4em around the glyphs — the
+    # rect extends past the run on every side, proportional to the
+    # font size.
+    pad_x = code.size * 0.4
+    pad_y = code.size * 0.2
+    chip.rect.left.should be_close(code.pos.x - pad_x, 0.5)
+    chip.rect.height.should be_close(code.size + pad_y * 2.0, 0.5)
+    chip.rounding.should be >= 6.0
   end
 
   it "gives horizontal rules at least 5px of padding above" do
