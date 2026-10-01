@@ -17,7 +17,15 @@ module Egui
       source.each_byte do |b|
         h = (h ^ b) &* FNV_PRIME
       end
-      h = h ^ salt.hash.to_u64! &+ 0x9e3779b97f4a7c15_u64
+      # The plain FNV-1a over the bytes is deterministic ACROSS
+      # processes too — auto ids (`#0x…`) then address the same widget
+      # after a restart, which the .ecss style diff relies on. Only an
+      # explicit salt mixes in `String#hash`, and that one is
+      # deliberately per-process-seeded (unstable) — never use a salt
+      # for an id that must survive a restart.
+      unless salt.empty?
+        h = h ^ salt.hash.to_u64! &+ 0x9e3779b97f4a7c15_u64
+      end
       Id.new(h)
     end
 

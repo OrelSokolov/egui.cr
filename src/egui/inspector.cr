@@ -100,11 +100,15 @@ module Egui
     # spacing each) = 402 → 422 leaves the spacer's gap non-negative
     # (at 420 the ✕ cell was clamped 26→24 and its glyph spilled).
     PANEL_W    = 422.0
+    # The width with a live .ecss session: the header adds the «Сохранить»
+    # button (SAVE_W + its item-spacing gap) before Export.
+    PANEL_W_SAVE = 530.0
     LABEL_W    = 130.0
     # Header geometry: equal-width tab cells (the "Class"/"Element"
     # pair reads as one control) and the right-pinned action cluster.
     TAB_W      = 80.0
     TAB_H      = 26.0
+    SAVE_W     = 100.0
     EXPORT_W   = 150.0
     MENU_W     = 26.0
     CLOSE_W    = 26.0
@@ -140,7 +144,11 @@ module Egui
     @pending_pick : {Id, Pos2}?
     @pick_target : Id?
     @last_selected_meta : WidgetMeta?
-    @class_sel : String?
+    # The "Class" tab's selected class. Linked to the Element tab:
+    # switching to Class jumps to the LAST SELECTED element's class
+    # (see #class_sel=), so "pick the element → edit its class" is one
+    # motion, not a manual hunt through the class combo.
+    property class_sel : String?
     @class_state : String?
     @element_state : String?
     @color_target : ColorTarget?
@@ -400,11 +408,14 @@ module Egui
       # dark ones (#292a2d-ish), like the real DevTools dock.
       v = @ctx.style.visuals
       fill = v.fade_color(v.panel_fill, 0.055)
+      # With a live .ecss session the header carries one more button
+      # («Сохранить») — the column widens to fit it.
+      width = @ctx.ecss ? PANEL_W_SAVE : PANEL_W
       if @dock == :right
         # The right column: a top-down panel gets its own auto-scroll
         # from Context#panel_ui, so the tab body needs no nested
         # scroll_area — the overflow is the panel's business.
-        @ctx.side_panel(:right, "inspector", width: PANEL_W,
+        @ctx.side_panel(:right, "inspector", width: width,
           layer: INSPECTOR_LAYER, fill: fill) do |ui|
           render_header(ui)
           render_tab_body(ui)
@@ -429,25 +440,44 @@ module Egui
 
     # The DevTools-style header shared by both docks: tab cells on the
     # left (equal width, active fill + accent underline), the actions
-    # pinned to the panel's RIGHT edge (Export with the download icon,
-    # the settings dock menu, then ✕) through a spacer consuming the
-    # leftover width.
+    # pinned to the panel's RIGHT edge (with a live .ecss session also
+    # «Сохранить», then Export with the download icon, the settings
+    # dock menu, then ✕) through a spacer consuming the leftover width.
     private def render_header(ui : Ui) : Nil
+      session = @ctx.ecss
       ui.horizontal do |row|
         if render_tab(row, "Class", @tab == :class)
           @tab = :class
+          # Element → Class linkage: jumping to the Class tab targets
+          # the LAST SELECTED element's class — pick the widget, edit
+          # its class, no manual combo hunt.
+          if (sc = @last_selected_meta.try &.style_class)
+            @class_sel = sc
+          end
         end
         if render_tab(row, "Element", @tab == :element)
           @tab = :element
         end
         # Right-pinned cluster: the spacer eats the leftover width so
         # the cluster's LAST item (✕) ends flush at the panel's right
-        # edge. Each item_spacing gap after the spacer (spacer→export,
-        # export→cog, cog→✕) is part of the cluster's footprint.
+        # edge. Each item_spacing gap after the spacer (spacer→save,
+        # save→export, export→cog, cog→✕) is part of the cluster's
+        # footprint.
         s = row.style.spacing.item_spacing.x
-        cluster = EXPORT_W + MENU_W + CLOSE_W + 3 * s
+        extra = session ? SAVE_W + s : 0.0
+        cluster = EXPORT_W + MENU_W + CLOSE_W + 3 * s + extra
         gap = {row.available_width - cluster, 0.0}.max
         row.allocate_space(Vec2.new(gap, 0.0))
+        if session &&
+           row.add_sized(Vec2.new(SAVE_W, TAB_H),
+             Button.new("Сохранить", id: "inspector_save_btn")
+               .icon(Icon.from_file(:lucide, :save,
+                 tint: row.style.visuals.text_color))).clicked?
+          # Edits live in the session's document and apply to the UI
+          # immediately — the FILE is written only by this button, on
+          # demand (never per change).
+          session.flush(force: true)
+        end
         if row.add_sized(Vec2.new(EXPORT_W, TAB_H),
              Button.new("Export Style", id: "inspector_export_btn")
                .icon(:download)).clicked?
@@ -589,10 +619,15 @@ module Egui
       end
       set = ->(k : String, v : StyleValue) do
         @ctx.stylesheet.rule(sel, StyleVars{k => v})
+        # ECSS write-through: the edit lands in the session's document
+        # (saved to disk ONLY by the header's «Сохранить» button — see
+        # egui/ecss.cr); no session, no recording.
+        @ctx.ecss.try &.record_class(sel, k, v)
         @ctx.request_repaint
       end
       unset = ->(k : String) do
         @ctx.stylesheet.unset(sel, k)
+        @ctx.ecss.try &.unset_class(sel, k)
         @ctx.request_repaint
       end
 
@@ -645,7 +680,19 @@ module Egui
         end
         if row.button("Reset all", id: "insp_reset_all").clicked?
           @ctx.clear_id_style(id)
+          @ctx.ecss.try &.clear_element(id)
         end
+      end
+
+      # An auto-id element cannot persist: its raw value means nothing
+      # in another process, so .ecss records only explicit ids. Edits
+      # still apply live — this says so before the user wonders why a
+      # save didn't keep them.
+      if @ctx.ecss && m.id_name.nil?
+        v = ui.style.visuals
+        ui.rich(RichText.new(
+          "⚠ auto-id — правки не сохранятся в .ecss (задайте виджету явный id)"
+        ).color(v.hyperlink_color))
       end
 
       if m.props.empty?
@@ -664,8 +711,14 @@ module Egui
 
       vars = element_vars(id, m, state)
       overrides = @ctx.id_style_state_vars(id, state)
-      set = ->(k : String, v : StyleValue) { @ctx.set_id_style(id, k, v, state) }
-      unset = ->(k : String) { @ctx.clear_id_style(id, k, state) }
+      set = ->(k : String, v : StyleValue) do
+        @ctx.set_id_style(id, k, v, state)
+        @ctx.ecss.try &.record_element(id, m.id_name, k, v, state)
+      end
+      unset = ->(k : String) do
+        @ctx.clear_id_style(id, k, state)
+        @ctx.ecss.try &.unset_element(id, k, state)
+      end
 
       render_table_header(ui)
       m.props.each do |prop|
@@ -880,18 +933,24 @@ module Egui
         ui.color_edit32(current) do |c|
           if (id = t.element_id)
             @ctx.set_id_style(id, t.prop.key, c, t.element_state)
+            name = (meta_for(id) || @last_selected_meta).try &.id_name
+            @ctx.ecss.try &.record_element(id, name, t.prop.key, c,
+              t.element_state)
           elsif (path = t.class_path)
             sel = t.class_state ? "#{path}:#{t.class_state}" : path
             @ctx.stylesheet.rule(sel, StyleVars{t.prop.key => c})
+            @ctx.ecss.try &.record_class(sel, t.prop.key, c)
             @ctx.request_repaint
           end
         end
         if ui.button("Remove override").clicked?
           if (id = t.element_id)
             @ctx.clear_id_style(id, t.prop.key, t.element_state)
+            @ctx.ecss.try &.unset_element(id, t.prop.key, t.element_state)
           elsif (path = t.class_path)
             sel = t.class_state ? "#{path}:#{t.class_state}" : path
             @ctx.stylesheet.unset(sel, t.prop.key)
+            @ctx.ecss.try &.unset_class(sel, t.prop.key)
             @ctx.request_repaint
           end
           @ctx.close_popup(COLOR_POP)

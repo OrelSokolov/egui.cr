@@ -171,6 +171,11 @@ module Egui
     # inspector yields to app menus when picking (see
     # `Inspector#after_update`).
     @popup_opened_this_frame : Bool
+    # The debug-only `.ecss` style-diff session (see `egui/ecss.cr`),
+    # started by `Sokol.run` when the app opted in via the
+    # `enable_ecss` macro — nil (zero cost) in release builds.
+    @ecss : Ecss::Session?
+    property ecss : Ecss::Session?
 
     def initialize
       @memory = Memory.new
@@ -198,6 +203,7 @@ module Egui
       @inspector = nil
       @inspector_enabled = false
       @popup_opened_this_frame = false
+      @ecss = nil
     end
 
     def begin_frame(raw : RawInput) : Nil
@@ -240,6 +246,9 @@ module Egui
       @claimed_ids.clear
       @popup_opened_this_frame = false
       @inspector.try &.begin_frame
+      # Hot reload: an externally edited .ecss file re-applies here,
+      # before this frame's widgets resolve their styles.
+      @ecss.try &.poll
     end
 
     # Instant theme swap (see #theme) — takes effect next frame.
@@ -249,6 +258,9 @@ module Egui
     def theme=(theme : Theme) : Theme
       unless theme.name == @theme.name
         @theme = theme
+        # A new theme brings a fresh StyleSheet — the .ecss class-rule
+        # diff must ride over to it (see Ecss::Session#reapply).
+        @ecss.try &.reapply
         request_repaint
       end
       theme
@@ -615,6 +627,11 @@ module Egui
       ui.clip = clip
       yield ui
 
+      # Content may leave the painter in another layer (a popup opened
+      # inside resets it to Background on exit) — re-establish this
+      # window's layer before the back-painted shell and title bar.
+      @painter.layer = Order::Middle
+
       outer = fixed ? Rect.from_min_size(pos, size) : Rect.new(
         pos,
         Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
@@ -874,6 +891,11 @@ module Egui
       @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
       yield ui
 
+      # Content may leave the painter in another layer (a popup opened
+      # inside resets it to Background on exit) — the footer band and
+      # buttons below must stay in the modal's Foreground layer.
+      @painter.layer = Order::Foreground
+
       # --- zone 2: the raised footer band with the buttons ------------
       clicked = nil
       outer_h = {ui.min_rect.bottom + pad.y - pos.y + footer_h,
@@ -1012,8 +1034,13 @@ module Egui
       end
 
       # The dialog shell is back-painted at the end (bg_index below);
-      # stroke at low alpha like #modal's card.
+      # stroke at low alpha like #modal's card. The title band gets its
+      # own reserved slot UNDER the title text: the band rect is only
+      # known after the content is measured, but simply painting it at
+      # the end would stack it OVER the title and the ✕ (within a
+      # layer, insertion order == paint order).
       bg_index = @painter.add_noop
+      band_index = title ? @painter.add_noop : nil
       clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
       @painter.clip = clip
 
@@ -1040,6 +1067,11 @@ module Egui
       ui.clip = clip
       yield ui
 
+      # Content may leave the painter in another layer — a popup opened
+      # inside the dialog resets it to Background on exit — so this
+      # window's layer must be re-established before the trailing paints.
+      @painter.layer = Order::Foreground
+
       outer = Rect.new(
         pos,
         Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
@@ -1050,8 +1082,9 @@ module Egui
         RectCmd.new(outer, outer, v.window_rounding, v.window_fill,
           Color32.rgba(v.window_stroke.r, v.window_stroke.g,
             v.window_stroke.b, 90), 1.0))
-      @painter.rect(Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
-        rounding: v.window_rounding, fill: v.title_bar_fill) if title
+      @painter.set(band_index,
+        RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
+          v.window_rounding, v.title_bar_fill, nil, 0.0)) if band_index
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       close

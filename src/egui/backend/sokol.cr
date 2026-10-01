@@ -578,6 +578,15 @@ module Egui
         else
           app.ctx.inspector_enabled = false
         end
+        {% if flag?(:debug) %}
+          # The debug-only .ecss style-diff session (see egui/ecss.cr):
+          # apps opt in with the `enable_ecss` macro — the methods only
+          # exist in debug builds, so release binaries never touch the
+          # file system for styles.
+          if app.responds_to?(:ecss_app_id)
+            Egui::Ecss::Session.enable(app.ctx, app.ecss_app_id)
+          end
+        {% end %}
         # Framework CLI: pull --page out of ARGV (in place, so the app's
         # own file/flag parsing still works) and deep-link the router.
         # Validation is soft — an unknown page renders the "Page not

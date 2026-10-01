@@ -187,4 +187,75 @@ describe "Context#embedded_window" do
     after = ctx.memory.widget_rects[title_id].not_nil!.left
     (after - dragged_left).abs.should be <= 2.0 # no snap back to center
   end
+
+  # The title band is only measurable after the content, but painting it
+  # at the end would stack it OVER the title text and the ✕ (insertion
+  # order == paint order within a layer) — the band must be back-painted
+  # into a slot reserved before the texts, like the shell background.
+  it "paints the title band under the title text and the ✕" do
+    ctx = Egui::Context.new
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.embedded_window("d", title: "Settings", width: 400.0) do |ui|
+        ui.label("body")
+      end
+      ctx.end_frame
+    end
+
+    2.times { |i| draw.call([] of Egui::Event, 0.016 * (i + 1)) }
+    flat = ctx.painter.commands_in_layer_order
+    title = flat.index { |c| c.is_a?(Egui::TextCmd) && c.as(Egui::TextCmd).text == "Settings" }
+    close = flat.index { |c| c.is_a?(Egui::TextCmd) && c.as(Egui::TextCmd).text == "✕" }
+    band = flat.rindex { |c| c.is_a?(Egui::RectCmd) && c.as(Egui::RectCmd).fill == ctx.style.visuals.title_bar_fill }
+    title.should_not be_nil
+    close.should_not be_nil
+    band.should_not be_nil
+    band.not_nil!.should be < title.not_nil!
+    band.not_nil!.should be < close.not_nil!
+  end
+
+  # A popup drawn inside the content (a color picker under a swatch,
+  # like the theme editor) resets the painter's layer to Background on
+  # exit — the trailing title-band paint must stay in the window's own
+  # layer, not sink below the scrim (which made the title flash visible
+  # only while the popup was open).
+  it "keeps the title band in the window layer while a popup is open inside" do
+    ctx = Egui::Context.new
+    swatch_center = nil
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.embedded_window("d", title: "Settings", width: 400.0) do |ui|
+        ui.label("body")
+        swatch = ui.allocate_space(Egui::Vec2.new(40.0, 16.0))
+        swatch_center = swatch.center
+        resp = ui.interact(swatch, ui.next_widget_id, Egui::Sense.click)
+        pop_id = "pick/#{ui.next_widget_id.value}"
+        if resp.clicked?
+          ctx.popup_open?(pop_id) ? ctx.close_popup(pop_id) : ctx.open_popup(pop_id)
+        end
+        if ctx.popup_open?(pop_id)
+          ctx.popup(pop_id, Egui::Pos2.new(swatch.left, swatch.bottom),
+            width: 200.0) { |pop| pop.color_edit32(Egui::Color32.rgb(255, 0, 0)) { } }
+        end
+      end
+      ctx.end_frame
+    end
+
+    2.times { |i| draw.call([] of Egui::Event, 0.016 * (i + 1)) }
+    c = swatch_center.not_nil!
+    draw.call([Egui::Event.pointer_moved(c), Egui::Event.pointer_pressed(c)], 0.048)
+    draw.call([Egui::Event.pointer_released(c)], 0.064)
+
+    flat = ctx.painter.commands_in_layer_order
+    title = flat.index { |c| c.is_a?(Egui::TextCmd) && c.as(Egui::TextCmd).text == "Settings" }
+    # the title band: a wide, short rect at the card's top
+    band = flat.rindex do |c|
+      next false unless c.is_a?(Egui::RectCmd)
+      r = c.as(Egui::RectCmd).rect
+      r.width > 300.0 && r.height < 40.0
+    end
+    title.should_not be_nil
+    band.should_not be_nil
+    band.not_nil!.should be < title.not_nil!
+  end
 end

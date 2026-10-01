@@ -26,6 +26,12 @@ require "../src/egui"
 require "../src/egui/backend/sokol"
 
 class NotepadApp < Egui::App
+  # Debug builds keep the inspector's style edits in a `.ecss` diff
+  # file next to the binary (style_notepad.ecss), saved by the
+  # inspector's «Сохранить» button and hot reloaded on external edits —
+  # see src/egui/ecss.cr.
+  enable_ecss "notepad"
+
   # Persisted settings (the AppConfig system port): stored as JSON in
   # the user config dir (~/.config/notepad/settings.json et al.) and
   # reloaded on start. A missing or corrupt file yields the defaults.
