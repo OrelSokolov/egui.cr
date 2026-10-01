@@ -148,6 +148,20 @@ module Egui
       end
       @cursor = @layout.advance(@cursor, rect.size,
         style.spacing.item_spacing)
+      # A clamped allocation must not march the cursor past the
+      # region's far edge (egui.cr fix, no upstream counterpart): in
+      # an already-full horizontal row the follow-up widgets would get
+      # zero-size rects BEYOND max_rect — outside the clip, out in the
+      # panel padding — each marching one item_spacing further. Pin
+      # them at the edge instead; they still don't fit, and the
+      # widget's own policy (Button's ellipsis) renders what it can.
+      # VERTICAL stays as-is: below-the-fold widgets in a bounded
+      # region march down on purpose and the painter's row culling
+      # hides them, so pinning them at the fold would stack them
+      # visibly on the last fitting row.
+      if @layout.horizontal?
+        @cursor = Pos2.new({@cursor.x, @max_rect.right}.min, @cursor.y)
+      end
       rect
     end
 

@@ -38,8 +38,13 @@ module Egui
           visuals.text_color)
       end
 
+      # A clamped host squeezes the rect below the natural size:
+      # truncate to the room left of the icon's trailing edge (see
+      # Fonts#fit).
+      label = ui.ctx.fonts_for(style.font_family)
+        .fit(@text, font_size, {rect.width - icon - sp.icon_spacing, 0.0}.max)
       text_pos = Pos2.new(rect.left + icon + sp.icon_spacing, rect.center.y)
-      ui.painter.text(text_pos, @text, font_size, visuals.text_color,
+      ui.painter.text(text_pos, label, font_size, visuals.text_color,
         family: style.font_family)
 
       response.paint_focus_ring(9.0)

@@ -23,6 +23,33 @@ module Egui
       measure(text, size)
     end
 
+    # Truncate `text` with an ellipsis so it measures at most
+    # `max_width` (upstream's galley truncation). Returns the text
+    # unchanged when it already fits, "…" when only the ellipsis
+    # fits, "" when not even that does. Binary-searches the prefix
+    # length through `measure_cached`, so a squeezed widget pays
+    # O(log n) measures.
+    def fit(text : String, size : Float64, max_width : Float64) : String
+      return text if measure_cached(text, size).x <= max_width
+      ell = "…"
+      return "" if measure_cached(ell, size).x > max_width
+      chars = text.chars
+      lo = 0
+      hi = chars.size
+      best = ell
+      while lo < hi
+        mid = (lo + hi) // 2
+        candidate = chars[0, mid].join + "…"
+        if measure_cached(candidate, size).x <= max_width
+          best = candidate
+          lo = mid + 1
+        else
+          hi = mid
+        end
+      end
+      best
+    end
+
     # Memoized layouts (upstream caches galleys in Fonts too): a
     # widget re-layouts its text every frame, which is fine for labels
     # but pins a textarea with a multi-megabyte buffer to a full

@@ -249,6 +249,7 @@ module Egui
     # nil uses the primary one.
     def text(pos : Pos2, text : String, size : Float64, color : Color32,
              family : String? = nil) : Nil
+      return if text.empty? # nothing to rasterize (Fonts#fit gave up)
       add(TextCmd.new(@clip, pos, text, size, color, family))
     end
 

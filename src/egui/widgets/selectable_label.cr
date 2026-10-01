@@ -28,11 +28,17 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
       font_size = style.font_size
-      text_size = ui.ctx.fonts_for(style.font_family).measure(@text, font_size)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      text_size = fonts.measure(@text, font_size)
       pad = style.spacing.button_padding
       height = {text_size.y + 2 * pad.y, style.spacing.interact_size.y}.max
       rect = ui.allocate_at_least(Vec2.new(text_size.x + 2 * pad.x, height))
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+
+      # A clamped host (the max-size rule at a region edge) squeezes
+      # the rect below the natural size: truncate to what fits so the
+      # text stays inside the label (see Fonts#fit).
+      label = fonts.fit(@text, font_size, {rect.width - 2 * pad.x, 0.0}.max)
 
       visuals = style.visuals
       if @selected
@@ -43,7 +49,7 @@ module Egui
           visuals.fade_color(visuals.selection_fill, 0.4))
       end
       ui.painter.text(
-        Pos2.new(rect.left + pad.x, rect.center.y), @text, font_size,
+        Pos2.new(rect.left + pad.x, rect.center.y), label, font_size,
         visuals.text_color, family: style.font_family)
 
       response.paint_focus_ring

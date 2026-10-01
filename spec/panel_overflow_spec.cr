@@ -66,6 +66,90 @@ describe "panel overflow (CSS overflow-y: auto by default)" do
     scrolled.should_not contain("row 0")
   end
 
+  it "truncates a button label squeezed below its natural width (panel edge)" do
+    ctx = Egui::Context.new
+    panel_frame(ctx) do |c|
+      c.side_panel(:left, "p", width: 150.0, resizable: false) do |ui|
+        ui.horizontal do |row|
+          row.button("first", id: "first")
+          row.button("➕ VeryLongAgentName", id: "agent")
+        end
+      end
+    end
+    # the max-size rule clamps the last button's rect to the panel
+    rect = ctx.memory.widget_rects[Egui::Id.from("agent")].not_nil!
+    rect.right.should be <= 140.0
+    # …and the label is truncated with an ellipsis that fits the rect
+    cmd = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text.ends_with?("…") &&
+                 t.pos.x >= rect.left - 0.5 && t.pos.x <= rect.right }
+      .not_nil!
+    ctx.fonts.measure(cmd.text, ctx.style.font_size).x
+      .should be <= rect.width
+  end
+
+  it "keeps a fitting button label untouched" do
+    ctx = Egui::Context.new
+    panel_frame(ctx) do |c|
+      c.central_panel { |ui| ui.button("OK", id: "ok") }
+    end
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("OK")
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should_not contain("…")
+  end
+
+  it "truncates a squeezed SelectableLabel and Checkbox label too" do
+    ctx = Egui::Context.new
+    panel_frame(ctx) do |c|
+      c.side_panel(:left, "p", width: 60.0, resizable: false) do |ui|
+        ui.add(Egui::SelectableLabel.new(false,
+          "a very long selectable label", id: "sel"))
+        ui.checkbox(false, "a very long checkbox label", id: "cb")
+        ui.radio(false, "a very long radio label")
+      end
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd)
+      .reject { |t| t.text.empty? }.map(&.text)
+    texts.size.should eq(3)
+    texts.each { |t| t.should end_with "…" }
+  end
+
+  it "pins zero-fit widgets at the region edge instead of marching past it" do
+    ctx = Egui::Context.new
+    panel_frame(ctx) do |c|
+      c.side_panel(:left, "p", width: 150.0, resizable: false) do |ui|
+        ui.horizontal do |row|
+          row.button("first", id: "first")
+          row.button("second button that overflows", id: "second")
+          row.button("third button that overflows", id: "third")
+        end
+      end
+    end
+    # the interior right edge of a 150px panel with 10px padding
+    edge = 140.0
+    second = ctx.memory.widget_rects[Egui::Id.from("second")].not_nil!
+    third = ctx.memory.widget_rects[Egui::Id.from("third")].not_nil!
+    second.right.should be <= edge
+    # the zero-fit widget pins AT the edge (a zero-width rect there),
+    # not one item_spacing past it out into the panel padding
+    third.left.should be_close(edge, 0.01)
+    third.width.should be_close(0.0, 0.01)
+    # and nothing paints past the panel at all
+    ctx.painter.commands.select(Egui::TextCmd)
+      .each { |t| t.pos.x.should be < edge }
+  end
+
+  it "Fonts#fit gives up entirely when not even the ellipsis fits" do
+    ctx = Egui::Context.new
+    fonts = ctx.fonts
+    fonts.fit("hello", ctx.style.font_size, 1e9).should eq("hello")
+    fonts.fit("hello", ctx.style.font_size,
+      fonts.measure("hello", ctx.style.font_size).x * 0.7)
+      .should end_with "…"
+    fonts.fit("hello", ctx.style.font_size, 1.0).should eq("")
+  end
+
   it "keeps rows below the fold full-size instead of overlapping (v_overflow propagates)" do
     ctx = Egui::Context.new
     panel_frame(ctx) do |c|

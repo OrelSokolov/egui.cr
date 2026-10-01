@@ -208,7 +208,16 @@ module Egui
                  @icon_svg.is_a?(Svg) ||
                  ((name = @icon) && Icons::NAMES.includes?(name))
       icon_w = has_icon ? glyph_h : 0.0
-      block_w = icon_w + (@text.empty? ? 0.0 : icon_adv) + text_size.x
+      # A host may clamp the rect below the natural size (the max-size
+      # rule at a region edge — e.g. a "➕ Agent" button overflowing
+      # the sidebar): truncate the label to what fits so the text
+      # stays INSIDE the button instead of spilling past its fill.
+      icon_room = has_icon ? icon_w + icon_adv : 0.0
+      max_text_w = {rect.width - pad.horizontal - icon_room, 0.0}.max
+      label = @text.empty? ? @text : fonts.fit(@text, font_size, max_text_w)
+      label_size = label.same?(@text) ? text_size :
+                   fonts.measure_cached(label, font_size)
+      block_w = icon_w + (@text.empty? ? 0.0 : icon_adv) + label_size.x
       # Center the block in the content box (rect minus padding); when
       # the cell is TIGHTER than the natural size (#add_sized
       # hard-clamps to the region's max rect — e.g. a fixed-size icon
@@ -241,7 +250,7 @@ module Egui
       pos = Pos2.new(block_left + icon_w + icon_adv, rect.center.y)
       text_color = state_vars.color?("text_color") ||
                    style.visuals.text_color
-      ui.painter.text(pos, @text, font_size, text_color,
+      ui.painter.text(pos, label, font_size, text_color,
         family: style.font_family)
 
       response.paint_focus_ring
