@@ -31,10 +31,12 @@
 #       bitmap_left   @192           bitmap_left   @144
 #       bitmap_top    @196           bitmap_top    @148
 #
-# Size convention (same as the stb backend and fontstash's FreeType path):
-# `size` pixels of (ascender - descender) height, so widget layout does not
-# shift between backends. FT_Face's size is stateful вЂ” set_size must run
-# before every call whose result depends on it.
+# Size convention (same as the Crystal backend and fontstash's FreeType
+# path): `size` pixels of EM (ppem = size, the egui/CSS convention), so
+# widget layout does not shift between backends and every font renders
+# at the same visual height at the same nominal size. FT_Face's size is
+# stateful вЂ” set_size must run before every call whose result depends
+# on it.
 
 require "./text"
 
@@ -199,12 +201,12 @@ module Egui
 
       # {ascender, descender} in px (descender negative), cached per size.
       # Computed linearly from the font units вЂ” the same convention as
-      # CrystalFonts (size pixels of ascender-descender height) вЂ”
-      # because FT's scaled metrics are rounded to whole pixels (DejaVu:
-      # 13/-4 = 17px at size 16), which would shift widget layout.
+      # CrystalFonts (size px of EM) вЂ” because FT's scaled metrics are
+      # rounded to whole pixels (DejaVu: 13/-4 = 17px at size 16), which
+      # would shift widget layout.
       def metrics_at(size : Float64) : {Float64, Float64}
         @metrics[size_key(size)] ||= begin
-          scale = size / (@asc - @desc)
+          scale = size / @upem
           {@asc * scale, @desc * scale}
         end
       end
@@ -277,7 +279,7 @@ module Egui
         req = LibFreetype::SizeRequestRec.new
         req.type = LibFreetype::FT_SIZE_REQUEST_TYPE_NOMINAL
         req.width = 0_i64
-        req.height = Backend.ft_long(size * @upem / (@asc - @desc) * 64.0) # 26.6
+        req.height = Backend.ft_long(size * 64.0) # 26.6; NOMINAL = EM ppem
         req.hori_resolution = 0_u32 # 0 = default 72 dpi в†’ pixels
         req.vert_resolution = 0_u32
         LibFreetype.request_size(@face, pointerof(req))

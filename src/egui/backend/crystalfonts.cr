@@ -9,10 +9,11 @@
 # backend is what release binaries run on.
 #
 # The size convention matches FreetypeFonts exactly — `size` pixels of
-# (ascender - descender) height with the ascender/descender picked like
-# FreeType's sfnt_load_face — so widget layout does not shift between
-# the tabs. The face size FreeType would see from that request is an
-# integer ppem (FT_Request_Metrics rounds), which is what
+# EM (ppem = size, the egui/CSS convention) — so widget layout does not
+# shift between the tabs and every font renders at the same visual
+# height at the same nominal size (a font's ascender-descender extent
+# no longer shrinks it). The face size FreeType would see from that
+# request is an integer ppem (FT_Request_Metrics rounds), which is what
 # TT::HintedFace#set_pixel_size takes.
 #
 # FONT FALLBACK CHAIN: `from_system` loads EVERY loadable path (the
@@ -22,7 +23,7 @@
 # one atlas). Composite glyph ids pack the face index above the local
 # gid (STRIDE), so the shared {gid, size} glyph cache routes each
 # entry back to the face that owns the glyph. Metrics come from the
-# primary; each fallback bakes at its own ppem for `size`, so its
+# primary; every face bakes at the same EM ppem for `size`, so its
 # glyphs sit at the same visual height.
 
 require "freetype-cr"
@@ -120,7 +121,7 @@ module Egui
       # exactly like FreetypeFonts.
       def metrics_at(size : Float64) : {Float64, Float64}
         @metrics[size_key(size)] ||= begin
-          scale = size / (@asc[0] - @desc[0])
+          scale = size / @upem[0]
           {@asc[0] * scale, @desc[0] * scale}
         end
       end
@@ -193,11 +194,12 @@ module Egui
 
       # The integer ppem FreeType's FT_Request_Size(NOMINAL) settles on for
       # FreetypeFonts' fractional height request: trunc26.6 then (h + 32) >> 6.
-      # Per FACE — a fallback face with different units gets the ppem that
-      # renders its glyphs at the same `size` box as the primary's.
+      # The same EM ppem for every face (primary and fallbacks alike) —
+      # one em is `size` px in each, so mixed-unit chains render at one
+      # visual height.
 
       private def ppem_for(size : Float64, face_i : Int32) : Int32
-        h = (size * @upem[face_i] / (@asc[face_i] - @desc[face_i]) * 64.0).to_i64
+        h = (size * 64.0).to_i64
         {((h &+ 32) >> 6).to_i32, 1}.max
       end
 
