@@ -26,6 +26,8 @@ module Egui
     # Horizontal rules carry at least this much breathing room above
     # and below the line.
     HR_PAD = 5.0
+    # Horizontal rule stroke: soft gray, ~70% opacity.
+    HR_COLOR = Color32.rgba(0xD1, 0xD9, 0xE0, 0xB3)
     # Default horizontal reading padding (the text never touches the
     # window edges); override per widget with `pad_x:`.
     DEFAULT_PAD_X = 10.0
@@ -392,8 +394,7 @@ module Egui
         Vec2.new(ui.available_width, HR_PAD * 2.0 + 1.0))
       y = {y, rect.top + HR_PAD}.max
       ui.painter.line(Pos2.new(rect.left, y),
-        Pos2.new(rect.right, y), 1.0,
-        style.visuals.fade_color(style.visuals.text_color, 0.45))
+        Pos2.new(rect.right, y), 1.0, HR_COLOR)
     end
 
     # A list item hangs: the bullet sits in its own left column, the

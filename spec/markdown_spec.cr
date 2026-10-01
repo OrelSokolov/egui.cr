@@ -354,6 +354,7 @@ describe "Markdown widget" do
     rule = ctx.painter.commands.select(Egui::LineCmd)
       .find { |l| l.p1.y == l.p2.y }.not_nil!
     (rule.p1.y - text_bottom).should be >= 5.0
+    rule.color.should eq(Egui::Markdown::HR_COLOR)
   end
 
   it "renders tables as aligned columns with a header rule" do
