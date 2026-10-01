@@ -181,8 +181,10 @@ module Egui
           close = src.byte_index('`', i + 1)
           if close
             flush.call
+            # GitHub renders inline code at 85% of the body size —
+            # also keeps the padded chip inside the 1.3em row box.
             runs << TextRun.new(src.byte_slice(i + 1, close - i - 1),
-              size, color, false, "monospace", bold, italic, strike)
+              size * 0.85, color, false, "monospace", bold, italic, strike)
             i = close + 1
           else
             plain << "`"

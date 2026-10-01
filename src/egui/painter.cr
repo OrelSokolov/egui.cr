@@ -292,13 +292,16 @@ module Egui
           # rect under the text, padded around the glyphs the way
           # GitHub does (`code { padding: 0.2em 0.4em; border-radius:
           # 6px }`) — the padding scales with the run's font size.
+          # Height clamps to the row box so the chip never bleeds
+          # into neighboring lines or blocks.
           if (bg = run.background)
             w = run_fonts.measure(run.text, run.size).x
             pad_x = run.size * 0.4
-            pad_y = run.size * 0.2
+            chip_h = {run.size * 1.4, row.height}.min
             rect(Rect.from_min_size(
-              Pos2.new(run_pos.x - pad_x, row_top + row.height / 2.0 - run.size / 2.0 - pad_y),
-              Vec2.new(w + pad_x * 2.0, run.size + pad_y * 2.0)),
+              Pos2.new(run_pos.x - pad_x,
+                row_top + row.height / 2.0 - chip_h / 2.0),
+              Vec2.new(w + pad_x * 2.0, chip_h)),
               6.0, bg)
           end
           text(run_pos, run.text, run.size, color, run_family,
