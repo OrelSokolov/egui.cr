@@ -988,9 +988,15 @@ module Egui
       # default).
       private def self.fonts_for_cmd(cmd : Egui::TextCmd) : AtlasFonts?
         case family = cmd.family
-        when nil         then @@fonts
-        when "monospace" then @@mono_fonts || @@fonts
-        when "system"    then @@fonts
+        when nil
+          @@fonts
+        when "monospace"
+          # select_fonts installs the mono SLOT; register_font may
+          # instead register "monospace" as a NAMED family — honor
+          # both before degrading to the primary face.
+          @@mono_fonts || @@named_fonts["monospace"]? || @@fonts
+        when "system"
+          @@fonts
         else
           if (stack = @@named_fonts[family]?)
             stack
