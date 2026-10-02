@@ -21,10 +21,14 @@ class LucideIconsApp < Egui::App
   ICON_FONT = 34.0
   CAPTION_FONT = 13.0
 
+  # Same compile-time enumeration as icons_browser (`cmd /c dir /b` on
+  # Windows — macro backticks run no shell and cmd builtins need cmd;
+  # `ls -1` elsewhere).
   ICONS = {{ begin
-    files = `ls -1 #{__DIR__}/../icons/lucide/*.svg`
+    files = flag?(:windows) ? `cmd /c dir /b "#{__DIR__}\\..\\icons\\lucide\\*.svg"`.gsub(/\r/, "") : `ls -1 #{__DIR__}/../icons/lucide/*.svg`
     files.split("\n").select { |f| f.size > 0 }.sort.map do |f|
-      {f.split("/")[-1].split(".")[0], read_file(f)}
+      name = f.split(/[\\\/]/)[-1].split(".")[0]
+      {name, read_file("#{__DIR__}/../icons/lucide/#{name.id}.svg")}
     end
   end }}
 

@@ -37,21 +37,26 @@ class LucideIconsApp < Egui::App
 
   # {dashed-name, svg-source} per icon, alphabetical — both sets
   # embedded at compile time, so search covers every icon on disk.
-  # (The macro language has no Dir/File — a compile-time `ls` lists
-  # the provider folders, `read_file` embeds each SVG.) The folders
-  # themselves are kept too: the context menu opens the icon's file
-  # on disk through the FileOpen system port (xdg-open / open /
-  # explorer).
+  # (The macro language has no Dir/File, so the provider folder is
+  # listed with a compile-time shell command. NB macro backticks run
+  # NO shell: on Windows the listing must go through `cmd /c dir /b`
+  # — dir is a cmd builtin, and there is no ls — with literal
+  # backslashes doubled against macro-string unescaping; Unix keeps
+  # `ls -1`. `read_file` embeds each SVG.) The folders themselves are
+  # kept too: the context menu opens the icon's file on disk through
+  # the FileOpen system port (xdg-open / open / explorer).
   ICONS_LUCIDE = {{ begin
-    files = `ls -1 #{__DIR__}/../icons/lucide/*.svg`
+    files = flag?(:windows) ? `cmd /c dir /b "#{__DIR__}\\..\\icons\\lucide\\*.svg"`.gsub(/\r/, "") : `ls -1 #{__DIR__}/../icons/lucide/*.svg`
     files.split("\n").select { |f| f.size > 0 }.sort.map do |f|
-      {f.split("/")[-1].split(".")[0], read_file(f)}
+      name = f.split(/[\\\/]/)[-1].split(".")[0]
+      {name, read_file("#{__DIR__}/../icons/lucide/#{name.id}.svg")}
     end
   end }}
   ICONS_BOOTSTRAP = {{ begin
-    files = `ls -1 #{__DIR__}/../icons/bootstrap/*.svg`
+    files = flag?(:windows) ? `cmd /c dir /b "#{__DIR__}\\..\\icons\\bootstrap\\*.svg"`.gsub(/\r/, "") : `ls -1 #{__DIR__}/../icons/bootstrap/*.svg`
     files.split("\n").select { |f| f.size > 0 }.sort.map do |f|
-      {f.split("/")[-1].split(".")[0], read_file(f)}
+      name = f.split(/[\\\/]/)[-1].split(".")[0]
+      {name, read_file("#{__DIR__}/../icons/bootstrap/#{name.id}.svg")}
     end
   end }}
   PROVIDERS = {"lucide" => ICONS_LUCIDE, "bootstrap" => ICONS_BOOTSTRAP}
