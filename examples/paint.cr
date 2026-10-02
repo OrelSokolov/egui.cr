@@ -923,22 +923,30 @@ class PaintApp
       end
     end
 
-    # Visible affordance: small grip squares INSIDE the canvas (8 px
-    # inset — outside the edge the scroll viewport's classic-scrollbar
-    # reservation would clip/overpaint them), at the middle of the
-    # right/bottom edges and at the corner. Screen overlay, not canvas
-    # pixels.
+    # Visible affordance: grip squares centered ON the canvas border
+    # (half in, half out, MSPaint-style) at the middle of the right and
+    # bottom edges and at the corner. Screen overlay, not canvas
+    # pixels. The clip is widened past the scroll viewport's
+    # classic-scrollbar reservation so the outer half survives.
     p = ui.painter
-    draw_resize_grip(p, Egui::Pos2.new(rect.max.x - 8, rect.center.y))
-    draw_resize_grip(p, Egui::Pos2.new(rect.center.x, rect.max.y - 8))
-    draw_resize_grip(p, Egui::Pos2.new(rect.max.x - 8, rect.max.y - 8))
+    old_clip = p.clip
+    centers = {
+      Egui::Pos2.new(rect.max.x, rect.center.y),
+      Egui::Pos2.new(rect.center.x, rect.max.y),
+      Egui::Pos2.new(rect.max.x, rect.max.y),
+    }
+    centers.each do |c|
+      r = grip_rect(c)
+      p.clip = old_clip.union(r)
+      p.rect(r, 0.0, PaintXp::FACE, PaintXp::BEVEL_DK, 1.0)
+    end
+    p.clip = old_clip
   end
 
-  private def draw_resize_grip(p : Egui::Painter, c : Egui::Pos2) : Nil
-    r = Egui::Rect.from_min_size(
+  private def grip_rect(c : Egui::Pos2) : Egui::Rect
+    Egui::Rect.from_min_size(
       Egui::Pos2.new(c.x - RESIZE_GRIP / 2, c.y - RESIZE_GRIP / 2),
       Egui::Vec2.new(RESIZE_GRIP, RESIZE_GRIP))
-    p.rect(r, 0.0, PaintXp::FACE, PaintXp::BEVEL_DK, 1.0)
   end
 
   private def pt(p : Egui::Pos2) : {Int32, Int32}
