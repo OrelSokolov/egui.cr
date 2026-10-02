@@ -2757,6 +2757,15 @@ static int sh_doorbell_drain(intptr_t a_end, unsigned char* buf, int cap) {
 #else // _SAPP_WIN32: TCP loopback pair
 
 static SOCKET g_r_sock = INVALID_SOCKET; // R's write end
+// Set when A (Crystal) provided R's write end itself: Crystal's IOCP
+// scheduler never wakes an evented read on a foreign socket, so on
+// Win32 the pair is created Crystal-side and the peer fd is handed
+// over here before egui_cr_start.
+static int g_doorbell_peer = 0;
+void egui_cr_doorbell_set_peer(intptr_t fd) {
+    g_r_sock = (SOCKET)fd;
+    g_doorbell_peer = 1;
+}
 static void sh_wake_a(unsigned char tag) {
     if (g_r_sock == INVALID_SOCKET) return;
     char c = (char)tag;
@@ -2767,10 +2776,12 @@ static void sh_wake_a(unsigned char tag) {
 // main loop must leave its blocking doorbell read and produce a frame.
 void egui_cr_wake_main(void) { sh_wake_a(SH_WAKE_EVENTS); }
 
-// An overlapped-capable loopback TCP pair (WSA_FLAG_OVERLAPPED — Crystal's
-// IOCP scheduler adopts existing sockets only in that mode). Anonymous
-// pipes don't do overlapped IO at all. Returns A's end, -1 on failure.
+// A loopback TCP pair for the C-owned path (Linux keeps its pipe; this
+// is the Win32 fallback when no peer was provided). NOTE: Crystal's
+// IOCP scheduler will not wake an evented read on this foreign socket —
+// on Win32 the pair must come from Crystal (egui_cr_doorbell_set_peer).
 static intptr_t sh_doorbell_open(void) {
+    if (g_doorbell_peer) return 0; // pair owned by Crystal; A keeps its end
     WSADATA wsa;
     if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return -1;
     SOCKET srv = WSASocketW(AF_INET, SOCK_STREAM, 0, NULL, 0, WSA_FLAG_OVERLAPPED);

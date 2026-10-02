@@ -95,6 +95,12 @@ lib LibEguiCr
     # returns the byte count — same contract for the pipe and the socket.
     fun doorbell_drain = egui_cr_doorbell_drain(handle : Int64, buf : UInt8*,
                                                 cap : Int32) : Int32
+    {% if flag?(:win32) %}
+      # Hand R's doorbell write end (a Crystal-created TCPSocket's fd) to
+      # the shim before #start — see run_detached for why the pair must be
+      # Crystal-made on Win32.
+      fun doorbell_set_peer = egui_cr_doorbell_set_peer(fd : Int64)
+    {% end %}
 
     # One input event as the render thread flattened it (backend/
     # sokol_shim.c sh_event_rec_t). `payload` carries the dropped-files
@@ -280,6 +286,11 @@ module Egui
       # when chasing freezes. The C side adds per-phase [loop] lines
       # (x11_events / frame_cb+commit / glx_swap / xflush).
       @@frame_debug : Bool = ENV["EGUI_FRAME_DEBUG"]? ? true : false
+      # Win32 detached loop: R's doorbell write end. Pinned in a class var
+      # so the GC can never collect (and finalize) the TCPSocket whose fd
+      # the shim now owns — run_detached hands it over before #start and
+      # C closes it in egui_cr_join.
+      @@doorbell_peer : TCPSocket? = nil
       # Debug-clock epoch (Time::Instant — the monotonic clock has no
       # absolute seconds, only differences; #dbg_now spans from here).
       @@dbg_t0 = Time.instant
@@ -675,22 +686,33 @@ module Egui
                                       height : Int32, decorations : Bool,
                                       transparent : Bool,
                                       vsync : Bool) : Nil
-          handle = LibEguiCr.start(title.to_unsafe, width, height,
-            decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
-          return if handle < 0
-          Egui::Runtime.natural_scheduler = true
-          Egui::Runtime.wake = ->{ LibEguiCr.wake_main }
-
-          # The doorbell's A-side end: a pipe fd on Linux, an
-          # overlapped-capable socket on Win32 (see egui_cr_start in the
-          # shim) — both block evented with read_timeout, both drain
-          # through egui_cr_doorbell_drain.
+          handle : Int64
           {% if flag?(:win32) %}
-            pipe = Socket.new(handle.to_u64!, Socket::Family::INET,
-              Socket::Type::STREAM, Socket::Protocol::TCP)
+            # Win32 doorbell: the C-made loopback pair's A end can't be
+            # adopted by Crystal's IOCP scheduler — an evented read on it
+            # never completes (INIT sat in the socket buffer forever:
+            # black window). Create the pair Crystal-side instead: the
+            # accepted socket is IOCP-native, and its peer fd becomes R's
+            # write end (plain send(), no overlapped needed there).
+            server = TCPServer.new("127.0.0.1", 0)
+            @@doorbell_peer = TCPSocket.new("127.0.0.1",
+              server.local_address.port)
+            pipe = server.accept
+            server.close
+            LibEguiCr.doorbell_set_peer(@@doorbell_peer.not_nil!.fd.to_i64!)
+            handle = LibEguiCr.start(title.to_unsafe, width, height,
+              decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
+            return if handle < 0
+            # A's end for the C-side non-blocking drains (FIONREAD + recv).
+            handle = pipe.fd.to_i64!
           {% else %}
+            handle = LibEguiCr.start(title.to_unsafe, width, height,
+              decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
+            return if handle < 0
             pipe = IO::FileDescriptor.new(handle.to_i32)
           {% end %}
+          Egui::Runtime.natural_scheduler = true
+          Egui::Runtime.wake = ->{ LibEguiCr.wake_main }
           doorbell = Bytes.new(256)
           records = Pointer(LibEguiCr::EventRecord).malloc(64)
 
@@ -713,18 +735,65 @@ module Egui
           fallback = 1.0 / 60.0
           last_produce = Time.instant - 1.second
           busy = false
+          {% if flag?(:win32) %}
+            # Win32: the doorbell read must NOT carry a read timeout.
+            # Crystal 1.21's IOCP runtime cancels a timed-out overlapped
+            # read with CancelIoEx, but when the completion slipped in
+            # just before the cancel (ERROR_NOT_FOUND) it does not wait
+            # for the already-queued completion packet — the fiber-stack
+            # OVERLAPPED is then reused by the next read while the OS
+            # still holds it. The stale packet later reaches the IOCP
+            # forwarder thread, which panics the process
+            # ("PostQueuedCompletionStatus failed … ERROR_INVALID_HANDLE",
+            # silent exit seconds into a busy frame run). Same class of
+            # race as the C-side drain one below (drain_doorbells_raw).
+            # So the read below is untimed, and the 60 Hz fallback
+            # deadline is served by this watchdog fiber: it sleeps until
+            # the deadline the main loop armed and injects a tag-5
+            # doorbell byte through the peer socket (untimed one-byte
+            # write; like the ack/event tags, 5 is ignored by the loop
+            # and only serves as a wake).
+            fallback_mu = Thread::Mutex.new
+            fallback_due : Time::Instant? = nil
+            spawn do
+              peer = @@doorbell_peer.not_nil!
+              loop do
+                due = fallback_mu.synchronize { fallback_due }
+                nap = due ? due - Time.instant : 50.milliseconds
+                if nap > Time::Span::ZERO
+                  sleep(nap)
+                else
+                  fallback_mu.synchronize { fallback_due = nil }
+                  begin
+                    peer.write(Bytes[5_u8])
+                  rescue IO::Error | Socket::Error
+                    # R is gone — the main read returns 0 and the loop exits
+                  end
+                end
+              end
+            end
+          {% end %}
           loop do
             # Wait for a doorbell: indefinitely when nothing is pending,
             # until the fallback deadline while a repaint run is active.
-            wait = busy ? (last_produce + fallback.seconds - Time.instant) : 1.hour
-            pipe.read_timeout = {wait, 1.millisecond}.max
-            begin
+            {% if flag?(:win32) %}
+              fallback_mu.synchronize do
+                fallback_due = busy ? last_produce + fallback.seconds : nil
+              end
               n = pipe.read(doorbell)
               break if n.zero?                          # R died
               break if doorbell[0, n].includes?(3_u8)    # QUIT
-            rescue IO::TimeoutError
-              # no ack in the fallback window — produce anyway below
-            end
+            {% else %}
+              wait = busy ? (last_produce + fallback.seconds - Time.instant) : 1.hour
+              pipe.read_timeout = {wait, 1.millisecond}.max
+              begin
+                n = pipe.read(doorbell)
+                break if n.zero?                          # R died
+                break if doorbell[0, n].includes?(3_u8)    # QUIT
+              rescue IO::TimeoutError
+                # no ack in the fallback window — produce anyway below
+              end
+            {% end %}
             # Keep doorbells from filling the pipe during busy runs.
             break if drain_doorbells_raw(handle, doorbell)
             drain_events(records)
@@ -758,14 +827,24 @@ module Egui
         # Raw non-blocking drain loop: while producing frames back-to-back
         # the blocking #read never runs, so doorbell bytes would pile up
         # and eventually silence R's writes.
+        # Win32 exception: the drain's plain recv() on the IOCP-registered
+        # socket races Crystal's overlapped reads (a stale OVERLAPPED
+        # completion then panics the IOCP forwarder thread — silent exit
+        # after seconds). The loop's own #read consumes every pending byte
+        # each iteration there anyway (TCP buffer pressure is not a
+        # concern at ~60 one-byte acks/s), so the C drain stays off.
         private def self.drain_doorbells_raw(handle : Int64, buf : Bytes) : Bool
-          quit = false
-          loop do
-            n = LibEguiCr.doorbell_drain(handle, buf, buf.size)
-            break if n <= 0
-            quit = true if buf[0, n].includes?(3_u8)
-          end
-          quit
+          {% if flag?(:win32) %}
+            false
+          {% else %}
+            quit = false
+            loop do
+              n = LibEguiCr.doorbell_drain(handle, buf, buf.size)
+              break if n <= 0
+              quit = true if buf[0, n].includes?(3_u8)
+            end
+            quit
+          {% end %}
         end
 
         # True when the event ring / repaint flags / texture evictions
