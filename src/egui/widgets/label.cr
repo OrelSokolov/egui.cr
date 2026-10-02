@@ -84,10 +84,14 @@ module Egui
       # where the inspector edit used to be a silent no-op.
       run_size = class_vars.f64?("font_size").try { |s| {s, 0.0}.max }
       # font_weight rides the same cascade: a set value beats the
-      # RichText's own .bold (>= 600 synthesizes bold, < 600 unbolds —
-      # CSS class-rule semantics).
+      # RichText's own .bold. Resolution goes through the REAL weight
+      # axis — a family with cut files (Noto Sans Thin…Black) draws
+      # through the actual face; without one it degrades to the bold
+      # flag (the primary's variant faces), never an emulation.
       weight = class_vars.f64?("font_weight")
-      run_bold = weight.nil? ? nil : weight >= 600.0
+      fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+        style.font_family, weight, @rich.bold?)
+      run_bold = weight.nil? ? nil : face_bold
       runs = @rich.runs(style.font_size, style.visuals.text_color,
         run_size, run_bold)
       # Code blocks share the inline-code fallback: without a mono
@@ -102,10 +106,10 @@ module Egui
       available = ui.available_width
       room = available - pad.horizontal
       max_width = wrap && room > 0.0 ? room : nil
-      fonts = ui.ctx.fonts_for(style.font_family)
       # Runs may carry their own family (RichText#code — code blocks):
       # resolve those through ctx.fonts_for for BOTH measuring and
-      # drawing, like RichLabel does for its markup spans.
+      # drawing; the base runs measure through the weight-resolved
+      # stack (`fonts` above — a real cut face when one matched).
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       galley = fonts.layout(runs, max_width, resolve)
 
@@ -118,10 +122,11 @@ module Egui
       content = Rect.from_min_size(
         rect.min + Vec2.new(pad.left, pad.top), galley.size)
       if @userselect
-        paint_selectable(ui, response, id, content, galley, style)
+        paint_selectable(ui, response, id, content, galley, fonts,
+          face_family, style)
       else
         ui.painter.paint_galley(content.min, galley, fonts,
-          style.visuals.text_color, style.font_family, resolve)
+          style.visuals.text_color, face_family, resolve)
       end
 
       response
@@ -135,9 +140,9 @@ module Egui
     # carries the indexes.
     private def paint_selectable(ui : Ui, response : Response, id : Id,
                                  rect : Rect, galley : Galley,
+                                 fonts : Fonts, face_family : String?,
                                  style : Style) : Nil
       ctx = ui.ctx
-      fonts = ctx.fonts_for(style.font_family)
       anchor_id = id.child(0x5EED_u64)
       # The anchor cell has no #interact of its own — mark it used or
       # end-frame pruning drops the selection every frame.
@@ -219,7 +224,7 @@ module Egui
         end
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        style.font_family, ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) })
+        face_family, ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) })
     end
 
     # Byte index of the pointer inside the flattened row text: the row

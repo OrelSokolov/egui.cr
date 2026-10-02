@@ -930,6 +930,12 @@ module Egui
         app.ctx.font_loader = ->(paths : Array(String)) : Egui::Fonts? {
           materialize_font(paths)
         }
+        # Cut stacks (the CSS weight axis) register at runtime, long
+        # after this scan — route them into the backend registry too
+        # so TextCmds naming them resolve (see Context#cut_stack).
+        app.ctx.font_register = ->(name : String, paths : Array(String)) {
+          register_deferred_font(name, paths)
+        }
         Egui::SystemPorts::Fonts.installed_families.each do |name, path|
           next if @@named_fonts.has_key?(name) ||
                   @@deferred_fonts.has_key?(name)

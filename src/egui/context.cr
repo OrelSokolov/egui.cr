@@ -34,6 +34,15 @@ module Egui
     getter theme : Theme
     property fonts : Fonts
 
+    def fonts=(fonts : Fonts)
+      @fonts = fonts
+      # The primary family name derives from the stack's source file —
+      # a swapped stack (backend init, theme swap) re-derives it.
+      @primary_family_name_set = false
+      @primary_family_name = nil
+      fonts
+    end
+
     # The monospace font stack (terminal grids, code) — nil means "same
     # as #fonts". The backend installs a second stack via
     # `Sokol.select_fonts(font, mono:)`; widgets that need mono METRICS
@@ -85,6 +94,90 @@ module Egui
     def register_deferred_font(name : String, paths : Array(String)) : Nil
       return if name == "system" || name == "monospace"
       @deferred_font_paths[name] = paths
+    end
+
+    # Draw-side twin of #register_deferred_font, installed by the
+    # backend at on_init: a deferred family must be resolvable when a
+    # TextCmd NAMES it, and the measure side (#fonts_for) alone
+    # doesn't register anything the backend knows. Cut stacks created
+    # lazily by #fonts_for_weight go through here too.
+    property font_register : Proc(String, Array(String), Nil)? = nil
+
+    # Register (once) the deferred stack for one font FILE and return
+    # its family name — the "wght:<path>" cut stacks of the weight
+    # axis measure through #fonts_for(name) and draw through the
+    # backend's registry.
+    def cut_stack(path : String) : String
+      name = FontCuts.stack_name(path)
+      unless @deferred_font_paths.has_key?(name) ||
+             @font_families.has_key?(name)
+        register_deferred_font(name, [path])
+        @font_register.try &.call(name, [path])
+      end
+      name
+    end
+
+    # The REAL family name of the primary stack (read from its source
+    # file's name table) — what the weight axis resolves a nil family
+    # against. Nil headless / for synthetic stacks: no cuts then.
+    def primary_family_name : String?
+      return @primary_family_name if @primary_family_name_set
+      @primary_family_name_set = true
+      @primary_family_name = @fonts.source_path.try { |p|
+        SystemPorts::Fonts.family_name(p)
+      } || @fonts.source_path.try { |p|
+        FontCuts.normalize_family(File.basename(p, ".ttf"))
+      }
+    end
+
+    @primary_family_name : String?
+    @primary_family_name_set = false
+
+    # The weight axis a family REALLY has on this system — the
+    # distinct roman cuts of its installed files (Thin 100 … Black
+    # 900), empty for unknown families and the mono slot. This is
+    # what the inspector's smart weight selector offers.
+    def font_weight_axis(family : String?) : Array(Int32)
+      fam = case family
+            when nil, "system" then primary_family_name
+            when "monospace"   then return [] of Int32
+            else family
+            end
+      FontCuts.axis(fam)
+    end
+
+    # Resolve (family, weight, bold) to what a widget lays out and
+    # draws its base text through — a REAL cut face when the family
+    # has one for the target weight, else the family's own stack with
+    # a bold flag (the primary's variant faces pick that up; a family
+    # without variants degrades to its regular face, no emulation).
+    # Returns {fonts, family-for-commands, bold-flag}.
+    #
+    # The target: the cascade weight when one is set (the inspector /
+    # class-rule value beats a .bold RichText), else the CSS bold
+    # slot 700 for bold markup, else 400. A target that lands on the
+    # family's own regular file never substitutes — the curated
+    # primary stack keeps serving unstyled text.
+    def fonts_for_weight(family : String?, weight : Float64?,
+                         bold : Bool) : {Fonts, String?, Bool}
+      target = if weight
+                 weight.round.to_i.clamp(100, 900)
+               elsif bold
+                 700
+               else
+                 400
+               end
+      fam = case family
+            when nil, "system" then primary_family_name
+            when "monospace"   then return {fonts_for(family), family, target >= 600}
+            else family
+            end
+      if fam && (cut = FontCuts.closest(fam, target)) &&
+         (base = FontCuts.closest(fam, 400)) && cut.path != base.path
+        name = cut_stack(cut.path)
+        return {fonts_for(name), name, false}
+      end
+      {fonts_for(family), family, target >= 600}
     end
 
     # The stack a `family`-tagged text measures/draws through: nil or

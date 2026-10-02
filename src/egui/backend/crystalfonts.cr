@@ -55,6 +55,7 @@ module Egui
         return nil if datas.empty?
         font = new(datas, atlas)
         font.face_paths.concat(loaded) if font.loaded?
+        font.source_path = loaded.first? if font.loaded?
         font.loaded? ? font : nil
       end
 

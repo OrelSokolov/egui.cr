@@ -63,11 +63,15 @@ module Egui
       # the RichText's own explicit .size — same rule as `Label`: the
       # edit must visibly work on sized labels (markdown headings),
       # not be a silent no-op. No class layer here (no style_class).
-      # font_weight follows the same element layer (>= 600 = bold).
+      # font_weight follows the same element layer and resolves
+      # through the REAL weight axis (a cut face when the family has
+      # one, else the bold flag).
       ov = ui.ctx.id_style_state_vars(id, nil)
       ov_size = ov.try(&.f64?("font_size")).try { |s| {s, 0.0}.max }
       weight = ov.try(&.f64?("font_weight"))
-      ov_bold = weight.nil? ? nil : weight >= 600.0
+      fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+        style.font_family, weight, @rich.bold?)
+      ov_bold = weight.nil? ? nil : face_bold
       runs = @rich.styled_runs(style.font_size, visuals.text_color,
         visuals.hyperlink_color, ov_size, ov_bold)
       # Inline code = monospace runs in a rounded chip; without a
@@ -87,7 +91,6 @@ module Egui
       wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
       available = ui.available_width
       max_width = wrap && available > 0.0 ? available : nil
-      fonts = ui.ctx.fonts_for(style.font_family)
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       galley = fonts.layout(runs, max_width, resolve)
 
@@ -96,10 +99,11 @@ module Egui
         @userselect ? Sense.click_and_drag : Sense.none)
 
       if @userselect
-        paint(ui, response, id, rect, galley, runs, links, fonts, style)
+        paint(ui, response, id, rect, galley, runs, links, fonts, style,
+          face_family)
       else
         ui.painter.paint_galley(rect.min, galley, fonts,
-          visuals.text_color, style.font_family, resolve)
+          visuals.text_color, face_family, resolve)
       end
       response
     end
@@ -111,7 +115,7 @@ module Egui
     private def paint(ui : Ui, response : Response, id : Id, rect : Rect,
                       galley : Galley, runs : Array(TextRun),
                       links : Array(RichText::LinkSpan), fonts : Fonts,
-                      style : Style) : Nil
+                      style : Style, face_family : String?) : Nil
       ctx = ui.ctx
       visuals = style.visuals
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) }
@@ -201,7 +205,7 @@ module Egui
       end
 
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        style.font_family, resolve)
+        face_family, resolve)
     end
 
     # The link span under `pos`, if any: char index in the flattened

@@ -35,7 +35,9 @@ module Egui
       # so min_rect (and any auto-sizing parent) stays within the
       # available width. Painting the label OUTSIDE the allocated rect
       # made every containing window grow a little each frame.
-      label_w = label_width(ui, style)
+      fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+        style.font_family, style.font_weight, false)
+      label_w = label_width(ui, style, fonts)
       width = {sp.slider_width, ui.available_width - label_w}.max
       outer = ui.allocate_at_least(Vec2.new(width + label_w, thickness))
       rect = Rect.from_min_size(outer.min, Vec2.new(width, thickness))
@@ -70,11 +72,11 @@ module Egui
 
       if text = @text
         label = "#{text}: #{format_value(new_value)}"
-        label_size = ui.ctx.fonts_for(style.font_family).measure(label, style.font_size)
+        label_size = fonts.measure(label, style.font_size)
         label_pos = Pos2.new(rect.right + sp.icon_spacing, rect.center.y)
         ui.painter.text(label_pos, label, style.font_size,
-          visuals.text_color, family: style.font_family,
-          bold: style.font_weight_bold?)
+          visuals.text_color, family: face_family,
+          bold: face_bold)
         ui.min_rect = ui.min_rect.union(
           Rect.from_min_size(label_pos, label_size))
       end
@@ -84,9 +86,9 @@ module Egui
       response
     end
 
-    private def label_width(ui : Ui, style : Style) : Float64
+    private def label_width(ui : Ui, style : Style, fonts : Fonts) : Float64
       return 0.0 unless text = @text
-      ui.ctx.fonts_for(style.font_family).measure("#{text}: #{format_value(@value)}",
+      fonts.measure("#{text}: #{format_value(@value)}",
         style.font_size).x + style.spacing.icon_spacing
     end
 

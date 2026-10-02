@@ -12,6 +12,11 @@ module Egui
     # used by containers that need a row height before measuring).
     LINE_H_FACTOR = 1.3
 
+    # Source font FILE this stack was built from (nil for synthetic
+    # stacks) — `Context#primary_family_name` reads the weight axis
+    # family through it. Set by the backends' from_system builders.
+    property source_path : String? = nil
+
     abstract def measure(text : String, size : Float64) : Vec2
 
     # Memoized `measure` for STATIC text (label-like widgets — see

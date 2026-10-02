@@ -40,7 +40,8 @@ module Egui
       font_size = style.font_size
       visuals = style.visuals
       class_vars = style_vars(ui, id, "checkbox")
-      fonts = ui.ctx.fonts_for(style.font_family)
+      fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+        style.font_family, style.font_weight, false)
       text_size = fonts.measure(@text, font_size)
 
       icon = sp.icon_width
@@ -84,7 +85,7 @@ module Egui
         {rect.width - icon - sp.icon_spacing, 0.0}.max)
       text_pos = Pos2.new(icon_rect.right + sp.icon_spacing, rect.center.y)
       ui.painter.text(text_pos, label, font_size, visuals.text_color,
-        family: style.font_family, bold: style.font_weight_bold?)
+        family: face_family, bold: face_bold)
 
       response.paint_focus_ring(9.0)
       response.mark_changed if response.clicked?

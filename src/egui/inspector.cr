@@ -835,20 +835,32 @@ module Egui
             end
           end
         when :weight
-          # CSS `font-weight` edits from the closed 100..900 ladder —
-          # a select, not a free drag (only these values are CSS).
-          # The zero option («(наследуется)») UNSETS the key, back to
-          # the inherited theme weight (400).
-          current = vars.f64?(prop.key).try { |v| "%.0f" % v } || ""
-          options = (100..900).step(100).map(&.to_s).to_a
+          # The SMART weight selector: options are the cuts the
+          # widget's family REALLY has (the system scan's axis —
+          # "Thin 100" … "Black 900"), so a picked value always draws
+          # through a real face (`Context#fonts_for_weight`). Families
+          # without variants fall back to the plain CSS ladder —
+          # values degrade to the nearest face / the primary's bold
+          # variant, never an emulation. The zero option
+          # («(наследуется)») UNSETS the key (back to the theme 400).
+          wfam = vars.str?("font_family") || theme_string("font_family")
+          axis = @ctx.font_weight_axis(wfam)
+          fmt = axis.size > 1 ?
+              ->(w : Int32) { "#{w} #{Egui::FontCuts.weight_name(w)}" } :
+              ->(w : Int32) { w.to_s }
+          options = axis.size > 1 ?
+              axis.map { |w| fmt.call(w) } :
+              (100..900).step(100).map { |w| fmt.call(w) }.to_a
+          cur = vars.f64?(prop.key)
+          current = cur ? fmt.call(cur.round.to_i.clamp(100, 900)) : ""
           options = [current] + options unless current.empty? ||
-                                             options.includes?(current)
-          row.select_box("insp_weight", current, options, 70.0,
+                                               options.includes?(current)
+          row.select_box("insp_weight", current, options, 110.0,
             label: "(наследуется)") do |opt|
             if opt.empty?
               unset_prop(prop, unsetter)
             else
-              setter.call(prop.key, opt.to_f64)
+              setter.call(prop.key, opt.split.first.to_f64)
             end
           end
         when :string

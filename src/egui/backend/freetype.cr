@@ -153,7 +153,10 @@ module Egui
         paths.each do |path|
           next unless File.exists?(path)
           font = new(File.read(path), atlas)
-          return font if font.loaded?
+          if font.loaded?
+            font.source_path = path
+            return font
+          end
         end
         nil
       end

@@ -1,11 +1,11 @@
 # Font specimen browser — the fonts.google.com/noto/specimen layout:
 # type a preview string, dial the size (slider + preset dropdown), pick a
 # family from the searchable catalog, and every style file of that family
-# renders the string in a row of its own. Families/files come from the
-# system font scan (SystemPorts::Fonts — `name`-table reads only, no
-# parsing at startup); each style file loads lazily through the
-# deferred-font registry (`Sokol.register_deferred_font`): one shared
-# glyph atlas, LRU eviction, a re-pick just re-parses the file.
+# renders the string in a row of its own. Discovery (family folding,
+# weight-axis parsing, per-file deferred stacks) is the ENGINE's
+# `Egui::FontCuts` — the same module the CSS font-weight cascade and the
+# inspector's smart selector resolve through; this example is a pure
+# view over it.
 
 require "../src/egui"
 require "../src/egui/backend/sokol"
@@ -14,63 +14,6 @@ require "../src/egui/backend/crystalfonts"
 class FontBrowserApp < Egui::App
   # Dropdown presets alongside the free slider (both write @size).
   SIZES = [12.0, 16.0, 20.0, 24.0, 32.0, 48.0, 64.0, 96.0]
-
-  # Weight axis of a style file's filename token — the Google Fonts
-  # specimen labels ("Thin 100" … "Black 900 Italic"). `slant` carries
-  # the Italic/Oblique suffix for both label and row order (roman
-  # before slanted of the same weight); `known: false` marks width/
-  # shape tokens (Condensed, Mono…) with no weight slot — they keep
-  # their prettified filename token and sort after the weight axis.
-  record WeightCut, name : String, num : Int32, slant : String, known : Bool
-
-  WEIGHTS = {
-    "thin"       => {"Thin", 100},
-    "extralight" => {"ExtraLight", 200},
-    "ultralight" => {"ExtraLight", 200},
-    "light"      => {"Light", 300},
-    ""           => {"Regular", 400},
-    "regular"    => {"Regular", 400},
-    "book"       => {"Regular", 400},
-    "r"          => {"Regular", 400},
-    "roman"      => {"Regular", 400},
-    "medium"     => {"Medium", 500},
-    "semibold"   => {"SemiBold", 600},
-    "demibold"   => {"SemiBold", 600},
-    "bold"       => {"Bold", 700},
-    "extrabold"  => {"ExtraBold", 800},
-    "ultrabold"  => {"ExtraBold", 800},
-    "black"      => {"Black", 900},
-    "heavy"      => {"Black", 900},
-  }
-
-  # Glued short codes ("Ubuntu-R.ttf") → long form before weight lookup.
-  LONG_TOKENS = {
-    "r"  => "regular", "b" => "bold", "i" => "italic", "bi" => "bold italic",
-    "bd" => "bold", "it" => "italic", "z" => "bold italic",
-  }
-
-  # Parse the post-dash filename token into a WeightCut:
-  # "BoldItalic" → Bold 700 Italic, "Italic" → Regular 400 Italic,
-  # "SemiBold" → SemiBold 600 roman, "ExtraCondensedBold" → unknown
-  # (a width shape, not a weight slot).
-  private def parse_cut(token : String) : WeightCut
-    t = (LONG_TOKENS[token.downcase]? || token.downcase)
-    slant = ""
-    if t.ends_with?("italic")
-      slant = "Italic"
-      t = t.rpartition("italic").first
-    elsif t.ends_with?("oblique")
-      slant = "Oblique"
-      t = t.rpartition("oblique").first
-    end
-    if (w = WEIGHTS[t]?)
-      WeightCut.new(w[0], w[1], slant, true)
-    else
-      pretty = token.gsub(/(?<=[A-Za-z])(?=[A-Z])/, " ").capitalize
-      WeightCut.new(pretty + (slant.empty? ? "" : " #{slant}"),
-        10_000, slant, false)
-    end
-  end
 
   @text = "reactive"
   @size = 32.0
@@ -82,12 +25,14 @@ class FontBrowserApp < Egui::App
   # Active family's rows: style label → file path.
   @variants = [] of {String, String}
   @variants_family = ""
-  # Style files already in the deferred registry ("fb:<path>" stacks).
-  @registered = Set(String).new
 
   def initialize
     super
-    scan_families
+    # The engine scan: normalized families (the "Noto Sans Thin" files
+    # fold onto "Noto Sans") with every cut parsed off the filename
+    # token — see Egui::FontCuts.
+    @families = Egui::FontCuts.installed
+      .transform_values(&.map(&.path))
     names = @families.keys.sort
     # The reference specimen (the Google Fonts default): Noto Sans when
     # installed, otherwise the first family the scan found.
@@ -146,7 +91,7 @@ class FontBrowserApp < Egui::App
           .small(scroll.style.font_size).weak(scroll.style.visuals))
         scroll.separator
         @variants.each do |label, path|
-          stack = register_variant(path)
+          stack = ctx.cut_stack(path)
           scroll.rich(Egui::RichText.new(label)
             .small(scroll.style.font_size).weak(scroll.style.visuals))
           # Route just the specimen through this style's stack; the
@@ -162,79 +107,16 @@ class FontBrowserApp < Egui::App
   end
 
   # ------------------------------------------------------------------
-  # Family / style discovery
+  # Variant rows (the engine's parsed cuts)
 
-  # One-time scan of the system font dirs: family name (the SFNT
-  # `name` table, not the filename) → every loadable .ttf of that
-  # family. Noto-style files register each WEIGHT as its own legacy
-  # family ("Noto Sans Thin", "Noto Sans Black"…) — #normalize_family
-  # folds them back into the base ("Noto Sans") so the specimen shows
-  # the Google Fonts weight axis, not 18 one-file families. Files
-  # nobody picks never get parsed — loading is deferred to the rows
-  # that actually render.
-  private def scan_families : Nil
-    Egui::SystemPorts::Fonts.font_dirs.each do |dir|
-      next unless Dir.exists?(dir)
-      Dir.glob("#{dir}/**/*") do |path|
-        next unless path.downcase.ends_with?(".ttf") && File.file?(path)
-        name = Egui::SystemPorts::Fonts.family_name(path)
-        next unless name
-        (@families[normalize_family(name)] ||= [] of String) << path
-      end
-    end
-  end
-
-  # Strip trailing style words off a legacy family name: weight and
-  # slant suffixes ("Noto Sans Thin" → "Noto Sans"), width families
-  # ("Noto Sans ExtraCondensed") stay their own family, like Google's.
-  # At least one word always remains.
-  STYLE_WORDS = %w[thin extralight ultralight light medium semibold
-                   demibold bold extrabold ultrabold black heavy italic
-                   oblique regular book roman]
-
-  private def normalize_family(name : String) : String
-    words = name.split
-    while words.size > 1 && STYLE_WORDS.includes?(words.last.downcase)
-      words.pop
-    end
-    words.join(" ")
-  end
-
-  # Refresh @variants when the picked family changed: style label →
-  # file, the weight axis first (100→900, roman before slanted), the
-  # width/shape cuts after it alphabetically.
+  # Refresh @variants when the picked family changed: the engine's
+  # per-family cut list is already ordered weight-axis first
+  # (100→900, roman before slanted), the width/shape cuts after it.
   private def rebuild_variants : Nil
     return if @variants_family == @family
     @variants_family = @family
-    rows = (@families[@family]? || [] of String).map do |path|
-      cut = parse_cut(style_token(path))
-      label = cut.known ?
-        "#{cut.name} #{cut.num}#{cut.slant.empty? ? "" : " #{cut.slant}"}" :
-        cut.name
-      key = {cut.num, cut.slant.empty? ? 0 : 1, label}
-      {key, label, path}
-    end.sort_by(&.[0])
-    @variants = rows.map { |_, label, path| {label, path} }
-  end
-
-  # The style segment of a font filename: after the last '-'
-  # ("NotoSans-BoldItalic.ttf" → "BoldItalic", "Ubuntu-R.ttf" → "R");
-  # no dash at all → "" (the whole base is the family name).
-  private def style_token(path : String) : String
-    base = File.basename(path, ".ttf")
-    base.includes?('-') ? base.rpartition('-').last : ""
-  end
-
-  # Push the file into the deferred registry once ("fb:<path>" — unique
-  # per file, can't collide with the catalog's family names); the stack
-  # itself parses on the row's first draw.
-  private def register_variant(path : String) : String
-    stack = "fb:#{path}"
-    unless @registered.includes?(path)
-      @registered << path
-      Egui::Backend::Sokol.register_deferred_font(stack, [path])
-    end
-    stack
+    @variants = (Egui::FontCuts.installed[@family]? || [] of Egui::FontCuts::Cut)
+      .map { |cut| {cut.label, cut.path} }
   end
 end
 

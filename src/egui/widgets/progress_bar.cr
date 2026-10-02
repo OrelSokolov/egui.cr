@@ -45,10 +45,12 @@ module Egui
       end
 
       if text = @text
-        text_size = ui.ctx.fonts_for(style.font_family).measure(text, style.font_size)
+        fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+          style.font_family, style.font_weight, false)
+        text_size = fonts.measure(text, style.font_size)
         text_pos = Pos2.new(rect.center.x - text_size.x / 2.0, rect.center.y)
         ui.painter.text(text_pos, text, style.font_size, visuals.text_color,
-          family: style.font_family, bold: style.font_weight_bold?)
+          family: face_family, bold: face_bold)
       end
 
       ui.interact(rect, id, Sense.none)

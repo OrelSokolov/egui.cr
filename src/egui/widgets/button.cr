@@ -115,7 +115,10 @@ module Egui
             StyleBox.new(bp.y, bp.x, bp.y, bp.x)
 
       font_size = style.font_size
-      fonts = ui.ctx.fonts_for(style.font_family)
+      # Weight goes through the real axis (a cut face when the family
+      # has one) — measure and draw share the resolved stack.
+      fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
+        style.font_family, style.font_weight, false)
       text_size = fonts.measure_cached(@text, font_size)
       # An icon-only button (empty label) still needs a glyph-height
       # box: `measure("")` is zero and would collapse the icon to
@@ -252,7 +255,7 @@ module Egui
       text_color = state_vars.color?("text_color") ||
                    style.visuals.text_color
       ui.painter.text(pos, label, font_size, text_color,
-        family: style.font_family, bold: style.font_weight_bold?)
+        family: face_family, bold: face_bold)
 
       response.paint_focus_ring
       response
