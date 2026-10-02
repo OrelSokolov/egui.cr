@@ -50,7 +50,8 @@ module Egui
       end
       ui.painter.text(
         Pos2.new(rect.left + pad.x, rect.center.y), label, font_size,
-        visuals.text_color, family: style.font_family)
+        visuals.text_color, family: style.font_family,
+        bold: style.font_weight_bold?)
 
       response.paint_focus_ring
       response.mark_changed if response.clicked?

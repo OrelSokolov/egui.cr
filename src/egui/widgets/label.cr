@@ -14,6 +14,12 @@
 # Clipboard system port while no widget holds keyboard focus.
 # `userselect: false` reverts to the inert paint-only label (upstream
 # `Sense::hover()`).
+#
+# CSS-wise the label styles under the "label" class and reads the
+# box-model `padding` (per-side `padding.top/…` or the scalar shorthand):
+# padding grows the allocated rect and offsets the text into the
+# content box, and a wrapping label wraps against the width minus the
+# horizontal padding.
 
 module Egui
   class Label
@@ -51,8 +57,12 @@ module Egui
       self
     end
 
+    def style_class : String?
+      "label"
+    end
+
     def style_properties : Array(StyleProp)
-      StyleProps.textlike
+      StyleProps.textlike + [StyleProp.new("padding", :box)]
     end
 
     def inspector_label : String?
@@ -61,8 +71,25 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
-      style = effective_style(ui, id)
-      runs = @rich.runs(style.font_size, style.visuals.text_color)
+      class_vars = style_vars(ui, id, "label")
+      style = effective_style(ui, id, class_vars)
+      # CSS `padding` box (per-side, default 0 — an unpadded label keeps
+      # its exact upstream sizing).
+      pad = class_vars.box?("padding") || StyleBox.new
+      # A font_size that arrived through the cascade (a "label" class
+      # rule or the inspector's per-element override — both live in
+      # `class_vars`) beats the RichText's own explicit .size; without
+      # one the RichText size keeps winning (upstream behavior). The
+      # override matters on sized labels (headings, `.size(...)`),
+      # where the inspector edit used to be a silent no-op.
+      run_size = class_vars.f64?("font_size").try { |s| {s, 0.0}.max }
+      # font_weight rides the same cascade: a set value beats the
+      # RichText's own .bold (>= 600 synthesizes bold, < 600 unbolds —
+      # CSS class-rule semantics).
+      weight = class_vars.f64?("font_weight")
+      run_bold = weight.nil? ? nil : weight >= 600.0
+      runs = @rich.runs(style.font_size, style.visuals.text_color,
+        run_size, run_bold)
       # Code blocks share the inline-code fallback: without a mono
       # stack they draw in the proportional font — retint them.
       runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
@@ -73,22 +100,27 @@ module Egui
       # treat it as unbounded instead.
       wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
       available = ui.available_width
-      max_width = wrap && available > 0.0 ? available : nil
+      room = available - pad.horizontal
+      max_width = wrap && room > 0.0 ? room : nil
       fonts = ui.ctx.fonts_for(style.font_family)
       # Runs may carry their own family (RichText#code — code blocks):
       # resolve those through ctx.fonts_for for BOTH measuring and
       # drawing, like RichLabel does for its markup spans.
-      resolve = ->(family : String?) { ui.ctx.fonts_for(family) }
+      resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       galley = fonts.layout(runs, max_width, resolve)
 
-      rect = ui.allocate_at_least(galley.size)
+      rect = ui.allocate_at_least(
+        galley.size + Vec2.new(pad.horizontal, pad.vertical))
       response = ui.interact(rect, id,
         @userselect ? Sense.click_and_drag : Sense.none)
 
+      # The text lives in the content box (rect minus padding).
+      content = Rect.from_min_size(
+        rect.min + Vec2.new(pad.left, pad.top), galley.size)
       if @userselect
-        paint_selectable(ui, response, id, rect, galley, style)
+        paint_selectable(ui, response, id, content, galley, style)
       else
-        ui.painter.paint_galley(rect.min, galley, fonts,
+        ui.painter.paint_galley(content.min, galley, fonts,
           style.visuals.text_color, style.font_family, resolve)
       end
 
@@ -187,7 +219,7 @@ module Egui
         end
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        style.font_family, ->(family : String?) { ctx.fonts_for(family) })
+        style.font_family, ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) })
     end
 
     # Byte index of the pointer inside the flattened row text: the row

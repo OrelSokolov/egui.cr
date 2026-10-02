@@ -12,9 +12,12 @@ require "../src/egui/backend/sokol"
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
 # Demo fonts: NotoSans (prose) + LiberationMono (code) shipped in
-# assets/fonts (both SIL OFL). NotoSans becomes the PRIMARY stack;
-# LiberationMono the "monospace" family. Both fall back to system
-# faces when the files are missing.
+# assets/fonts (both SIL OFL). NotoSans becomes the PRIMARY stack with
+# REAL bold/italic variant faces (headings, **bold**, *italic* draw and
+# measure through the actual 600/oblique files — never an emulation);
+# LiberationMono the "monospace" family. Missing files degrade silently
+# to the faces that did load (a variant without its file falls back to
+# the regular face).
 def pick_fonts : Nil
   fonts_dir = File.join(REPO_ROOT, "assets", "fonts")
 
@@ -22,7 +25,14 @@ def pick_fonts : Nil
     File.join(fonts_dir, "NotoSans-Regular.ttf"),
   ])
   if noto
-    Egui::Backend::Sokol.select_fonts(noto)
+    bold = Egui::Backend::Sokol.fonts_from_system(
+      [File.join(fonts_dir, "NotoSans-SemiBold.ttf")])
+    italic = Egui::Backend::Sokol.fonts_from_system(
+      [File.join(fonts_dir, "NotoSans-Italic.ttf")])
+    bold_italic = Egui::Backend::Sokol.fonts_from_system(
+      [File.join(fonts_dir, "NotoSans-SemiBoldItalic.ttf")])
+    Egui::Backend::Sokol.select_fonts(noto,
+      bold: bold, italic: italic, bold_italic: bold_italic)
   else
     STDERR.puts "markdown demo: NotoSans-Regular.ttf not found — system font"
   end

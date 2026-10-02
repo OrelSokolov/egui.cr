@@ -48,13 +48,15 @@ module Egui
       self
     end
 
-    # Base synthetic bold for the whole string (headings).
+    # Base bold for the whole string (headings): routes to the real
+    # bold variant face when one is installed.
     def bold : RichText
       @bold = true
       self
     end
 
-    # Base synthetic italic for the whole string.
+    # Base italic for the whole string: routes to the real italic
+    # variant face when one is installed.
     def italic : RichText
       @italic = true
       self
@@ -78,10 +80,12 @@ module Egui
       color(visuals.fade_color(visuals.text_color, 0.6))
     end
 
-    def runs(default_size : Float64, default_color : Color32) : Array(TextRun)
-      [TextRun.new(@text, @size || default_size,
+    def runs(default_size : Float64, default_color : Color32,
+             override_size : Float64? = nil,
+             override_bold : Bool? = nil) : Array(TextRun)
+      [TextRun.new(@text, override_size || @size || default_size,
         @color || default_color, @underline, @code ? "monospace" : nil,
-        @bold, @italic, @strikethrough)]
+        override_bold.nil? ? @bold : override_bold, @italic, @strikethrough)]
     end
 
     # A link span parsed out of the markup: CHAR range within the
@@ -108,12 +112,13 @@ module Egui
     # escapes the next marker character. `#link_spans` carries the
     # link ranges for the widget that laid the runs out.
     def styled_runs(default_size : Float64, default_color : Color32,
-                    link_color : Color32) : Array(TextRun)
+                    link_color : Color32, override_size : Float64? = nil,
+                    override_bold : Bool? = nil) : Array(TextRun)
       runs = [] of TextRun
       @link_spans.clear
-      parse_inline(@text, runs, @link_spans, @size || default_size,
-        @color || default_color, @bold, @italic,
-        @code ? "monospace" : nil, link_color)
+      parse_inline(@text, runs, @link_spans, override_size || @size || default_size,
+        @color || default_color, override_bold.nil? ? @bold : override_bold,
+        @italic, @code ? "monospace" : nil, link_color)
       runs
     end
 

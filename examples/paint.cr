@@ -90,6 +90,10 @@ module PaintXp
   DEFAULT_W = 640
   DEFAULT_H = 480
 
+  # PNG magic number — cheap "is this really a PNG" check for clipboard
+  # bytes coming from external tools.
+  PNG_SIG = Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+
   def self.theme : Egui::Theme
     theme = Egui::DefaultTheme.build("paint-xp", dark: false)
     v = theme.style.visuals
@@ -206,6 +210,7 @@ class PaintApp < Egui::App
   ACTION_EXIT    = Egui::HotkeyAction.new("paint.exit")
   ACTION_UNDO    = Egui::HotkeyAction.new("paint.undo")
   ACTION_REDO    = Egui::HotkeyAction.new("paint.redo")
+  ACTION_PASTE   = Egui::HotkeyAction.new("paint.paste")
   ACTION_SEL_ALL = Egui::HotkeyAction.new("paint.select_all")
   ACTION_DESEL   = Egui::HotkeyAction.new("paint.deselect")
   ACTION_DELETE  = Egui::HotkeyAction.new("paint.delete_sel")
@@ -219,6 +224,7 @@ class PaintApp < Egui::App
     ACTION_SAVE_AS => "Ctrl+Shift+S",
     ACTION_UNDO    => "Ctrl+Z",
     ACTION_REDO    => "Ctrl+Y",
+    ACTION_PASTE   => "Ctrl+V",
     ACTION_SEL_ALL => "Ctrl+A",
     ACTION_DESEL   => "Escape",
     ACTION_DELETE  => "Delete",
@@ -354,6 +360,7 @@ class PaintApp < Egui::App
       bar.menu_button("Edit") do |m|
         m.menu_item("Undo", ACTION_UNDO)
         m.menu_item("Repeat", ACTION_REDO)
+        m.menu_item("Paste", ACTION_PASTE)
         m.menu_item("Clear Selection", ACTION_DESEL)
         m.menu_item("Select All", ACTION_SEL_ALL)
         m.menu_item("Delete Selection", ACTION_DELETE)
@@ -809,6 +816,7 @@ class PaintApp
         ia.response.on_hover_cursor(cursor_for_tool)
       end
       handle_tools(ctx, ia, rect)
+      handle_canvas_resize(ctx, inner, rect)
       draw_overlays(ctx, ia, rect)
     end
     @canvas.flush(ctx) if @canvas.dirty?
@@ -853,6 +861,84 @@ class PaintApp
        Egui::CursorIcon::Pointer
     else                      Egui::CursorIcon::Crosshair
     end
+  end
+
+  # --- canvas resize handles --------------------------------------------
+  #
+  # jspaint-style: grips on the right edge, the bottom edge and the
+  # bottom-right corner of the white canvas drag the image size (content
+  # anchored top-left, new area in the background color). The grab strips
+  # sit OUTSIDE the canvas, in the gray workspace (1 px overlap so they
+  # still catch the pointer when the canvas fills the viewport), and are
+  # interacted AFTER the canvas widget — hit-testing is topmost-last, so
+  # they claim the pointer over the canvas itself. The outside placement
+  # also keeps them grabbable when a press is batched with the first
+  # motion event, and leaves the canvas free for drawing.
+
+  RESIZE_GRIP = 14.0
+
+  private def handle_canvas_resize(ctx : Egui::Context, ui : Egui::Ui,
+                                   rect : Egui::Rect) : Nil
+    g = RESIZE_GRIP
+    right = Egui::Rect.from_min_size(
+      Egui::Pos2.new(rect.max.x - 1, rect.min.y),
+      Egui::Vec2.new(g, rect.height))
+    bottom = Egui::Rect.from_min_size(
+      Egui::Pos2.new(rect.min.x, rect.max.y - 1),
+      Egui::Vec2.new(rect.width, g))
+    corner = Egui::Rect.from_min_size(
+      Egui::Pos2.new(rect.max.x - 1, rect.max.y - 1),
+      Egui::Vec2.new(g, g))
+
+    modes = {
+      right:  {right, Egui::CursorIcon::EwResize},
+      bottom: {bottom, Egui::CursorIcon::NsResize},
+      corner: {corner, Egui::CursorIcon::NwseResize},
+    }
+    modes.each do |mode, (hrect, cursor)|
+      # The strips reach past the scroll viewport's edge (the classic
+      # scrollbar reserves 16px there), so interact with a clip widened
+      # by the strip itself — the same trick the overlay scrollbar uses
+      # for its margin-side track.
+      resp = ctx.interact(ui.named_id("cresize_#{mode}"), hrect,
+        Egui::Sense.click_and_drag, ui.layer, ui.clip.union(hrect))
+      resp.on_hover_and_drag_cursor(cursor)
+      @status = "Drag to resize the image" if resp.hovered?
+      next unless resp.dragged? || resp.drag_stopped?
+      push_undo if resp.drag_started?
+      if (p = ctx.input.pointer_pos)
+        nw = ((p.x - rect.min.x) / @zoom).round.to_i.clamp(1, 16384)
+        nh = ((p.y - rect.min.y) / @zoom).round.to_i.clamp(1, 16384)
+        case mode
+        when :right  then resize_canvas(nw, @canvas.height, record: false)
+        when :bottom then resize_canvas(@canvas.width, nh, record: false)
+        else              resize_canvas(nw, nh, record: false)
+        end
+        @drag_size = {@canvas.width, @canvas.height}
+        ctx.request_repaint
+      end
+      if resp.drag_stopped?
+        @drag_size = nil
+        @status = "Resized to #{@canvas.width}×#{@canvas.height}"
+      end
+    end
+
+    # Visible affordance: small grip squares INSIDE the canvas (8 px
+    # inset — outside the edge the scroll viewport's classic-scrollbar
+    # reservation would clip/overpaint them), at the middle of the
+    # right/bottom edges and at the corner. Screen overlay, not canvas
+    # pixels.
+    p = ui.painter
+    draw_resize_grip(p, Egui::Pos2.new(rect.max.x - 8, rect.center.y))
+    draw_resize_grip(p, Egui::Pos2.new(rect.center.x, rect.max.y - 8))
+    draw_resize_grip(p, Egui::Pos2.new(rect.max.x - 8, rect.max.y - 8))
+  end
+
+  private def draw_resize_grip(p : Egui::Painter, c : Egui::Pos2) : Nil
+    r = Egui::Rect.from_min_size(
+      Egui::Pos2.new(c.x - RESIZE_GRIP / 2, c.y - RESIZE_GRIP / 2),
+      Egui::Vec2.new(RESIZE_GRIP, RESIZE_GRIP))
+    p.rect(r, 0.0, PaintXp::FACE, PaintXp::BEVEL_DK, 1.0)
   end
 
   private def pt(p : Egui::Pos2) : {Int32, Int32}
@@ -1547,13 +1633,15 @@ class PaintApp
 
   # --- whole-image transforms -------------------------------------------
 
-  # Generic resampling transform: push undo, then fill a new_w×new_h
-  # buffer where each pixel comes from the block's source coords (out
-  # of range → background color).
-  private def xform(new_w : Int32, new_h : Int32,
+  # Generic resampling transform: push undo (unless `record` is false —
+  # live drag resizing records one snapshot at drag start), then fill a
+  # new_w×new_h buffer where each pixel comes from the block's source
+  # coords (out of range → background color).
+  private def xform(new_w : Int32, new_h : Int32, record : Bool = true,
                     &src : Int32, Int32 -> {Int32, Int32}) : Nil
     return if new_w < 1 || new_h < 1 || new_w > 16384 || new_h > 16384
-    push_undo
+    return if new_w == @canvas.width && new_h == @canvas.height
+    push_undo if record
     ow, oh = @canvas.width, @canvas.height
     srcbuf = @canvas.snapshot
     dst = Bytes.new(new_w.to_i64 * new_h * 4)
@@ -1617,8 +1705,8 @@ class PaintApp
     end
   end
 
-  private def resize_canvas(w : Int32, h : Int32) : Nil
-    xform(w, h) { |dx, dy| {dx, dy} }
+  private def resize_canvas(w : Int32, h : Int32, record : Bool = true) : Nil
+    xform(w, h, record: record) { |dx, dy| {dx, dy} }
   end
 
   # --- file operations (all through the SystemPorts dialogs) ------------
@@ -1695,6 +1783,110 @@ class PaintApp
     rescue e : IO::Error | File::Error
       @status = "Cannot save: #{e.message}"
     end
+  end
+
+  # --- clipboard paste ---------------------------------------------------
+
+  # Edit → Paste: drop the clipboard image in as a floating selection at
+  # the top-left corner (canvas grown to fit first), with the Select
+  # tool active so the float can be dragged around — the same machinery
+  # a moved selection uses (move_base snapshot + blit).
+  private def paste_clipboard : Nil
+    png = clipboard_png_bytes
+    if png.nil?
+      @status = "The clipboard contains no image."
+      return
+    end
+    begin
+      img = PaintPng.decode(png)
+    rescue e : PaintPng::PngError
+      @status = "Cannot paste: #{e.message}"
+      return
+    end
+    commit_pending
+    push_undo
+    if img.width > @canvas.width || img.height > @canvas.height
+      resize_canvas({img.width, @canvas.width}.max,
+        {img.height, @canvas.height}.max, record: false)
+    end
+    select_tool(1) # Select
+    sel = SelState.new(0, 0, img.width, img.height, img.rgba)
+    sel.move_base = @canvas.snapshot
+    @canvas.blit(0, 0, img.rgba, img.width, img.height)
+    @sel = sel
+    @status = "Pasted #{img.width}×#{img.height} (drag to move, Esc to drop)"
+  end
+
+  # PNG bytes from the system clipboard, or nil when it holds no image.
+  # sokol_app only exposes the TEXT clipboard, so the image is fetched
+  # from the platform's tool: wl-paste / xclip write PNG bytes to
+  # stdout (Linux/BSD), pngpaste (macOS, Homebrew) and PowerShell's
+  # Windows.Forms clipboard (Windows) save to a temp file instead.
+  private def clipboard_png_bytes : Bytes?
+    {% if flag?(:linux) || flag?(:bsd) %}
+      if ENV["WAYLAND_DISPLAY"]? &&
+         (png = run_stdout_png("wl-paste", ["-t", "image/png"]))
+        return png
+      end
+      run_stdout_png("xclip", ["-selection", "clipboard", "-t", "image/png", "-o"])
+    {% elsif flag?(:darwin) %}
+      if command?("pngpaste")
+        tmp = File.tempname("paint-clip", ".png")
+        status = Process.run("pngpaste", [tmp],
+          output: Process::Redirect::Close, error: Process::Redirect::Close)
+        return read_png_file(tmp) if status.success?
+        File.delete?(tmp)
+      end
+      nil
+    {% elsif flag?(:win32) %}
+      tmp = File.tempname("paint-clip", ".png")
+      script = "Add-Type -AssemblyName System.Windows.Forms; " \
+               "$i=[System.Windows.Forms.Clipboard]::GetImage(); " \
+               "if ($i) { $i.Save('#{tmp.gsub('\'', "''")}') }"
+      Process.run("powershell", ["-NoProfile", "-STA", "-Command", script],
+        output: Process::Redirect::Close, error: Process::Redirect::Close)
+      read_png_file(tmp)
+    {% else %}
+      nil
+    {% end %}
+  end
+
+  # Run cmd, return its stdout as PNG bytes when it exited 0 and wrote
+  # what looks like a PNG; nil otherwise.
+  private def run_stdout_png(cmd : String, args : Array(String)) : Bytes?
+    return nil unless command?(cmd)
+    sink = IO::Memory.new
+    status = Process.run(cmd, args, output: sink,
+      error: Process::Redirect::Close)
+    return nil unless status.success?
+    data = sink.to_slice
+    data.size > 8 && data[0, 8] == PaintXp::PNG_SIG ? data.dup : nil
+  end
+
+  # Read (and delete) a PNG a clipboard tool saved to `path`; nil when
+  # the file is missing or not a PNG.
+  private def read_png_file(path : String) : Bytes?
+    data = nil
+    if File.exists?(path) && (size = File.size(path)) > 8
+      buf = Bytes.new(size)
+      File.open(path) { |f| f.read_fully(buf) }
+      data = buf if buf[0, 8] == PaintXp::PNG_SIG
+    end
+    File.delete?(path)
+    data
+  rescue IO::Error
+    nil
+  end
+
+  # Is `name` an executable on PATH? (Windows never reaches this — its
+  # tools are looked up by the shell itself.)
+  private def command?(name : String) : Bool
+    {% if flag?(:win32) %}
+      false
+    {% else %}
+      Process.run("which", [name], output: Process::Redirect::Close,
+        error: Process::Redirect::Close).success?
+    {% end %}
   end
 
   # Commit any pending multi-step interaction (text session, floating
@@ -1842,6 +2034,7 @@ class PaintApp
     quit_requested if ctx.consume_action(ACTION_EXIT)
     do_undo if ctx.consume_action(ACTION_UNDO)
     do_redo if ctx.consume_action(ACTION_REDO)
+    paste_clipboard if ctx.consume_action(ACTION_PASTE)
     select_all if ctx.consume_action(ACTION_SEL_ALL)
     if ctx.consume_action(ACTION_DESEL)
       @sel = nil
@@ -1875,7 +2068,11 @@ end
 
 Egui::Backend::Sokol.run(PaintApp.new,
   title: "untitled - Paint",
-  width: 880, height: 640,
+  # 692 tall so the default 640×480 canvas (plus chrome, toolbox,
+  # palette, status bar and the classic-scrollbar reservations) fits
+  # with slack to spare — the bottom resize grip and its marker must
+  # stay visible even after a small corner-drag grow.
+  width: 880, height: 692,
   decorations: false,
   chrome_style: Egui::WindowFrame::Style::WindowsXp,
   inspector: :hidden)

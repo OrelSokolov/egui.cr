@@ -204,6 +204,61 @@ describe "widget inspector" do
     ctx.painter.commands.any?(Egui::RectCmd).should be_true
   end
 
+  # Composite widgets are built from subwidgets via `Ui#add` — those
+  # record their own meta. The pick menu must list EVERY widget under
+  # the press (outermost first), not just the topmost one: right-clicked
+  # markdown offers both the Markdown root and the RichLabel the
+  # clicked block is made of.
+  it "pick menu offers nested subwidgets (Markdown → RichLabel)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    pos = nil
+    label_id = nil
+
+    # frame 1: lay out markdown, aim at the PARAGRAPH label
+    insp_frame(ctx) do |c|
+      c.window("w") do |ui|
+        ui.add(Egui::Markdown.new("# Title\n\nSome **bold** prose."))
+      end
+      meta = ctx.inspector.meta_values.find { |m|
+        m.kind == "RichLabel" && m.label.try(&.includes?("bold"))
+      }.not_nil!
+      label_id = meta.id
+      rect = ctx.memory.prev_widget_rects[meta.id]? ||
+             ctx.memory.widget_rects[meta.id]
+      pos = rect.not_nil!.center
+    end
+
+    # frame 2: secondary press over the paragraph → pick menu opens
+    events = [Egui::Event.pointer_moved(pos.not_nil!),
+              Egui::Event.pointer_pressed(pos.not_nil!,
+                Egui::PointerButton::Secondary)]
+    insp_frame(ctx, events: events, time: 0.032) do |c|
+      c.window("w") { |ui|
+        ui.add(Egui::Markdown.new("# Title\n\nSome **bold** prose."))
+      }
+    end
+    ctx.popup_open?("inspector_pick").should be_true
+
+    # frame 3: the menu lists both the root and the nested label
+    insp_frame(ctx, time: 0.048) do |c|
+      c.window("w") { |ui|
+        ui.add(Egui::Markdown.new("# Title\n\nSome **bold** prose."))
+      }
+    end
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.any?(&.starts_with?("Inspect Markdown")).should be_true
+    texts.any?(&.starts_with?("Inspect RichLabel")).should be_true
+
+    # clicking the RichLabel row selects the subwidget, not the root
+    row = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.starts_with?("Inspect RichLabel")).not_nil!
+    insp_frame(ctx, events: [Egui::Event.pointer_pressed(row.pos),
+                             Egui::Event.pointer_released(row.pos)],
+      time: 0.064) { |c| }
+    ctx.inspector.selected.should eq label_id
+  end
+
   # The one-menu rule: a widget with its own context menu gets the
   # «Inspect …» row appended as that menu's LAST item — never a second
   # popup beside it. Reproduces the bin/terminal double-menu bug: the

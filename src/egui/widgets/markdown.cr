@@ -450,7 +450,7 @@ module Egui
     # markup parsing, no highlighting) on a subtle rounded rect. No
     # wrap: long lines stay on one row, clipped like code editors.
     private def render_code(ui : Ui, block : Block, style : Style) : Nil
-      resolve = ->(family : String?) { ui.ctx.fonts_for(family) }
+      resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       fonts = ui.ctx.fonts_for(style.font_family)
       rich = RichText.new(block.text).code
       # 14px monospace at the default 16px body (0.875 — the same

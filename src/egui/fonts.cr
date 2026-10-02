@@ -78,14 +78,14 @@ module Egui
     @layout_cache = [] of LayoutCacheEntry
 
     # Lay styled runs out into rows. `max_width` nil = never wrap.
-    # `resolve` maps a run's `family` to its font stack (a
-    # `Context#fonts_for` closure) so runs tagged with another family
-    # (inline monospace code) MEASURE through that stack; nil measures
-    # everything through `self` (the historical behavior — fine when
-    # no run carries a family).
+    # `resolve` maps a run's `family` + bold/italic flags to its font
+    # stack (a `Context#fonts_for` closure) so runs tagged with another
+    # family (inline monospace code) or a real variant face MEASURE
+    # through that stack; nil measures everything through `self` (the
+    # historical behavior — fine when no run carries a family/variant).
     def layout(runs : Array(TextRun),
                max_width : Float64? = nil,
-               resolve : ((String?) -> Fonts)? = nil) : Galley
+               resolve : ((String?, Bool, Bool) -> Fonts)? = nil) : Galley
       if runs.size == 1
         run = runs.first
         # The style rides the key: run color and underline are baked
@@ -120,7 +120,7 @@ module Egui
 
     private def build_galley(runs : Array(TextRun),
                              max_width : Float64?,
-                             resolve : ((String?) -> Fonts)?) : Galley
+                             resolve : ((String?, Bool, Bool) -> Fonts)?) : Galley
       state = WrapState.new(self, max_width, resolve)
 
       tokenize(runs).each do |text, run, kind|
@@ -156,15 +156,19 @@ module Egui
       property newline_before = false
 
       def initialize(@fonts : Fonts, @max_width : Float64?,
-                     @resolve : ((String?) -> Fonts)?)
+                     @resolve : ((String?, Bool, Bool) -> Fonts)?)
       end
 
-      # The stack a token measures through: the run's family resolved
-      # through the caller's resolver (Context#fonts_for), `self` for
-      # family-less runs or when nobody resolved (headless callers).
-      private def stack_for(family : String?) : Fonts
-        if family && (r = @resolve)
-          r.call(family)
+      # The stack a token measures through: the run's family + variant
+      # flags resolved through the caller's resolver (Context#fonts_for),
+      # `self` for family-less runs or when nobody resolved (headless
+      # callers).
+      private def stack_for(family : String?, bold : Bool,
+                            italic : Bool) : Fonts
+        if family.nil? && !bold && !italic
+          @fonts
+        elsif (r = @resolve)
+          r.call(family, bold, italic)
         else
           @fonts
         end
@@ -194,7 +198,8 @@ module Egui
       end
 
       def add_space(text : String, run : TextRun) : Nil
-        w = stack_for(run.family).measure(text, run.size).x
+        w = stack_for(run.family, run.bold?, run.italic?)
+          .measure(text, run.size).x
         @tokens << {text, run, w}
         @width += w
         @height = {@height, run.size}.max
@@ -202,7 +207,7 @@ module Egui
 
       def add_word(word : String, run : TextRun) : Nil
         @height = {@height, run.size}.max
-        stack = stack_for(run.family)
+        stack = stack_for(run.family, run.bold?, run.italic?)
         w = stack.measure(word, run.size).x
         if (mw = @max_width) && !@tokens.empty? && @width + w > mw
           flush

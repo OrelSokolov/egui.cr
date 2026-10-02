@@ -46,11 +46,11 @@ module Egui
     def style_properties : Array(StyleProp)
       StyleProps.buttonlike + [
         StyleProp.new("padding", :box),
-        StyleProp.new("rounding", :number, fallback: 4.0),
+        StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
         StyleProp.new("bevel_light", :color, states: true),
         StyleProp.new("bevel_dark", :color, states: true),
         StyleProp.new("shadow.color", :color, states: true),
-        StyleProp.new("shadow.blur", :number),
+        StyleProp.new("shadow.blur", :number, min: 0.0),
         StyleProp.new("shadow.x", :number),
         StyleProp.new("shadow.y", :number),
         StyleProp.new("shadow.inset", :bool, states: true),
@@ -252,7 +252,7 @@ module Egui
       text_color = state_vars.color?("text_color") ||
                    style.visuals.text_color
       ui.painter.text(pos, label, font_size, text_color,
-        family: style.font_family)
+        family: style.font_family, bold: style.font_weight_bold?)
 
       response.paint_focus_ring
       response

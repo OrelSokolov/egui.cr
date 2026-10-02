@@ -565,9 +565,14 @@ module Egui
     end
 
     # Upload pending pixels NOW (show/flush otherwise catch it a frame
-    # later) — call after this frame's tool processing.
+    # later) — call after this frame's tool processing. Skipped when the
+    # buffer was resized after the texture (post-#show #resize): the
+    # stale texture gets wrong-size data — #ensure_texture recreates it
+    # on the next #show, and a same-frame second update is a sokol
+    # validation error (one sg_update_image per image per frame).
     def flush(ctx : Context) : Nil
       return unless @dirty && !@texture_id.zero?
+      return if @texture_w != @width || @texture_h != @height
       ctx.textures.update(@texture_id, @texture_w, @texture_h, @pixels)
       @dirty = false
     end

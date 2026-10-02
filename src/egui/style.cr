@@ -205,6 +205,12 @@ module Egui
     property spacing : Spacing
     property visuals : Visuals
     property font_size : Float64
+    # CSS `font-weight`: the 100..900 ladder (400 = normal, 700 = bold).
+    # No real bold faces exist — the backend synthesizes bold (double
+    # strike), so weights map by the browser rule: >= 600 renders bold,
+    # anything lighter stays normal. Rides the same cascade as
+    # font_size (theme → class rules → inline → inspector).
+    property font_weight : Float64
     # Named font family (upstream `Style::override_font_id`'s family
     # half): a key into `Context#font_families` — nil = the primary
     # #fonts stack, "monospace" → #mono_font. Rides the style cascade
@@ -223,6 +229,7 @@ module Egui
       @spacing = Spacing.new
       @visuals = Visuals.new
       @font_size = 16.0
+      @font_weight = 400.0
       @font_family = nil
       @scroll_speed = 60.0
     end
@@ -234,9 +241,16 @@ module Egui
       other.spacing = spacing.clone
       other.visuals = visuals.clone
       other.font_size = font_size
+      other.font_weight = font_weight
       other.font_family = font_family
       other.scroll_speed = scroll_speed
       other
+    end
+
+    # The browser synthesis rule for a weight with no matching face:
+    # semibold and up (>= 600) fake bold, lighter stays normal.
+    def font_weight_bold? : Bool
+      @font_weight >= 600.0
     end
   end
 end

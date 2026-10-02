@@ -104,7 +104,10 @@ module Egui
       # the file: 12-byte header → table records → the `name` table's
       # own header + records, then only the winning string's bytes.
       # A handful of small reads per file, no glyph data touched.
-      private def self.family_name(path : String) : String?
+      # Public so apps that group fonts beyond #installed_families'
+      # one-representative-per-family view (a specimen browser listing
+      # every style file) can reuse the same cheap reader.
+      def self.family_name(path : String) : String?
         File.open(path) do |io|
           head = read_bytes(io, 12) || return nil
           version = be_u32(head, 0)

@@ -141,8 +141,8 @@ module Egui
 
     @prev_meta = {} of Id => WidgetMeta
     @meta = {} of Id => WidgetMeta
-    @pending_pick : {Id, Pos2}?
-    @pick_target : Id?
+    @pending_pick : {Array(Id), Pos2}?
+    @pick_targets : Array(Id) = [] of Id
     @last_selected_meta : WidgetMeta?
     # The "Class" tab's selected class. Linked to the Element tab:
     # switching to Class jumps to the LAST SELECTED element's class
@@ -186,8 +186,8 @@ module Egui
     def before_update : Nil
       self.open = !@open if @ctx.input.consume_key(KeyCode::F12)
       if @ctx.input.secondary_pressed? && (pos = @ctx.input.secondary_pos) &&
-         (hit = @ctx.memory.widget_at(pos))
-        @pending_pick = {hit, pos}
+         !(hits = @ctx.memory.widgets_at(pos)).empty?
+        @pending_pick = {hits, pos}
       end
       render_panel if @open
     end
@@ -205,7 +205,7 @@ module Egui
         pop_id = Id.from("popup/#{PICK_MENU}")
         @ctx.memory.areas.set_pos(pop_id, pk[1])
         @ctx.open_popup(PICK_MENU)
-        @pick_target = pk[0]
+        @pick_targets = pk[0]
       end
       @pending_pick = nil
       render_pick_menu
@@ -274,13 +274,17 @@ module Egui
       end
     end
 
+    # One row per widget under the pick point, outermost first: the
+    # composite root (Markdown) on top, then its parts (RichLabel,
+    # Label, …) — each opens the Element tab for its own id.
     private def render_pick_menu : Nil
       return unless @ctx.popup_open?(PICK_MENU)
       pop_id = Id.from("popup/#{PICK_MENU}")
       anchor = @ctx.memory.areas.pos_for(pop_id, Pos2.zero)
       @ctx.popup(PICK_MENU, anchor, width: 260) do |ui|
         ui.menu_popup_key = PICK_MENU
-        if (id = @pick_target) && (m = meta_for(id))
+        @pick_targets.each do |id|
+          next unless m = meta_for(id)
           ui.menu_item("Inspect #{m.kind} · #{display_name(id, m)}") do
             inspect_widget(id)
           end
@@ -762,7 +766,15 @@ module Egui
             # value, so the editor opens on what's already visible.
             case prop.kind
             when :color  then setter.call(prop.key, display_color_value(prop, vars, theme_state))
-            when :number then setter.call(prop.key, display_number(prop, vars))
+            when :number
+              v = display_number(prop, vars)
+              v = {v, prop.min.not_nil!}.max if prop.min
+              setter.call(prop.key, v)
+            when :weight
+              # Seeding the CSS weight ladder starts from the current
+              # display value (a set 400 override is legitimate — it
+              # unbolds a .bold label).
+              setter.call(prop.key, display_number(prop, vars))
             when :bool   then setter.call(prop.key, display_bool(prop, vars))
             when :string
               # Seeding an empty string (an unset family) would store a
@@ -807,6 +819,9 @@ module Egui
         when :number
           value = display_number(prop, vars)
           row.drag_value(value, speed: prop_speed(prop.key)) do |v|
+            # A `min`-bounded key never stores below the bound (a
+            # negative font_size or blur is meaningless).
+            v = {v, prop.min.not_nil!}.max if prop.min
             setter.call(prop.key, v)
           end
         when :box
@@ -817,6 +832,23 @@ module Egui
               # Same clamp as StyleVars#box — keep the stored sheet value
               # sane, not just the read side.
               setter.call("#{prop.key}.#{side}", {nv, 0.0}.max)
+            end
+          end
+        when :weight
+          # CSS `font-weight` edits from the closed 100..900 ladder —
+          # a select, not a free drag (only these values are CSS).
+          # The zero option («(наследуется)») UNSETS the key, back to
+          # the inherited theme weight (400).
+          current = vars.f64?(prop.key).try { |v| "%.0f" % v } || ""
+          options = (100..900).step(100).map(&.to_s).to_a
+          options = [current] + options unless current.empty? ||
+                                             options.includes?(current)
+          row.select_box("insp_weight", current, options, 70.0,
+            label: "(наследуется)") do |opt|
+            if opt.empty?
+              unset_prop(prop, unsetter)
+            else
+              setter.call(prop.key, opt.to_f64)
             end
           end
         when :string
@@ -1049,8 +1081,9 @@ module Egui
 
     private def theme_number(key : String) : Float64?
       case key
-      when "font_size" then @ctx.style.font_size
-      else                  nil
+      when "font_size"   then @ctx.style.font_size
+      when "font_weight" then @ctx.style.font_weight
+      else                    nil
       end
     end
 

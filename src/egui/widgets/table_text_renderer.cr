@@ -34,7 +34,7 @@ module Egui
       return Rect.new(ui.cursor, ui.cursor) if @rows.empty?
       ctx = ui.ctx
       fonts = ctx.fonts_for(style.font_family)
-      resolve = ->(family : String?) { ctx.fonts_for(family) }
+      resolve = ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) }
       visuals = style.visuals
       cols = @rows.map(&.size).max
       avail = ui.available_width
@@ -58,7 +58,7 @@ module Egui
           wmin = 0.0
           wmax = 0.0
           runs.each do |r|
-            stack = resolve.call(r.family)
+            stack = resolve.call(r.family, r.bold?, r.italic?)
             wmax += stack.measure(r.text, r.size).x
             r.text.split(' ').each do |word|
               w = stack.measure(word, r.size).x

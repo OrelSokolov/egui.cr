@@ -41,8 +41,9 @@ module Egui
     # pre-existing command is unaffected), "monospace" → the mono
     # stack, any registered name (`Sokol.register_font`) → that stack.
     getter family : String?
-    # Synthetic styles (no separate faces): bold double-strikes the
-    # glyphs, italic shears them — see backend `paint_text`.
+    # Real variant faces: bold/italic shift the primary stack to its
+    # installed variant (`Context#fonts_for` — a missing variant draws
+    # the base face's own glyphs, no emulation).
     getter? bold : Bool
     getter? italic : Bool
 
@@ -251,8 +252,9 @@ module Egui
     # (upstream anchors at the galley's left edge + baseline; backends
     # convert using their font metrics — see backend/sokol/fontstash).
     # `family:` draws through that named stack (`Context#fonts_for`);
-    # nil uses the primary one. `bold:`/`italic:` are synthetic styles
-    # applied by the backend (double strike / shear).
+    # nil uses the primary one. `bold:`/`italic:` draw through the
+    # primary stack's REAL variant faces (a missing variant degrades to
+    # the base face — no emulation).
     def text(pos : Pos2, text : String, size : Float64, color : Color32,
              family : String? = nil, bold : Bool = false,
              italic : Bool = false) : Nil
@@ -265,13 +267,13 @@ module Egui
     # that's where per-run colors come from — plus underline lines.
     # `family:` is the stack the galley was laid out with, so the draw
     # commands hit the same font the measurement used; a run carrying
-    # its OWN family (inline code) overrides it per run — `resolve`
-    # (a `Context#fonts_for` closure) supplies that stack for the
-    # underline width measurement, exactly like `Fonts#layout` did for
-    # the wrap.
+    # its OWN family (inline code) or variant flags (bold/italic)
+    # overrides it per run — `resolve` (a `Context#fonts_for` closure)
+    # supplies that stack for the underline/strike/chip width
+    # measurement, exactly like `Fonts#layout` did for the wrap.
     def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
                      default_color : Color32, family : String? = nil,
-                     resolve : ((String?) -> Fonts)? = nil) : Nil
+                     resolve : ((String?, Bool, Bool) -> Fonts)? = nil) : Nil
       # Cull rows outside the clip rect: a scrolled textarea with a
       # multi-megabyte galley must not tessellate (and rasterize) every
       # row of the buffer each frame — only the visible window. Rows
@@ -287,7 +289,7 @@ module Egui
           run_pos = Pos2.new(pos.x + run.x, row_center_y)
           color = run.color || default_color
           run_family = run.family || family
-          run_fonts = run.family && resolve ? resolve.not_nil!.call(run.family) : fonts
+          run_fonts = resolve ? resolve.not_nil!.call(run.family, run.bold?, run.italic?) : fonts
           # Chip behind a backgrounded run (inline code): a rounded
           # rect under the text, padded around the glyphs the way
           # GitHub does (`code { padding: 0.2em 0.4em; border-radius:

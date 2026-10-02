@@ -218,6 +218,13 @@ module Egui
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
       @@mono_fonts : Egui::Backend::AtlasFonts? = nil
+      # Real variant faces of the PRIMARY stack (TextCmd bold/italic
+      # flags): registered via select_fonts(bold:/italic:/bold_italic:).
+      # nil = that variant isn't installed — the text draws through the
+      # base stack's real glyphs (never an emulated variant).
+      @@bold_fonts : Egui::Backend::AtlasFonts? = nil
+      @@italic_fonts : Egui::Backend::AtlasFonts? = nil
+      @@bold_italic_fonts : Egui::Backend::AtlasFonts? = nil
       # THE glyph atlas every stack the backend itself creates bakes
       # into (primary/mono chains + materialized deferred families): one
       # GPU texture, one CPU buffer, regardless of how many font
@@ -479,14 +486,20 @@ module Egui
       # connection lives on the render thread) and returns a malloc'd
       # copy that we free after building the String.
       class ClipboardPort < Egui::SystemPorts::Clipboard::Implementation
+        # The last text WE set: when the X read fails (a stalled
+        # compositor path), fall back to it — the same owner shortcut
+        # sapp has (`XGetSelectionOwner == self → return the buffer`).
+        @last_set : String? = nil
+
         def set(text : String) : Nil
           text.to_unsafe # ensure a contiguous buffer
+          @last_set = text
           LibEguiCr.clipboard_set(text.to_unsafe)
         end
 
         def get : String?
           ptr = LibEguiCr.clipboard_get
-          return nil if ptr.null?
+          return @last_set if ptr.null?
           begin
             String.new(ptr)
           ensure
@@ -948,12 +961,13 @@ module Egui
         @@shared_atlas ||= GlyphAtlas.new(ATLAS_SIZE)
       end
 
-      # Every stack the registry knows: the primary/mono slots, the
-      # app-registered named stacks and every materialized deferred
+      # Every stack the registry knows: the primary/mono/variant slots,
+      # the app-registered named stacks and every materialized deferred
       # family. What the registry-level atlas reset and the per-frame
       # scale sync iterate.
       private def self.all_stacks : Array(Egui::Backend::AtlasFonts)
-        ([@@fonts, @@mono_fonts].concat(@@named_fonts.values)
+        ([@@fonts, @@mono_fonts, @@bold_fonts, @@italic_fonts,
+          @@bold_italic_fonts].concat(@@named_fonts.values)
           .concat(@@materialized.values.compact)).compact
       end
 
@@ -963,11 +977,26 @@ module Egui
       # `mono:` optionally installs a SECOND stack (Context#mono_fonts)
       # for TextCmd family "monospace" — terminal grids, code. Nil
       # (default) keeps mono text on the primary stack.
-      def self.select_fonts(font : AtlasFonts, mono : AtlasFonts? = nil) : Nil
+      # `bold:`/`italic:`/`bold_italic:` install the primary stack's REAL
+      # variant faces (Context#bold_fonts & co) — what TextCmd bold /
+      # italic flags draw and measure through. A nil variant is no
+      # emulation: the base stack's real glyphs serve the text.
+      def self.select_fonts(font : AtlasFonts, mono : AtlasFonts? = nil,
+                            bold : AtlasFonts? = nil,
+                            italic : AtlasFonts? = nil,
+                            bold_italic : AtlasFonts? = nil) : Nil
         @@fonts = font
         @@mono_fonts = mono
-        @@app.try &.ctx.fonts = font
-        @@app.try &.ctx.mono_fonts = mono
+        @@bold_fonts = bold
+        @@italic_fonts = italic
+        @@bold_italic_fonts = bold_italic
+        app = @@app
+        return unless app
+        app.ctx.fonts = font
+        app.ctx.mono_fonts = mono
+        app.ctx.bold_fonts = bold
+        app.ctx.italic_fonts = italic
+        app.ctx.bold_italic_fonts = bold_italic
       end
 
       # Register a NAMED font stack (`Context#font_families`): a widget
@@ -1008,32 +1037,47 @@ module Egui
       # "monospace" → the mono stack, a registered name → that stack,
       # a deferred name → its materialized stack (loaded right here on
       # first draw), anything else → primary (a typo degrades to the
-      # default).
+      # default). The primary then shifts to a REAL variant face when
+      # the cmd is bold/italic and one is installed (nil variants are
+      # no emulation — the base stack's own glyphs serve the text).
       private def self.fonts_for_cmd(cmd : Egui::TextCmd) : AtlasFonts?
-        case family = cmd.family
-        when nil
-          @@fonts
-        when "monospace"
-          # select_fonts installs the mono SLOT; register_font may
-          # instead register "monospace" as a NAMED family — honor
-          # both before degrading to the primary face.
-          @@mono_fonts || @@named_fonts["monospace"]? || @@fonts
-        when "system"
-          @@fonts
+        stack = case family = cmd.family
+                when nil
+                  @@fonts
+                when "monospace"
+                  # select_fonts installs the mono SLOT; register_font may
+                  # instead register "monospace" as a NAMED family — honor
+                  # both before degrading to the primary face.
+                  @@mono_fonts || @@named_fonts["monospace"]? || @@fonts
+                when "system"
+                  @@fonts
+                else
+                  if (named = @@named_fonts[family]?)
+                    named
+                  elsif (paths = @@deferred_fonts[family]?)
+                    if (real = materialize_font(paths))
+                      @@named_fonts[family] = real
+                      real
+                    else
+                      @@deferred_fonts.delete(family)
+                      @@fonts
+                    end
+                  else
+                    @@fonts
+                  end
+                end
+        # Variant faces exist for the PRIMARY stack only: named stacks
+        # (fontbrowser rows, app-registered families) are exact files
+        # and draw as loaded, whatever flags the run carries.
+        return stack unless stack.same?(@@fonts) || stack.nil?
+        if cmd.bold? && cmd.italic?
+          @@bold_italic_fonts || @@bold_fonts || @@italic_fonts || stack
+        elsif cmd.bold?
+          @@bold_fonts || stack
+        elsif cmd.italic?
+          @@italic_fonts || stack
         else
-          if (stack = @@named_fonts[family]?)
-            stack
-          elsif (paths = @@deferred_fonts[family]?)
-            if (real = materialize_font(paths))
-              @@named_fonts[family] = real
-              real
-            else
-              @@deferred_fonts.delete(family)
-              @@fonts
-            end
-          else
-            @@fonts
-          end
+          stack
         end
       end
 
@@ -1256,7 +1300,8 @@ module Egui
       # TextCmd resolves to them — a family only MEASURED still needs
       # the right scale).
       private def self.set_stack_scales : Nil
-        [@@fonts, @@mono_fonts].concat(@@named_fonts.values)
+        [@@fonts, @@mono_fonts, @@bold_fonts, @@italic_fonts,
+          @@bold_italic_fonts].concat(@@named_fonts.values)
           .concat(@@materialized.values.compact).each do |f|
           f.try &.scale = @@pixels_per_point
         end
@@ -1704,13 +1749,10 @@ module Egui
         color = cmd.color
         x_origin = cmd.pos.x * ppp
         inv = (1.0 / ppp).to_f32 # emit in points; the viewport scales back
-        # Synthetic bold (no separate face): the glyph batch is drawn
-        # twice, the second pass nudged right — the classic double
-        # strike; strokes read heavier after the coverage blend.
-        embolden = cmd.bold? ? {draw_size / 32.0, 1.0}.max : 0.0
-        # Synthetic italic: shear the quads around the baseline, top
-        # leaning right (≈12°, the standard oblique angle).
-        shear = cmd.italic? ? 0.21 : 0.0
+        # Bold/italic cmds already draw through a REAL variant face
+        # resolved in #fonts_for_cmd (a missing variant degrades to the
+        # base face — never an emulated one), so the quads below are
+        # plain: one pass, no shear, no double strike.
         # letter_spacing is absolute px — widen it with the draw size so
         # the tracking reads the same at 2x as at 1x.
         saved_spacing = fonts.letter_spacing
@@ -1725,17 +1767,10 @@ module Egui
           y0 = baseline - g.ytop.to_f32
           x1 = x0 + g.w.to_f32
           y1 = y0 + g.h.to_f32
-          # Italic shear: x grows with height above the baseline.
-          s0 = (shear * (baseline - y0)).to_f32
-          s1 = (shear * (baseline - y1)).to_f32
-          2.times do |pass|
-            dx = pass.zero? ? 0.0 : embolden.to_f32
-            LibEguiCr.sgl_v2f_t2f_c4b((x0 + s0 + dx) * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
-            LibEguiCr.sgl_v2f_t2f_c4b((x1 + s0 + dx) * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
-            LibEguiCr.sgl_v2f_t2f_c4b((x1 + s1 + dx) * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
-            LibEguiCr.sgl_v2f_t2f_c4b((x0 + s1 + dx) * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
-            break if pass.zero? && embolden <= 0.0
-          end
+          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
+          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
         end
         LibEguiCr.sgl_end
         LibEguiCr.text_pipeline_pop

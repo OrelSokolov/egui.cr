@@ -1,7 +1,7 @@
 # RichLabel — a Label whose text carries inline markdown markup:
 # `**bold**`, `*italic*`, `***both***`, `` `code` `` and
 # `[label](url)` links, parsed by `RichText#styled_runs` into styled
-# runs (synthetic bold/italic, the monospace family for code) and
+# runs (real bold/italic variant faces, the monospace family for code) and
 # laid out as one wrapping galley. Plain `Label` stays verbatim —
 # markup parsing is THIS widget's job.
 #
@@ -59,8 +59,17 @@ module Egui
       id = resolve_id(ui)
       style = effective_style(ui, id)
       visuals = style.visuals
+      # A per-element font_size override (inspector Element tab) beats
+      # the RichText's own explicit .size — same rule as `Label`: the
+      # edit must visibly work on sized labels (markdown headings),
+      # not be a silent no-op. No class layer here (no style_class).
+      # font_weight follows the same element layer (>= 600 = bold).
+      ov = ui.ctx.id_style_state_vars(id, nil)
+      ov_size = ov.try(&.f64?("font_size")).try { |s| {s, 0.0}.max }
+      weight = ov.try(&.f64?("font_weight"))
+      ov_bold = weight.nil? ? nil : weight >= 600.0
       runs = @rich.styled_runs(style.font_size, visuals.text_color,
-        visuals.hyperlink_color)
+        visuals.hyperlink_color, ov_size, ov_bold)
       # Inline code = monospace runs in a rounded chip; without a
       # mono stack they also retint weaker (the font alone can't
       # distinguish them).
@@ -79,7 +88,7 @@ module Egui
       available = ui.available_width
       max_width = wrap && available > 0.0 ? available : nil
       fonts = ui.ctx.fonts_for(style.font_family)
-      resolve = ->(family : String?) { ui.ctx.fonts_for(family) }
+      resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       galley = fonts.layout(runs, max_width, resolve)
 
       rect = ui.allocate_at_least(galley.size)
@@ -105,7 +114,7 @@ module Egui
                       style : Style) : Nil
       ctx = ui.ctx
       visuals = style.visuals
-      resolve = ->(family : String?) { ctx.fonts_for(family) }
+      resolve = ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) }
       anchor_id = id.child(0x5EED_u64)
       ctx.memory.use_id(anchor_id)
 

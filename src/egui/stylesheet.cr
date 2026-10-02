@@ -95,9 +95,15 @@ module Egui
     # it) — the inspector shows it as the value while unset, instead
     # of a bogus 0.
     getter fallback : StyleValue?
+    # Lower bound for :number keys the value makes no sense below
+    # (font_size, rounding, blur…): the inspector's number editor
+    # clamps edits to it. nil = unclamped (offsets, spreads —
+    # negatives are legitimate CSS there).
+    getter min : Float64?
 
     def initialize(@key : String, @kind : Symbol, label : String? = nil,
-                   @states : Bool = false, @fallback : StyleValue? = nil)
+                   @states : Bool = false, @fallback : StyleValue? = nil,
+                   @min : Float64? = nil)
       @label = label || @key
     end
   end
@@ -105,10 +111,14 @@ module Egui
   # Ready-made declaration sets shared by several widgets (widgets
   # return their OWN array — treat the results as read-only).
   module StyleProps
-    # Text-carrying widgets: color + size + family.
+    # Text-carrying widgets: color + size + weight + family. `font_size`
+    # floors at 0 — a negative size is meaningless (the inspector
+    # clamps); `font_weight` is the CSS 100..900 ladder edited from a
+    # list (>= 600 synthesizes bold — see `Style#font_weight`).
     def self.textlike : Array(StyleProp)
       [StyleProp.new("text_color", :color),
-       StyleProp.new("font_size", :number),
+       StyleProp.new("font_size", :number, min: 0.0),
+       StyleProp.new("font_weight", :weight),
        StyleProp.new("font_family", :string)]
     end
 
@@ -232,7 +242,14 @@ module Egui
         v.hyperlink_color = c
       end
       if (f = f64?("font_size"))
-        merged.font_size = f
+        # Floor at 0: a negative size is meaningless in every consumer
+        # (layout, rasterization) no matter how it got in — inspector,
+        # .ecss file or a code-side rule.
+        merged.font_size = {f, 0.0}.max
+      end
+      if (f = f64?("font_weight"))
+        # Clamp to the CSS ladder 100..900 (see `Style#font_weight`).
+        merged.font_weight = f.clamp(100.0, 900.0)
       end
       if (f = str?("font_family"))
         merged.font_family = f

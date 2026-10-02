@@ -73,7 +73,8 @@ module Egui
         label_size = ui.ctx.fonts_for(style.font_family).measure(label, style.font_size)
         label_pos = Pos2.new(rect.right + sp.icon_spacing, rect.center.y)
         ui.painter.text(label_pos, label, style.font_size,
-          visuals.text_color, family: style.font_family)
+          visuals.text_color, family: style.font_family,
+          bold: style.font_weight_bold?)
         ui.min_rect = ui.min_rect.union(
           Rect.from_min_size(label_pos, label_size))
       end

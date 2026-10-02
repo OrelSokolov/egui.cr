@@ -40,6 +40,14 @@ module Egui
     # read #mono_font, never this nullable property.
     property mono_fonts : Fonts? = nil
 
+    # REAL variant faces of the primary stack — what bold/italic text
+    # measures and draws through (`Sokol.select_fonts(bold:/italic:/`
+    # `bold_italic:)`). Nil = the variant isn't installed: the text
+    # serves through the base #fonts' own glyphs, never an emulated one.
+    property bold_fonts : Fonts? = nil
+    property italic_fonts : Fonts? = nil
+    property bold_italic_fonts : Fonts? = nil
+
     # The font stack mono text measures/draws through: #mono_fonts when
     # the backend installed one, #fonts otherwise.
     def mono_font : Fonts
@@ -85,7 +93,28 @@ module Egui
     # #mono_font. A deferred family materializes HERE — the first
     # resolution parses the files, swaps the placeholder out of
     # #deferred_font_paths and never pays again.
-    def fonts_for(family : String?) : Fonts
+    #
+    # `bold`/`italic` shift the PRIMARY resolution to a real variant
+    # face when one is installed (#bold_fonts & co — the measure-side
+    # twin of the backend's #fonts_for_cmd); a missing variant degrades
+    # to the nearest real face (bold+italic → bold → base), headless
+    # Contexts included: #fonts serves everything there.
+    def fonts_for(family : String?, bold : Bool = false,
+                  italic : Bool = false) : Fonts
+      base = fonts_for_family(family)
+      return base unless base.same?(@fonts)
+      if bold && italic
+        @bold_italic_fonts || @bold_fonts || @italic_fonts || base
+      elsif bold
+        @bold_fonts || base
+      elsif italic
+        @italic_fonts || base
+      else
+        base
+      end
+    end
+
+    private def fonts_for_family(family : String?) : Fonts
       return @fonts unless family
       case family
       when "monospace" then mono_font

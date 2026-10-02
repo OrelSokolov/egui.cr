@@ -563,9 +563,31 @@ module Egui
     # within the same z the last registration (paint order) is on top.
     # Hit-tests resolve against the previous frame's geometry.
     # The topmost registered widget (any sense) at `pos`, against the
-    # previous frame's geometry — the inspector's pick hit-test.
+    # previous frame's geometry.
     def widget_at(pos : Pos2?) : Id?
       topmost_at(pos) { |_sense| true }
+    end
+
+    # EVERY registered widget (any sense) containing `pos`, against the
+    # previous frame's geometry — outermost first (rect area descending).
+    # The inspector's pick menu offers all of them so a composite widget
+    # (Markdown and the RichLabels it is built from) is inspectable down
+    # to its parts; `#widget_at` alone would always answer the root,
+    # which interacts last and covers the whole body.
+    def widgets_at(pos : Pos2?) : Array(Id)
+      return [] of Id unless pos
+      hits = [] of {Id, Float64}
+      @prev_widget_rects.each do |id, rect|
+        next unless rect.contains?(pos)
+        next unless @prev_widget_senses[id]?
+        clip = @prev_widget_clips[id]?
+        next if clip && !clip.contains?(pos)
+        layer = @prev_widget_layers[id]? || LayerId.background
+        next if @modal_open && !layer.order.foreground?
+        hits << {id, rect.width * rect.height}
+      end
+      hits.sort_by! { |_, area| -area }
+      hits.map(&.[0])
     end
 
     private def topmost_at(pos : Pos2?, &sense_filter : Sense -> Bool) : Id?

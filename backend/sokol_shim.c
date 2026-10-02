@@ -2592,6 +2592,7 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 #include <poll.h>
 #include <errno.h>
 #include <time.h>
+#include <limits.h>
 
 #define SH_THREAD_LOCAL __thread
 #define SH_MUTEX_STATIC_INIT PTHREAD_MUTEX_INITIALIZER
@@ -3047,6 +3048,8 @@ static void sh_cmd_exec(sh_cmd_t* c) {
     case SH_CMD_QUIT:         sapp_quit(); break;
     case SH_CMD_CLIP_GET: {
         const char* s = sapp_get_clipboard_string();
+        if (getenv("EGUI_CLIP_DEBUG"))
+            fprintf(stderr, "[clip] R exec get: '%s'\n", s ? s : "(null)");
         c->r_str = sh_strdup_n(s && s[0] ? s : NULL);
         sh_cmd_reply(c);
         return; // sync: reply instead of free
@@ -3792,18 +3795,91 @@ void egui_cr_clipboard_set(const char* text) {
     sh_cmd_post_async(SH_CMD_CLIP_SET, 0, 0, 0, 0, 0.f, sh_strdup_n(text), 0);
 }
 
+#if defined(_SAPP_LINUX)
+// Clipboard READ on the caller's (A's) thread through a private X
+// connection — the same XConvertSelection dance sokol runs on its own
+// connection. The sync roundtrip below could stall behind a ~1 s
+// glXSwapBuffers wait (mutter stops sending frame events to occluded
+// or freshly-mapped windows; loop_redesign.md §1): a paste must not
+// depend on R's tick health. The connection + request window are
+// thread-local and created once.
+static SH_THREAD_LOCAL Display* sh_clip_d = NULL;
+static SH_THREAD_LOCAL Window sh_clip_w = None;
+
+static void sh_clip_conn_init(void) {
+    if (sh_clip_d) return;
+    sh_clip_d = XOpenDisplay(NULL);
+    if (!sh_clip_d) return;
+    sh_clip_w = XCreateSimpleWindow(sh_clip_d,
+                                    DefaultRootWindow(sh_clip_d),
+                                    0, 0, 1, 1, 0, 0, 0);
+}
+
+// malloc'd copy (free with egui_cr_mem_free); NULL when empty/failed.
+static char* sh_clipboard_get_x11(void) {
+    sh_clip_conn_init();
+    if (!sh_clip_d || sh_clip_w == None) return NULL;
+    Display* d = sh_clip_d;
+    Atom utf8 = XInternAtom(d, "UTF8_STRING", False);
+    Atom clip = XInternAtom(d, "CLIPBOARD", False);
+    Atom prop = XInternAtom(d, "EGUI_CR_SELECTION", False);
+    XConvertSelection(d, clip, utf8, prop, sh_clip_w, CurrentTime);
+    XFlush(d);
+    XEvent ev;
+    const double deadline = sh_now() + 0.5; // generous vs sokol's 0.1
+    for (;;) {
+        if (XCheckTypedWindowEvent(d, sh_clip_w, SelectionNotify, &ev)) break;
+        const double left = deadline - sh_now();
+        if (left <= 0.0) return NULL;
+        struct pollfd fd = { ConnectionNumber(d), POLLIN, 0 };
+        poll(&fd, 1, (int)(left * 1000.0));
+    }
+    if (ev.xselection.property == None) return NULL;
+    Atom actual;
+    int fmt;
+    unsigned long items, after;
+    unsigned char* data = NULL;
+    char* out = NULL;
+    if (XGetWindowProperty(d, ev.xselection.requestor,
+                           ev.xselection.property, 0, LONG_MAX, True, utf8,
+                           &actual, &fmt, &items, &after,
+                           &data) == Success && data) {
+        out = sh_strdup_n((const char*)data);
+        XFree(data);
+    }
+    return out;
+}
+#endif // _SAPP_LINUX
+
 // malloc'd strdup (free with egui_cr_mem_free); NULL when empty/failed.
 char* egui_cr_clipboard_get(void) {
+#if defined(_SAPP_LINUX)
+    // Detached A thread: read through the private connection above.
+    // (R keeps the mailbox path; the legacy path runs the sokol call
+    // directly on the one and only thread.)
+    if (sh_detached() && !sh_on_render_thread) {
+        char* s = sh_clipboard_get_x11();
+        if (getenv("EGUI_CLIP_DEBUG"))
+            fprintf(stderr, "[clip] get x11: '%s'\n", s ? s : "(null)");
+        return s;
+    }
+#endif
     if (sh_run_direct()) {
         const char* s = sapp_get_clipboard_string();
+        if (getenv("EGUI_CLIP_DEBUG"))
+            fprintf(stderr, "[clip] get direct: '%s'\n", s ? s : "(null)");
         return sh_strdup_n(s && s[0] ? s : NULL);
     }
     sh_cmd_t cmd;
     memset(&cmd, 0, sizeof cmd);
     cmd.kind = SH_CMD_CLIP_GET;
-    if (sh_cmd_roundtrip(&cmd) != 0) return NULL;
+    int rc = sh_cmd_roundtrip(&cmd);
     char* s = cmd.r_str;
     cmd.r_str = NULL;
+    if (getenv("EGUI_CLIP_DEBUG"))
+        fprintf(stderr, "[clip] get roundtrip rc=%d: '%s'\n", rc,
+                s ? s : "(null)");
+    if (rc != 0) return NULL;
     return s;
 }
 

@@ -5,10 +5,11 @@
 module Egui
   # One styled chunk of text (upstream `LayoutJob` section + format).
   # `family` routes the chunk through another font stack (`nil` = the
-  # stack the galley is laid out with); `bold`/`italic` are synthetic
-  # (no separate faces — see backend `paint_text`); `strikethrough`
-  # paints a line through the row (like `underline`); `background`
-  # paints a rounded chip BEHIND the run (inline code).
+  # stack the galley is laid out with); `bold`/`italic` route to the
+  # primary stack's REAL variant faces (`Context#fonts_for` — a missing
+  # variant degrades to the nearest real face, never an emulation);
+  # `strikethrough` paints a line through the row (like `underline`);
+  # `background` paints a rounded chip BEHIND the run (inline code).
   class TextRun
     getter text : String
     getter size : Float64

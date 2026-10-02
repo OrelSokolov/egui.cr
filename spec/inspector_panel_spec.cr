@@ -236,9 +236,11 @@ describe "inspector panel rendering smoke" do
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("(наследуется)")
 
-    # open it and pick "monospace" from the loaded catalog
+    # open it and pick "monospace" from the loaded catalog. TWO rows
+    # show the «(наследуется)» placeholder now (font_weight's select
+    # has one too) — the family row is the LAST (weight sits above it).
     btn = ctx.painter.commands.select(Egui::TextCmd)
-      .find(&.text.==("(наследуется)")).not_nil!
+      .select(&.text.==("(наследуется)")).last.not_nil!
     click = Egui::Pos2.new(btn.pos.x + 10.0, btn.pos.y)
     smoke_frame(ctx, events: [Egui::Event.pointer_moved(click),
       Egui::Event.pointer_pressed(click)], time: 0.048) do |c|

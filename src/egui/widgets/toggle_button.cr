@@ -86,7 +86,8 @@ module Egui
       if (text = @text)
         ui.painter.text(
           Pos2.new(track.right + style.spacing.icon_spacing, rect.center.y),
-          text, font_size, visuals.text_color, family: style.font_family)
+          text, font_size, visuals.text_color, family: style.font_family,
+          bold: style.font_weight_bold?)
       end
 
       response.paint_focus_ring(track_h / 2.0)
