@@ -59,7 +59,10 @@ static int g_transparent;
 // off the render thread are forwarded to the packet builder / command
 // mailbox. Everywhere else (and before egui_cr_start) everything runs
 // direct.
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
+// The detached-path entry points are declared unconditionally: the
+// routing prologues below call them on every platform, but on non-
+// detached ones (macOS) sh_run_direct() always succeeds so the stubs
+// at the bottom of this block are never reached.
 typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
 static int sh_run_direct(void);
 static void egui_cr_pkt_pipe(int kind);
@@ -69,18 +72,19 @@ static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
                                      int stream);
 // packet builder API (see the detached section)
-void egui_cr_pkt_begin(int fb_w, int fb_h);
-void egui_cr_pkt_publish(void);
-void egui_cr_pkt_scissor(float x, float y, float w, float h);
-void egui_cr_pkt_tex(uint32_t id, int nearest);
-void egui_cr_pkt_tex_on(void);
-void egui_cr_pkt_tex_off(void);
-void egui_cr_pkt_begin_quads(void);
-void egui_cr_pkt_end_quads(void);
-void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g, unsigned b,
-                   unsigned a);
-void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
-                    unsigned g, unsigned b, unsigned a);
+static void egui_cr_pkt_begin(int fb_w, int fb_h);
+static void egui_cr_pkt_publish(void);
+static void egui_cr_pkt_scissor(float x, float y, float w, float h);
+static void egui_cr_pkt_tex(uint32_t id, int nearest);
+static void egui_cr_pkt_tex_on(void);
+static void egui_cr_pkt_tex_off(void);
+static void egui_cr_pkt_begin_quads(void);
+static void egui_cr_pkt_end_quads(void);
+static void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g,
+                          unsigned b, unsigned a);
+static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
+                           unsigned g, unsigned b, unsigned a);
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
 static void sh_post_window_size(int w, int h);
@@ -101,6 +105,39 @@ static void sh_post_cursor_image(const unsigned char* rgba, int w, int h,
 static void sh_post_clear_color(void);
 #else
 static int sh_run_direct(void) { return 1; }
+// no-op stubs for the detached-path entry points declared above — never
+// reached (sh_run_direct() always succeeds), they only let the routing
+// prologues compile on non-detached platforms
+static void egui_cr_pkt_begin(int fb_w, int fb_h) { (void)fb_w; (void)fb_h; }
+static void egui_cr_pkt_publish(void) {}
+static void egui_cr_pkt_scissor(float x, float y, float w, float h) {
+    (void)x; (void)y; (void)w; (void)h;
+}
+static void egui_cr_pkt_tex(uint32_t id, int nearest) { (void)id; (void)nearest; }
+static void egui_cr_pkt_tex_on(void) {}
+static void egui_cr_pkt_tex_off(void) {}
+static void egui_cr_pkt_begin_quads(void) {}
+static void egui_cr_pkt_end_quads(void) {}
+static void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g,
+                          unsigned b, unsigned a) {
+    (void)x; (void)y; (void)r; (void)g; (void)b; (void)a;
+}
+static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
+                           unsigned g, unsigned b, unsigned a) {
+    (void)x; (void)y; (void)u; (void)v; (void)r; (void)g; (void)b; (void)a;
+}
+static void egui_cr_pkt_pipe(int kind) { (void)kind; }
+static void egui_cr_pkt_pipe_pop(void) {}
+static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
+                           int stream, const void* data, size_t size) {
+    (void)kind; (void)id; (void)w; (void)h; (void)stream; (void)data;
+    (void)size;
+}
+static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
+                                     int stream) {
+    (void)w; (void)h; (void)rgba8; (void)stream;
+    return 0;
+}
 #endif
 
 // window management (defined in the section below)
@@ -699,7 +736,7 @@ void egui_cr_present_clear(void) {
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
     NSOpenGLView* view = win ? (NSOpenGLView*)win.contentView : NULL;
     NSOpenGLContext* ctx = view ? view.openGLContext : NULL;
-    if (ctx) { [ctx makeCurrentContext]; [ctx flushDrawing]; }
+    if (ctx) { [ctx makeCurrentContext]; [ctx flushBuffer]; }
 }
 
 #else
@@ -793,7 +830,12 @@ void egui_cr_replace_pipeline_pop(void) {
 // --- textures -------------------------------------------------------------
 
 static sg_sampler g_linear_sampler;
-static void sh_sampler_ensure(void); // defined with the R texture table
+static void sh_sampler_ensure(void) {
+    if (!g_linear_sampler.id) {
+        g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
+            .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR });
+    }
+}
 // Point-sampled twin for pixel-art surfaces (the Paint canvas): created
 // lazily by egui_cr_sgl_texture_nearest.
 static sg_sampler g_nearest_sampler;
@@ -1595,7 +1637,7 @@ void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, i
     NSImage* image = [[NSImage alloc] initWithSize:NSMakeSize(w, h)];
     [image addRepresentation:rep];
     NSCursor* cursor = [[NSCursor alloc] initWithImage:image
-                                               hotspot:NSMakePoint(hx, hy)];
+                                                hotSpot:NSMakePoint(hx, hy)];
     [cursor set];
     g_mac_cursor[0] = '\0'; // force the named path to re-apply
     sh_custom_remember(rgba, w, h, hx, hy);
@@ -3208,7 +3250,7 @@ static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
 
 // --- packet builder API (A-side; called from Crystal paint code) --------------
 
-void egui_cr_pkt_begin(int fb_w, int fb_h) {
+static void egui_cr_pkt_begin(int fb_w, int fb_h) {
     sh_build_ensure();
     free(g_build->ops); // draw ops never carry past a publish; a fresh
     g_build->ops = NULL; // frame resets them (texture ops accumulate)
@@ -3245,7 +3287,7 @@ static void sh_texops_splice(sh_texop_t** dst, int* dst_n, int* dst_cap,
     free(src);
 }
 
-void egui_cr_pkt_publish(void) {
+static void egui_cr_pkt_publish(void) {
     if (!g_build) return;
     sh_packet_t* p = g_build;
     g_build = NULL;
@@ -3274,35 +3316,35 @@ void egui_cr_pkt_publish(void) {
 
 void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
 
-void egui_cr_pkt_scissor(float x, float y, float w, float h) {
+static void egui_cr_pkt_scissor(float x, float y, float w, float h) {
     uint32_t o[5] = { SH_OP_SCISSOR, sh_f2u(x), sh_f2u(y), sh_f2u(w), sh_f2u(h) };
     sh_push_words(o, 5);
 }
-void egui_cr_pkt_pipe(int kind) { // 0 alpha, 1 replace, 2 text
+static void egui_cr_pkt_pipe(int kind) { // 0 alpha, 1 replace, 2 text
     uint32_t o[2] = { SH_OP_PIPE, (uint32_t)kind };
     sh_push_words(o, 2);
 }
-void egui_cr_pkt_pipe_pop(void) {
+static void egui_cr_pkt_pipe_pop(void) {
     uint32_t o[1] = { SH_OP_PIPE_POP };
     sh_push_words(o, 1);
 }
-void egui_cr_pkt_tex(uint32_t id, int nearest) {
+static void egui_cr_pkt_tex(uint32_t id, int nearest) {
     uint32_t o[3] = { SH_OP_TEX, id, (uint32_t)(nearest ? 1 : 0) };
     sh_push_words(o, 3);
 }
-void egui_cr_pkt_tex_on(void)  { uint32_t o[1] = { SH_OP_TEX_ON }; sh_push_words(o, 1); }
-void egui_cr_pkt_tex_off(void) { uint32_t o[1] = { SH_OP_TEX_OFF }; sh_push_words(o, 1); }
-void egui_cr_pkt_begin_quads(void) { uint32_t o[1] = { SH_OP_BEGIN }; sh_push_words(o, 1); }
-void egui_cr_pkt_end_quads(void)    { uint32_t o[1] = { SH_OP_END }; sh_push_words(o, 1); }
+static void egui_cr_pkt_tex_on(void)  { uint32_t o[1] = { SH_OP_TEX_ON }; sh_push_words(o, 1); }
+static void egui_cr_pkt_tex_off(void) { uint32_t o[1] = { SH_OP_TEX_OFF }; sh_push_words(o, 1); }
+static void egui_cr_pkt_begin_quads(void) { uint32_t o[1] = { SH_OP_BEGIN }; sh_push_words(o, 1); }
+static void egui_cr_pkt_end_quads(void)    { uint32_t o[1] = { SH_OP_END }; sh_push_words(o, 1); }
 
-void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g, unsigned b,
+static void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g, unsigned b,
                    unsigned a) {
     uint32_t o[4] = { SH_OP_V, sh_f2u(x), sh_f2u(y),
                       (r & 255u) | ((g & 255u) << 8) | ((b & 255u) << 16) |
                       ((a & 255u) << 24) };
     sh_push_words(o, 4);
 }
-void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r, unsigned g,
+static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r, unsigned g,
                     unsigned b, unsigned a) {
     uint32_t o[6] = { SH_OP_VT, sh_f2u(x), sh_f2u(y), sh_f2u(u), sh_f2u(v),
                       (r & 255u) | ((g & 255u) << 8) | ((b & 255u) << 16) |
@@ -3329,13 +3371,6 @@ static sh_tex_t* sh_tex_find(uint32_t id) {
     for (int i = 0; i < g_tex_tab_n; i++)
         if (g_tex_tab[i].id == id) return &g_tex_tab[i];
     return NULL;
-}
-
-static void sh_sampler_ensure(void) {
-    if (!g_linear_sampler.id) {
-        g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
-            .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR });
-    }
 }
 
 static void sh_white_tex_ensure(void) {
@@ -3914,3 +3949,18 @@ void egui_cr_request_quit(void) {
 }
 
 #endif // _SAPP_LINUX || _SAPP_WIN32
+
+#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32)
+// Legacy-path entry points that the detached section above defines for
+// Linux/Win32: on macOS everything runs on the one thread, so they are
+// plain sapp pass-throughs.
+void egui_cr_set_window_title(const char* title) { sapp_set_window_title(title); }
+void egui_cr_clipboard_set(const char* text) { sapp_set_clipboard_string(text); }
+char* egui_cr_clipboard_get(void) {
+    const char* s = sapp_get_clipboard_string();
+    return (s && s[0]) ? strdup(s) : NULL;
+}
+void egui_cr_toggle_fullscreen(void) { sapp_toggle_fullscreen(); }
+int egui_cr_fullscreen_q(void) { return sapp_is_fullscreen(); }
+void egui_cr_request_quit(void) { sapp_quit(); }
+#endif

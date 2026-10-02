@@ -290,7 +290,9 @@ module Egui
       # so the GC can never collect (and finalize) the TCPSocket whose fd
       # the shim now owns — run_detached hands it over before #start and
       # C closes it in egui_cr_join.
-      @@doorbell_peer : TCPSocket? = nil
+      {% if flag?(:win32) %}
+        @@doorbell_peer : TCPSocket? = nil
+      {% end %}
       # Debug-clock epoch (Time::Instant — the monotonic clock has no
       # absolute seconds, only differences; #dbg_now spans from here).
       @@dbg_t0 = Time.instant
@@ -1270,7 +1272,9 @@ module Egui
               p ? String.new(p) : ""
             end
             @@events << Egui::Event.dropped_files(paths)
-            LibEguiCr.drop_payload_free(payload)
+            {% if flag?(:linux) || flag?(:win32) %}
+              LibEguiCr.drop_payload_free(payload)
+            {% end %}
           else
             # sokol_app collects the paths before the event fires; query
             # them through the sapp drop API (valid until the next drop).
