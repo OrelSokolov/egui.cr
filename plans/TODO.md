@@ -241,3 +241,27 @@ HTML-движка — DOM-образный IR для markdown (текущий `M
 `Array(Block)` с `\x1F`-таблицами ему предшествует), формулы LaTeX —
 через SVG (nanosvg) с попиксельным оракулом MathJax. Подробности и фазы —
 syntax-highlighting-plan.md.
+
+## Непротекающие абстракции
+
+### Слой декодирования изображений — не начато
+
+Ядро не должно знать, кто декодирует PNG/JPEG/GIF/WebP/… Сегодня
+виджеты и бекенд ходят напрямую в stb_image через C-шим
+(`backend/sokol_shim.c`, `egui_cr_load_rgba` / `egui_cr_info`) —
+абстракции нет, pure-Crystal декодер когда-нибудь потом.
+
+Ввести модуль-интерфейс (например `Egui::ImageCodec`) со сниффером по
+magic bytes:
+
+- `decode(bytes) -> {width, height, rgba}` — full-frame RGBA8
+  (straight alpha);
+- `image_size(bytes) -> Vec2?` — header-only probe для layout-side
+  сайзинга (сейчас `TextureRegistry#image_size` delegирует в stb_info);
+- расширяемо до кадров анимации (`frames?`), когда дойдёт до GIF.
+
+Провайдер пока один: тонкая обёртка над sokol-бекендом (временно
+вызывает те же `egui_cr_load_rgba`/`stbi_info`). Всё, что выше слоя
+(`Image`-виджет, markdown, Svg-кэш, диалоги), ходит только через
+интерфейс — тогда будущая замена stb (pure-Crystal кодеки, второй
+провайдер) не тронет ни одного виджета.
