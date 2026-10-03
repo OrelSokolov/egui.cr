@@ -23,3 +23,7 @@ dependencies:
 development_dependencies:
   sysinfo:
     github: OrelSokolov/sysinfo.cr
+  # Demos only: examples/formulas.cr typesets TeX through the MathJax
+  # core port and renders the SVG output via NanoSVG.
+  mathjax:
+    git: https://github.com/OrelSokolov/mathjax.cr
