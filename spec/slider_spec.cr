@@ -27,6 +27,33 @@ describe Egui::Slider do
     expect_raises(ArgumentError) do
       Egui::Slider.new(0.5, 0.0..1.0, ticks: true)
     end
+    expect_raises(ArgumentError) do
+      Egui::Slider.new(0.5, 0.0..1.0, ticks: :up)
+    end
+  end
+
+  it "refuses unknown handle shapes and tick modes" do
+    expect_raises(ArgumentError) do
+      Egui::Slider.new(0.5, 0.0..1.0, handle: :star)
+    end
+    expect_raises(ArgumentError) do
+      Egui::Slider.new(0.5, 0.0..1.0, values: [0.0, 1.0], ticks: :sideways)
+    end
+  end
+
+  it "paints the value label ABOVE the rail (a stacked-slider separator)" do
+    ctx = Egui::Context.new
+    rail = nil
+    slider_frame(ctx) do |c|
+      c.window("demo") do |ui|
+        rail = ui.slider(0.3, 0.0..1.0, "Opacity") { |_v| }.rect
+      end
+    end
+    r = rail.not_nil!
+    cmd = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("Opacity: 0.3")).not_nil!
+    cmd.pos.y.should be < r.top        # above the rail row
+    cmd.pos.x.should be_close(r.left, 1.0) # flush to its left edge
   end
 
   it "snaps the initial value onto the list" do
@@ -177,5 +204,89 @@ describe Egui::Slider do
       .select { |l| l.color == red }
     strokes.size.should eq(values.size)
     strokes.each { |l| (l.p2.y - l.p1.y).should be_close(9.0, 0.5) }
+  end
+
+  it "places :up ticks above the rail and :up_down on both sides" do
+    ctx = Egui::Context.new
+    values = [0.0, 0.5, 1.0]
+    rail = nil
+    run = ->(mode : Symbol) do
+      rail = nil
+      slider_frame(ctx) do |c|
+        c.window("demo") do |ui|
+          rail = ui.slider(0.5, 0.0..1.0, quantized: true, ticks: mode,
+            values: values) { |_v| }.rect
+        end
+      end
+      rail.not_nil!
+    end
+
+    r = run.call(:up)
+    strokes = ctx.painter.commands.select(Egui::LineCmd)
+      .select { |l| l.width == 1.0 && l.p1.y < r.top && l.p2.y < l.p1.y &&
+                    (l.p2.y - l.p1.y).abs < 6.5 }
+    strokes.size.should eq(values.size)
+
+    r = run.call(:up_down)
+    strokes = ctx.painter.commands.select(Egui::LineCmd).select do |l|
+      l.width == 1.0 && l.p2.x == l.p1.x &&
+        (l.p1.y < r.top || l.p1.y > r.bottom) &&
+        (l.p2.y - l.p1.y).abs < 6.5
+    end
+    # double: one stroke per quant per side
+    strokes.size.should eq(values.size * 2)
+    above = strokes.count { |l| l.p1.y < r.top }
+    below = strokes.count { |l| l.p1.y > r.bottom }
+    above.should eq(values.size)
+    below.should eq(values.size)
+  end
+
+  it "paints rect and pentagon handles (pentagon_up up, pentagon_down down)" do
+    ctx = Egui::Context.new
+    rail = nil
+    run = ->(shape : Symbol) do
+      rail = nil
+      slider_frame(ctx) do |c|
+        c.window("demo") do |ui|
+          rail = ui.slider(0.5, 0.0..1.0, handle: shape) { |_v| }.rect
+        end
+      end
+      rail.not_nil!
+    end
+
+    fill = ctx.style.visuals.selection_fill
+
+    # rect: a 2×HANDLE_R square filled with the handle color at the
+    # value's spot, no circle.
+    r = run.call(:rect)
+    handle = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == fill && c.rect.height > 5.0 }
+    handle.should_not be_nil
+    handle.not_nil!.rect.height.should be_close(12.0, 0.5)
+    handle.not_nil!.rect.center.y.should be_close(r.center.y, 0.5)
+    ctx.painter.commands.select(Egui::CircleCmd)
+      .select { |c| c.center.y > r.top - 1.0 && c.center.y < r.bottom + 1.0 }
+      .should be_empty
+
+    # pentagon = house: a 2r body rect + ONE roof triangle — the apex
+    # (the TriCmd's top vertex for :pentagon_up) points up, the body
+    # fills the opposite half.
+    r = run.call(:pentagon_up)
+    tris = ctx.painter.commands.select(Egui::TriCmd)
+    tris.size.should eq(1)
+    roof = tris.first
+    roof.c.y.should be < (r.center.y - 5.5)                 # apex above
+    {roof.a.y, roof.b.y}.max.should be_close(r.center.y, 0.5) # base at the seam
+    body = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == fill && c.rect.width > 5.0 &&
+                  c.rect.top >= r.center.y - 0.5 }
+    body.should_not be_nil                                   # body below
+    body.not_nil!.rect.bottom.should be_close(r.center.y + 6.0, 0.5)
+
+    r = run.call(:pentagon_down)
+    tris = ctx.painter.commands.select(Egui::TriCmd)
+    tris.size.should eq(1)
+    roof = tris.first
+    roof.c.y.should be > (r.center.y + 5.5) # apex below the rail center
   end
 end

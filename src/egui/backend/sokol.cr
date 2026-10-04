@@ -1582,6 +1582,8 @@ module Egui
           paint_circle(cmd)
         when Egui::LineCmd
           paint_line(cmd)
+        when Egui::TriCmd
+          paint_tri(cmd)
         when Egui::ArcCmd
           paint_arc(cmd)
         when Egui::ShadowCmd
@@ -1964,6 +1966,15 @@ module Egui
         clip = cmd.clip
         paint_ring(cmd.center, cmd.radius, cmd.start_angle, cmd.end_angle,
           cmd.width, cmd.color, clip)
+      end
+
+      # A filled triangle as a degenerate quad (a, a, b, c) — the same
+      # trick the circle fan in #paint_circle uses.
+      def self.paint_tri(cmd : Egui::TriCmd) : Nil
+        apply_scissor(cmd.clip)
+        LibEguiCr.sgl_begin_quads
+        quad_pts(cmd.a, cmd.a, cmd.b, cmd.c, cmd.fill)
+        LibEguiCr.sgl_end
       end
 
       # The shared geometry of stroked circles and arcs: a strip of quads

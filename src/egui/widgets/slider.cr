@@ -13,9 +13,14 @@
 #   * `quantized: true` + `values` — the value is restricted to that
 #     list: the pointer maps to the NEAREST entry and the handle snaps
 #     to discrete positions (index-spaced across the rail);
-#   * `ticks: true` + `values` — macOS-style tick marks: short vertical
-#     strokes under the rail, one per entry, pointing at the quants.
-#     Stylable the same way through the `slider.tick` class (TickPart).
+#   * `ticks:` — macOS-style tick marks: short vertical strokes
+#     pointing at the quants. `true`/`:down` under the rail, `:up`
+#     above it, `:up_down` on both sides at once. Stylable the same
+#     way through the `slider.tick` class (TickPart). Requires
+#     `values:`;
+#   * `handle:` — the handle shape: `:circle` (default), `:rect`, or a
+#     pentagon pointing at the tips row: `:pentagon_up` /
+#     `:pentagon_down`.
 
 module Egui
   class Slider
@@ -57,13 +62,34 @@ module Egui
       end
     end
 
+    # Handle shapes `handle:` accepts (`:pentagon_up` points at the
+    # tips row below, `:pentagon_down` at a row above the rail).
+    HANDLE_SHAPES = [:circle, :rect, :pentagon_up, :pentagon_down]
+
     def initialize(@value : Float64, @range : Range(Float64, Float64),
                    @text : String? = nil, id : String? = nil,
                    @tips : {String, String}? = nil,
                    @quantized : Bool = false,
                    @values : Array(Float64)? = nil,
-                   @ticks : Bool = false)
+                   ticks : Bool | Symbol = false,
+                   @handle : Symbol = :circle)
       @id_name = id
+      unless HANDLE_SHAPES.includes?(@handle)
+        raise ArgumentError.new(
+          "Slider handle: #{@handle} (expected one of " +
+          HANDLE_SHAPES.map(&.to_s).join(", ") + ")")
+      end
+      # `true` reads as :down (the pre-`:up` behavior); the symbols
+      # pick which side of the rail the strokes point from, :up_down
+      # both at once.
+      @ticks = case ticks
+        when false          then nil
+        when true           then :down
+        when :down, :up, :up_down then ticks
+        else
+          raise ArgumentError.new(
+            "Slider ticks: #{ticks} (expected true/false/:up/:down/:up_down)")
+      end
       if @quantized
         # The flag requires the list — nothing to snap to otherwise.
         if (list = @values).nil? || list.empty?
@@ -76,7 +102,7 @@ module Egui
       if @ticks && ((list = @values).nil? || list.empty?)
         # Strokes point AT the quants — no list, nowhere to point.
         raise ArgumentError.new(
-          "Slider ticks: true requires a non-empty values list")
+          "Slider ticks requires a non-empty values list")
       end
     end
 
@@ -97,31 +123,41 @@ module Egui
       sp = style.spacing
       thickness = sp.interact_size.y
 
-      # The label is part of the widget: allocate rail + label together,
-      # so min_rect (and any auto-sizing parent) stays within the
-      # available width. Painting the label OUTSIDE the allocated rect
-      # made every containing window grow a little each frame.
+      # The label is part of the widget: it sits on its own line ABOVE
+      # the rail (not beside it) — stacked sliders then read as
+      # separate blocks, the label line doubling as a separator. Its
+      # height is reserved up front so min_rect (and any auto-sizing
+      # parent) covers what we paint.
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, style.font_weight, false)
-      label_w = label_width(ui, style, fonts)
+      label = @text ? "#{@text}: #{format_value(@value)}" : nil
+      label_size = label ? fonts.measure(label.not_nil!, style.font_size) : Vec2.zero
+      label_h = label ? label_size.y + TIP_GAP : 0.0
 
-      # Everything under the rail — tips and/or the tick-mark row — is
-      # reserved up front so the allocated rect covers what we paint.
-      # Each tip resolves its own `slider.tick`-style cascade first
-      # (font size/family/weight and the tick height influence the
-      # measurement, so this runs before the allocate).
+      # Everything the rail does not cover — tips and the tick rows
+      # (below, and now above for :up/:up_down) — is reserved up front
+      # so the allocated rect covers what we paint. Tips resolve their
+      # cascade first, the tick row its own (font size/family/weight
+      # and the styled tick height influence the measurement, so this
+      # runs before the allocate).
       tips = @tips ? {
         prepare_tip(ui, id.child(1), @tips.not_nil![0], style),
         prepare_tip(ui, id.child(2), @tips.not_nil![1], style),
       } : nil
       tick = @ticks ? prepare_tick(ui, id.child(3)) : nil
-      tick_h = tick ? TIP_GAP + tick.height : 0.0
+      both = @ticks == :up_down
+      above_h = (tick && (both || @ticks == :up)) ? TIP_GAP + tick.height : 0.0
+      tick_h = (tick && (both || @ticks == :down)) ? TIP_GAP + tick.height : 0.0
       tips_h = tips ? TIP_GAP + {tips[0].height, tips[1].height}.max : 0.0
 
-      width = {sp.slider_width, ui.available_width - label_w}.max
+      width = {sp.slider_width, ui.available_width}.max
       outer = ui.allocate_at_least(
-        Vec2.new(width + label_w, thickness + tick_h + tips_h))
-      rect = Rect.from_min_size(outer.min, Vec2.new(width, thickness))
+        Vec2.new(width, above_h + label_h + thickness + tick_h + tips_h))
+      # The rail row sits under the label line and the up-tick band, at
+      # the same offset from the outer rect's top every frame.
+      rect = Rect.from_min_size(
+        Pos2.new(outer.min.x, outer.min.y + above_h + label_h),
+        Vec2.new(width, thickness))
       response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
 
       new_value = @value
@@ -141,13 +177,13 @@ module Egui
       # rail visible in every preset.
       ui.painter.rect(rail, rail.height / 2.0, visuals.button_stroke)
 
-      handle_r = 6.0
+      handle_r = HANDLE_R
       t = normalized(new_value)
       handle_x = rect.left + handle_r + t * (rect.width - 2 * handle_r)
       handle_color = visuals.selection_fill
       handle_color = visuals.fade_color(handle_color, 0.85) if response.hovered?
-      ui.painter.circle_filled(Pos2.new(handle_x, rail_y), handle_r,
-        handle_color)
+      paint_handle(ui.painter, @handle,
+        Pos2.new(handle_x, rail_y), handle_r, handle_color)
 
       response.paint_focus_ring(9.0)
 
@@ -164,14 +200,18 @@ module Egui
       end
 
       if text = @text
-        label = "#{text}: #{format_value(new_value)}"
-        label_size = fonts.measure(label, style.font_size)
-        label_pos = Pos2.new(rect.right + sp.icon_spacing, rect.center.y)
-        ui.painter.text(label_pos, label, style.font_size,
+        # Above the rail, flush to its left edge (left-center anchor).
+        # The painted string carries `new_value` — the live figure
+        # during a drag — while the reserved height was measured from
+        # the frame's start value (same digit count, no reflow).
+        live = "#{text}: #{format_value(new_value)}"
+        label_pos = Pos2.new(rect.left, rect.top - TIP_GAP - label_size.y / 2.0)
+        ui.painter.text(label_pos, live, style.font_size,
           visuals.text_color, family: face_family,
           bold: face_bold)
-        ui.min_rect = ui.min_rect.union(
-          Rect.from_min_size(label_pos, label_size))
+        ui.min_rect = ui.min_rect.union(Rect.from_min_size(
+          Pos2.new(rect.left, rect.top - TIP_GAP - label_size.y),
+          label_size))
       end
 
       response.widget_value = new_value
@@ -179,16 +219,12 @@ module Egui
       response
     end
 
-    private def label_width(ui : Ui, style : Style, fonts : Fonts) : Float64
-      return 0.0 unless text = @text
-      fonts.measure("#{text}: #{format_value(@value)}",
-        style.font_size).x + style.spacing.icon_spacing
-    end
-
     # Gap between the rail row and the rows under it (ticks, tips).
     TIP_GAP = 3.0
     # Default tick-mark length (the `slider.tick` `height` key overrides).
     TICK_LEN = 5.0
+    # Handle radius (half the rect edge / the pentagon's circumradius).
+    HANDLE_R = 6.0
 
     # The tick-mark row, resolved for painting: its part (inspector
     # meta + `slider.tick` cascade) and the cascade-read stroke length.
@@ -213,20 +249,22 @@ module Egui
 
     # Paint one vertical stroke per quant, at the handle's own spot for
     # that entry (index-spaced when quantized, numeric otherwise), and
-    # register the row's bounding rect as a pickable sub-widget — one
-    # interact for the whole row (Sense::none: decorative, but the
+    # register the rows' bounding rect as a pickable sub-widget — one
+    # interact for the whole band (Sense::none: decorative, but the
     # inspector can pick it and edit `slider.tick` per element).
+    # :down strokes hang under the rail, :up stand above it, :up_down
+    # paints both.
     private def paint_ticks(ui : Ui, tick : TickRender, rail : Rect,
                             visuals : Visuals) : Nil
       list = @values.not_nil!
-      handle_r = 6.0
+      handle_r = HANDLE_R
       span = rail.width - 2 * handle_r
-      y0 = rail.bottom + TIP_GAP
       color = tick.vars.color("stroke", visuals.button_stroke)
 
+      top = rail.top - (@ticks == :up || @ticks == :up_down ? TIP_GAP + tick.height : 0.0)
+      bottom = rail.bottom + (@ticks == :down || @ticks == :up_down ? TIP_GAP + tick.height : 0.0)
       row = Rect.from_min_size(
-        Pos2.new(rail.left, rail.bottom),
-        Vec2.new(rail.width, TIP_GAP + tick.height))
+        Pos2.new(rail.left, top), Vec2.new(rail.width, bottom - top))
       ui.ctx.with_inspector_widget(tick.part) do
         ui.interact(row, tick.id, Sense.none)
       end
@@ -234,8 +272,16 @@ module Egui
       list.each_with_index do |v, i|
         t = tick_t(list, i, v)
         x = rail.left + handle_r + t * span
-        ui.painter.line(Pos2.new(x, y0), Pos2.new(x, y0 + tick.height),
-          1.0, color)
+        if @ticks == :up || @ticks == :up_down
+          y = rail.top - TIP_GAP
+          ui.painter.line(Pos2.new(x, y), Pos2.new(x, y - tick.height),
+            1.0, color)
+        end
+        if @ticks == :down || @ticks == :up_down
+          y = rail.bottom + TIP_GAP
+          ui.painter.line(Pos2.new(x, y), Pos2.new(x, y + tick.height),
+            1.0, color)
+        end
       end
     end
 
@@ -247,6 +293,39 @@ module Egui
         list.size == 1 ? 0.0 : i.to_f64 / (list.size - 1)
       else
         normalized(v)
+      end
+    end
+
+    # The handle glyph: a filled disc (:circle, the upstream look), a
+    # rounded square (:rect), or a house pentagon (:pentagon_up roof on
+    # top / :pentagon_down roof below) — a 2r×r body rect plus one
+    # roof triangle, the bounding box matching the other shapes'.
+    private def paint_handle(painter : Painter, shape : Symbol,
+                             center : Pos2, r : Float64,
+                             color : Color32) : Nil
+      case shape
+      when :rect
+        painter.rect(
+          Rect.from_min_size(Pos2.new(center.x - r, center.y - r),
+            Vec2.new(2 * r, 2 * r)),
+          2.0, color)
+      when :pentagon_up, :pentagon_down
+        # Body: the half away from the roof; roof: one triangle with
+        # its apex on the pointing side, base flush at the seam.
+        body = shape == :pentagon_up ?
+          Rect.from_min_size(Pos2.new(center.x - r, center.y),
+            Vec2.new(2 * r, r)) :
+          Rect.from_min_size(Pos2.new(center.x - r, center.y - r),
+            Vec2.new(2 * r, r))
+        painter.rect(body, 0.0, color)
+        seam = shape == :pentagon_up ? body.top : body.bottom
+        apex = shape == :pentagon_up ?
+          Pos2.new(center.x, center.y - r) :
+          Pos2.new(center.x, center.y + r)
+        painter.triangle(Pos2.new(center.x - r, seam),
+          Pos2.new(center.x + r, seam), apex, color)
+      else # :circle
+        painter.circle_filled(center, r, color)
       end
     end
 
@@ -334,7 +413,7 @@ module Egui
     # The inverse map, with SmartAim refinement around the pointer
     # (upstream `Slider::slider_ui` + `best_in_range_f64`).
     private def value_at(ui : Ui, rect : Rect, pointer_x : Float64) : Float64
-      handle_r = 6.0
+      handle_r = HANDLE_R
       span = rect.width - 2 * handle_r
 
       if @quantized && (list = @values)

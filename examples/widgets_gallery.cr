@@ -36,6 +36,11 @@ class GalleryApp < Egui::App
   @slider_q = 0.5_f64
   @slider_qt = 0.5_f64
   @slider_tick = 0.25_f64
+  @slider_tu = 0.25_f64
+  @slider_tud = 0.25_f64
+  @slider_hr = 0.4_f64
+  @slider_hpu = 0.5_f64
+  @slider_hpd = 0.5_f64
   @drag = 10.0_f64
   @spin = 42
   @combo = "Second"
@@ -453,38 +458,73 @@ class GalleryApp < Egui::App
   # The Slider tab: every slider variation in one place — plain,
   # unlabeled, with macOS-style tips under the rail, and quantized
   # (the value restricted to a fixed list the handle snaps onto).
+  # Sections get real headings (×1.25) with a weak one-line caption —
+  # the sliders themselves carry no borders, so plain labels made the
+  # blocks read as one blur.
+  # One visually separated demo block: a breathing-space gap, a ×1.25
+  # heading and an optional weak small caption line.
+  private def slider_section(ui : Egui::Ui, title : String,
+                             note : String? = nil) : Nil
+    ui.allocate_space(Egui::Vec2.new(0.0, 8.0))
+    ui.heading(title)
+    if n = note
+      ui.rich(Egui::RichText.new(n)
+        .small(ui.style.font_size)
+        .weak(ui.style.visuals))
+    end
+  end
+
   private def slider_gallery(ui : Egui::Ui) : Nil
-    ui.label("Plain slider (label + live value):")
+    slider_section(ui, "Plain slider", "label + live value")
     ui.slider(@slider, 0.0..1.0, "Opacity") { |v| @slider = v }
     ui.separator
 
-    ui.label("No label:")
+    slider_section(ui, "No label")
     ui.slider(@slider_nt, 0.0..1.0) { |v| @slider_nt = v }
     ui.separator
 
     # macOS-style: `tips:` paints the pair under the rail, flush to its
     # ends — the left one left-aligned, the right one right-aligned.
-    ui.label("Tips (macOS-style captions under the rail):")
+    slider_section(ui, "Tips", "macOS-style captions under the rail (class slider.tip)")
     ui.slider(@slider_tips, 0.0..100.0, "Volume",
       tips: {"Quiet", "Loud"}) { |v| @slider_tips = v }
     ui.separator
 
     # `quantized: true` requires `values:` — the pointer maps to the
     # nearest entry and the handle sits at discrete index positions.
-    ui.label("Quantized (value restricted to a list):")
+    slider_section(ui, "Quantized", "value restricted to a list the handle snaps onto")
     ui.slider(@slider_q, 0.0..1.0, "Steps",
       quantized: true, values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_q = v }
     ui.separator
 
-    # `ticks: true` — macOS-style vertical strokes under the rail, one
-    # per entry, pointing at the quants (stylable as `slider.tick`).
-    ui.label("Quantized + tick marks (macOS strokes at the quants):")
-    ui.slider(@slider_tick, 0.0..1.0, "Steps",
-      quantized: true, ticks: true,
+    # `ticks:` — macOS-style vertical strokes pointing at the quants,
+    # stylable as `slider.tick`: `true`/`:down` under the rail, `:up`
+    # above it, `:up_down` on both sides at once.
+    slider_section(ui, "Tick marks", "macOS strokes at the quants (class slider.tick)")
+    ui.slider(@slider_tick, 0.0..1.0, "Down",
+      quantized: true, ticks: :down,
       values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_tick = v }
+    ui.slider(@slider_tu, 0.0..1.0, "Up",
+      quantized: true, ticks: :up,
+      values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_tu = v }
+    ui.slider(@slider_tud, 0.0..1.0, "Both",
+      quantized: true, ticks: :up_down,
+      values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_tud = v }
     ui.separator
 
-    ui.label("Quantized + ticks + tips:")
+    # `handle:` — the handle shape: rect, or a pentagon pointing up /
+    # down (pair it with ticks on the matching side).
+    slider_section(ui, "Handle shapes", ":circle / :rect / :pentagon_up / :pentagon_down")
+    ui.slider(@slider_hr, 0.0..1.0, "Rect", handle: :rect) { |v| @slider_hr = v }
+    ui.slider(@slider_hpu, 0.0..1.0, "Pentagon", handle: :pentagon_up,
+      quantized: true, ticks: true,
+      values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_hpu = v }
+    ui.slider(@slider_hpd, 0.0..1.0, "Pentagon", handle: :pentagon_down,
+      quantized: true, ticks: :up,
+      values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_hpd = v }
+    ui.separator
+
+    slider_section(ui, "Everything together", "quantized + ticks + tips")
     ui.slider(@slider_qt, 0.0..1.0, "Quality",
       tips: {"Low", "High"}, quantized: true, ticks: true,
       values: [0.0, 0.5, 1.0]) { |v| @slider_qt = v }

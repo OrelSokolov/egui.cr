@@ -293,15 +293,19 @@ module Egui
     # the block fires with the new value when it changed this frame.
     # `tips:` adds macOS-style {left, right} captions under the rail;
     # `quantized: true` restricts the value to `values:` (required) —
-    # the handle snaps to the nearest list entry; `ticks: true` draws
-    # a vertical stroke per entry under the rail (requires `values:`).
+    # the handle snaps to the nearest list entry; `ticks:` draws a
+    # vertical stroke per entry (`true`/`:down` under the rail, `:up`
+    # above, `:up_down` both; requires `values:`); `handle:` picks the
+    # handle shape (`:circle`, `:rect`, `:pentagon_up`, `:pentagon_down`).
     def slider(value : Float64, range : Range(Float64, Float64),
                text : String? = nil, id : String? = nil,
                tips : {String, String}? = nil, quantized : Bool = false,
-               values : Array(Float64)? = nil, ticks : Bool = false,
+               values : Array(Float64)? = nil, ticks : Bool | Symbol = false,
+               handle : Symbol = :circle,
                &on_change : Float64 ->) : Response
       response = add(Slider.new(value, range, text, id: id, tips: tips,
-        quantized: quantized, values: values, ticks: ticks))
+        quantized: quantized, values: values, ticks: ticks,
+        handle: handle))
       if response.changed? && (v = response.widget_value)
         on_change.call(v)
       end
@@ -384,9 +388,11 @@ module Egui
                text : String? = nil, tips : {String, String}? = nil,
                quantized : Bool = false,
                values : Array(Float64)? = nil,
-               ticks : Bool = false) : Response
+               ticks : Bool | Symbol = false,
+               handle : Symbol = :circle) : Response
       response = add(Slider.new(sig.value, range, text, tips: tips,
-        quantized: quantized, values: values, ticks: ticks))
+        quantized: quantized, values: values, ticks: ticks,
+        handle: handle))
       if response.changed? && (v = response.widget_value)
         sig.value = v
       end

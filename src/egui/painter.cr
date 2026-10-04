@@ -83,6 +83,21 @@ module Egui
     end
   end
 
+  # One filled triangle (egui `epaint::Mesh` reduced to a primitive):
+  # the building block for shapes composed of straight edges — the
+  # slider's pentagon handle paints its roof as one of these.
+  struct TriCmd
+    getter clip : Rect
+    getter a : Pos2
+    getter b : Pos2
+    getter c : Pos2
+    getter fill : Color32
+
+    def initialize(@clip : Rect, @a : Pos2, @b : Pos2, @c : Pos2,
+                   @fill : Color32)
+    end
+  end
+
   # Circular arc (egui `epaint` arc paths; used by Spinner and later the
   # color wheel). Angles in radians, clockwise from the +x axis.
   struct ArcCmd
@@ -147,7 +162,7 @@ module Egui
   struct NoopCmd
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | ArcCmd | ImageCmd | ShadowCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | NoopCmd
 
   class Painter
     getter commands : Array(PaintCmd)
@@ -340,6 +355,11 @@ module Egui
 
     def line(p1 : Pos2, p2 : Pos2, width : Float64, color : Color32) : Nil
       add(LineCmd.new(@clip, p1, p2, width, color))
+    end
+
+    # One filled triangle.
+    def triangle(a : Pos2, b : Pos2, c : Pos2, fill : Color32) : Nil
+      add(TriCmd.new(@clip, a, b, c, fill))
     end
 
     def arc(center : Pos2, radius : Float64, start_angle : Float64,
