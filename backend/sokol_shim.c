@@ -65,9 +65,12 @@ static int g_transparent;
 // at the bottom of this block are never reached.
 typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
 static int sh_run_direct(void);
-// pixels-per-point scale, set from Crystal via egui_cr_set_ppp; defined
-// with its initializer in the detached section below (the tentative
-// declaration here lets the direct-path mesh3d restore read it)
+// pixels-per-point scale. Detached platforms: set from Crystal via
+// egui_cr_set_ppp every produced frame. Direct path (macOS): set_ppp is
+// never called, so egui_cr_begin_pass refreshes it from sapp_dpi_scale()
+// instead — sh_draw_mesh3d divides by it to restore the 2D ortho after a
+// 3D draw, and a stale 0 made that matrix NaN (every 2D draw after the
+// first mesh3d in a frame silently vanished; macOS-only bug).
 static float g_pkt_ppp;
 static void egui_cr_pkt_pipe(int kind);
 static void egui_cr_pkt_pipe_pop(void);
@@ -627,6 +630,13 @@ void egui_cr_begin_pass(int w, int h) {
     g_fb_w = w;
     g_fb_h = h;
     if (!sh_run_direct()) { egui_cr_pkt_begin(w, h); return; }
+    // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
+    // is only called by the detached produce loop), yet the mesh3d
+    // restore divides by it — a stale 0 turns the restored ortho into
+    // NaN and silently drops every 2D draw after the first 3D mesh.
+    // Refresh from the live dpi scale every frame.
+    float d = sapp_dpi_scale();
+    if (d > 0.0f) g_pkt_ppp = d;
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
         .action = {
@@ -911,6 +921,7 @@ static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
                            int count, const unsigned char* verts,
                            int fb_w, int fb_h, float ppp) {
     if (w <= 0 || h <= 0 || count <= 0) return;
+    if (ppp <= 0.0f) ppp = 1.0f; // never divide by a stale zero below
     sh_ensure_pipelines();
     sgl_push_pipeline();
     sgl_load_pipeline(blend ? g_pip_3d_blend : g_pip_3d);
