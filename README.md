@@ -283,6 +283,19 @@ shells, OSC-driven tab titles, closable tabs, mouse selection and
 scrollback. The engine is headless-spec'd (`spec/terminal_spec.cr`,
 `spec/terminal_widget_spec.cr`).
 
+## 3D
+
+`Viewport3D` is a depth-tested 3D viewport widget: meshes draw through
+sokol_gl's matrix stack inside the normal paint stream (no offscreen
+pass), clipped by the widget rect, with a built-in orbit camera (drag
+rotates, wheel zooms) and a `Frame3D#project` helper for anchoring
+ordinary text labels to 3D points. Geometry is packed SoA (x,y,z f32 +
+rgba u8 per vertex) and rides the same paint commands / detached
+packets as everything else (`Painter#mesh3d`); the math lives in
+`egui/math3d.cr` (`Vec3`, column-major `Mat4`). Runnable demo:
+`./bin/crystal3d` — a flat-shaded crystal spinning around its axis,
+with speed/wireframe controls.
+
 ## Status
 
 Core frame loop (RawInput → begin_frame → app update → end_frame →

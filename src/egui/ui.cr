@@ -504,6 +504,12 @@ module Egui
       ia.response
     end
 
+    # A depth-tested 3D viewport with an orbit camera; the block draws
+    # meshes through the frame it receives.
+    def viewport3d(viewport : Viewport3D, & : Frame3D ->) : Response
+      viewport.show(self) { |frame| yield frame }
+    end
+
     # egui `ui.color_edit32(&mut color)`: the block fires with the new
     # color when the picker changed it this frame.
     def color_edit32(color : Color32, &on_change : Color32 ->) : Response

@@ -65,6 +65,10 @@ static int g_transparent;
 // at the bottom of this block are never reached.
 typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
 static int sh_run_direct(void);
+// pixels-per-point scale, set from Crystal via egui_cr_set_ppp; defined
+// with its initializer in the detached section below (the tentative
+// declaration here lets the direct-path mesh3d restore read it)
+static float g_pkt_ppp;
 static void egui_cr_pkt_pipe(int kind);
 static void egui_cr_pkt_pipe_pop(void);
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
@@ -84,6 +88,9 @@ static void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g,
                           unsigned b, unsigned a);
 static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
                            unsigned g, unsigned b, unsigned a);
+static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
+                               int x, int y, int w, int h, int count,
+                               const unsigned char* verts);
 #if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
@@ -125,6 +132,12 @@ static void egui_cr_pkt_v(float x, float y, unsigned r, unsigned g,
 static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
                            unsigned g, unsigned b, unsigned a) {
     (void)x; (void)y; (void)u; (void)v; (void)r; (void)g; (void)b; (void)a;
+}
+static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
+                               int x, int y, int w, int h, int count,
+                               const unsigned char* verts) {
+    (void)mvp; (void)blend; (void)prim; (void)x; (void)y; (void)w; (void)h;
+    (void)count; (void)verts;
 }
 static void egui_cr_pkt_pipe(int kind) { (void)kind; }
 static void egui_cr_pkt_pipe_pop(void) {}
@@ -372,6 +385,16 @@ void egui_cr_gfx_init(void) {
         // Must match the swapchain sample count requested in
         // egui_cr_sapp_run, or sokol_gfx validation fails.
         .sample_count = sapp_sample_count(),
+        // Color/depth formats from the actual environment (sokol_app
+        // defaults the swapchain to a DEPTH attachment in this vendor
+        // version). Without a depth format here, sokol_gl patches every
+        // pipeline to depth-format NONE and disables depth writes — fine
+        // for 2D, but the depth-tested 3D pipelines below would silently
+        // render without depth. 2D pipelines stay unaffected: sg defaults
+        // depth compare to ALWAYS with writes off, which the GL backend
+        // reduces to a no-op.
+        .color_format = sglue_environment().defaults.color_format,
+        .depth_format = sglue_environment().defaults.depth_format,
         .logger.func = slog_func,
     });
 }
@@ -595,9 +618,15 @@ static void sh_shot_legacy(void) {
     idx++;
 }
 
+// Framebuffer size of the pass in progress (both paths) — the mesh3d
+// restore step needs it to re-establish the default pixel-space
+// viewport after a 3D draw.
+static int g_fb_w, g_fb_h;
+
 void egui_cr_begin_pass(int w, int h) {
+    g_fb_w = w;
+    g_fb_h = h;
     if (!sh_run_direct()) { egui_cr_pkt_begin(w, h); return; }
-    (void)w; (void)h;
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
         .action = {
@@ -784,9 +813,49 @@ static sgl_pipeline sh_make_blend_pip(const char* label) {
     });
 }
 
+// Depth-tested 3D pipelines (Viewport3D meshes; see egui_cr_mesh3d):
+//   g_pip_3d       — depth test + write, no blending (opaque triangles).
+//   g_pip_3d_blend — depth test, NO write, alpha blending (translucent
+//                    surfaces, drawn after the opaque pass).
+// Both inherit the context's sample_count / pixel formats via
+// sgl_make_pipeline. 2D UI drawn later is never z-fought away: the 2D
+// pipelines have depth compare ALWAYS + writes off (a GL no-op), so
+// painter's order still decides the UI stack.
+static sgl_pipeline g_pip_3d;
+static sgl_pipeline g_pip_3d_blend;
+
 static void sh_ensure_pipelines(void) {
     if (!g_alpha_pip.id)   g_alpha_pip = sh_make_blend_pip("egui-cr-alpha-pip");
     if (!g_text_pip.id)    g_text_pip = sh_make_blend_pip("egui-cr-text-pip");
+    if (!g_pip_3d.id) {
+        g_pip_3d = sgl_make_pipeline(&(sg_pipeline_desc){
+            .depth = {
+                .compare = SG_COMPAREFUNC_LESS_EQUAL,
+                .write_enabled = true,
+            },
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = { .enabled = false },
+            },
+            .label = "egui-cr-3d-pip",
+        });
+    }
+    if (!g_pip_3d_blend.id) {
+        g_pip_3d_blend = sgl_make_pipeline(&(sg_pipeline_desc){
+            .depth = { .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = {
+                    .enabled = true,
+                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                },
+            },
+            .label = "egui-cr-3d-blend-pip",
+        });
+    }
     if (!g_replace_pip.id) {
         g_replace_pip = sgl_make_pipeline(&(sg_pipeline_desc){
             .colors[0] = {
@@ -825,6 +894,49 @@ void egui_cr_replace_pipeline_push(void) {
 void egui_cr_replace_pipeline_pop(void) {
     if (!sh_run_direct()) { egui_cr_pkt_pipe_pop(); return; }
     sgl_pop_pipeline();
+}
+
+// --- 3D meshes (Viewport3D) -----------------------------------------------------
+
+// Draw one batched 3D mesh through a depth-tested pipeline, then restore
+// the default 2D state. `verts` is packed SoA: `count` vertices of 16
+// bytes each (x,y,z float32 + r,g,b,a uint8). `prim`: 0 = triangles,
+// 1 = lines. The restore step is mandatory: every subsequent 2D quad op
+// assumes the full-framebuffer viewport and the pixel-space ortho
+// projection, so a mesh drawn with a 3D projection leaves that state
+// exactly as it found it (the replay also resets matrices every frame,
+// so nothing leaks across frames either way).
+static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
+                           int x, int y, int w, int h,
+                           int count, const unsigned char* verts,
+                           int fb_w, int fb_h, float ppp) {
+    if (w <= 0 || h <= 0 || count <= 0) return;
+    sh_ensure_pipelines();
+    sgl_push_pipeline();
+    sgl_load_pipeline(blend ? g_pip_3d_blend : g_pip_3d);
+    sgl_viewport(x, y, w, h, true);
+    sgl_matrix_mode_projection();
+    sgl_load_matrix(mvp);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    if (prim) sgl_begin_lines(); else sgl_begin_triangles();
+    const unsigned char* v = verts;
+    for (int i = 0; i < count; i++, v += 16) {
+        float px, py, pz;
+        memcpy(&px, v, 4);
+        memcpy(&py, v + 4, 4);
+        memcpy(&pz, v + 8, 4);
+        sgl_v3f_c4b(px, py, pz, v[12], v[13], v[14], v[15]);
+    }
+    sgl_end();
+    sgl_pop_pipeline();
+    sgl_viewport(0, 0, fb_w, fb_h, true);
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, (float)fb_w / ppp, (float)fb_h / ppp, 0.0f,
+              -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
 }
 
 // --- textures -------------------------------------------------------------
@@ -1044,6 +1156,16 @@ void egui_cr_sgl_v2f_t2f_c4b(float x, float y, float u, float v,
     if (!sh_run_direct()) { egui_cr_pkt_vt(x, y, u, v, r, g, b, a); return; }
     sgl_v2f_t2f_c4b(x, y, u, v, r, g, b, a);
 }
+void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
+                    int x, int y, int w, int h, int count,
+                    const unsigned char* verts) {
+    if (!sh_run_direct()) {
+        egui_cr_pkt_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts);
+        return;
+    }
+    sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
+                   g_fb_w, g_fb_h, g_pkt_ppp);
+}
 #else /* not a detached platform (macOS): straight pass-throughs */
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     sgl_viewport(x, y, w, h, origin_top_left);
@@ -1068,6 +1190,12 @@ void egui_cr_sgl_v2f_t2f_c4b(float x, float y, float u, float v,
                              unsigned char r, unsigned char g,
                              unsigned char b, unsigned char a) {
     sgl_v2f_t2f_c4b(x, y, u, v, r, g, b, a);
+}
+void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
+                    int x, int y, int w, int h, int count,
+                    const unsigned char* verts) {
+    sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
+                   g_fb_w, g_fb_h, g_pkt_ppp);
 }
 #endif
 
@@ -3163,6 +3291,7 @@ typedef struct {
 enum {
     SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
+    SH_OP_MESH3D,
 };
 
 typedef struct {
@@ -3352,6 +3481,32 @@ static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r, unsig
     sh_push_words(o, 6);
 }
 
+// One 3D mesh per op — mvp (16 words) + flags + viewport + count, then
+// the raw packed vertex bytes riding the word stream (4 words per
+// 16-byte vertex). Precedent: texture pixel deltas already travel
+// inside packets, so streamed geometry shares the cost model.
+static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
+                               int x, int y, int w, int h, int count,
+                               const unsigned char* verts) {
+    uint32_t head[23];
+    head[0] = SH_OP_MESH3D;
+    for (int i = 0; i < 16; i++) head[1 + i] = sh_f2u(mvp[i]);
+    head[17] = (uint32_t)((blend ? 1 : 0) | (prim ? 2 : 0));
+    head[18] = (uint32_t)x;
+    head[19] = (uint32_t)y;
+    head[20] = (uint32_t)w;
+    head[21] = (uint32_t)h;
+    head[22] = (uint32_t)count;
+    sh_push_words(head, 23);
+    int words = count * 4;
+    sh_build_ensure();
+    sh_grow((void**)&g_build->ops, &g_build->ops_cap,
+            g_build->ops_len + words, sizeof(uint32_t));
+    if (verts) memcpy(g_build->ops + g_build->ops_len, verts,
+                      (size_t)words * 4);
+    g_build->ops_len += words;
+}
+
 // ---- R-side texture table -----------------------------------------------------
 // id → (sg_image, sg_view). Ids are allocated on A (atomic counter) and
 // created lazily here as packet pre-ops arrive; an UPDATE for a missing
@@ -3522,6 +3677,21 @@ static void sh_replay(sh_packet_t* p) {
                             sh_u2f(op[3]), c & 0xFF, (c >> 8) & 0xFF,
                             (c >> 16) & 0xFF, (c >> 24) & 0xFF);
             op += 5;
+            break;
+        }
+        case SH_OP_MESH3D: {
+            float mvp[16];
+            for (int i = 0; i < 16; i++) mvp[i] = sh_u2f(op[i]);
+            int flags = (int)op[16];
+            int vx = (int)op[17], vy = (int)op[18];
+            int vw = (int)op[19], vh = (int)op[20];
+            int count = (int)op[21];
+            op += 22;
+            sh_draw_mesh3d(mvp, flags & 1, (flags >> 1) & 1,
+                           vx, vy, vw, vh, count,
+                           (const unsigned char*)op,
+                           p->fb_w, p->fb_h, p->ppp);
+            op += (size_t)count * 4;
             break;
         }
         default: // corrupted stream — drop the rest of the frame

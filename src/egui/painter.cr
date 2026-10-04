@@ -134,6 +134,28 @@ module Egui
     end
   end
 
+  # One batched 3D mesh (egui-cr native — the Viewport3D primitive):
+  # SoA-packed vertices (`x,y,z` f32 + `r,g,b,a` u8, 16 bytes each)
+  # drawn through a depth-tested sgl pipeline under `mvp`
+  # (projection × view × model, column-major Float32) mapped onto
+  # `viewport` (points). `primitive` is :triangles or :lines; `blend`
+  # picks the no-depth-write translucent pipeline over the opaque one.
+  # The backend restores the default 2D pixel-space state afterwards, so
+  # ordinary UI painted later is unaffected.
+  struct Mesh3DCmd
+    getter clip : Rect
+    getter viewport : Rect
+    getter mvp : StaticArray(Float32, 16)
+    getter data : Bytes
+    getter primitive : Symbol
+    getter? blend : Bool
+
+    def initialize(@clip : Rect, @viewport : Rect,
+                   @mvp : StaticArray(Float32, 16), @data : Bytes,
+                   @primitive : Symbol, @blend : Bool = false)
+    end
+  end
+
   # CSS `box-shadow` (no upstream egui counterpart — upstream
   # `epaint::Shadow` has no inset and lives in the tessellator's
   # feathering instead): a blurred band around (outset) or inside
@@ -162,7 +184,7 @@ module Egui
   struct NoopCmd
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | NoopCmd
 
   class Painter
     getter commands : Array(PaintCmd)
@@ -375,6 +397,18 @@ module Egui
               nearest : Bool = false) : Nil
       uv ||= Rect.from_min_size(Pos2.new(0.0, 0.0), Vec2.new(1.0, 1.0))
       add(ImageCmd.new(@clip, rect, uv, texture_id, tint, nearest))
+    end
+
+    # One batched 3D mesh — see `Mesh3DCmd`. `data` is packed SoA
+    # (16 bytes per vertex: x,y,z f32 + r,g,b,a u8); `viewport` is the
+    # points-space rect the NDC cube maps onto.
+    def mesh3d(viewport : Rect, mvp : Mat4, data : Bytes,
+               primitive : Symbol = :triangles,
+               blend : Bool = false) : Nil
+      return if data.empty?
+      packed = StaticArray(Float32, 16).new(0.0f32)
+      16.times { |i| packed[i] = mvp.to_unsafe[i] }
+      add(Mesh3DCmd.new(@clip, viewport, packed, data, primitive, blend))
     end
 
     # egui `GraphicLayers::drain(order)`: flatten per layer, back to

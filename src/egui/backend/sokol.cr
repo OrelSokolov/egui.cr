@@ -175,6 +175,13 @@ lib LibEguiCr
   fun sgl_v2f_c4b = egui_cr_sgl_v2f_c4b(x : Float32, y : Float32, r : UInt8, g : UInt8, b : UInt8, a : UInt8)
   fun sgl_v2f_t2f_c4b = egui_cr_sgl_v2f_t2f_c4b(x : Float32, y : Float32, u : Float32, v : Float32,
                                                 r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+  # 3D mesh (Viewport3D): one batched SoA mesh under `mvp` (16 floats,
+  # column-major) mapped onto the framebuffer-pixel viewport rect;
+  # primitive 0 = triangles, 1 = lines. Self-contained: pushes a
+  # depth-tested pipeline, draws, and restores the default 2D state.
+  fun mesh3d = egui_cr_mesh3d(mvp : Float32*, blend : Bool, primitive : Int32,
+                              x : Int32, y : Int32, w : Int32, h : Int32,
+                              count : Int32, verts : UInt8*)
 
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
@@ -1590,6 +1597,8 @@ module Egui
           paint_shadow(cmd)
         when Egui::ImageCmd
           paint_image(cmd)
+        when Egui::Mesh3DCmd
+          paint_mesh3d(cmd)
         end
       end
 
@@ -1657,6 +1666,25 @@ module Egui
         LibEguiCr.sgl_end
         LibEguiCr.text_pipeline_pop
         LibEguiCr.sgl_disable_texture
+      end
+
+      # One batched 3D mesh (Viewport3D): clip to the widget's rect,
+      # map the NDC cube onto it (framebuffer pixels — same ppp scaling
+      # as the scissor), and hand the packed SoA vertices + column-major
+      # mvp to the shim. The shim restores the default 2D state on
+      # return, so later commands are unaffected.
+      def self.paint_mesh3d(cmd : Egui::Mesh3DCmd) : Nil
+        apply_scissor(cmd.clip)
+        s = @@pixels_per_point
+        v = cmd.viewport
+        x = (v.min.x * s).floor.to_i
+        y = (v.min.y * s).floor.to_i
+        w = {(v.max.x * s).ceil.to_i - x, 1}.max
+        h = {(v.max.y * s).ceil.to_i - y, 1}.max
+        count = cmd.data.size // 16
+        prim = cmd.primitive == :lines ? 1 : 0
+        LibEguiCr.mesh3d(cmd.mvp.to_unsafe, cmd.blend?, prim,
+          x, y, w, h, count, cmd.data.to_unsafe)
       end
 
       def self.paint_rect(cmd : Egui::RectCmd) : Nil
