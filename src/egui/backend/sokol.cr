@@ -1265,7 +1265,13 @@ module Egui
           end
         when CHAR
           # sapp char_code is a Unicode codepoint; skip surrogates.
-          if (chr > 0 && chr < 0xD800) || (chr >= 0xE000 && chr < 0x110000)
+          # Control chars (including DEL) are dropped as well: the macOS
+          # keyDown path reports Enter/Backspace here as \r / \x7F while
+          # the KEY_DOWN event already carries them (win32/x11 filter
+          # these out) — keeping the text copy would make focused
+          # consumers like the terminal double-fire the key.
+          if (chr >= 0x20 && chr != 0x7F && chr < 0xD800) ||
+             (chr >= 0xE000 && chr < 0x110000)
             @@events << Egui::Event.text_input(chr.unsafe_chr.to_s)
           end
         when FILES_DROPPED

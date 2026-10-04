@@ -102,9 +102,11 @@ module Egui
       editing, saved_buffer = edit_state(memory, id)
 
       unless editing
-        # Not editing yet: any digit starts an edit session.
-        if !input.text.empty? && input.text[0].ascii_number? ||
-           input.text == "-" || input.text == "."
+        # Not editing yet: any digit starts an edit session. Shortcut
+        # combos are excluded — macOS reports Cmd+letter/digit as plain
+        # text input alongside the modifier (see backend/sokol CHAR).
+        if !input.text.empty? && !input.shortcut_modifiers_down? &&
+           (input.text[0].ascii_number? || input.text == "-" || input.text == ".")
           buffer = input.text
           start_edit(memory, id, buffer)
           return value, changed, buffer
@@ -135,7 +137,7 @@ module Egui
       end
       if input.consume_key(KeyCode::Backspace)
         buffer = buffer[0...-1]
-      elsif !input.text.empty?
+      elsif !input.text.empty? && !input.shortcut_modifiers_down?
         buffer += input.text
       end
 

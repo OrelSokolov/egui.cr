@@ -260,8 +260,9 @@ module Egui
 
       unless editing
         # Not editing yet: a digit (or an allowed "-") starts an edit
-        # session with the typed text as its buffer.
-        seed = filter_typed(input.text, "")
+        # session with the typed text as its buffer. Shortcut combos
+        # don't seed (Cmd/Ctrl+digit arrives as text on macOS).
+        seed = input.shortcut_modifiers_down? ? "" : filter_typed(input.text, "")
         unless seed.empty?
           start_edit(memory, id, seed)
           return value, changed, seed
