@@ -100,10 +100,14 @@ module Egui
       property title : String?
       property width : Float64
       getter block : Proc(Ui, Nil)
+      getter buttons : Array(String)
+      getter on_button : Proc(String, Nil)?
       getter? modal : Bool
 
       def initialize(@block : Proc(Ui, Nil), @title : String?,
-                     @modal : Bool, @width : Float64)
+                     @modal : Bool, @width : Float64,
+                     @buttons : Array(String) = [] of String,
+                     @on_button : Proc(String, Nil)? = nil)
       end
     end
 
@@ -183,24 +187,32 @@ module Egui
     # button pops the stack when a page sits below).
     def page(address : String, title : String? = nil,
              &block : Ui ->) : Nil
-      register(Route.parse(address), title, modal: false,
-        width: 0.0, block: block)
+      register(Route.parse(address), title, modal: false, width: 0.0,
+        buttons: [] of String, on_button: nil, block: block)
     end
 
     # A modal page: an addressable overlay route — the semi-transparent
     # scrim + centered card (Context#modal), focusable/deep-linkable
     # like any page. "A modal is just a page."
+    #
+    # `buttons:`/`on_button:` ride through to Context#modal's styled
+    # footer band (equal-width stretched command buttons); `on_button`
+    # fires with the clicked label, after the caller's block ran.
     def modal(address : String, title : String? = nil,
-              width : Float64 = 480.0, &block : Ui ->) : Nil
+              width : Float64 = 480.0, buttons : Array(String) = [] of String,
+              on_button : Proc(String, Nil)? = nil,
+              &block : Ui ->) : Nil
       register(Route.parse(address), title, modal: true,
-        width: width, block: block)
+        width: width, buttons: buttons, on_button: on_button, block: block)
     end
 
     private def register(route : Route?, title : String?, modal : Bool,
-                         width : Float64, block : Proc(Ui, Nil)) : Nil
+                         width : Float64, buttons : Array(String),
+                         on_button : Proc(String, Nil)?,
+                         block : Proc(Ui, Nil)) : Nil
       return unless route
       @decls[route.page_id] =
-        PageDecl.new(block, title, modal, width)
+        PageDecl.new(block, title, modal, width, buttons, on_button)
     end
 
     protected def begin_frame : Nil
@@ -259,10 +271,12 @@ module Egui
       # The scrim is the modal page's "back": a click on the dimmed
       # area outside the card pops the route (no back button — the
       # card is a content dialog, not a page with a header).
-      @ctx.modal(route.page, width: decl.width, title: decl.title,
+      clicked = @ctx.modal(route.page, width: decl.width, title: decl.title,
+        buttons: decl.buttons,
         on_scrim_click: -> { self.back; nil }) do |ui|
         decl.block.call(ui)
       end
+      decl.on_button.try &.call(clicked) if clicked
     end
 
     # The soft "page not found" page — the back button pops, or goes

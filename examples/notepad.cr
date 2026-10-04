@@ -306,25 +306,22 @@ class NotepadApp < Egui::App
       if @pending_close
         pending_doc = @pending_close.not_nil!
         r.modal "root/confirm-close",
-          title: @quitting ? "Save changes before quitting?" : "Save changes?" do |ui|
-          ui.label("\"#{pending_doc.title}\" has unsaved changes.")
-          ui.separator
-          ui.horizontal do |row|
-            if row.button("Save").clicked?
-              @pending_close = nil
-              ctx.router.back
+          title: @quitting ? "Save changes before quitting?" : "Save changes?",
+          buttons: ["Save", "Don't save", "Cancel"],
+          on_button: ->(label : String) {
+            @pending_close = nil
+            ctx.router.back
+            case label
+            when "Save"
               save_and_close(pending_doc)
-            elsif row.button("Don't save").clicked?
-              @pending_close = nil
-              ctx.router.back
+            when "Don't save"
               do_close(pending_doc)
               continue_quit
-            elsif row.button("Cancel").clicked?
-              @pending_close = nil
-              ctx.router.back
+            else # Cancel
               @quitting = false
             end
-          end
+          } do |ui|
+          ui.label("\"#{pending_doc.title}\" has unsaved changes.")
         end
       end
     end
