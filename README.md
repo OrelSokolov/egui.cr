@@ -2,7 +2,7 @@
   <img src="assets/icon.png" width="160" alt="egui-cr logo">
 </p>
 
-# egui.cr — Crossplatform UI in pure Crystal
+# egui.cr — Easy crossplatform GUI on pure Crystal
 
 **[► WATCH DEMO](DEMO.md)** — screenshots of everything below.
 
@@ -14,11 +14,12 @@
 Crystal — inspired by [egui](https://github.com/emilk/egui)'s
 architecture (Rust) and its ideas, not a port of it.
 
-|  |  |
+| Feature | Description  |
 |---|---|
 | **Reactive** | signals, memoized computeds, one-line widget bindings — no manual repaint plumbing |
 | **Immediate mode** | egui-style per-frame UI: declare widgets every frame, state lives in your app |
 | **CSS cascade** | dotted-path style classes (`sidebar.tab`) with state overlays (`:hover`, `:selected`), resolved like the CSS cascade |
+| **Widget Inspector** | right-click any widget to restyle it live — per-element overrides and class rules with `:hover`/`:active` states — then export the tweaks as `ctx.set_id_style(...)` / `ctx.stylesheet.rule(...)` snippets |
 | **Font renderer** | [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — our pure-Crystal FreeType port (SFNT, TrueType hinting, ftgrays) |
 | **SVG renderer** | [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — our pure-Crystal NanoSVG port (fills, gradients, transforms, dashes) |
 | **Rendering backend** | [sokol_gfx](https://github.com/floooh/sokol) — window + GPU; the only native dependency |
