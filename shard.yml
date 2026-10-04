@@ -18,8 +18,8 @@ dependencies:
     github: OrelSokolov/freetype.cr
 
 # Demos only (examples/ + spec/) — never pulled in when egui-cr is
-# used as a library. examples/system_monitor.cr reads RAM through it;
-# its CPU/network counters come from /proc directly.
+# used as a library. examples/system_monitor.cr reads RAM, CPU and
+# network through it.
 development_dependencies:
   sysinfo:
     github: OrelSokolov/sysinfo.cr

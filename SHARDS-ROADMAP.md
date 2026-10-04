@@ -91,9 +91,9 @@ positron'овским `deep_links`: второй инстанс передаёт
 
 ### B5. Расширение `sysinfo.cr`
 
-Battery (charge%, power source), uptime, CPU-проценты, сеть — тогда
-`examples/system_monitor.cr` перестанет читать `/proc` руками и демка
-станет кроссплатформенной.
+Сделано: CPU-проценты (per-core busy%), сеть (rx/tx rates) —
+`examples/system_monitor.cr` полностью переведён на sysinfo и стал
+кроссплатформенным. Осталось: battery (charge%, power source), uptime.
 
 ### B6. Перенос из positron.cr в egui.cr (не шард, а порт + адаптер)
 

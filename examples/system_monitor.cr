@@ -1,15 +1,12 @@
 # System monitor demo — GNOME System Monitor-style live scrolling
 # graphs: one per CPU core, RAM, and network (receiving/sending).
 #
-# Data sources:
-#   RAM      — sysinfo.cr (https://github.com/OrelSokolov/sysinfo.cr),
-#              a DEVELOPMENT dependency of egui-cr: demos may require
-#              it, the framework itself never does (see shard.yml).
-#   CPU/network — /proc counters (stat / net/dev), read here in the
-#              demo: sysinfo.cr is memory-only, and per-core busy% and
-#              byte rates are pure counter deltas, so the demo needs
-#              no extra library for them. Linux-only; elsewhere the
-#              graphs simply stay flat at zero.
+# Data source: sysinfo.cr (https://github.com/OrelSokolov/sysinfo.cr),
+# a DEVELOPMENT dependency of egui-cr: demos may require it, the
+# framework itself never does (see shard.yml). RAM, per-core busy% and
+# network rates all come from there, so the demo is cross-platform
+# (Linux / macOS / Windows); on other platforms the graphs stay flat
+# at zero.
 #
 # The graphs scroll CONTINUOUSLY (each sample is tagged with its
 # monotonic timestamp and x = right edge - age, so the curve slides
@@ -141,95 +138,16 @@ module SysMon
       end
     end
   end
-
-  # --- /proc samplers (Linux; return zeros elsewhere) ----------------
-
-  # Per-core busy% from /proc/stat deltas: the per-CPU lines
-  #   "cpuN user nice system idle iowait irq softirq steal ..."
-  # busy = total - idle - iowait.
-  class CpuSampler
-    getter cores = 0
-    @linux = File.exists?("/proc/stat")
-    @prev_total = [] of Int64
-    @prev_busy = [] of Int64
-
-    def percentages : Array(Float64)
-      return Array.new(@cores, 0.0) unless @linux
-      totals = [] of Int64
-      busies = [] of Int64
-      File.each_line("/proc/stat") do |line|
-        next unless line.starts_with?("cpu")
-        parts = line.split
-        next unless parts.size >= 5 && parts[0] != "cpu" # per-core only
-        vals = parts[1..].map(&.to_i64)
-        total = vals.sum
-        idle = (vals[3]? || 0_i64) + (vals[4]? || 0_i64)
-        totals << total
-        busies << total - idle
-      end
-      @cores = totals.size
-      out = [] of Float64
-      totals.each_with_index do |total, i|
-        d_total = total - (@prev_total[i]? || total)
-        d_busy = busies[i] - (@prev_busy[i]? || busies[i])
-        out << (d_total > 0 ? (d_busy.to_f64 / d_total * 100.0).clamp(0.0, 100.0) : 0.0)
-      end
-      @prev_total = totals
-      @prev_busy = busies
-      out
-    end
-  end
-
-  # rx/tx byte rates from /proc/net/dev deltas (loopback excluded).
-  class NetSampler
-    @linux = File.exists?("/proc/net/dev")
-    @prev_rx = -1_i64
-    @prev_tx = -1_i64
-    @prev_t = 0.0
-    @first = true
-
-    def rates(now : Float64) : {Float64, Float64}
-      return {0.0, 0.0} unless @linux
-      rx = 0_i64
-      tx = 0_i64
-      File.each_line("/proc/net/dev") do |line|
-        # "  wlp0s20f3: rx_bytes packets ... tx_bytes packets ..."
-        # (the two header lines carry no ':' and are skipped)
-        next unless idx = line.index(':')
-        iface = line[0...idx]
-        next if iface.strip.empty? || iface.strip == "lo"
-        cols = line[(idx + 1)..].split
-        next if cols.size < 9
-        rx += cols[0].to_i64
-        tx += cols[8].to_i64
-      end
-      if @first || @prev_rx < 0
-        @first = false
-        @prev_rx = rx
-        @prev_tx = tx
-        @prev_t = now
-        return {0.0, 0.0}
-      end
-      dt = now - @prev_t
-      rate_rx = dt > 0 ? (rx - @prev_rx).to_f64 / dt : 0.0
-      rate_tx = dt > 0 ? (tx - @prev_tx).to_f64 / dt : 0.0
-      @prev_rx = rx
-      @prev_tx = tx
-      @prev_t = now
-      {rate_rx.clamp(0.0, Float64::MAX), rate_tx.clamp(0.0, Float64::MAX)}
-    end
-  end
 end
 
 class SystemMonitorApp < Egui::App
-  @cpu = SysMon::CpuSampler.new
-  @net = SysMon::NetSampler.new
   @cpu_series = [] of SysMon::Series
   @ram_series = SysMon::Series.new
   @rx_series = SysMon::Series.new
   @tx_series = SysMon::Series.new
   @last_sample = -1.0e18_f64
   @ram_total_kb : Int64 = 0
+  @cores = 0
   # Cores view: false = one small graph per core (default), true = all
   # cores overlaid in a single graph (Settings menu).
   @merged = false
@@ -241,9 +159,13 @@ class SystemMonitorApp < Egui::App
     # `theme = …` would be a LOCAL variable in Crystal — the setter
     # needs an explicit receiver.
     self.theme = Egui::Theme.light
-    # Seed the core series now so the first frame knows the layout;
-    # every series fills from the right edge like GSM's do.
-    @cpu.percentages.size.times { @cpu_series << SysMon::Series.new }
+    # Baseline CPU sample: sysinfo's percentages read 0 until the
+    # second refresh, and the core count is known from the first —
+    # seed the series now so the first frame knows the layout; every
+    # series fills from the right edge like GSM's do.
+    Sysinfo.refresh_cpu
+    @cores = Sysinfo.cpu_percentages.size
+    @cores.times { @cpu_series << SysMon::Series.new }
   end
 
   def update(ctx : Egui::Context) : Nil
@@ -265,10 +187,10 @@ class SystemMonitorApp < Egui::App
         # row, notepad-style.
         ctx.menu_bar do |bar|
           bar.menu_button("Settings") do |menu|
-            menu.menu_item("Все ядра вместе", icon: @merged ? :check : nil) do
+            menu.menu_item("Merged cores", icon: @merged ? :check : nil) do
               @merged = true
             end
-            menu.menu_item("Ядра отдельно", icon: @merged ? nil : :check) do
+            menu.menu_item("Separate cores", icon: @merged ? nil : :check) do
               @merged = false
             end
           end
@@ -286,26 +208,31 @@ class SystemMonitorApp < Egui::App
   end
 
   private def sample(now : Float64) : Nil
-    core_pcts = @cpu.percentages
+    Sysinfo.refresh_cpu
+    core_pcts = Sysinfo.cpu_percentages
+    @cores = core_pcts.size
     if @cpu_series.size != core_pcts.size
       @cpu_series = core_pcts.map { SysMon::Series.new }
     end
-    core_pcts.each_with_index { |pct, i| @cpu_series[i].push(now, pct) }
+    core_pcts.each_with_index { |pct, i| @cpu_series[i].push(now, pct.to_f64) }
 
     if mem = Sysinfo.memory
       @ram_total_kb = mem.total_kb
       @ram_series.push(now, mem.used_kb.to_f64)
     end
 
-    rx, tx = @net.rates(now)
-    @rx_series.push(now, rx)
-    @tx_series.push(now, tx)
+    Sysinfo.refresh_network
+    if net = Sysinfo.network
+      # sysinfo reports KB/s; the graph and human_rate work in B/s.
+      @rx_series.push(now, net.received_kb_s.to_f64 * 1024.0)
+      @tx_series.push(now, net.sent_kb_s.to_f64 * 1024.0)
+    end
   end
 
   private def cpu_section(ui : Egui::Ui, now : Float64) : Nil
     ui.heading("CPU")
     total = @cpu_series.empty? ? 0.0 : @cpu_series.sum(&.last_value) / @cpu_series.size
-    ui.label("Total #{"%.1f" % total}%  ·  #{@cpu.cores} cores")
+    ui.label("Total #{"%.1f" % total}%  ·  #{@cores} cores")
 
     if @merged
       # All cores overlaid in one shared 0-100% graph (GSM's combined
@@ -365,9 +292,9 @@ class SystemMonitorApp < Egui::App
   end
 end
 
-# Headless drivers (spec/system_monitor_spec.cr, debug scripts) set
-# EGUI_NOWINDOW=1 before requiring this file to reuse the app class
-# without opening a sokol window.
+# Headless drivers (debug scripts) set EGUI_NOWINDOW=1 before
+# requiring this file to reuse the app class without opening a sokol
+# window.
 unless ENV["EGUI_NOWINDOW"]?
   Egui::Backend::Sokol.run(SystemMonitorApp.new,
     title: "egui-cr — system monitor",
