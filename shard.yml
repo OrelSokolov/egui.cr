@@ -27,3 +27,5 @@ development_dependencies:
   # core port and renders the SVG output via NanoSVG.
   mathjax:
     git: https://github.com/OrelSokolov/mathjax.cr
+    # >= 1.1.0: to_svg(paths: true) — v3 defs+use SVG for examples/formulas
+    version: ">= 1.1.0"
