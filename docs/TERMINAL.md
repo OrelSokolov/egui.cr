@@ -25,8 +25,9 @@ examples/terminal.cr          tabbed terminal app
 ```
 
 The core (`theme`…`keymap` + `widget`) is platform-pure and required
-from `src/egui.cr`; `pty.cr` links against the native library, so apps
-require it explicitly: `require "egui/terminal/pty"`.
+from `src/egui.cr`; `pty.cr` calls into the native library (whose
+`-l` flag `backend/sokol.cr` declares), so apps require it explicitly:
+`require "egui/terminal/pty"`.
 
 ## PTY, per platform
 

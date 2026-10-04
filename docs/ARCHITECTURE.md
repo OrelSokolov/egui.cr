@@ -133,10 +133,13 @@ where text is concerned.
 
 `src/egui/terminal/pty.cr` — the native `Terminal::Backend`
 implementation — sits in the CORE tree (`src/egui/terminal/`, required
-alongside pure files by convention) and declares
-`@[Link("egui_cr_sokol")]` (pty.cr:25) because `pty_shim.o` happens to
-be archived into the same `libegui_cr_sokol.a`. A terminal embedder
-that never opens a window still links sokol, GL, X11, Xcursor. Same
+alongside pure files by convention); `pty_shim.o` happens to be
+archived into the same `libegui_cr_sokol.a` as the whole windowing
+backend (the `-l` flag is declared once, in `backend/sokol.cr` — every
+current consumer requires it too, and duplicating the annotation made
+ld warn about the repeated flag). A terminal embedder that never opens
+a window still links sokol, GL, X11, Xcursor — or must pass
+`--link-flags "-legui_cr_sokol"` and then drags them in anyway. Same
 archive hosts `nanosvg_shim.o` — every shim
 depends on every other by packaging accident.
 

@@ -10,12 +10,16 @@
 #     libegui_cr_sokol.a — apps that never require this file don't
 #     pull the object in, since nothing references its symbols).
 #
+# The -legui_cr_sokol link flag is declared once, in backend/sokol.cr
+# (every consumer of this file requires the sokol backend too);
+# repeating @[Link] here would put the flag on the linker command line
+# twice and ld warns about the duplicate.
+#
 # Contract twin of NanoSvgCr.rasterize: same pre-bake rewrite (via
 # NanoSvgCr.prepare), same fit — the parsed image (viewBox already
 # applied by NanoSVG) is scaled with the aspect preserved and
 # centered in the target bitmap, like `<img>` object-fit.
 
-@[Link("egui_cr_sokol")]
 lib LibNanoSvg
   fun parse = egui_cr_svg_parse(input : UInt8*, dpi : Float32) : Void*
   fun free = egui_cr_svg_free(image : Void*) : Void

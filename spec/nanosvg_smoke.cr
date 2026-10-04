@@ -7,7 +7,7 @@
 # the native archive, which a fresh clone may not have built); run:
 #
 #   rake build:native
-#   crystal run spec/nanosvg_smoke.cr --link-flags "-Llib"
+#   crystal run spec/nanosvg_smoke.cr --link-flags "-Llib -legui_cr_sokol"
 require "../src/egui"
 require "../src/egui/backend/nanosvg"
 

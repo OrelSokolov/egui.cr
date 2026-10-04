@@ -4,6 +4,11 @@
 # library) provides one API over POSIX ptys (Linux/macOS) and ConPTY
 # (Windows). Two data paths, both fiber-scheduler-friendly:
 #
+# The -legui_cr_sokol link flag is declared once, in
+# backend/sokol.cr — every terminal app opens a window through the
+# sokol backend and requires it alongside this file (repeating
+# @[Link] here would duplicate the linker flag and ld warns).
+#
 #   Unix    — the master fd is wrapped in IO::FileDescriptor (epoll/
 #             kqueue): a reader FIBER suspends properly on read, and
 #             new data wakes the UI through `on_output` (hook it to
@@ -22,7 +27,6 @@
 # All parser work happens on the frame fiber via the channel, so no
 # locking is needed around the emulator.
 
-@[Link("egui_cr_sokol")]
 lib LibPty
   type Pty = Void*
 
