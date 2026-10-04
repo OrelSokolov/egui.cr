@@ -30,6 +30,12 @@ class GalleryApp < Egui::App
   @section : Int32 = 0
   @tab : Int32 = 0
   @slider = 0.3_f64
+  # Slider tab: one state var per variation (see #slider_gallery).
+  @slider_nt = 0.7_f64
+  @slider_tips = 65.0_f64
+  @slider_q = 0.5_f64
+  @slider_qt = 0.5_f64
+  @slider_tick = 0.25_f64
   @drag = 10.0_f64
   @spin = 42
   @combo = "Second"
@@ -93,7 +99,7 @@ class GalleryApp < Egui::App
   # Mutable app state (not a constant) because tabs disappear.
   @sections = [
     Egui::Sidebar::Section.new(
-      "Widgets", ["Buttons", "Inputs", "Select box", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
+      "Widgets", ["Buttons", "Inputs", "Slider", "Select box", "Text", "Textarea", "Context menu", "Display", "Color", "Logos", "Hotkeys"],
       closable: true),
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "System styles", "Cursors"], closable: true),
@@ -207,6 +213,7 @@ class GalleryApp < Egui::App
           case {@sections[@section].title, @sections[@section].tabs[@tab]}
           when {"Widgets", "Buttons"}   then buttons_gallery(scroll)
           when {"Widgets", "Inputs"}    then inputs_gallery(scroll)
+          when {"Widgets", "Slider"}    then slider_gallery(scroll)
           when {"Widgets", "Select box"} then select_box_gallery(scroll, ctx)
           when {"Widgets", "Text"}      then text_gallery(scroll)
           when {"Widgets", "Textarea"}  then textarea_gallery(scroll)
@@ -390,8 +397,7 @@ class GalleryApp < Egui::App
     end
     ui.separator
 
-    ui.label("Slider / drag value:")
-    ui.slider(@slider, 0.0..1.0) { |v| @slider = v }
+    ui.label("Drag value (sliders live in their own tab now):")
     ui.drag_value(@drag, speed: 0.1, suffix: " px") { |v| @drag = v }
     ui.separator
 
@@ -442,6 +448,46 @@ class GalleryApp < Egui::App
     ui.date_picker("gallery_date", @date) { |t| @date = t }
     ui.drag_value(@drag, speed: 0.1, suffix: " px",
       format: ->(v : Float64) { "%.1f" % v }) { |v| @drag = v }
+  end
+
+  # The Slider tab: every slider variation in one place — plain,
+  # unlabeled, with macOS-style tips under the rail, and quantized
+  # (the value restricted to a fixed list the handle snaps onto).
+  private def slider_gallery(ui : Egui::Ui) : Nil
+    ui.label("Plain slider (label + live value):")
+    ui.slider(@slider, 0.0..1.0, "Opacity") { |v| @slider = v }
+    ui.separator
+
+    ui.label("No label:")
+    ui.slider(@slider_nt, 0.0..1.0) { |v| @slider_nt = v }
+    ui.separator
+
+    # macOS-style: `tips:` paints the pair under the rail, flush to its
+    # ends — the left one left-aligned, the right one right-aligned.
+    ui.label("Tips (macOS-style captions under the rail):")
+    ui.slider(@slider_tips, 0.0..100.0, "Volume",
+      tips: {"Quiet", "Loud"}) { |v| @slider_tips = v }
+    ui.separator
+
+    # `quantized: true` requires `values:` — the pointer maps to the
+    # nearest entry and the handle sits at discrete index positions.
+    ui.label("Quantized (value restricted to a list):")
+    ui.slider(@slider_q, 0.0..1.0, "Steps",
+      quantized: true, values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_q = v }
+    ui.separator
+
+    # `ticks: true` — macOS-style vertical strokes under the rail, one
+    # per entry, pointing at the quants (stylable as `slider.tick`).
+    ui.label("Quantized + tick marks (macOS strokes at the quants):")
+    ui.slider(@slider_tick, 0.0..1.0, "Steps",
+      quantized: true, ticks: true,
+      values: [0.0, 0.25, 0.5, 0.75, 1.0]) { |v| @slider_tick = v }
+    ui.separator
+
+    ui.label("Quantized + ticks + tips:")
+    ui.slider(@slider_qt, 0.0..1.0, "Quality",
+      tips: {"Low", "High"}, quantized: true, ticks: true,
+      values: [0.0, 0.5, 1.0]) { |v| @slider_qt = v }
   end
 
   # The SelectBox tab: a searchable select over the font family

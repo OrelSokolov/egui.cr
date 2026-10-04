@@ -291,10 +291,17 @@ module Egui
     # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
     # egui `ui.add_enabled`-style block helpers for value widgets:
     # the block fires with the new value when it changed this frame.
+    # `tips:` adds macOS-style {left, right} captions under the rail;
+    # `quantized: true` restricts the value to `values:` (required) —
+    # the handle snaps to the nearest list entry; `ticks: true` draws
+    # a vertical stroke per entry under the rail (requires `values:`).
     def slider(value : Float64, range : Range(Float64, Float64),
                text : String? = nil, id : String? = nil,
+               tips : {String, String}? = nil, quantized : Bool = false,
+               values : Array(Float64)? = nil, ticks : Bool = false,
                &on_change : Float64 ->) : Response
-      response = add(Slider.new(value, range, text, id: id))
+      response = add(Slider.new(value, range, text, id: id, tips: tips,
+        quantized: quantized, values: values, ticks: ticks))
       if response.changed? && (v = response.widget_value)
         on_change.call(v)
       end
@@ -374,8 +381,12 @@ module Egui
     # the settle repaints).
 
     def slider(sig : Signal(Float64), range : Range(Float64, Float64),
-               text : String? = nil) : Response
-      response = add(Slider.new(sig.value, range, text))
+               text : String? = nil, tips : {String, String}? = nil,
+               quantized : Bool = false,
+               values : Array(Float64)? = nil,
+               ticks : Bool = false) : Response
+      response = add(Slider.new(sig.value, range, text, tips: tips,
+        quantized: quantized, values: values, ticks: ticks))
       if response.changed? && (v = response.widget_value)
         sig.value = v
       end
