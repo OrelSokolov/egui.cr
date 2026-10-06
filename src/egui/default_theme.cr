@@ -150,6 +150,31 @@ module Egui
         "underline_width" => 2.0,
       })
 
+      # expander — Win11 accordion (header row + content reveal). The
+      # header carries a permanent subtle fill (weaker than :hover) and
+      # the content a fainter one, so the two regions read apart at
+      # rest — both blend panel_fill towards text_color, which lands
+      # lighter-on-dark and darker-on-light without branching.
+      sheet.rule("expander.header", StyleVars{
+        "padding.top"    => 8.0,
+        "padding.right"  => 12.0,
+        "padding.bottom" => 8.0,
+        "padding.left"   => 12.0,
+        "rounding"       => 4.0,
+        "text_color"     => v.text_color,
+        "background"     => v.panel_fill.lerp(v.text_color, 0.08),
+      })
+      sheet.rule("expander.header:hover", StyleVars{"background" => v.button_weak})
+      sheet.rule("expander.header:active", StyleVars{"background" => v.button_hovered})
+      sheet.rule("expander.content", StyleVars{
+        "padding.top"    => 4.0,
+        "padding.right"  => 12.0,
+        "padding.bottom" => 8.0,
+        "padding.left"   => 12.0,
+        "rounding"       => 4.0,
+        "background"     => v.panel_fill.lerp(v.text_color, 0.035),
+      })
+
       # button
       sheet.rule("button", StyleVars{
         "background"         => v.button_weak,

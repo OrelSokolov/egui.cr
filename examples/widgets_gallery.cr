@@ -64,7 +64,10 @@ class GalleryApp < Egui::App
   @seg = 0
   @sel = false
   @tree_sel = ""
+  @expander_clicks = 0
   @date = Time.local(2026, 9, 15)
+  # Win11 wheel pickers (Inputs tab): date (two format orders) + time.
+  @time = Time.local(2026, 9, 15, 12, 30, 45)
   @enabled = true
   # Dropped files (drag & drop) and the update-call counter that shows
   # on-demand repaint at work: it only ticks when the UI really runs.
@@ -109,7 +112,7 @@ class GalleryApp < Egui::App
     Egui::Sidebar::Section.new(
       "Style", ["Themes", "System styles", "Cursors"], closable: true),
     Egui::Sidebar::Section.new(
-      "Containers", ["Scroll", "Modal", "Files"], closable: true),
+      "Containers", ["Scroll", "Modal", "Files", "Expander"], closable: true),
     Egui::Sidebar::Section.new(
       "Layout", ["Grid", "Table", "Tree", "Plot", "Enabled"], closable: true),
   ]
@@ -233,6 +236,7 @@ class GalleryApp < Egui::App
           when {"Containers", "Scroll"} then scroll_gallery(scroll)
           when {"Containers", "Modal"}  then modal_gallery(scroll)
           when {"Containers", "Files"}  then files_gallery(scroll)
+          when {"Containers", "Expander"} then expander_gallery(scroll)
           when {"Layout", "Grid"}       then grid_gallery(scroll)
           when {"Layout", "Table"}      then table_gallery(scroll)
           when {"Layout", "Tree"}       then tree_gallery(scroll)
@@ -449,10 +453,21 @@ class GalleryApp < Egui::App
     end
     ui.separator
 
-    ui.label("Date picker:")
-    ui.date_picker("gallery_date", @date) { |t| @date = t }
+    ui.label("Calendar picker:")
+    ui.calendar_picker("gallery_date", @date) { |t| @date = t }
     ui.drag_value(@drag, speed: 0.1, suffix: " px",
       format: ->(v : Float64) { "%.1f" % v }) { |v| @drag = v }
+    ui.separator
+
+    ui.label("Date picker (Win11 wheels; ✓ commits, ✕ cancels; day.month.year / US order):")
+    ui.horizontal do |row|
+      row.date_picker("gallery_dtp", @date) { |t| @date = t }
+      row.date_picker("gallery_dtp_us", @date, format: "%m/%d/%Y") { |t| @date = t }
+    end
+    ui.separator
+
+    ui.label("Time picker (Win11 wheels):")
+    ui.time_picker("gallery_time", @time) { |t| @time = t }
   end
 
   # The Slider tab: every slider variation in one place — plain,
@@ -1129,6 +1144,37 @@ class GalleryApp < Egui::App
         end
       end
       tree.leaf("README.md", @tree_sel == "README.md") { @tree_sel = "README.md" }
+    end
+  end
+
+  # Win11-style Expander: header (Lucide icon + label + flipping
+  # chevron), content reveals with an animated slide. The open state
+  # lives in Memory (the app never holds it); the block is a normal
+  # Ui, so any widgets can live inside — even another Expander.
+  private def expander_gallery(ui : Egui::Ui) : Nil
+    ui.label("Expander (Windows 11 style) — the chevron flips and the \
+content slides out; open/close state is app-independent, like the tree view:")
+    ui.separator
+
+    ui.expander("Bluetooth & devices", icon: :bluetooth) do |body|
+      body.label("Devices: keyboard, mouse")
+      if body.button("Add device (#{@expander_clicks})").clicked?
+        @expander_clicks += 1
+      end
+    end
+
+    ui.expander("Network & internet", icon: :wifi) do |body|
+      body.label("Wi-Fi, airplane mode, VPN")
+      body.separator
+      body.label("Nested expander inside the content:")
+      body.expander("Advanced settings") do |inner|
+        inner.label("anything can live in here")
+        inner.checkbox(@checked, "A checkbox in the reveal") { |v| @checked = v }
+      end
+    end
+
+    ui.expander("System", icon: :monitor, default_open: true) do |body|
+      body.label("Opened by default (default_open: true).")
     end
   end
 

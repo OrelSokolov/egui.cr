@@ -3779,26 +3779,26 @@ describe "Ui helpers (phase 7)" do
   end
 end
 
-describe "DatePicker" do
+describe "CalendarPicker" do
   it "opens a calendar popup and a day click hands back the date" do
     ctx = Egui::Context.new
     value = Time.local(2026, 9, 15)
     center = nil
     raw_frame(ctx)
-    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.window("demo") { |ui| center = ui.calendar_picker("d", value) { }.rect.center }
     ctx.end_frame
 
     # open the popup
     raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
       Egui::Event.pointer_pressed(center.not_nil!)], time: 0.032)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
     picked = nil
     raw_frame(ctx, events: [Egui::Event.pointer_released(center.not_nil!)], time: 0.048)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
 
-    ctx.popup_open?("date_picker/d").should be_true
+    ctx.popup_open?("calendar_picker/d").should be_true
     # "September 2026" header + weekday row rendered
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("September 2026")
@@ -3809,13 +3809,13 @@ describe "DatePicker" do
     target = day.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
     raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
       Egui::Event.pointer_pressed(target)], time: 0.064)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
     raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.08)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| picked = t } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { |t| picked = t } }
     ctx.end_frame
     picked.not_nil!.day.should eq(20)
-    ctx.popup_open?("date_picker/d").should be_false
+    ctx.popup_open?("calendar_picker/d").should be_false
   end
 
   it "flips the calendar popup above the button near the screen bottom" do
@@ -3829,7 +3829,7 @@ describe "DatePicker" do
       ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
         Egui::Rect.from_min_size(Egui::Pos2.new(0.0, 540.0),
           Egui::Vec2.new(300.0, 36.0)))
-      center = ui.date_picker("d", value) { }.rect.center
+      center = ui.calendar_picker("d", value) { }.rect.center
       ctx.end_frame
     end
 
@@ -3841,7 +3841,7 @@ describe "DatePicker" do
     draw.call([Egui::Event.pointer_moved(center.not_nil!),
       Egui::Event.pointer_pressed(center.not_nil!)], 0.032)
     draw.call([Egui::Event.pointer_released(center.not_nil!)], 0.048)
-    pop_id = Egui::Id.from("popup/date_picker/d")
+    pop_id = Egui::Id.from("popup/calendar_picker/d")
     below = ctx.memory.popup_rects[pop_id].not_nil!
     below.top.should be_close(button.bottom, 0.01)
     below.height.should be > SCREEN.bottom - button.bottom
@@ -3858,16 +3858,16 @@ describe "DatePicker" do
     value = Time.local(2026, 9, 15)
     center = nil
     raw_frame(ctx)
-    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.window("demo") { |ui| center = ui.calendar_picker("d", value) { }.rect.center }
     ctx.end_frame
 
     # open the popup
     raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
       Egui::Event.pointer_pressed(center.not_nil!),
       Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
-    ctx.popup_open?("date_picker/d").should be_true
+    ctx.popup_open?("calendar_picker/d").should be_true
 
     # click the "›" arrow: press + release over its header cell
     arrow = ctx.painter.commands.select(Egui::TextCmd).find { |t| t.text == "›" }
@@ -3875,18 +3875,18 @@ describe "DatePicker" do
     target = arrow.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
     raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
       Egui::Event.pointer_pressed(target)], time: 0.048)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
     raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.064)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
 
     # the shift is latched in Memory#data — the frame after the click
     # renders the new month (and the click must not close the popup)
     raw_frame(ctx, time: 0.08)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
-    ctx.popup_open?("date_picker/d").should be_true
+    ctx.popup_open?("calendar_picker/d").should be_true
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("October 2026")
   end
@@ -3896,17 +3896,17 @@ describe "DatePicker" do
     value = Time.local(2026, 9, 15)
     center = nil
     raw_frame(ctx)
-    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.window("demo") { |ui| center = ui.calendar_picker("d", value) { }.rect.center }
     ctx.end_frame
 
     # open the popup
     raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
       Egui::Event.pointer_pressed(center.not_nil!),
       Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
-    ctx.popup_open?("date_picker/d").should be_true
-    pop_id = Egui::Id.from("popup/date_picker/d")
+    ctx.popup_open?("calendar_picker/d").should be_true
+    pop_id = Egui::Id.from("popup/calendar_picker/d")
     heights = [ctx.memory.popup_rects[pop_id].not_nil!.height]
 
     # click "›" five times: Sep → … → Feb 2027 — a 28-day month starting
@@ -3918,15 +3918,15 @@ describe "DatePicker" do
       t0 = 0.048 + 0.048 * i
       raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
         Egui::Event.pointer_pressed(target)], time: t0)
-      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
       ctx.end_frame
       raw_frame(ctx, events: [Egui::Event.pointer_released(target)],
         time: t0 + 0.016)
-      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
       ctx.end_frame
       # the frame after the click renders the shifted month
       raw_frame(ctx, time: t0 + 0.032)
-      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
       ctx.end_frame
       heights << ctx.memory.popup_rects[pop_id].not_nil!.height
     end
@@ -3941,28 +3941,28 @@ describe "DatePicker" do
     value = Time.local(2026, 9, 15)
     center = nil
     raw_frame(ctx)
-    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.window("demo") { |ui| center = ui.calendar_picker("d", value) { }.rect.center }
     ctx.end_frame
 
     # open the popup
     raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
       Egui::Event.pointer_pressed(center.not_nil!),
       Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
-    ctx.popup_open?("date_picker/d").should be_true
+    ctx.popup_open?("calendar_picker/d").should be_true
 
     # click far away from the window — nothing interactive there
     empty = Egui::Pos2.new(600.0, 500.0)
     raw_frame(ctx, events: [Egui::Event.pointer_moved(empty),
       Egui::Event.pointer_pressed(empty)], time: 0.048)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
     raw_frame(ctx, events: [Egui::Event.pointer_released(empty)], time: 0.064)
-    ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+    ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
     ctx.end_frame
 
-    ctx.popup_open?("date_picker/d").should be_false
+    ctx.popup_open?("calendar_picker/d").should be_false
   end
 
   it "toggles the calendar closed on a second button click" do
@@ -3970,7 +3970,7 @@ describe "DatePicker" do
     value = Time.local(2026, 9, 15)
     center = nil
     raw_frame(ctx)
-    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { }.rect.center }
+    ctx.window("demo") { |ui| center = ui.calendar_picker("d", value) { }.rect.center }
     ctx.end_frame
 
     # open, then click the button again — must close, not stay open
@@ -3979,11 +3979,268 @@ describe "DatePicker" do
         Egui::Event.pointer_pressed(center.not_nil!),
         Egui::Event.pointer_released(center.not_nil!)],
         time: 0.032 + 0.016 * i)
-      ctx.window("demo") { |ui| ui.date_picker("d", value) { } }
+      ctx.window("demo") { |ui| ui.calendar_picker("d", value) { } }
       ctx.end_frame
     end
     # after two full clicks: first opened, second toggled closed
+    ctx.popup_open?("calendar_picker/d").should be_false
+  end
+end
+
+describe "DatePicker (Win11 wheels)" do
+  it "shows the format's segments and opens a wheel flyout, day.month.year by default" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { |t| value = t }.rect.center }
+    ctx.end_frame
+    # the closed field spells the segments: 15.09.2026
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("15")
+    texts.should contain("09")
+    texts.should contain("2026")
+
+    # open the flyout
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+
+    # wheels: months spelled out, the selection centered; column order
+    # follows the format — the flyout opens BELOW the button, so its
+    # copies are the bottom-most of each duplicated label
+    cmds = ctx.painter.commands.select(Egui::TextCmd)
+    month = cmds.select { |t| t.text == "September" }.max_by(&.pos.y).pos.x
+    day = cmds.select { |t| t.text == "15" }.max_by(&.pos.y).pos.x
+    year = cmds.select { |t| t.text == "2026" }.max_by(&.pos.y).pos.x
+    day.should be < month
+    month.should be < year
+  end
+
+  it "orders the wheels by the format (%m/%d/%Y puts month first)" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value, format: "%m/%d/%Y") { |t| value = t }.rect.center }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value, format: "%m/%d/%Y") { |t| value = t } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_true
+
+    cmds = ctx.painter.commands.select(Egui::TextCmd)
+    month = cmds.select { |t| t.text == "September" }.max_by(&.pos.y).pos.x
+    day = cmds.select { |t| t.text == "15" }.max_by(&.pos.y).pos.x
+    year = cmds.select { |t| t.text == "2026" }.max_by(&.pos.y).pos.x
+    month.should be < day
+    day.should be < year
+  end
+
+  it "edits the draft on the wheel; ✕ cancels, ✓ commits with the day clamped" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 1, 31)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { |t| value = t }.rect.center }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+
+    # the footer's button centers (bottom bar, two half-width cells)
+    pop = ctx.memory.popup_rects[Egui::Id.from("popup/date_picker/d")].not_nil!
+    pad_y = Egui::WheelFieldPicker::FLYOUT_PAD
+    foot_h = Egui::WheelFieldPicker::FOOTER_H_FACTOR *
+             ctx.style.spacing.interact_size.y
+    foot_y = pop.bottom - pad_y - foot_h / 2.0
+    accept = Egui::Pos2.new(pop.left + pop.width * 0.25, foot_y)
+    cancel = Egui::Pos2.new(pop.left + pop.width * 0.75, foot_y)
+
+    # park the pointer over the month column's center row ("January")
+    # and wheel down: the DRAFT moves to February — the committed
+    # value must not fire while editing
+    jan = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text == "January" }.not_nil!.pos + Egui::Vec2.new(4.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(jan)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.scroll(Egui::Vec2.new(0.0, 60.0))],
+      time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    value.month.should eq(1) # draft only — nothing committed
+    ctx.popup_open?("date_picker/d").should be_true
+
+    # ✕ dismisses: closed, the committed value untouched
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(cancel),
+      Egui::Event.pointer_pressed(cancel)], time: 0.08)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(cancel)], time: 0.096)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
     ctx.popup_open?("date_picker/d").should be_false
+    value.should eq(Time.local(2026, 1, 31))
+
+    # reopen (draft reseeds from the committed value), wheel the month
+    # again and ✓: January 31 → February, day clamped to 28
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.112)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    jan = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text == "January" }.not_nil!.pos + Egui::Vec2.new(4.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(jan)], time: 0.128)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.scroll(Egui::Vec2.new(0.0, 60.0))],
+      time: 0.144)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(accept),
+      Egui::Event.pointer_pressed(accept)], time: 0.16)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(accept)], time: 0.176)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    value.month.should eq(2)
+    value.day.should eq(28)
+    ctx.popup_open?("date_picker/d").should be_false
+  end
+
+  it "picks into the draft on click; ✕ leaves the committed value alone" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { |t| value = t }.rect.center }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+
+    # click day "18" (three rows below the centered 15): the draft
+    # recenters on 18 (same center-row y the 15 had), the flyout stays
+    # open and the committed value is untouched
+    cmds = ctx.painter.commands.select(Egui::TextCmd)
+    was_y = cmds.select { |t| t.text == "15" }.max_by(&.pos.y).pos.y
+    target = cmds.find { |t| t.text == "18" }.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+      Egui::Event.pointer_pressed(target)], time: 0.048)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.064)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    # one settle frame: the draft's recentering shows up next paint
+    raw_frame(ctx, time: 0.072)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    value.day.should eq(15) # draft only
+    ctx.popup_open?("date_picker/d").should be_true
+    cmds = ctx.painter.commands.select(Egui::TextCmd)
+    cmds.select { |t| t.text == "18" }.max_by(&.pos.y).pos.y
+      .should be_close(was_y, 0.01)
+
+    # ✕ dismisses the draft
+    pop = ctx.memory.popup_rects[Egui::Id.from("popup/date_picker/d")].not_nil!
+    pad_y = Egui::WheelFieldPicker::FLYOUT_PAD
+    cancel = Egui::Pos2.new(pop.left + pop.width * 0.75,
+      pop.bottom - pad_y - Egui::WheelFieldPicker::FOOTER_H_FACTOR *
+        ctx.style.spacing.interact_size.y / 2.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(cancel),
+      Egui::Event.pointer_pressed(cancel)], time: 0.08)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(cancel)], time: 0.096)
+    ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+    ctx.end_frame
+    ctx.popup_open?("date_picker/d").should be_false
+    value.should eq(Time.local(2026, 9, 15))
+  end
+
+  it "toggles the flyout closed on a second button click" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.date_picker("d", value) { |t| value = t }.rect.center }
+    ctx.end_frame
+    2.times do |i|
+      raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+        Egui::Event.pointer_pressed(center.not_nil!),
+        Egui::Event.pointer_released(center.not_nil!)],
+        time: 0.032 + 0.016 * i)
+      ctx.window("demo") { |ui| ui.date_picker("d", value) { |t| value = t } }
+      ctx.end_frame
+    end
+    ctx.popup_open?("date_picker/d").should be_false
+  end
+end
+
+describe "TimePicker" do
+  it "picks a minute into the draft and ✓ commits it" do
+    ctx = Egui::Context.new
+    value = Time.local(2026, 9, 15, 12, 30, 45)
+    center = nil
+    raw_frame(ctx)
+    ctx.window("demo") { |ui| center = ui.time_picker("t", value) { |t| value = t }.rect.center }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(center.not_nil!),
+      Egui::Event.pointer_pressed(center.not_nil!),
+      Egui::Event.pointer_released(center.not_nil!)], time: 0.032)
+    ctx.window("demo") { |ui| ui.time_picker("t", value) { |t| value = t } }
+    ctx.end_frame
+    ctx.popup_open?("time_picker/t").should be_true
+
+    # H/M/S caps label the three columns (top row, faded)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("H")
+    texts.should contain("M")
+    texts.should contain("S")
+
+    # click minute "31" (one below the centered 30) — draft only
+    target = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |t| t.text == "31" }.not_nil!.pos + Egui::Vec2.new(1.0, 0.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(target),
+      Egui::Event.pointer_pressed(target)], time: 0.048)
+    ctx.window("demo") { |ui| ui.time_picker("t", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(target)], time: 0.064)
+    ctx.window("demo") { |ui| ui.time_picker("t", value) { |t| value = t } }
+    ctx.end_frame
+    value.minute.should eq(30) # nothing committed yet
+    ctx.popup_open?("time_picker/t").should be_true
+
+    # ✓ commits the draft: minute 31, hour/second preserved
+    pop = ctx.memory.popup_rects[Egui::Id.from("popup/time_picker/t")].not_nil!
+    pad_y = Egui::WheelFieldPicker::FLYOUT_PAD
+    accept = Egui::Pos2.new(pop.left + pop.width * 0.25,
+      pop.bottom - pad_y - Egui::WheelFieldPicker::FOOTER_H_FACTOR *
+        ctx.style.spacing.interact_size.y / 2.0)
+    raw_frame(ctx, events: [Egui::Event.pointer_moved(accept),
+      Egui::Event.pointer_pressed(accept)], time: 0.08)
+    ctx.window("demo") { |ui| ui.time_picker("t", value) { |t| value = t } }
+    ctx.end_frame
+    raw_frame(ctx, events: [Egui::Event.pointer_released(accept)], time: 0.096)
+    ctx.window("demo") { |ui| ui.time_picker("t", value) { |t| value = t } }
+    ctx.end_frame
+    value.minute.should eq(31)
+    value.hour.should eq(12)
+    value.second.should eq(45)
+    ctx.popup_open?("time_picker/t").should be_false
   end
 end
 

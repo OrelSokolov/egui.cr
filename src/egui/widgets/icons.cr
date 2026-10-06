@@ -10,18 +10,18 @@
 module Egui
   module Icons
     NAMES = {:check, :close, :left, :right, :up, :down, :plus, :minus,
-             :copy, :paste, :trash, :download}
+             :copy, :paste, :trash, :download,
+             :bluetooth, :wifi, :monitor}
 
     # Draw `name` fitted into `rect` with `color` and stroke width.
     def self.draw(painter : Painter, name : Symbol, rect : Rect,
                   color : Color32, width : Float64 = 2.0) : Nil
       case name
       when :check
-        a = Pos2.new(rect.left + 0.22 * rect.width, rect.top + 0.55 * rect.height)
-        b = Pos2.new(rect.left + 0.44 * rect.width, rect.top + 0.75 * rect.height)
-        c = Pos2.new(rect.left + 0.80 * rect.width, rect.top + 0.28 * rect.height)
-        painter.line(a, b, width, color)
-        painter.line(b, c, width, color)
+        # Lucide check (`icons/lucide/check.svg`: M20 6 9 17l-5-5),
+        # aspect-fitted like the rest of the Lucide set (#polyline24).
+        polyline24(painter, rect, width, color,
+          [Vec2.new(20.0, 6.0), Vec2.new(9.0, 17.0), Vec2.new(4.0, 12.0)])
       when :close
         # Lucide x (`icons/lucide/x.svg`: M18 6 6 18 / m6 6 12 12): the
         # diagonals span the 12×12 box centered in the icon's 24-grid —
@@ -121,6 +121,36 @@ module Egui
         painter.rect(Rect.from_min_size(
           Pos2.new(rect.left + 0.20 * rect.width, lid_y),
           Vec2.new(0.60 * rect.width, 0.70 * rect.height)), 1.0, nil, color, width)
+      when :bluetooth
+        # Lucide bluetooth (`icons/lucide/bluetooth.svg`:
+        # m7 7 10 10-5 5V2l5 5L7 17) — one continuous polyline
+        # through the rune's six corner points.
+        polyline24(painter, rect, width, color, [
+          Vec2.new(7.0, 7.0), Vec2.new(17.0, 17.0), Vec2.new(12.0, 22.0),
+          Vec2.new(12.0, 2.0), Vec2.new(17.0, 7.0), Vec2.new(7.0, 17.0),
+        ])
+      when :wifi
+        # Lucide wifi: three arcs radiating from a dot, all sharing the
+        # dot (12, 20) as center on the 24-grid. The arc angles come
+        # from the source radii and half-chords (r=15 through y=8.82,
+        # r=10 through y=12.859, r=5 through y=16.429).
+        s = {rect.width, rect.height}.min / 24.0
+        center = Pos2.new(rect.left + 12.0 * s, rect.top + 20.0 * s)
+        w = {2.0 * s, 1.0}.max
+        painter.arc(center, 15.0 * s, -2.3001, -0.8415, w, color)
+        painter.arc(center, 10.0 * s, -2.3460, -0.7956, w, color)
+        painter.arc(center, 5.0 * s, -2.3460, -0.7956, w, color)
+        painter.circle_filled(center, w / 2.0, color)
+      when :monitor
+        # Lucide monitor: rounded screen rect on a stand.
+        s = {rect.width, rect.height}.min / 24.0
+        ox = rect.left + (rect.width - 24.0 * s) / 2.0
+        oy = rect.top + (rect.height - 24.0 * s) / 2.0
+        g = ->(x : Float64, y : Float64) { Pos2.new(ox + x * s, oy + y * s) }
+        painter.rect(Rect.from_min_size(g.call(2.0, 3.0),
+          Vec2.new(20.0 * s, 14.0 * s)), 2.0 * s, nil, color, {2.0 * s, 1.0}.max)
+        painter.line(g.call(8.0, 21.0), g.call(16.0, 21.0), {2.0 * s, 1.0}.max, color)
+        painter.line(g.call(12.0, 17.0), g.call(12.0, 21.0), {2.0 * s, 1.0}.max, color)
       end
     end
 

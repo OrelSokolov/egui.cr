@@ -570,12 +570,26 @@ module Egui
       response
     end
 
-    # egui_extras `DatePickerButton` — see `DatePicker`. The block
+    # egui_extras `DatePickerButton` — see `CalendarPicker`. The block
     # fires from inside #show on the day click (and Today).
-    def date_picker(id : String, value : Time,
-                    format : String = "%Y-%m-%d",
+    def calendar_picker(id : String, value : Time,
+                        format : String = "%Y-%m-%d",
+                        &on_change : Time ->) : Response
+      add(CalendarPicker.new(id, value, format, &on_change))
+    end
+
+    # Windows 11–style date picker (wheel flyout, ✓/✕ footer) — see
+    # `DatePicker`.
+    def date_picker(id : String, value : Time, format : String = "%d.%m.%Y",
                     &on_change : Time ->) : Response
       add(DatePicker.new(id, value, format, &on_change))
+    end
+
+    # Windows 11–style time picker (wheel flyout, ✓/✕ footer) — see
+    # `TimePicker`.
+    def time_picker(id : String, value : Time, format : String = "%H:%M:%S",
+                    &on_change : Time ->) : Response
+      add(TimePicker.new(id, value, format, &on_change))
     end
 
     # egui_plot-style line/scatter plot; see `Plot`. `animated: true`

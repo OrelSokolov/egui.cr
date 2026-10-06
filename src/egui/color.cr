@@ -28,6 +28,17 @@ module Egui
       Color32.new(f.call(r), f.call(g), f.call(b), a)
     end
 
+    # Linear interpolation in sRGB space (upstream `ecolor::lerp`
+    # also blends channel bytes directly); `t` is clamped to 0..=1.
+    def lerp(other : Color32, t : Float64) : Color32
+      t = t.clamp(0.0, 1.0)
+      f = ->(c : UInt8, o : UInt8) do
+        (c.to_f64 + (o.to_f64 - c.to_f64) * t).round.clamp(0.0, 255.0).to_u8.as(UInt8)
+      end
+      Color32.new(f.call(r, other.r), f.call(g, other.g),
+        f.call(b, other.b), f.call(a, other.a))
+    end
+
     def ==(other : Color32) : Bool
       r == other.r && g == other.g && b == other.b && a == other.a
     end

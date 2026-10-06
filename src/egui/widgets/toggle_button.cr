@@ -5,6 +5,11 @@
 # `Response#changed?`), but painted as an iOS-style track + knob, which
 # reads better for instantaneous settings than a checkbox does.
 #
+# The flip itself is instantaneous in the app's state, but the paint
+# eases over ~150 ms (`Context#animate_value_with_time`, keyed by the
+# widget id): the knob slides along the track and the track fill
+# cross-fades between button_stroke and selection_fill.
+#
 # Sizing: by default the tumbler matches the text height
 # (`sync_with_text` = true). Untie it (`sync_with_text => false`) and
 # `tumbler_size` (the knob/track height; the track stays 2x as wide)
@@ -73,7 +78,10 @@ module Egui
       # Unchecked track: button_stroke, not button_weak — light themes
       # set weak ≈ the panel fill (macOS #FFF on #FFF) and the track
       # has no border of its own to fall back on (cf. Slider's rail).
-      track_fill = @checked ? visuals.selection_fill : visuals.button_stroke
+      # `anim_t` eases 0→1 across the flip, driving both the fill
+      # cross-fade and the knob position below.
+      anim_t = ui.ctx.animate_value_with_time(id, @checked ? 1.0 : 0.0, 0.15)
+      track_fill = visuals.button_stroke.lerp(visuals.selection_fill, anim_t)
       track_fill = visuals.button_active if response.active? && @checked
       ui.painter.rect(track, track_h / 2.0, track_fill)
 
@@ -81,7 +89,7 @@ module Egui
       # never touches the rounded ends.
       inset = 2.0
       travel = track_w - knob - 2.0 * inset
-      knob_x = track.left + inset + (@checked ? travel : 0.0)
+      knob_x = track.left + inset + anim_t * travel
       ui.painter.circle(Pos2.new(knob_x + knob / 2.0, track.center.y),
         knob / 2.0 - inset / 2.0, visuals.text_color)
 
