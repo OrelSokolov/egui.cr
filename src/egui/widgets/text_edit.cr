@@ -39,7 +39,9 @@ module Egui
 
     def initialize(@text : String, @hint : String? = nil,
                    @password : Bool = false, @focus_id : String? = nil,
-                   @frame : Bool = true)
+                   @frame : Bool = true,
+                   @cursor_style : Symbol = :line,
+                   @cursor_blinks : Bool = true)
     end
 
     def ui(ui : Ui) : Response
@@ -76,7 +78,7 @@ module Egui
         ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
         new_text, cursor, anchor, changed =
           handle_keyboard(ui.ctx, @text, cursor, anchor)
-        ui.ctx.request_repaint # caret blink
+        ui.ctx.request_repaint if @cursor_blinks # caret blink
       end
 
       # Password mode replaces every character with MASK_CHAR for
@@ -194,11 +196,12 @@ module Egui
       # edge, never paint over the padding/border zone (a wide mask
       # glyph bleeding into the border reads as misaligned).
       outer_clip = ui.painter.clip
-      ui.painter.clip = Rect.new(
+      content_clip = Rect.new(
         Pos2.new({outer_clip.min.x, rect.min.x + inset.x}.max,
           {outer_clip.min.y, rect.min.y + inset.y}.max),
         Pos2.new({outer_clip.max.x, rect.max.x - inset.x}.min,
           {outer_clip.max.y, rect.max.y - inset.y}.min))
+      ui.painter.clip = content_clip
 
       # Selection highlight behind the text (the galley is laid out on
       # the actual text, never the hint).
@@ -221,16 +224,45 @@ module Egui
 
       ui.painter.clip = outer_clip
 
-      # Blinking caret (1s period) while focused — painted AFTER the
-      # content clip is restored: auto-follow can park it exactly on
-      # the inner edge, where the half-pixel of its centered stroke
-      # would otherwise be scissored away.
-      if response.has_focus? && (ui.ctx.input.time % 1.0) < 0.6
-        caret_x = inner.x + galley.x_at(0, d_idx.call(cursor), fonts) - scroll
-        top = inner.y + 1.0
-        bottom = inner.y + line_h - 1.0
-        ui.painter.line(Pos2.new(caret_x, top), Pos2.new(caret_x, bottom),
-          1.0, visuals.text_color)
+      # Caret while focused — a 1px line by default, or a vim-style
+      # BLOCK with `cursor_style: :block`; it BLINKS (1s period) unless
+      # `cursor_blinks: false` holds it steady (a steady caret needs no
+      # repaints of its own). Painted AFTER the content clip is
+      # restored: auto-follow can
+      # park it exactly on the inner edge, where the half-pixel of its
+      # centered stroke would otherwise be scissored away. The block
+      # fills the cell of the character under the caret and re-draws
+      # that character in the field's background color (inverse
+      # video); past the last character it falls back to a space-width
+      # cell. The glyph repaint goes through the CONTENT clip (like
+      # the galley itself) so a caret parked at the edge cuts its
+      # glyph at the same line.
+      if response.has_focus? &&
+         (@cursor_blinks ? (ui.ctx.input.time % 1.0) < 0.6 : true)
+        if @cursor_style == :block
+          col = d_idx.call(cursor)
+          caret_x = galley.x_at(0, col, fonts)
+          w = galley.x_at(0, col + 1, fonts) - caret_x
+          w = {fonts.measure(" ", font_size).x, font_size * 0.5}.max if w <= 0.0
+          ui.painter.rect(
+            Rect.from_min_size(Pos2.new(inner.x + caret_x - scroll, inner.y + 1.0),
+              Vec2.new(w, line_h - 2.0)), 0.0, visuals.text_color)
+          if (ch = display[col]?)
+            glyph_bg = @frame ? bg : visuals.window_fill
+            row_h = galley.rows[0]?.try(&.height) || line_h
+            ui.painter.clip = content_clip
+            ui.painter.text(
+              Pos2.new(inner.x + caret_x - scroll, inner.y + row_h / 2.0),
+              ch.to_s, font_size, glyph_bg, family: style.font_family)
+            ui.painter.clip = outer_clip
+          end
+        else
+          caret_x = inner.x + galley.x_at(0, d_idx.call(cursor), fonts) - scroll
+          top = inner.y + 1.0
+          bottom = inner.y + line_h - 1.0
+          ui.painter.line(Pos2.new(caret_x, top), Pos2.new(caret_x, bottom),
+            1.0, visuals.text_color)
+        end
       end
 
       response.widget_text = new_text

@@ -438,8 +438,11 @@ module Egui
     end
 
     def text_field(sig : Signal(String), hint : String? = nil,
-                   password : Bool = false) : Response
-      response = add(TextEdit.new(sig.value, hint, password))
+                   password : Bool = false,
+                   cursor_style : Symbol = :line,
+                   cursor_blinks : Bool = true) : Response
+      response = add(TextEdit.new(sig.value, hint, password,
+        cursor_style: cursor_style, cursor_blinks: cursor_blinks))
       if response.changed? && (text = response.widget_text)
         sig.value = text
       end
@@ -447,8 +450,11 @@ module Egui
     end
 
     def textarea(sig : Signal(String), hint : String? = nil,
-                 rows : Int32 = 8, frame : Bool = true) : Response
-      response = add(TextArea.new(sig.value, hint, rows, frame))
+                 rows : Int32 = 8, frame : Bool = true,
+                 cursor_style : Symbol = :line,
+                 cursor_blinks : Bool = true) : Response
+      response = add(TextArea.new(sig.value, hint, rows, frame,
+        cursor_style: cursor_style, cursor_blinks: cursor_blinks))
       if response.changed? && (text = response.widget_text)
         sig.value = text
       end
@@ -470,8 +476,11 @@ module Egui
                              password : Bool = false,
                              focus_id : String? = nil,
                              frame : Bool = true,
+                             cursor_style : Symbol = :line,
+                             cursor_blinks : Bool = true,
                              &on_change : String ->) : Response
-      response = add(TextEdit.new(buffer, hint, password, focus_id, frame))
+      response = add(TextEdit.new(buffer, hint, password, focus_id, frame,
+        cursor_style, cursor_blinks))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end
@@ -481,9 +490,10 @@ module Egui
     # egui `ui.text_edit_multiline` — here an HTML-textarea-shaped
     # widget: soft wrap, `rows` lines tall, its own kinetic scroll.
     def textarea(buffer : String, hint : String? = nil, rows : Int32 = 8,
-                 frame : Bool = true,
+                 frame : Bool = true, cursor_blinks : Bool = true,
                  &on_change : String ->) : Response
-      response = add(TextArea.new(buffer, hint, rows, frame))
+      response = add(TextArea.new(buffer, hint, rows, frame,
+        cursor_blinks: cursor_blinks))
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end

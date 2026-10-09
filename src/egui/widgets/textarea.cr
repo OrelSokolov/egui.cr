@@ -35,7 +35,9 @@ module Egui
     BIG_TEXT_BYTES = 1 << 19
 
     def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8,
-                   @frame : Bool = true, @focus_id : String? = nil)
+                   @frame : Bool = true, @focus_id : String? = nil,
+                   @cursor_style : Symbol = :line,
+                   @cursor_blinks : Bool = true)
     end
 
     # Cross-frame state for the virtual big-text mode: TextArea widgets
@@ -295,7 +297,7 @@ module Egui
         new_text, cursor, anchor, changed =
           handle_keyboard(ui.ctx, @text, cursor, anchor,
             galley, row_starts, fonts, view_h)
-        ui.ctx.request_repaint # caret blink
+        ui.ctx.request_repaint if @cursor_blinks # caret blink
       end
 
       # The galley was laid out from the OLD buffer before the keyboard
@@ -422,18 +424,41 @@ module Egui
           hint_galley, fonts, color, style.font_family)
       end
 
-      # Blinking caret (1s period) while focused. In virtual mode a
-      # caret outside the built window has no row to sit on — skip it
-      # (the window recenters on the caret before the next frame).
-      if response.has_focus? && (input.time % 1.0) < 0.6
+      # Caret while focused: a 1px line by default, or a vim-style
+      # BLOCK with `cursor_style: :block`; it BLINKS (1s period) unless
+      # `cursor_blinks: false` holds it steady —
+      # the block fills the cell of the character under the caret and
+      # re-draws that character in the widget's background color
+      # (inverse video); at end of line (or on an empty buffer) it
+      # falls back to a space-width cell. In virtual mode a caret
+      # outside the built window has no row to sit on — skip it (the
+      # window recenters on the caret before the next frame).
+      if response.has_focus? &&
+         (@cursor_blinks ? (input.time % 1.0) < 0.6 : true)
         row_index, col = caret_row_col(galley, row_starts, cursor)
         row = galley.rows[row_index]?
         if row || !vstate
-          caret_x = inner.min.x + (row ? galley.x_at(row_index, col, fonts) : 0.0)
+          caret_x = row ? galley.x_at(row_index, col, fonts) : 0.0
           top = inner.min.y + (row ? row.y : galley.size.y) - offset
-          bottom = top + (row ? row.height : line_h)
-          ui.painter.line(Pos2.new(caret_x, top + 1.0),
-            Pos2.new(caret_x, bottom - 1.0), 1.0, visuals.text_color)
+          h = (row ? row.height : line_h) - 2.0
+          if @cursor_style == :block
+            w = row ? galley.x_at(row_index, col + 1, fonts) - caret_x : 0.0
+            w = {fonts.measure(" ", font_size).x, font_size * 0.5}.max if w <= 0.0
+            ui.painter.rect(
+              Rect.from_min_size(Pos2.new(inner.min.x + caret_x, top + 1.0),
+                Vec2.new(w, h)), 0.0, visuals.text_color)
+            if row && (ch = row.text[col]?)
+              glyph_bg = @frame ? visuals.button_weak : visuals.window_fill
+              size = row.runs.map(&.size).max? || font_size
+              ui.painter.text(
+                Pos2.new(inner.min.x + caret_x, top + row.height / 2.0),
+                ch.to_s, size, glyph_bg, family: style.font_family)
+            end
+          else
+            ui.painter.line(Pos2.new(inner.min.x + caret_x, top + 1.0),
+              Pos2.new(inner.min.x + caret_x, top + 1.0 + h),
+              1.0, visuals.text_color)
+          end
         end
       end
 
