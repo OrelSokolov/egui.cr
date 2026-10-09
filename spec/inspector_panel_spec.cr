@@ -201,6 +201,9 @@ describe "inspector panel rendering smoke" do
     end
     ctx.inspector.inspect_widget(Egui::Id.from("save"))
     ctx.set_id_style(Egui::Id.from("save"), "background", Egui::Color32.rgb(9, 9, 9))
+    # the element tab is a manual switch now (Class is the default);
+    # this test exercises the element snippet
+    ctx.inspector.tab = :element
     ctx.inspector.open_export
     smoke_frame(ctx, time: 0.032) do |c|
       c.window("w") { |ui| ui.button("OK", id: "save") }
@@ -227,6 +230,8 @@ describe "inspector panel rendering smoke" do
       end
     end
     ctx.inspector.inspect_widget(Egui::Id.from("lbl"))
+    # the element tab is a manual switch now (Class is the default)
+    ctx.inspector.tab = :element
 
     # the element tab's font_family row is a combo: the closed button
     # shows the placeholder (nothing set), not a text cursor field

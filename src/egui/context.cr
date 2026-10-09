@@ -610,6 +610,12 @@ module Egui
       merged.empty? ? nil : merged
     end
 
+    # Mirror of the live `Ui#style_scope` (kept equal by
+    # `Ui#with_style_scope`, the only writer): lets the inspector meta
+    # and paint-in-place `StyledPart`s see the scope at record/resolve
+    # time, where no `Ui` is at hand. Internal.
+    property current_style_scope : String? = nil
+
     # The inspector state (built on first enable — zero cost while
     # off). The backend drives its frame hooks; see `inspector.cr`.
     def inspector : Inspector

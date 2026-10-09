@@ -42,7 +42,7 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
-      class_vars = style_vars(ui, id, "link")
+      class_vars = style_vars(ui, id)
       style = effective_style(ui, id, class_vars)
       font_size = style.font_size
       fonts = ui.ctx.fonts_for(style.font_family)
@@ -62,7 +62,7 @@ module Egui
       # the text color and the underline ride the state bag (a
       # `link:hover { underline }` rule applies while hovered).
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      state_vars = style_vars(ui, id, "link", state)
+      state_vars = style_vars(ui, id, state)
       color = state_vars.color?("text_color") ||
               style.visuals.hyperlink_color
       # The explicit `#underline` attribute beats the stylesheet — a

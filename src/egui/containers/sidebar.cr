@@ -9,7 +9,10 @@
 # outgrow the panel scroll (wheel + overlay scrollbar) instead of
 # clipping away.
 #
-# Styling goes through the global `StyleSheet` (CSS-like classes):
+# Styling goes through the global `StyleSheet` (CSS-like classes).
+# #ui opens the "sidebar" style scope (`Ui#with_style_scope`), so the
+# parts below chain onto it and any NESTED real widget (a Button added
+# inside) styles under "sidebar.button" automatically:
 #   sidebar          — tab_spacing (the gap between tab buttons)
 #   sidebar.section  — font_size, margin.top/left/…, text_color
 #   sidebar.tab      — padding.top/right/bottom/left, height,
@@ -40,6 +43,9 @@ module Egui
 
     # Element classes for `StyleSheet` tweaks from app code:
     #   ctx.stylesheet.rule(Sidebar::TAB_CLASS, …)
+    # The parts chain onto the "sidebar" style scope (`Ui#with_style_scope`
+    # in #ui), so the paths derive as "sidebar" + part name — the
+    # constants below are the resulting paths, kept for app-side rules.
     ROOT_CLASS    = "sidebar"
     SECTION_CLASS = "sidebar.section"
     TAB_CLASS     = "sidebar.tab"
@@ -51,13 +57,14 @@ module Egui
 
     # The StyledPart behind one tab row (see widgets/styled_part.cr):
     # carries the inspector meta for the row's interact and declares
-    # the `sidebar.tab` keys. Without it the row's interact recorded
-    # the whole Sidebar widget (kind "Sidebar", no stylable props).
-    # State overlays (:hover/:selected) resolve per row id, so class
-    # rules AND per-element inspector edits both reach the row.
+    # the `sidebar.tab` keys. The bare "tab" name chains onto the
+    # live "sidebar" scope (see #ui). Without it the row's interact
+    # recorded the whole Sidebar widget (kind "Sidebar", no stylable
+    # props). State overlays (:hover/:selected) resolve per row id, so
+    # class rules AND per-element inspector edits both reach the row.
     class TabPart < StyledPart
       def initialize(label : String)
-        super("SidebarTab", TAB_CLASS, [
+        super("SidebarTab", "tab", [
           StyleProp.new("height", :number),
           StyleProp.new("font_size", :number),
           StyleProp.new("font_family", :string),
@@ -69,11 +76,12 @@ module Egui
     end
 
     # The StyledPart behind a row's nested close button — its own kind
-    # and `sidebar.close` class, so the X is pickable and stylable
-    # separately from the tab row it lives in.
+    # and the "close" part of the "sidebar" scope ("sidebar.close"), so
+    # the X is pickable and stylable separately from the tab row it
+    # lives in.
     class ClosePart < StyledPart
       def initialize(label : String)
-        super("SidebarCloseButton", CLOSE_CLASS, [
+        super("SidebarCloseButton", "close", [
           StyleProp.new("background", :color, states: true),
           StyleProp.new("text_color", :color),
         ], label)
@@ -119,6 +127,12 @@ module Egui
         return ui.interact(rect, ui.next_widget_id, Sense.none)
       end
 
+      # Style scope: the parts below (and any nested real widget)
+      # chain onto "sidebar.*" — see `Ui#with_style_scope`.
+      ui.with_style_scope(ROOT_CLASS) { render(ui) }
+    end
+
+    private def render(ui : Ui) : Response
       ctx = ui.ctx
       sheet = ctx.stylesheet
       style = ui.style
@@ -236,8 +250,14 @@ module Egui
                   .vars(inner, x_id.not_nil!, cr.hovered? ? "hover" : nil)
                 x_color = x_vars.color("text_color",
                   cr.hovered? ? text_color : visuals.fade_color(text_color))
-                if cr.hovered?
-                  fill = x_vars.color?("background") || visuals.button_hovered
+                # The class `background` paints in the BASE state too (a
+                # `sidebar.close { background }` rule must not wait for a
+                # hover); the hovered fill — the rule's :hover overlay or
+                # the theme slot — replaces it on top.
+                fill = cr.hovered? ?
+                  x_vars.color?("background") || visuals.button_hovered :
+                  x_vars.color?("background")
+                if fill
                   inner.painter.rect(cr.rect, 3.0, fill)
                 end
                 Icons.draw(inner.painter, :close, cr.rect, x_color)

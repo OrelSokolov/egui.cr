@@ -83,7 +83,7 @@ module Egui
         # so `terminal { background }` etc. restyle the grid live
         # without touching the app's Theme object.
         id = ui.next_widget_id
-        vars = style_vars(ui, id, "terminal")
+        vars = style_vars(ui, id)
         @font_family = vars.str?("font_family") || "monospace"
         @font_size = vars.f64("font_size", @base_font_size)
         if vars.any? { |k, _| COLOR_KEYS.includes?(k) }

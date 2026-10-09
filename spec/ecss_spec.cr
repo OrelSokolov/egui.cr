@@ -250,6 +250,8 @@ describe "ecss" do
 
     draw.call([] of Egui::Event)
     ctx.inspector.selected = Egui::Id.from("save")
+    # the element tab is a manual switch now (Class is the default)
+    ctx.inspector.tab = :element
     draw.call([] of Egui::Event) # element tab rows render
 
     markers = ctx.inspector.meta_values
@@ -301,10 +303,12 @@ describe "ecss" do
     # alphabetically-first class) and the header cells register rects
     ctx.inspector.class_sel.should eq "button"
 
-    # Pick the Checkbox — selection forces the Element tab; clicking
-    # "Class" afterwards must jump to "checkbox", not stay on "button".
+    # Pick the Checkbox — the pick itself stays on the Class tab and
+    # targets the picked widget's class ("checkbox"); the manual
+    # Element switch stays available.
     ctx.inspector.selected = Egui::Id.from("the_box")
-    ctx.inspector.tab.should eq :element
+    ctx.inspector.tab.should eq :class
+    ctx.inspector.class_sel.should eq "checkbox"
     draw.call([] of Egui::Event)
 
     class_tab = ctx.inspector.meta_values.find { |m|

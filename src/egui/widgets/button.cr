@@ -105,7 +105,7 @@ module Egui
       # the class defaults. Sizing uses the state-less style; the
       # state only picks colors, re-resolved after the interaction
       # verdict.
-      class_vars = style_vars(ui, id, "button")
+      class_vars = style_vars(ui, id)
       style = effective_style(ui, id, class_vars)
 
       # Per-side padding box; falls back to Spacing#button_padding
@@ -156,8 +156,8 @@ module Egui
       # the same state bag (a `button:hover { stroke }` rule applies
       # while hovered).
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      state_vars = style_vars(ui, id, "button", state)
-      fill = background_color(ui, id, "button", state,
+      state_vars = style_vars(ui, id, state)
+      fill = background_color(ui, id, state,
         response.hovered?, response.active?)
       stroke_color = state_vars.color?("stroke") ||
                      style.visuals.button_stroke

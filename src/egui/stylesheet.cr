@@ -23,6 +23,13 @@
 # nothing is rebuilt per frame; defining or tweaking a rule drops the
 # cache.
 #
+# Style scopes (`Ui#with_style_scope`) chain a widget's base class with
+# a scoped path — a Button inside scope "sidebar" reads BOTH "button"
+# and "sidebar.button" through `#resolve_chain` (class layers first,
+# state layers on top, so `button:hover` still beats
+# `sidebar.button`). See `Widget#class_paths` for how the chain is
+# derived.
+#
 # Introspection: `#classes` / `#selectors` list what is defined, and
 # `#dump(io)` (or `puts ctx.stylesheet`) prints the whole tree with
 # every key per class/state — for logs or a runtime style editor.
@@ -342,6 +349,46 @@ module Egui
         end
       end
       @resolved[key] = bag
+      bag
+    end
+
+    # The class-chain counterpart of #resolve: merges every path's
+    # resolved bag in CSS cascade order — later paths are more
+    # specific and win per key (`.sidebar .button` beats `button`), but
+    # the STATE layer of ANY path beats the class layer of ANY path
+    # (`button:hover` still wins over `sidebar.button`). Cached like
+    # #resolve (the joined paths form the cache key), so chains resolve
+    # once and the bag is shared across frames until a rule changes.
+    def resolve_chain(paths : Array(String), state : String? = nil) : StyleVars
+      return resolve(paths.first, state) if paths.size == 1
+      key = paths.join('\u0000')
+      if (cached = @resolved[{key, state}]?)
+        Egui::Bench.count("style.resolve.hit")
+        return cached
+      end
+      Egui::Bench.count("style.resolve.miss")
+      bag = StyleVars.new
+      # 1. class layer (defaults), least specific first
+      paths.each { |path| bag.merge!(resolve(path)) }
+      # 2. state layer on top — always beats class values
+      if state
+        paths.each { |path| bag.merge!(resolve_state_layer(path, state)) }
+      end
+      @resolved[{key, state}] = bag
+      bag
+    end
+
+    # The state layer of #resolve alone: every matching ancestor's
+    # `state` overlay merged root→leaf, with NO class values — what
+    # resolve_chain needs to keep a pseudo-class rule above the class
+    # layer of a more specific chain path.
+    def resolve_state_layer(path : String, state : String) : StyleVars
+      bag = StyleVars.new
+      ancestors(path).each do |ancestor|
+        if (cls = @classes[ancestor]?) && (overlay = cls.states[state]?)
+          bag.merge!(overlay)
+        end
+      end
       bag
     end
 

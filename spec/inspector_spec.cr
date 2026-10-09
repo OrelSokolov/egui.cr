@@ -50,7 +50,7 @@ describe "widget inspector" do
     end
     m = ctx.inspector.meta_for(Egui::Id.from("save")).not_nil!
     m.kind.should eq "Button"
-    m.style_class.should eq "button"
+    m.display_class.should eq "button"
     m.id_name.should eq "save"
     m.props.any? { |p| p.key == "background" }.should be_true
 

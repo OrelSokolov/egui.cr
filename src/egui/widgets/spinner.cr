@@ -29,7 +29,7 @@ module Egui
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       style = effective_style(ui, id)
-      vars = style_vars(ui, id, "spinner")
+      vars = style_vars(ui, id)
       size = @size || vars.f64("size", style.spacing.interact_size.y)
       rect = ui.allocate_at_least(Vec2.new(size, size))
 

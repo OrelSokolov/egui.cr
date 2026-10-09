@@ -30,6 +30,8 @@ module Egui
     # and inspector edits address them as `slider.tip` —
     #   ctx.stylesheet.rule("slider.tip", StyleVars{
     #     "text_color" => Color32.rgb(120, 120, 120), …})
+    # The part's bare "tip" name chains onto the live "slider" scope
+    # (`Ui#with_style_scope` in #ui) to form the path.
     TIP_CLASS = "slider.tip"
 
     # The StyledPart behind one tip caption (see widgets/styled_part.cr):
@@ -39,7 +41,7 @@ module Egui
     # id, so class rules AND per-element inspector edits both land.
     class TipPart < StyledPart
       def initialize(label : String)
-        super("SliderTip", TIP_CLASS, StyleProps.textlike, label)
+        super("SliderTip", "tip", StyleProps.textlike, label)
       end
     end
 
@@ -52,10 +54,11 @@ module Egui
     # The StyledPart behind the tick-mark row: one part covers the whole
     # row (the strokes are decorative, there is nothing to pick per
     # stroke) — it records the inspector meta for the row's interact
-    # and declares the `slider.tick` keys.
+    # and declares the `slider.tick` keys (bare "tick" name chained
+    # onto the "slider" scope).
     class TickPart < StyledPart
       def initialize
-        super("SliderTick", TICK_CLASS, [
+        super("SliderTick", "tick", [
           StyleProp.new("stroke", :color),
           StyleProp.new("height", :number, min: 0.0),
         ])
@@ -118,6 +121,12 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
+      # Style scope: the tip/tick parts below (and any nested real
+      # widget) chain onto "slider.*" — see `Ui#with_style_scope`.
+      ui.with_style_scope("slider") { render(ui) }
+    end
+
+    private def render(ui : Ui) : Response
       id = resolve_id(ui)
       style = effective_style(ui, id)
       sp = style.spacing

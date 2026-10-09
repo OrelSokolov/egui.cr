@@ -37,14 +37,22 @@ module Egui
     class WidgetMeta
       getter id : Id                 # the interact id the meta was recorded for
       getter kind : String           # short class name ("Button")
-      getter style_class : String?
+      # The widget's live class chain (base + scoped path, most
+      # specific last — see `Widget#style_classes`): rules of EVERY
+      # path apply, so edits to "button" reach a button in a sidebar
+      # through "sidebar.button".
+      getter style_classes : Array(String)
+      # The most specific class (chain head) — what the pick menu and
+      # the Element→Class jump show.
+      getter display_class : String?
       getter props : Array(StyleProp)
       getter id_name : String?      # explicit id, if any
       getter label : String?        # text-ish human label
 
-      def initialize(@id : Id, widget : Widget)
+      def initialize(@id : Id, widget : Widget, ctx : Context)
         @kind = widget.inspector_kind
-        @style_class = widget.style_class
+        @style_classes = widget.style_classes(ctx)
+        @display_class = @style_classes.last?
         @props = widget.style_properties
         @id_name = widget.id_name
         @label = widget.inspector_label
@@ -157,7 +165,9 @@ module Egui
 
     def initialize(@ctx : Context)
       @open = true
-      @tab = :element
+      # Class tab by default: rules are the usual edit target, elements
+      # only after an explicit pick (which flips the tab — see #selected=).
+      @tab = :class
       @dock = :right
       @export_open = false
       @export_text = ""
@@ -177,7 +187,7 @@ module Egui
     # inspector is enabled, so the off case costs one branch.
     def record_meta(id : Id, widget : Widget?) : Nil
       return unless widget
-      @meta[id] = WidgetMeta.new(id, widget)
+      @meta[id] = WidgetMeta.new(id, widget, @ctx)
     end
 
     # Before app.update: the panel must bite #available_rect first to
@@ -232,7 +242,13 @@ module Egui
       # A fresh selection starts at the base state — a stale Hover (with
       # every non-state row filtered out) would read as an empty table.
       @element_state = nil
-      @tab = :element if id
+      # Picking stays on the Class tab (the default edit target): the
+      # selector jumps to the picked widget's most specific class, so
+      # pick → edit its rules in one motion. The Element tab stays a
+      # manual switch.
+      if (m = @last_selected_meta) && (dc = m.display_class)
+        @class_sel = dc
+      end
       id
     end
 
@@ -453,9 +469,9 @@ module Egui
         if render_tab(row, "Class", @tab == :class)
           @tab = :class
           # Element → Class linkage: jumping to the Class tab targets
-          # the LAST SELECTED element's class — pick the widget, edit
-          # its class, no manual combo hunt.
-          if (sc = @last_selected_meta.try &.style_class)
+          # the LAST SELECTED element's class (also done right at pick
+          # time in #selected= — kept here for the manual tab switch).
+          if (sc = @last_selected_meta.try &.display_class)
             @class_sel = sc
           end
         end
@@ -596,7 +612,10 @@ module Egui
 
       ui.horizontal do |row|
         row.label("Class:")
-        row.combo_box("insp_class", path, classes, 180.0) do |c|
+        # Searchable select (SelectBox): the class list grows with the
+        # app's scopes ("sidebar.button", "notepad.toolbar.tab", …) —
+        # typing a substring beats scanning the combo linearly.
+        row.select_box("insp_class", path, classes, 180.0) do |c|
           @class_sel = c
         end
       end
@@ -1123,12 +1142,13 @@ module Egui
       end
     end
 
-    # Merged display source for the Element tab: the class rules (with
-    # the state overlay) plus the per-element override of the same
+    # Merged display source for the Element tab: the class-chain rules
+    # (with the state overlay) plus the per-element override of the same
     # state (mirrors `Widget#style_vars`).
     private def element_vars(id : Id, m : WidgetMeta,
                              state : String? = nil) : StyleVars
-      vars = m.style_class ? @ctx.stylesheet.resolve(m.style_class.not_nil!, state) : StyleVars.new
+      vars = m.style_classes.empty? ? StyleVars.new :
+        @ctx.stylesheet.resolve_chain(m.style_classes, state)
       if (ov = @ctx.id_style_state_vars(id, state))
         merged = StyleVars.new
         merged.merge!(vars)
@@ -1149,7 +1169,7 @@ module Egui
 
     private def class_choices : Array(String)
       seen = (@meta.values + @prev_meta.values)
-        .map(&.style_class).compact.uniq
+        .flat_map(&.style_classes).uniq
       (seen + @ctx.stylesheet.classes).uniq.sort
     end
 
@@ -1159,7 +1179,7 @@ module Egui
       return [] of StyleProp unless path
       out = [] of StyleProp
       (@meta.values + @prev_meta.values).each do |m|
-        next unless m.style_class == path
+        next unless m.style_classes.includes?(path)
         m.props.each do |p|
           out << p unless out.any? { |e| e.key == p.key }
         end

@@ -67,7 +67,7 @@ describe "paint-in-place parts in the inspector" do
     # the bar button itself
     metas = ctx.inspector.meta_values
     btn = metas.find(&.kind.==("MenuButton")).not_nil!
-    btn.style_class.should eq "menu.button"
+    btn.display_class.should eq "menu.button"
     btn.props.any? { |p| p.key == "background" }.should be_true
 
     # open the menu so the ITEM interacts and records meta
@@ -85,7 +85,7 @@ describe "paint-in-place parts in the inspector" do
     menu.call([] of Egui::Event, 0.080)
     item = ctx.inspector.meta_values.find(&.kind.==("MenuItem"))
     item.should_not be_nil
-    item.not_nil!.style_class.should eq "menu.item"
+    item.not_nil!.display_class.should eq "menu.item"
     item.not_nil!.label.should eq "Tool Box"
 
     # a hover rule restyles the row: move over the item, then a rule
@@ -121,7 +121,7 @@ describe "paint-in-place parts in the inspector" do
 
     metas = ctx.inspector.meta_values
     tab = metas.find(&.kind.==("Tab")).not_nil!
-    tab.style_class.should eq "title_bar.tab"
+    tab.display_class.should eq "title_bar.tab"
     tab.props.any? { |p| p.key == "min_width" }.should be_true
     metas.any?(&.kind.==("NewTab")).should be_true
 
@@ -168,7 +168,7 @@ describe "paint-in-place parts in the inspector" do
     metas = ctx.inspector.meta_values.select(&.kind.==("Tab"))
     metas.size.should eq(2)
     metas.each do |m|
-      m.style_class.should eq("tabs.tab")
+      m.display_class.should eq("tabs.tab")
       m.props.any? { |p| p.key == "background" }.should be_true
     end
 
@@ -190,6 +190,31 @@ describe "paint-in-place parts in the inspector" do
     rects.any? { |r| r.fill == blue }.should be_true
   end
 
+  it "Tabs: the BASE background rule paints the close X without hover" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    draw = ->(time : Float64) do
+      raw = Egui::RawInput.new(PARTS_SCREEN, [] of Egui::Event, time)
+      ctx.begin_frame(raw)
+      ctx.central_panel do |ui|
+        ui.add(Egui::Tabs.new(["a", "b"], 0, closable: true))
+      end
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::RectCmd)
+    end
+
+    draw.call(0.016)
+
+    # a BASE rule (no :hover) must paint the non-selected card AND the
+    # close X marks at rest — the X reads the class background in the
+    # base state too (the SELECTED card keeps its :selected overlay —
+    # the cascade is untouched)
+    red = Egui::Color32.rgb(255, 0, 0)
+    ctx.stylesheet.rule("tabs.tab", Egui::StyleVars{"background" => red})
+    rects = draw.call(0.032)
+    rects.count { |r| r.fill == red }.should be >= 3
+  end
+
   it "terminal: style keys cover colors and font size, rules restyle the grid" do
     backend = PartsFakeBackend.with_screen("hello")
     ctx = Egui::Context.new
@@ -198,7 +223,7 @@ describe "paint-in-place parts in the inspector" do
       c.central_panel { |ui| ui.terminal(backend) }
     end
     m = ctx.inspector.meta_values.find(&.kind.==("TermView")).not_nil!
-    m.style_class.should eq "terminal"
+    m.display_class.should eq "terminal"
     keys = m.props.map(&.key)
     {"font_size", "background", "text_color", "cursor_color",
      "selection_overlay", "scrollbar_color"}.each do |k|
@@ -245,7 +270,7 @@ describe "paint-in-place parts in the inspector" do
     metas = ctx.inspector.meta_values.select(&.kind.==("InspectorTab"))
     metas.size.should eq(2) # "Class" + "Element"
     metas.each do |m|
-      m.style_class.should eq("inspector.tab")
+      m.display_class.should eq("inspector.tab")
       m.props.any? { |p| p.key == "background" }.should be_true
     end
     metas.map(&.label).compact.sort.should eq(["Class", "Element"])
@@ -280,13 +305,13 @@ describe "paint-in-place parts in the inspector" do
     tabs = metas.select(&.kind.==("SidebarTab"))
     tabs.size.should eq(2)
     tabs.each do |m|
-      m.style_class.should eq("sidebar.tab")
+      m.display_class.should eq("sidebar.tab")
       m.props.any? { |p| p.key == "background" }.should be_true
     end
     xs = metas.select(&.kind.==("SidebarCloseButton"))
     xs.size.should eq(2)
     xs.each do |m|
-      m.style_class.should eq("sidebar.close")
+      m.display_class.should eq("sidebar.close")
       m.props.any? { |p| p.key == "background" }.should be_true
     end
 
@@ -309,5 +334,35 @@ describe "paint-in-place parts in the inspector" do
     rects = ctx.painter.commands.select(Egui::RectCmd)
     rects.any? { |r| r.fill == lime }.should be_true
     rects.any? { |r| r.fill == cyan }.should be_true
+  end
+
+  it "sidebar.close: the BASE background rule paints the X without hover" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    sections = [Egui::Sidebar::Section.new("One", ["A"], closable: true)]
+    draw = ->(time : Float64) do
+      raw = Egui::RawInput.new(PARTS_SCREEN, [] of Egui::Event, time)
+      ctx.begin_frame(raw)
+      ctx.central_panel do |ui|
+        ui.sidebar(sections, 0, 0) { |_s, _t| }
+      end
+      ctx.end_frame
+      ctx.painter.commands.select(Egui::RectCmd)
+    end
+
+    # no rule, no hover: nothing paints behind the X
+    draw.call(0.016)
+    xs = ctx.inspector.meta_values.select(&.kind.==("SidebarCloseButton"))
+    xs.size.should eq(1)
+    x_rect = ctx.memory.widget_rects[xs[0].id]? ||
+             ctx.memory.prev_widget_rects[xs[0].id].not_nil!
+
+    # a BASE rule (no :hover) must paint the X at rest — the X reads
+    # it in the base state, not only while hovered
+    red = Egui::Color32.rgb(255, 0, 0)
+    ctx.stylesheet.rule("sidebar.close", Egui::StyleVars{"background" => red})
+    draw.call(0.032)
+    rects = ctx.painter.commands.select(Egui::RectCmd)
+    rects.any? { |r| r.fill == red && r.rect == x_rect }.should be_true
   end
 end

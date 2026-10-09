@@ -18,7 +18,10 @@
 # style — when one line of tabs fills up, the next starts below it
 # (a baseline under every row, the strip grows downward).
 #
-# Styling goes through the global `StyleSheet` (CSS-like classes):
+# Styling goes through the global `StyleSheet` (CSS-like classes).
+# #ui opens the "tabs" style scope (`Ui#with_style_scope`), so the
+# cards chain onto it and any nested real widget styles under
+# "tabs.*" automatically:
 #   tabs          — tab_spacing (gap between tab buttons),
 #                   rule_color (the baseline under the strip),
 #                   merge_selected (1.0: the baseline skips the active
@@ -43,6 +46,9 @@ module Egui
 
     # Element classes for `StyleSheet` tweaks from app code:
     #   ctx.stylesheet.rule(Tabs::TAB_CLASS, …)
+    # The parts chain onto the "tabs" style scope (`Ui#with_style_scope`
+    # in #ui), so the paths derive as "tabs" + part name — the
+    # constants below are the resulting paths, kept for app-side rules.
     ROOT_CLASS = "tabs"
     TAB_CLASS  = "tabs.tab"
 
@@ -63,12 +69,13 @@ module Egui
 
     # The StyledPart behind one tab card (see widgets/styled_part.cr):
     # carries the inspector meta for the card's interacts and declares
-    # the `tabs.tab` keys. State overlays (:hover/:selected) resolve
+    # the `tabs.tab` keys. The bare "tab" name chains onto the live
+    # "tabs" scope (see #ui). State overlays (:hover/:selected) resolve
     # per card id, so BOTH class rules and per-element inspector edits
     # reach the card.
     class TabPart < StyledPart
       def initialize(label : String)
-        super("Tab", TAB_CLASS, [
+        super("Tab", "tab", [
           StyleProp.new("height", :number),
           StyleProp.new("font_size", :number),
           StyleProp.new("font_family", :string),
@@ -117,6 +124,12 @@ module Egui
         return ui.interact(rect, ui.next_widget_id, Sense.none)
       end
 
+      # Style scope: the cards below (and any nested real widget)
+      # chain onto "tabs.*" — see `Ui#with_style_scope`.
+      ui.with_style_scope(ROOT_CLASS) { render(ui) }
+    end
+
+    private def render(ui : Ui) : Response
       ctx = ui.ctx
       sheet = ctx.stylesheet
       style = ui.style
@@ -378,9 +391,14 @@ module Egui
 
           if (cr = close_resp)
             x_color = cr.hovered? ? text_color : visuals.fade_color(text_color)
-            if cr.hovered?
-              fill = part.vars(ui, x_id.not_nil!, "hover")
-                .color?("background") || visuals.button_hovered
+            # The class `background` paints in the BASE state too (same
+            # fix as sidebar's close X); the hovered fill — the :hover
+            # overlay or the theme slot — replaces it on top.
+            x_vars = part.vars(ui, x_id.not_nil!, cr.hovered? ? "hover" : nil)
+            fill = cr.hovered? ?
+              x_vars.color?("background") || visuals.button_hovered :
+              x_vars.color?("background")
+            if fill
               ui.painter.rect(cr.rect, 3.0, fill)
             end
             Icons.draw(ui.painter, :close, cr.rect, x_color)

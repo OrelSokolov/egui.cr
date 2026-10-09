@@ -39,7 +39,7 @@ module Egui
       sp = style.spacing
       font_size = style.font_size
       visuals = style.visuals
-      class_vars = style_vars(ui, id, "checkbox")
+      class_vars = style_vars(ui, id)
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, style.font_weight, false)
       text_size = fonts.measure(@text, font_size)
@@ -57,7 +57,7 @@ module Egui
       # state-aware bag so a `checkbox:hover { box_fill }` rule applies;
       # the fallback is the theme's state slots.
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      state_vars = style_vars(ui, id, "checkbox", state)
+      state_vars = style_vars(ui, id, state)
       ui.painter.rect(icon_rect,
         class_vars.f64("rounding", 3.0),
         state_vars.color("box_fill",

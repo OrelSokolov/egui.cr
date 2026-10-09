@@ -32,7 +32,9 @@ class TabsHarness
   property selected = 0
   property dirty = [false, false, false]
   property closed : Int32? = nil
+  property menu_tab : Int32? = nil
   getter new_count = 0
+  getter menu_fired = [] of Int32
   getter areas = [] of Egui::Rect
 
   def initialize
@@ -43,7 +45,12 @@ class TabsHarness
         dirty: dirty,
         on_select: ->(t : Int32) { self.selected = t; nil },
         on_close: ->(t : Int32) { self.closed = t; nil },
-        on_new: -> { @new_count += 1; nil })
+        on_new: -> { @new_count += 1; nil },
+        on_context_menu: ->(t : Int32, menu : Egui::Ui) {
+          self.menu_tab = t
+          menu.menu_item("menu #{t}") { menu_fired << t; nil }
+          nil
+        })
     end
   end
 end
@@ -415,5 +422,30 @@ describe Egui::TitleBarTabs do
     tabs_frame(ctx, [Egui::Event.pointer_moved(
       Egui::Pos2.new(empty.x + 20.0, empty.y))], 0.064)
     win.drags.should eq(1)
+  end
+
+  it "a secondary press on a tab opens its context menu; items fire on click" do
+    harness = TabsHarness.new
+    ctx = Egui::Context.new
+    tabs_frame(ctx, [] of Egui::Event, 0.016) # rects registered
+
+    second = tab_center(ctx, harness, 1)
+    tabs_frame(ctx, [Egui::Event.pointer_pressed(second, :secondary)], 0.032)
+    harness.menu_tab.should eq(1)
+    # the menu rendered at the pointer — the popup for THAT tab
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("menu 1")
+
+    # click the first row: the popup's window padding + row band
+    item_pos = Egui::Pos2.new(second.x + 12.0, second.y + 12.0)
+    tabs_frame(ctx, [] of Egui::Event, 0.048) # item rects registered
+    tabs_frame(ctx, [Egui::Event.pointer_pressed(item_pos)], 0.064)
+    tabs_frame(ctx, [Egui::Event.pointer_released(item_pos)], 0.080)
+    harness.menu_fired.should eq([1])
+
+    # a secondary press on ANOTHER tab switches the menu to it
+    tabs_frame(ctx, [Egui::Event.pointer_pressed(
+      tab_center(ctx, harness, 2), :secondary)], 0.096)
+    harness.menu_tab.should eq(2)
   end
 end

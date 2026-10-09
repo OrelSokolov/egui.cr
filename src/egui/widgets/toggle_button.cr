@@ -53,7 +53,7 @@ module Egui
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, style.font_weight, false)
       text_size = @text ? fonts.measure(@text.not_nil!, font_size) : Vec2.zero
-      class_vars = style_vars(ui, id, "toggle_button")
+      class_vars = style_vars(ui, id)
 
       # Sizing: synced (default) the tumbler rides the text height (the
       # icon width when there is no text); unsynced, tumbler_size wins.

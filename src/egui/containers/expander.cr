@@ -34,6 +34,10 @@ module Egui
   class Expander
     # Element classes for `StyleSheet` tweaks from app code:
     #   ctx.stylesheet.rule(Expander::HEADER_CLASS, …)
+    # The header/content reads and the content block run inside the
+    # "expander" style scope (`Ui#with_style_scope` in #show), so
+    # nested real widgets chain onto "expander.*" too.
+    ROOT_CLASS    = "expander"
     HEADER_CLASS  = "expander.header"
     CONTENT_CLASS = "expander.content"
 
@@ -45,6 +49,13 @@ module Egui
     end
 
     def show(ui : Ui, &block : Ui ->) : Response
+      # Style scope: header/content keys stay "expander.*" and any
+      # widget added inside the reveal chains onto them — see
+      # `Ui#with_style_scope`.
+      ui.with_style_scope(ROOT_CLASS) { render(ui, &block) }
+    end
+
+    private def render(ui : Ui, &block : Ui ->) : Response
       ctx = ui.ctx
       memory = ctx.memory
       sheet = ctx.stylesheet
@@ -231,7 +242,7 @@ module Egui
     # optional `Icons` glyph before the label.
     def expander(text : String, default_open : Bool = false,
                   icon : Symbol? = nil, &block : Ui ->) : Response
-      Expander.new(text, default_open, icon).show(self) { |body| yield body }
+      Expander.new(text, default_open, icon).show(self, &block)
     end
   end
 end

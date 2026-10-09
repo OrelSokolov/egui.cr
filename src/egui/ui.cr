@@ -30,6 +30,12 @@ module Egui
     # stays bounded by `max_rect`, so fill-height widgets keep sizing
     # to the viewport. Set by `ScrollArea#show` on its inner Ui.
     property v_overflow : Bool = false
+    # CSS-like style scope (see #with_style_scope): the dotted class
+    # prefix widgets added through this Ui style under — nil = no
+    # scope, widgets ride their plain `style_class`. A child Ui
+    # inherits it (see #child_ui), so scoping is opt-in per container
+    # and flows down the whole subtree.
+    getter style_scope : String?
 
     @child_counter : UInt64 = 0
 
@@ -58,6 +64,7 @@ module Egui
       @min_rect = Rect.new(@max_rect.min, @max_rect.min)
       @layer = LayerId.background
       @clip = Rect.infinite
+      @style_scope = nil
     end
 
     def style : Style
@@ -175,18 +182,47 @@ module Egui
     end
 
     # egui `Ui::new_child`: a child region with its own cursor/layout.
-    # Inherits the parent's layer, clip rect AND vertical-overflow mode
+    # Inherits the parent's layer, clip rect, vertical-overflow mode
     # (`v_overflow` — the CSS overflow-y semantics of a scroll
     # viewport must reach the whole subtree: without this, rows built
     # through `#horizontal`/`#scope` near the fold would clamp their
-    # children to the viewport's bottom edge and overlap there).
+    # children to the viewport's bottom edge and overlap there) AND
+    # style scope (a widget inside stays inside the scope).
     def child_ui(max_rect : Rect, id : Id? = nil,
                  layout : Layout = Layout.top_down) : Ui
       child = Ui.new(@ctx, id || next_widget_id, max_rect, layout)
       child.layer = @layer
       child.clip = @clip
       child.v_overflow = @v_overflow
+      child.set_style_scope(@style_scope)
       child
+    end
+
+    # CSS-like scoping for complex components: while the block runs,
+    # widgets added through this Ui carry an extra class path
+    # `"{scope}.{own class}"` on top of their base `style_class` (see
+    # `Widget#class_paths`) — a Button inside `with_style_scope("sidebar")`
+    # styles under BOTH "button" and "sidebar.button" without any
+    # per-widget wiring. Scopes nest by dots ("sidebar" → "sidebar.toolbar").
+    # Returns the block's value. The current scope is also mirrored on
+    # the Context (inspector meta and paint-in-place `StyledPart`s read
+    # it without a Ui).
+    def with_style_scope(name : String, &)
+      old = @style_scope
+      old_ctx = @ctx.current_style_scope
+      @style_scope = old ? "#{old}.#{name}" : name
+      @ctx.current_style_scope = @style_scope
+      begin
+        yield self
+      ensure
+        @style_scope = old
+        @ctx.current_style_scope = old_ctx
+      end
+    end
+
+    # Internal: seed a child Ui's inherited scope (#child_ui).
+    def set_style_scope(scope : String?) : Nil
+      @style_scope = scope
     end
 
     # egui `Ui::add(widget)` — the generic Widget entry point. While

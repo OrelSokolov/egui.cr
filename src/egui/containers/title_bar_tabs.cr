@@ -7,7 +7,12 @@
 #       dirty: dirty_flags,
 #       on_select: ->(t : Int32) { … },   # a tab was clicked
 #       on_close: ->(t : Int32) { … },    # a tab's X was clicked
-#       on_new: -> { … })                 # the "+" button was clicked
+#       on_new: -> { … },                 # the "+" button was clicked
+#       on_context_menu: ->(t : Int32, menu : Egui::Ui) { … })
+#                                         # right-click on a tab: render
+#                                         # the tab's context menu into
+#                                         # the popup's Ui (re-run each
+#                                         # frame while it is open)
 #   end
 #
 # Look (Win11 Notepad; the card palette is dark or light, following
@@ -122,6 +127,9 @@ module Egui
     # Show the strip: paints into `area` (the WindowFrame content
     # area) and fires at most one callback this frame. `dirty` marks
     # unsaved tabs (dot instead of X, Notepad's marker).
+    # `on_context_menu`, when set, attaches a context menu to every
+    # tab (through `Response#context_menu`): a secondary press over a
+    # card opens the app's menu for that tab's index at the pointer.
     #
     # Styling: every card reads its geometry and colors through the
     # `title_bar.tab` class (+ per-element inspector overrides — see
@@ -130,7 +138,8 @@ module Egui
                   selected : Int32, dirty : Array(Bool) = [] of Bool,
                   on_select : (Int32 ->)? = nil,
                   on_close : (Int32 ->)? = nil,
-                  on_new : (-> Nil)? = nil) : Nil
+                  on_new : (-> Nil)? = nil,
+                  on_context_menu : (Int32, Ui ->)? = nil) : Nil
       painter = ctx.painter
       sel = titles.empty? ? 0 : selected.clamp(0, titles.size - 1)
 
@@ -209,6 +218,12 @@ module Egui
 
           paint_tab(ctx, rect, title, i == sel, tab_resp.hovered?,
             x_resp.hovered?, dirty[i]? || false, view, vars, hover_vars)
+
+          # The app's tab menu rides the card's Response — one popup
+          # per tab id, opened at the pointer (Response#context_menu).
+          if (menu = on_context_menu)
+            tab_resp.context_menu { |menu_ui| menu.call(i, menu_ui) }
+          end
 
           if x_resp.clicked?
             on_close.try(&.call(i))

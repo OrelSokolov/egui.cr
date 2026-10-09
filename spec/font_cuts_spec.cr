@@ -126,6 +126,8 @@ describe "inspector smart weight selector" do
     smoke = 0.0
     cuts_insp_frame(ctx, time: (smoke += 0.016)) { |c| c.window("w") { |ui| ui.add(Egui::Label.new("lbl text", id: "lw")) } }
     ctx.inspector.selected = Egui::Id.from("lw")
+    # the element tab is a manual switch now (Class is the default)
+    ctx.inspector.tab = :element
     cuts_insp_frame(ctx, time: (smoke += 0.016)) { |c| c.window("w") { |ui| ui.add(Egui::Label.new("lbl text", id: "lw")) } }
 
     # the closed select shows the current cut by name

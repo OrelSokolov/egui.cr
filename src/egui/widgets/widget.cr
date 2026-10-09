@@ -29,6 +29,7 @@ module Egui
 
     @style_override : WidgetStyle?
     @id_name : String?
+    @part_name : String?
 
     # Give the widget an explicit id (builder form of the `id:`
     # constructor parameter). Explicit ids are claimed once per frame —
@@ -82,6 +83,17 @@ module Egui
       self
     end
 
+    # Name this widget's slot inside its container's style scope (see
+    # `Ui#with_style_scope`): inside scope "sidebar" a
+    # `Button.new("✕").part("close")` styles under BOTH "button" and
+    # "sidebar.close" (a nameless widget uses its base class name:
+    # "sidebar.button"). The scoped path is more specific and wins
+    # per key.
+    def part(name : String) : self
+      @part_name = name
+      self
+    end
+
     # The widget's id for this frame: the explicit one (claimed — a
     # duplicate raises) or the stable auto id. Widgets call this
     # instead of `ui.next_widget_id` directly.
@@ -95,26 +107,68 @@ module Egui
       end
     end
 
-    # The merged raw-key vars for `class_path` (+ optional state
-    # overlay): `StyleSheet#resolve` with this widget's per-element
+    # The class paths this widget styles under, least specific first:
+    # the base `style_class` plus — inside a style scope
+    # (`Ui#with_style_scope`) — the scoped path "{scope}.{part}"
+    # ("button" → ["button", "sidebar.button"]). `#part` names the
+    # scope segment explicitly; nil uses the base class name. Empty
+    # when the widget has no class at all.
+    protected def class_paths(scope : String?) : Array(String)
+      base = style_class
+      part = @part_name || base
+      paths = [] of String
+      paths << base if base
+      if scope && !scope.empty? && part
+        scoped = "#{scope}.#{part}"
+        paths << scoped unless paths.includes?(scoped)
+      end
+      paths
+    end
+
+    # The widget's live class chain (base + scoped path) for the
+    # inspector meta — reads the Context's scope mirror because
+    # paint-in-place parts have no Ui at record time (the mirror is
+    # kept equal to the Ui's scope by `Ui#with_style_scope`).
+    def style_classes(ctx : Context) : Array(String)
+      class_paths(ctx.current_style_scope)
+    end
+
+    # The merged raw-key vars of this widget's class chain (#
+    # class_paths) with the optional state overlay and the per-element
     # inspector override merged ON TOP (into a copy — the sheet's
     # resolved bags are shared caches, read-only; the element layer is
     # state-keyed, base keys under the state overlay). Without an
-    # override this is the shared cache itself, so widgets pay nothing
-    # extra until the inspector actually touches them. Widgets read
-    # their raw keys (`padding`, `rounding`, `shadow.*`, …) through
-    # here — reading `resolve` directly would hide the per-element
-    # layer.
-    protected def style_vars(ui : Ui, id : Id, class_path : String?,
-                             state : String? = nil) : StyleVars
-      class_vars = class_path ? ui.ctx.stylesheet.resolve(class_path, state) : StyleVars.new
+    # override the cached shared bag comes back as-is, so widgets pay
+    # nothing extra until the inspector actually touches them. Widgets
+    # read their raw keys (`padding`, `rounding`, `shadow.*`, …)
+    # through here — the chain (base class + style scope) is derived,
+    # never hardcoded at the call site.
+    protected def style_vars(ui : Ui, id : Id, state : String? = nil) : StyleVars
+      vars_for(ui, id, class_paths(ui.style_scope), state)
+    end
+
+    # Explicit-path variant for sites that resolve one known class
+    # path (a container's own root keys) — same per-element layer on
+    # top as #style_vars.
+    protected def style_vars_for(ui : Ui, id : Id, class_path : String?,
+                                 state : String? = nil) : StyleVars
+      vars_for(ui, id, class_path ? [class_path] : [] of String, state)
+    end
+
+    private def vars_for(ui : Ui, id : Id, paths : Array(String),
+                         state : String?) : StyleVars
+      bag = case paths.size
+            when 0 then StyleVars.new
+            when 1 then ui.ctx.stylesheet.resolve(paths.first, state)
+            else        ui.ctx.stylesheet.resolve_chain(paths, state)
+            end
       if (ov = ui.ctx.id_style_state_vars(id, state))
         merged = StyleVars.new
-        merged.merge!(class_vars)
+        merged.merge!(bag)
         merged.merge!(ov)
         merged
       else
-        class_vars
+        bag
       end
     end
 
@@ -125,19 +179,19 @@ module Egui
     #   1. per-element inspector override (state value over base);
     #   2. the inline `#style` background (flat — inline-style
     #      semantics, CSS `style="background: …"`);
-    #   3. class rules: `StyleSheet#resolve(class, state)` — a
-    #      `:hover`/`:active` rule beats the class base value;
+    #   3. the class chain's rules (`StyleSheet#resolve_chain`) — a
+    #      `:hover`/`:active` rule beats the class base value, a
+    #      scoped path beats the base class;
     #   4. the theme's state slots (`Visuals#button_fill`) — the
     #      user-agent default with built-in per-state colors.
-    protected def background_color(ui : Ui, id : Id, class_path : String?,
-                                   state : String?, hovered : Bool,
-                                   active : Bool) : Color32
+    protected def background_color(ui : Ui, id : Id, state : String?,
+                                   hovered : Bool, active : Bool) : Color32
       if (c = ui.ctx.id_style_state_vars(id, state).try(&.color?("background")))
         c
       elsif (c = @style_override.try(&.background))
         c
-      elsif class_path && (c = ui.ctx.stylesheet.resolve(class_path, state)
-                           .color?("background"))
+      elsif !(paths = class_paths(ui.style_scope)).empty? &&
+           (c = ui.ctx.stylesheet.resolve_chain(paths, state).color?("background"))
         c
       else
         ui.style.visuals.button_fill(hovered, active)

@@ -71,7 +71,7 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
-      class_vars = style_vars(ui, id, "label")
+      class_vars = style_vars(ui, id)
       style = effective_style(ui, id, class_vars)
       # CSS `padding` box (per-side, default 0 — an unpadded label keeps
       # its exact upstream sizing).

@@ -141,7 +141,7 @@ describe Egui::Slider do
     # props — so the inspector's Element and Class tabs can edit it.
     tips = ctx.inspector.meta_values.select(&.kind.==("SliderTip"))
     tips.size.should eq(2)
-    tips.map(&.style_class).uniq.should eq(["slider.tip"])
+    tips.map(&.display_class).uniq.should eq(["slider.tip"])
     tips.map(&.label).compact.sort.should eq(["Loud", "Quiet"])
     tips.first.props.any? { |p| p.key == "text_color" }.should be_true
 
@@ -193,7 +193,7 @@ describe Egui::Slider do
     # The row records inspector meta under the slider.tick class, and a
     # rule restyles the strokes on the next frame.
     tick = ctx.inspector.meta_values.find(&.kind.==("SliderTick")).not_nil!
-    tick.style_class.should eq("slider.tick")
+    tick.display_class.should eq("slider.tick")
     tick.props.any? { |p| p.key == "stroke" }.should be_true
 
     red = Egui::Color32.rgb(255, 0, 0)
