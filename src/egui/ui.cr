@@ -669,6 +669,17 @@ module Egui
       Table.new(id, headers, fractions).show(self) { |rows| yield rows }
     end
 
+    # GTK TreeView-style model/view table; see `TableView`. The block
+    # configures columns before the table lays out, the return value
+    # carries the selection for post-frame queries.
+    def table_view(id : String, store : ListStore,
+                   &block : TableView ->) : TableView
+      tv = TableView.new(id, store)
+      yield tv
+      tv.show(self)
+      tv
+    end
+
     # egui `ui.add_sized(size, widget)` — lay the widget out in an
     # exact-size cell instead of its natural size (still bounded by
     # the region's max_rect, like every allocation).
