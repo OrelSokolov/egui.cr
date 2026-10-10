@@ -2,8 +2,7 @@
 # The SVG source is parsed and painted as vectors, so one slider
 # rescales every logo live with no rasterization.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "./icon"
 require "./logo_variants"
 
@@ -38,6 +37,6 @@ class LogosApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(LogosApp.new, title: "egui-cr — logo.svg variants",
+Egui.run(LogosApp.new, title: "egui-cr — logo.svg variants",
   width: 900, height: 700,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

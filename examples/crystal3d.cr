@@ -14,8 +14,7 @@
 #   wheel   — zoom
 #   select  — smoothing: off / shading / shading + edges
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 # Crystal silhouette (example-local): world-space triangles and edges
 # of a hexagonal prism with pyramidal caps, slightly oblique at the
@@ -181,5 +180,5 @@ class Crystal3DApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(Crystal3DApp.new,
+Egui.run(Crystal3DApp.new,
   title: "egui.cr — crystal 3D (rotating)", inspector: :hidden)

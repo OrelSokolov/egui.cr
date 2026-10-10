@@ -10,8 +10,7 @@
 #       ui.label(format!("count: {}", count));
 #   });
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class HelloApp < Egui::App
   @count = 0
@@ -89,5 +88,5 @@ class HelloApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(HelloApp.new, title: "egui-cr — hello",
+Egui.run(HelloApp.new, title: "egui-cr — hello",
   inspector: :hidden)

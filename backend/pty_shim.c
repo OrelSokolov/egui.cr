@@ -7,7 +7,7 @@
  *   Windows            : ConPTY (CreatePseudoConsole, Win10 1809+) with a
  *                        dedicated reader thread feeding a ring buffer
  *
- * The Crystal side (src/egui/terminal/pty.cr) calls egui_cr_pty_read from
+ * The Crystal side (src/egui/backend/pty.cr) calls egui_cr_pty_read from
  * a fiber: on Unix read(2) blocks that worker thread until the child
  * produces output (a blocked fiber is fine, a blocked frame is not);
  * on Windows read waits on a condition variable the reader thread

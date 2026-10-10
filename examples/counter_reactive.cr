@@ -10,8 +10,7 @@
 #  - every input is a binding: `ui.text_field(name)`, `ui.slider(speed…)`,
 #    `ui.checkbox(enabled…)` — no `if changed?; @field = v` plumbing.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class CounterApp < Egui::App
   reactive count = 0
@@ -70,5 +69,5 @@ class CounterApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(CounterApp.new, title: "egui-cr — reactive",
+Egui.run(CounterApp.new, title: "egui-cr — reactive",
   inspector: :hidden)

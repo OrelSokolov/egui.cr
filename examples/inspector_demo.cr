@@ -1,4 +1,4 @@
-# Widget Inspector demo — `Sokol.run(…, inspector: :on)`.
+# Widget Inspector demo — `Egui.run(…, inspector: :on)`.
 #
 # Right-click any widget → «Inspect» opens the bottom panel:
 # * «Элемент» — per-element style overrides (live, the top cascade
@@ -9,8 +9,7 @@
 # F12 toggles the panel. The Spinner at the bottom is the honest
 # "no stylable properties" case.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class InspectorDemoApp < Egui::App
   @speed = 0.4
@@ -50,5 +49,5 @@ class InspectorDemoApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(InspectorDemoApp.new,
+Egui.run(InspectorDemoApp.new,
   title: "egui-cr — inspector demo", inspector: :on)

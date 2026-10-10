@@ -27,7 +27,7 @@ examples/terminal.cr          tabbed terminal app
 The core (`theme`…`keymap` + `widget`) is platform-pure and required
 from `src/egui.cr`; `pty.cr` calls into the native library (whose
 `-l` flag `backend/sokol.cr` declares), so apps require it explicitly:
-`require "egui/terminal/pty"`.
+`require "egui/backend/pty"`.
 
 ## PTY, per platform
 
@@ -45,18 +45,21 @@ Windows nothing blocks a fiber at all — `Session#pump` (called by the
 widget each frame) drains the channel / a non-blocking ring, and
 `TermView` requests repaints while its session is alive to keep frames
 coming. On Unix the scheduler pass that wakes the reader fibers is
-`Session#evented_pass(frame_time)`: ONE ~1 ms pass per frame, deduped
-by the frame's input time and shared by every session in the process,
-so the frame cost stays flat as tabs grow.
+`Session.evented_pass` (a class method): ONE ~1 ms pass per frame,
+called by the backend frame loop before `begin_frame` through
+`Egui::Runtime.frame_scheduler_pass` (installed by `backend/pty` at
+require time) and shared by every session in the process, so the frame
+cost stays flat as tabs grow. Under the detached render loop it is a
+no-op — the scheduler runs naturally between frames.
 
 Lifecycle is two-phase because a blocked/blocking read must never touch
 freed state: `close` asks the child to die (SIGHUP / ClosePseudoConsole
 — safe from any thread), `reap` waits, closes and frees (called once
 from the reader path after EOF).
 
-The shim compiles into `libegui_cr_sokol.a` / `egui_cr_sokol.lib` by
-`rake build:native` — no new libraries, no new link flags on any of
-the three platforms.
+The shim compiles into its own `libegui_cr_pty.a` / `egui_cr_pty.lib`
+by `rake build:native` — terminal embedders that never open a window
+link no sokol/GL/X11.
 
 ## Emulator scope
 
@@ -93,7 +96,7 @@ no mouse motion reporting in "any" mode without a held button.
 
 ```crystal
 require "egui"
-require "egui/terminal/pty"
+require "egui/backend/pty"
 
 session = Egui::Terminal::Session.new(
   shell: ENV["SHELL"]?, cwd: Dir.current,
@@ -106,9 +109,9 @@ end
 
 `Session` API: `term` (the emulator state — title, colors, mouse
 modes for the app's own chrome), `pump` (normally called by the
-widget), `evented_pass(frame_time)` (the once-per-frame scheduler
-pass; the widget triggers it, apps pumping hidden sessions call it
-once first), `write`, `resize`, `alive?`, `exit_code`, `close`.
+widget; apps pumping hidden sessions call it directly — the frame
+loop's scheduler pass already woke the reader fibers), `write`,
+`resize`, `alive?`, `exit_code`, `close`.
 
 The widget needs a monospace font to align cells; the example picks a
 per-platform one via `FreetypeFonts.from_system` and

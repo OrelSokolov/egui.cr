@@ -13,8 +13,7 @@
 # Bootstrap Icons (MIT) live in icons/bootstrap, Lucide (ISC) in
 # icons/lucide — Rakefile download:bootstrap refreshes them.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 # The C twin — the ONLY consumer of backend/nanosvg.cr: requiring it
 # here links the nanosvg_shim object out of libegui_cr_sokol.a; all
 # other apps bake through the Crystal port alone.
@@ -257,7 +256,7 @@ if ARGV.includes?("--headless")
   exit 0
 end
 
-Egui::Backend::Sokol.run(SvgRasterizerApp.new,
+Egui.run(SvgRasterizerApp.new,
   title: "egui-cr — SVG rasterizer comparison",
   width: 760, height: 860,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

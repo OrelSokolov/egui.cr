@@ -7,8 +7,7 @@
 # inspector's smart selector resolve through; this example is a pure
 # view over it.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "../src/egui/backend/crystalfonts"
 
 class FontBrowserApp < Egui::App
@@ -120,5 +119,5 @@ class FontBrowserApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(FontBrowserApp.new, title: "egui-cr — fonts",
+Egui.run(FontBrowserApp.new, title: "egui-cr — fonts",
   width: 1024, height: 800, inspector: :hidden)

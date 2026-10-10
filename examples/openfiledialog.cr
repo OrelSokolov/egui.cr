@@ -3,8 +3,7 @@
 # copy it to. The chosen paths arrive in the on_done callbacks a few
 # frames later — the app state updates and the UI reflects it.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class OpenFileDialogApp < Egui::App
   @picked : String? = nil
@@ -61,6 +60,6 @@ class OpenFileDialogApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(OpenFileDialogApp.new,
+Egui.run(OpenFileDialogApp.new,
   title: "egui-cr — file dialogs", width: 520, height: 320,
   inspector: :hidden)

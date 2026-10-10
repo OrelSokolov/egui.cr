@@ -3,7 +3,7 @@
 # anti-aliased circle with the white "E" on a blue gradient), with a
 # cycling status label at the bottom ("инициализация…", "загрузка…").
 #
-#   Egui::Backend::Sokol.run(                      # window = image:
+#   Egui.run(                      # window = image:
 #     decorations: false,                           # no system chrome
 #     transparent: true,                            # alpha 0 = desktop
 #     width: 256, height: 256)                      # image is 1:1
@@ -14,8 +14,7 @@
 # Cross-platform: X11 depth-32 ARGB visual + compositor, Win32 DWM
 # blur-behind, macOS non-opaque NSWindow.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class SplashApp < Egui::App
   SIZE = 256
@@ -85,6 +84,6 @@ class SplashApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(SplashApp.new,
+Egui.run(SplashApp.new,
   title: "egui-cr — splash", width: SplashApp::SIZE, height: SplashApp::SIZE,
   decorations: false, transparent: true, inspector: :hidden)

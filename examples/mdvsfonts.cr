@@ -7,8 +7,7 @@
 #   4. *italic* through the real Italic file.
 # Rows 1 and 2 must be metric twins: same letter pitches, same edges.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 TEXT = "egui.cr — Crossplatform UI in pure Crystal"
@@ -61,5 +60,5 @@ end
 
 app = MdVsFontsApp.new
 app.theme = Egui::Theme.light
-Egui::Backend::Sokol.run(app, title: "egui-cr — md vs fonts",
+Egui.run(app, title: "egui-cr — md vs fonts",
   width: 900, height: 420, inspector: :hidden)

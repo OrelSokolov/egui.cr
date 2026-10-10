@@ -21,8 +21,7 @@
 # once both tanks the frame rate and loses geometry — watch Debug →
 # Show FPS while scrolling.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class LucideIconsApp < Egui::App
   # Catalog cell: a large icon-only button (the icon box is
@@ -298,7 +297,7 @@ class LucideIconsApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(LucideIconsApp.new, title: "egui-cr — icons (lucide · bootstrap)",
+Egui.run(LucideIconsApp.new, title: "egui-cr — icons (lucide · bootstrap)",
   width: 1120, height: 760, inspector: :hidden, vsync: false)
 # vsync off: an FPS meter capped at the monitor's refresh rate
 # measures the monitor, not the app — this demo exists to measure.

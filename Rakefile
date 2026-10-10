@@ -5,8 +5,9 @@ require "monitor"
 WINDOWS    = Gem.win_platform?
 DARWIN     = RUBY_PLATFORM.include?("darwin")
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
-# no lib prefix, no -l rewriting like cc.
+# no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
+PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
 EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
@@ -81,24 +82,37 @@ SHIM_HEADERS.each do |shim, headers|
   end
 end
 
-shim_objs = SHIM_HEADERS.keys.map { |shim| "lib/#{shim}#{OBJ_EXT}" }
-file NATIVE_LIB => shim_objs do
-  FileUtils.mkdir_p("lib")
-  # Recreate from scratch: `ar rcs` only adds/replaces members, so a
-  # dropped shim would linger in an existing archive forever.
-  FileUtils.rm_f(NATIVE_LIB)
-  if WINDOWS
-    # FreeType import lib + dll (scripts/fetch_freetype.bat is a no-op
-    # once lib/freetype.lib and bin/freetype.dll are in place).
-    sh "scripts\\fetch_freetype.bat"
-    msvc("lib /nologo /OUT:#{NATIVE_LIB.tr('/', '\\')} #{shim_objs.join(' ').tr('/', '\\')}")
-  else
-    sh "ar rcs #{NATIVE_LIB} #{shim_objs.join(' ')}"
+# Which shim objects go into which archive. The PTY shim gets its own
+# library so terminal embedders that never open a window link no
+# sokol/GL/X11; nanosvg stays with sokol (sokol.cr itself requires it
+# as the dev-only C rasterizer behind C_EXTENSIONS).
+ARCHIVES = {
+  NATIVE_LIB => %w[sokol_shim nanosvg_shim],
+  PTY_LIB    => %w[pty_shim],
+}
+
+ARCHIVES.each do |lib, shims|
+  objs = shims.map { |shim| "lib/#{shim}#{OBJ_EXT}" }
+  file lib => objs do
+    FileUtils.mkdir_p("lib")
+    # Recreate from scratch: `ar rcs` only adds/replaces members, so a
+    # dropped shim would linger in an existing archive forever.
+    FileUtils.rm_f(lib)
+    if WINDOWS
+      if lib == NATIVE_LIB
+        # FreeType import lib + dll (scripts/fetch_freetype.bat is a no-op
+        # once lib/freetype.lib and bin/freetype.dll are in place).
+        sh "scripts\\fetch_freetype.bat"
+      end
+      msvc("lib /nologo /OUT:#{lib.tr('/', '\\')} #{objs.join(' ').tr('/', '\\')}")
+    else
+      sh "ar rcs #{lib} #{objs.join(' ')}"
+    end
   end
 end
 
-desc "Build vendor C code (sokol_app/gfx/glue/gl + fontstash) into #{NATIVE_LIB}"
-task "build:native" => NATIVE_LIB
+desc "Build vendor C code into #{NATIVE_LIB} (sokol) + #{PTY_LIB} (pty shim)"
+task "build:native" => ARCHIVES.keys
 
 # Warm ONE compiler cache with a single small build, then clone it into
 # every empty worker slot. On a fresh clone (or after a cache wipe) the

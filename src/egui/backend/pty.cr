@@ -1,25 +1,22 @@
 # PTY bindings + Session — the native Terminal::Backend.
 #
-# The shim (backend/pty_shim.c, linked into the egui_cr_sokol native
-# library) provides one API over POSIX ptys (Linux/macOS) and ConPTY
-# (Windows). Two data paths, both fiber-scheduler-friendly:
-#
-# The -legui_cr_sokol link flag is declared once, in
-# backend/sokol.cr — every terminal app opens a window through the
-# sokol backend and requires it alongside this file (repeating
-# @[Link] here would duplicate the linker flag and ld warns).
+# The shim (backend/pty_shim.c, archived into its own libegui_cr_pty
+# native library — windowless embedders link no sokol/GL) provides one
+# API over POSIX ptys (Linux/macOS) and ConPTY (Windows). Two data
+# paths, both fiber-scheduler-friendly:
 #
 #   Unix    — the master fd is wrapped in IO::FileDescriptor (epoll/
 #             kqueue): a reader FIBER suspends properly on read, and
 #             new data wakes the UI through `on_output` (hook it to
 #             ctx.request_repaint). A blocking C read from a fiber
 #             would wedge the Crystal scheduler — don't go there.
-#             Sokol's frame loop never yields to the scheduler
-#             (sapp_run is a blocking C call), so `evented_pass`
-#             gives the process ONE bounded pass per frame to deliver
-#             pending PTY data to all reader fibers (same trick as
-#             AsyncDialogs.pump) — keep the per-frame repaint while a
-#             session is alive (TermView does).
+#             Sokol's legacy frame loop never yields to the
+#             scheduler (sapp_run is a blocking C call), so the frame
+#             loop gives the process ONE bounded pass per frame
+#             (Egui::Runtime.frame_scheduler_pass, installed below) to
+#             deliver pending PTY data to all reader fibers (same trick
+#             as AsyncDialogs.pump) — keep the per-frame repaint while
+#             a session is alive (TermView does).
 #   Windows — the shim's reader thread fills a ring buffer;
 #             `pump` drains it per frame (the TermView requests
 #             repaints while the session is alive to drive that).
@@ -27,6 +24,7 @@
 # All parser work happens on the frame fiber via the channel, so no
 # locking is needed around the emulator.
 
+@[Link("egui_cr_pty")]
 lib LibPty
   type Pty = Void*
 
@@ -82,9 +80,12 @@ module Egui
       @reaped = false
       @io : IO::FileDescriptor? = nil
 
-      # Frame-time mark of the last evented pass, shared by EVERY
-      # session in the process (see #evented_pass).
-      @@pass_time : Float64 = -1.0
+      # Live sessions: the frame loop's scheduler pass
+      # (self.evented_pass) must reach every reader fiber, including
+      # those of sessions whose TermView is not rendered (hidden
+      # terminal tabs). A session registers at spawn and leaves in
+      # #finish — dead sessions never keep the pass alive.
+      @@sessions = [] of Session
 
       # EGUI_FRAME_DEBUG also gates PTY-side logging (reader wakeups,
       # evented-pass cost, session teardown) — see Backend::Sokol.
@@ -132,6 +133,7 @@ module Egui
           # main fiber goes straight from here into sapp_run.
           Fiber.yield
         {% end %}
+        @@sessions << self
       end
 
       def self.default_shell : String
@@ -169,17 +171,18 @@ module Egui
         end
       {% end %}
 
-      # One bounded evented scheduler pass per FRAME, deduped by the
-      # frame's input time across every session in the process. Only
-      # needed by the LEGACY single-thread backend (sapp_run never
-      # yields, so PTY reader fibers would never run); with the detached
-      # render loop the scheduler is alive between frames and this is a
-      # no-op (Egui::Runtime.natural_scheduler?).
-      def evented_pass(frame_time : Float64) : Nil
+      # One bounded evented scheduler pass per FRAME, shared by every
+      # session's reader fibers. Only needed by the LEGACY single-thread
+      # backend (sapp_run never yields, so PTY reader fibers would never
+      # run); with the detached render loop the scheduler is alive
+      # between frames and this is a no-op (Egui::Runtime.
+      # natural_scheduler?). Called once per frame by the backend frame
+      # loop through Egui::Runtime.frame_scheduler_pass — before
+      # begin_frame, not from the widget.
+      def self.evented_pass : Nil
         {% unless flag?(:win32) %}
           return if Egui::Runtime.natural_scheduler?
-          return if frame_time == @@pass_time
-          @@pass_time = frame_time
+          return if @@sessions.empty?
           t0 = Time.instant if Session.debug?
           select
           when timeout(1.millisecond)
@@ -192,8 +195,9 @@ module Egui
 
       # Drain newly arrived bytes into the emulator (and flush emulator
       # replies). Returns true when the visible state changed. The
-      # evented pass that fills the channel is #evented_pass — one per
-      # frame, shared by all sessions; a drain alone is cheap.
+      # evented pass that fills the channel is the frame loop's (see
+      # .evented_pass) — one per frame, shared by all sessions; a drain
+      # alone is cheap.
       def pump : Bool
         changed = false
         {% if flag?(:win32) %}
@@ -266,6 +270,7 @@ module Egui
 
       private def finish : Nil
         return if @dead
+        @@sessions.delete(self)
         @channel.close
         @exit_code = LibPty.wait(@pty, 1)
         @dead = true
@@ -305,3 +310,9 @@ module Egui
     end
   end
 end
+
+# The frame loop's per-frame scheduler pass (legacy loop only — see
+# Session.evented_pass). Installed at require time so the backend never
+# depends on this file: sokol.cr calls Egui::Runtime.frame_scheduler_pass,
+# which stays nil (a no-op) for apps without a terminal.
+Egui::Runtime.frame_scheduler_pass = ->{ Egui::Terminal::Session.evented_pass }

@@ -22,8 +22,7 @@ require "json"
 require "mime"
 
 require "./icon" # ICON_64_RGBA — the shared app icon (64x64 RGBA)
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class NotepadApp < Egui::App
   # Debug builds keep the inspector's style edits in a `.ecss` diff
@@ -564,7 +563,7 @@ app = NotepadApp.new(files, theme)
 if (route = cli[:route])
   app.ctx.router.navigate(route)
 end
-Egui::Backend::Sokol.run(app,
+Egui.run(app,
   title: "egui-cr — notepad", width: 800, height: 600,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64},
   decorations: false, inspector: :hidden)

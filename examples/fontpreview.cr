@@ -8,8 +8,7 @@
 # Look for: solid crossbars (e, A, Б), consistent baselines, even
 # spacing, stem weight parity between the tabs.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "../src/egui/backend/crystalfonts"
 # The C-FFI tab is part of the A/B toolset — fontpreview links
 # libfreetype unconditionally, even in release builds (it is the
@@ -215,5 +214,5 @@ class FontPreviewApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(FontPreviewApp.new, title: "egui-cr — fontpreview",
+Egui.run(FontPreviewApp.new, title: "egui-cr — fontpreview",
   width: 820, height: 760, inspector: :hidden)

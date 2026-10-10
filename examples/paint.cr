@@ -14,8 +14,7 @@
 # Linux, osascript on macOS, WinForms/Win32 on Windows) and a pure
 # stdlib PNG codec (examples/paint/png.cr) — fully cross-platform.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "./paint/dialog"
 require "./paint/png"
 require "./paint/text"
@@ -297,7 +296,7 @@ class PaintApp < Egui::App
     @themed = false
     @hotkeys_ready = false
     # Exit confirmation: the backend Quit port (wrapped on the first
-    # frame, once Sokol.run has installed it) so the window ✕ asks to
+    # frame, once Egui.run has installed it) so the window ✕ asks to
     # save too, exactly like File → Exit.
     @exiting = false
     @orig_quit = nil
@@ -2074,7 +2073,7 @@ class GuardedQuit < Egui::SystemPorts::Quit::Implementation
   end
 end
 
-Egui::Backend::Sokol.run(PaintApp.new,
+Egui.run(PaintApp.new,
   title: "untitled - Paint",
   # 692 tall so the default 640×480 canvas (plus chrome, toolbox,
   # palette, status bar and the classic-scrollbar reservations) fits

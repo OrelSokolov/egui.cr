@@ -286,15 +286,35 @@ the same). Record as an accepted convention so nobody "fixes" it.
 
 ## Fix plan, ordered
 
+Status at the sweep of steps 1/4/6: ✅ done, the rest pending.
+
 | # | Change | Class | Effort | Unlocks |
 |---|--------|-------|--------|---------|
-| 1 | `Egui.run` facade + example sweep | A1 | tiny | apps stop naming sokol |
+| 1 | ✅ `Egui.run` facade + example sweep | A1 | tiny | apps stop naming sokol |
 | 2 | Font registry → Context, `font_loader` factory generalized | A2 | medium | A2 + kills dual state; C1 partially |
 | 3 | `GlyphAtlas#flush` via `TextureRegistry`; stb lib split out | A3 | medium | font specs back into `crystal spec` |
-| 4 | Shim archive split + `pty.cr` → `backend/` | A4 | small (build) | embedders link what they use |
+| 4 | ✅ Shim archive split + `pty.cr` → `backend/` | A4 | small (build) | embedders link what they use |
 | 5 | `Egui::Host` + `RunOptions`; run() policy moves core-side | B1-B3 | medium-large | B2 checklist becomes code; C2 headroom |
-| 6 | Retire `evented_pass` into the host tick | B4 | small | simpler Terminal seam |
+| 6 | ✅ Retire `evented_pass` into the host tick | B4 | small | simpler Terminal seam |
 | 7 | Doc sweep of backend names in core | C1 | small, rides along with 1-2 | — |
+
+Step 1 landed as `src/egui/backend_selector.cr`: apps `require
+"egui/backend_selector"` and call `Egui.run(…)`; the headless core
+(`require "egui"`) stays backend-free, and `Backend::Sokol` remains
+public for sokol-specific knobs.
+
+Step 4 landed as `libegui_cr_pty.a` (Rakefile `ARCHIVES`): the pty
+shim has its own archive and `@[Link("egui_cr_pty")]`;
+`pty.cr` moved to `src/egui/backend/pty.cr`. nanosvg stays in the
+sokol archive deliberately — `sokol.cr` itself requires it for the
+dev-only C rasterizer.
+
+Step 6 landed as `Egui::Runtime.frame_scheduler_pass` (runtime.cr):
+`backend/pty` installs the hook at require time, the frame loop calls
+it once per frame before `begin_frame`, and the `Terminal::Backend`
+seam method + its widget call are deleted. When step 5's `Host`
+lands, the call (and `AsyncDialogs.pump_pass`) move into
+`Host#before_update` unchanged.
 
 Steps 1, 4, 6 are low-risk and independently shippable. Step 5 is the
 one that deserves its own plan (it touches the frame loop of both the

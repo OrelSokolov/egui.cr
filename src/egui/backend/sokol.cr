@@ -1310,6 +1310,10 @@ module Egui
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
         Egui::SystemPorts::AsyncDialogs.pump_pass
+        # Same slot for native reader fibers (PTY sessions) — nil (a
+        # no-op) unless backend/pty was required, and a no-op under the
+        # detached loop where the scheduler runs naturally.
+        Egui::Runtime.frame_scheduler_pass.try &.call
         delivered = Egui::SystemPorts::AsyncDialogs.take_delivered
 
         if @@frame_debug

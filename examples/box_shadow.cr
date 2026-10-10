@@ -12,8 +12,7 @@
 # (`button:active { shadow.inset }` is the pressed look, no custom
 # painting involved).
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 # Bootstrap 2.0.4 button palette: gradient stops (top/bottom) plus the
 # label color. Hover darkens the stops ~7%, active ~18% (the v2
@@ -367,5 +366,5 @@ class BoxShadowApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(BoxShadowApp.new,
+Egui.run(BoxShadowApp.new,
   title: "egui.cr — box-shadow (bootstrap 2.0.4)", inspector: :hidden)

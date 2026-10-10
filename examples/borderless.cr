@@ -1,6 +1,6 @@
 # egui-cr: borderless window demo — the DEFAULT client-side chrome.
 #
-# `Egui::Backend::Sokol.run(decorations: false)` strips the system
+# `Egui.run(decorations: false)` strips the system
 # frame; the backend then draws `Egui::WindowFrame` before every app
 # frame, in one of three looks (segmented switch below):
 #
@@ -22,8 +22,7 @@
 # frame. `chrome: false` in #run would opt out for fully hand-rolled
 # chrome (see git history for the old manual version).
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 class BorderlessApp < Egui::App
   STYLES = {Egui::WindowFrame::Style::Windows,
@@ -36,7 +35,7 @@ class BorderlessApp < Egui::App
 
   @decorated = false
   # `--frame windows|xp|ubuntu|macos` — the initial look (screenshots).
-  # Parsed as a CLASS method because the style must reach `Sokol.run`'s
+  # Parsed as a CLASS method because the style must reach `Egui.run`'s
   # `chrome_style:` option: run assigns @@chrome_style AFTER the app is
   # constructed, so an assignment from #initialize would be overwritten
   # before the first frame (only the in-app segmented switch worked).
@@ -98,6 +97,6 @@ class BorderlessApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(BorderlessApp.new,
+Egui.run(BorderlessApp.new,
   title: "egui-cr — borderless", decorations: false, inspector: :hidden,
   chrome_style: BorderlessApp.frame_style)

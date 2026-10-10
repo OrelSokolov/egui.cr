@@ -6,7 +6,7 @@
 # scrolling, copy/paste).
 #
 # Usage: `ui.terminal(session)` where session is a Terminal::Backend
-# (a Terminal::Session from egui/terminal/pty).
+# (a Terminal::Session from egui/backend/pty).
 
 module Egui
   module Terminal
@@ -131,11 +131,11 @@ module Egui
         response = ui.interact(interact_rect, id,
           Sense::Click | Sense::Drag | Sense::Focusable)
 
-        # One evented scheduler pass for the whole frame (Session
-        # dedups by frame time — multiple TermViews share it) right
-        # before the drain, so data that arrived since the last frame
-        # reaches the emulator this same frame.
-        @backend.evented_pass(ui.ctx.input.time)
+        # Drain newly arrived bytes into the emulator. The frame
+        # loop's scheduler pass (Egui::Runtime.frame_scheduler_pass,
+        # installed by backend/pty) already woke the reader fibers
+        # before begin_frame, so data that arrived since the last
+        # frame reaches the emulator this same frame.
         @backend.pump
 
         # Grid geometry: fit whole cells, keep the leftover as padding.
@@ -169,9 +169,9 @@ module Egui
         # Repaint drivers: blinking cursor while focused (only when the
         # blink option is on — a steady cursor needs no repaints of its
         # own); every alive session keeps frames coming (Windows drains
-        # the shim's ring buffer per frame; Unix needs the per-frame
+        # the shim's ring buffer per frame; Unix needs the frame loop's
         # evented pass that wakes the reader fibers — see
-        # Session#evented_pass).
+        # Session.evented_pass).
         if response.has_focus? && term.cursor_visible && @cursor_blinks
           ui.ctx.request_repaint
         end

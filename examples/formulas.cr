@@ -10,8 +10,7 @@
 #   bin/formulas   # GUI: a handful of formulas + a size slider
 
 require "mathjax"
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 # One typeset formula: the v3 SVG is produced once; the Svg widget
 # caches rasters per pixel size, so the slider only rebakes.
@@ -124,6 +123,6 @@ class FormulasApp < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(FormulasApp.new,
+Egui.run(FormulasApp.new,
   title: "egui-cr — LaTeX formulas (mathjax.cr)",
   width: 720, height: 1080, inspector: :hidden)

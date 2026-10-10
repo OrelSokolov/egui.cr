@@ -12,8 +12,7 @@
 # monotonic timestamp and x = right edge - age, so the curve slides
 # every frame, not once per sample) with an EKG-style time grid.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "sysinfo"
 
 module SysMon
@@ -296,7 +295,7 @@ end
 # requiring this file to reuse the app class without opening a sokol
 # window.
 unless ENV["EGUI_NOWINDOW"]?
-  Egui::Backend::Sokol.run(SystemMonitorApp.new,
+  Egui.run(SystemMonitorApp.new,
     title: "egui-cr — system monitor",
     inspector: :hidden)
 end

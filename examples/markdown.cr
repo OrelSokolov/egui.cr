@@ -7,8 +7,7 @@
 # (highlight_cr — the fence's info string names the language, a
 # missing or unknown one falls back to autodetect).
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
@@ -106,5 +105,5 @@ end
 
 app = MarkdownApp.new
 app.theme = Egui::Theme.light # a markdown reader reads best light
-Egui::Backend::Sokol.run(app, title: "egui-cr — markdown",
+Egui.run(app, title: "egui-cr — markdown",
   inspector: :hidden)

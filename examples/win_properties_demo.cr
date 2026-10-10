@@ -19,8 +19,7 @@
 # the next starts below it. Toggle the checkbox to compare with the
 # default `:carousel` (one scrolling row) on the same tab set.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 module Win95
   SILVER = Egui::Color32.rgb(192, 192, 192)
@@ -195,5 +194,5 @@ class WinPropertiesDemo < Egui::App
   end
 end
 
-Egui::Backend::Sokol.run(WinPropertiesDemo.new,
+Egui.run(WinPropertiesDemo.new,
   title: "egui-cr — Windows Properties tabs (Win95)", inspector: :hidden)

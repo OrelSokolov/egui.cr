@@ -3,8 +3,7 @@
 # hosts the sidebar, and the central panel shows the gallery for the
 # selected tab (top menu bar and bottom status bar around it).
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 require "./icon"
 require "./logo_variants"
 
@@ -1282,6 +1281,6 @@ the default, no pan/zoom and no reset pill:")
   end
 end
 
-Egui::Backend::Sokol.run(GalleryApp.new, title: "egui-cr — widget gallery",
+Egui.run(GalleryApp.new, title: "egui-cr — widget gallery",
   width: 900, height: 700,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

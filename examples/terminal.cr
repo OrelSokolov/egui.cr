@@ -16,9 +16,8 @@
 # (the Settings menu in the menu bar — a section of its own, not a File
 # entry).
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
-require "../src/egui/terminal/pty"
+require "../src/egui/backend_selector"
+require "../src/egui/backend/pty"
 
 class TerminalApp < Egui::App
   # Lowest useful window opacity (below this, text gets unreadable).
@@ -95,13 +94,12 @@ class TerminalApp < Egui::App
     Egui::SystemPorts::Quit.quit! if tabs.empty?
 
     # Hidden sessions don't render, but their PTYs keep producing.
-    # One evented pass for the whole frame (the first caller pays the
-    # ~1 ms select; TermView's call below rides on the same deduped
-    # pass) wakes every reader fiber, then drain each hidden session —
-    # a drain alone is cheap, so the frame cost no longer scales with
-    # the tab count. Without these a hidden tab's title would stick
-    # at "bash" until it's clicked and rendered.
-    tabs.first?.try &.session.evented_pass(ctx.input.time)
+    # The frame loop's scheduler pass (Egui::Runtime.frame_scheduler_pass,
+    # installed by backend/pty) already woke every reader fiber before
+    # begin_frame, so a plain drain reaches the data — cheap per
+    # session, the frame cost stays flat with the tab count. Without
+    # these a hidden tab's title would stick at "bash" until it's
+    # clicked and rendered.
     tabs.each_with_index do |tab, i|
       next if i == selected
       tab.session.pump
@@ -352,6 +350,6 @@ pick_monospace
 # around it stays opaque.
 config = Egui::Terminal::Config.load
 
-Egui::Backend::Sokol.run(TerminalApp.new(config),
+Egui.run(TerminalApp.new(config),
   title: "egui-cr — terminal", width: 900, height: 640,
   transparent: true, inspector: :hidden)

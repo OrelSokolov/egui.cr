@@ -5,8 +5,7 @@
 # sokol shim's SG_USAGE_STREAM images). Demo side: FFmpeg bindings +
 # decoder/player + this UI. See videoplayer.md for the full plan.
 
-require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/backend_selector"
 
 require "./video/ffmpeg"
 require "./video/player"
@@ -14,5 +13,5 @@ require "./video/app"
 
 app = VideoApp.new(ARGV[0]?)
 
-Egui::Backend::Sokol.run(app,
+Egui.run(app,
   title: "egui-cr — video", width: 960, height: 620, inspector: :hidden)
