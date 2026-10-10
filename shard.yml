@@ -1,5 +1,5 @@
 name: egui-cr
-version: 0.1.0
+version: 0.2.0
 description: |
   Immediate-mode GUI for Crystal — a 1:1 port of the egui (Rust)
   architecture: Context / Ui / Memory / Response / widgets, rendered
