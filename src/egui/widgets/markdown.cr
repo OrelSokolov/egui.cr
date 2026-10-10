@@ -4,8 +4,10 @@
 # than one monolithic painter.
 #
 # Supported blocks: ATX headings (`#`…`######`), paragraphs (soft-wrap
-# lines joined), fenced code blocks (``` — rendered as a monospace
-# block on a subtle background, NO syntax highlighting), blockquotes
+# lines joined), fenced code blocks (``` — monospace on a subtle
+# background, SYNTAX HIGHLIGHTED through the highlight_cr port of
+# highlight.js: the fence's info string names the language, a missing
+# or unknown one falls back to relevance autodetect), blockquotes
 # (`>`, weak text + accent bar), bullet/ordered lists, horizontal
 # rules. Inline markup inside every text block goes through
 # RichLabel: `**bold**`, `*italic*`, `***both***`, `` `code` `` and
@@ -13,6 +15,8 @@
 #
 # Parsing is pure (`Markdown.parse` — no Context) so specs can test
 # the block model headless; `#ui` only lays blocks out.
+
+require "highlight_cr"
 
 module Egui
   class Markdown
@@ -42,6 +46,8 @@ module Egui
     # `alt` its alt text, `width_px` an explicit `<img width=…>` size
     # and `align` its horizontal alignment. A table's `text` holds the
     # rows joined by \n and \x1F (unit separator): first row = header.
+    # A code block's `lang` is the fence info string's first word
+    # (downcased; nil when the fence carries none).
     class Block
       getter kind : Symbol
       # List items append lazy-continuation lines to their text, so
@@ -53,11 +59,12 @@ module Egui
       getter alt : String
       getter width_px : Float64?
       getter align : Symbol
+      getter lang : String?
 
       def initialize(@kind : Symbol, @text : String = "", @level : Int32 = 0,
                      @ordered : Bool = false, @number : Int32 = 0,
                      @alt : String = "", @width_px : Float64? = nil,
-                     @align : Symbol = :left)
+                     @align : Symbol = :left, @lang : String? = nil)
       end
     end
 
@@ -106,7 +113,7 @@ module Egui
       body = ui.child_ui(
         Rect.from_min_size(Pos2.new(origin.x + @pad_x, origin.y),
           Vec2.new({width - @pad_x * 2.0, 1.0}.max, 1e6)), id)
-      Markdown.parse(@source).each { |b| render_block(body, b, style) }
+      Markdown.parse_cached(@source).each { |b| render_block(body, b, style) }
 
       ui.min_rect = ui.min_rect.union(body.min_rect)
       ui.cursor = Pos2.new(origin.x, body.cursor.y)
@@ -121,6 +128,140 @@ module Egui
     end
 
     # --- parsing -------------------------------------------------------
+
+    # The widget is recreated every frame (`Ui#markdown` builds a fresh
+    # `Markdown` per draw), so both the block model and the highlight
+    # tokens cache on the CLASS, keyed by source / {lang, code}. Bounds
+    # are coarse (clear-all past N entries): typical documents hold a
+    # handful of blocks, and a clear only costs one re-parse.
+    PARSE_CACHE = {} of String => Array(Block)
+    TOKEN_CACHE = {} of String => Array(Tuple(String?, String))?
+
+    def self.parse_cached(source : String) : Array(Block)
+      if (cached = PARSE_CACHE[source]?)
+        cached
+      else
+        PARSE_CACHE.clear if PARSE_CACHE.size >= 32
+        PARSE_CACHE[source] = parse(source)
+      end
+    end
+
+    # Fence langs that mean "no highlighting, please" — autodetecting
+    # prose would paint false colors over what the author wrote as
+    # verbatim text.
+    PLAIN_LANGS = {"text", "plain", "plaintext", "txt", "none"}
+
+    # Highlight tokens for a code block: the named language when
+    # registered, otherwise relevance autodetect (a missing info
+    # string or a language the highlighter doesn't ship). Explicit
+    # plain langs and autodetect misses render unstyled.
+    def self.tokens_cached(code : String, lang : String?) : Array(Tuple(String?, String))?
+      return nil if lang && PLAIN_LANGS.includes?(lang)
+      key = "#{lang || "\u{0}auto"}\u{1}#{code}"
+      if (cached = TOKEN_CACHE[key]?)
+        cached
+      else
+        TOKEN_CACHE.clear if TOKEN_CACHE.size >= 128
+        tokens = Highlight.tokens(code, lang)
+        # Unknown named language → try autodetect over the same text.
+        if tokens.nil?
+          tokens = Highlight.tokens(code, nil)
+          # All-unscoped output (autodetect picked plaintext) is
+          # indistinguishable from no highlighting — store nil so the
+          # renderer takes its plain path.
+          tokens = nil if tokens && tokens.all? { |scope, _| scope.nil? }
+        end
+        TOKEN_CACHE[key] = tokens
+        tokens
+      end
+    end
+
+    # GitHub-style syntax palettes (light / dark), keyed by the
+    # highlighter's scope. Absent scopes (operator, punctuation —
+    # GitHub paints those plain too) fall back to the text color.
+    HL_LIGHT = {
+      "keyword"              => Color32.rgba(0xCF, 0x22, 0x2E, 255),
+      "literal"              => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "string"               => Color32.rgba(0x0A, 0x30, 0x69, 255),
+      "regexp"               => Color32.rgba(0x0A, 0x30, 0x69, 255),
+      "comment"              => Color32.rgba(0x59, 0x63, 0x6E, 255),
+      "doctag"               => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "meta"                 => Color32.rgba(0xCF, 0x22, 0x2E, 255),
+      "section"              => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "name"                 => Color32.rgba(0x11, 0x63, 0x29, 255),
+      "tag"                  => Color32.rgba(0x11, 0x63, 0x29, 255),
+      "attr"                 => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "attribute"            => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "symbol"               => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "bullet"               => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "variable"             => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "variable.language"    => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "variable.constant"    => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "title.function"       => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "title.function.invoke" => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "title.class"          => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "title.class.inherited" => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "title"                => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "type"                 => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "built_in"             => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "number"               => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "params"               => Color32.rgba(0x95, 0x38, 0x00, 255),
+      "property"             => Color32.rgba(0x05, 0x50, 0xAE, 255),
+      "selector-tag"         => Color32.rgba(0x11, 0x63, 0x29, 255),
+      "selector-id"          => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "selector-class"       => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "selector-attr"        => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "selector-pseudo"      => Color32.rgba(0x82, 0x50, 0xDF, 255),
+      "addition"             => Color32.rgba(0x11, 0x63, 0x29, 255),
+      "deletion"             => Color32.rgba(0x82, 0x50, 0xDF, 255),
+    } of String => Color32
+
+    HL_DARK = {
+      "keyword"              => Color32.rgba(0xFF, 0x7B, 0x72, 255),
+      "literal"              => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "string"               => Color32.rgba(0xA5, 0xD6, 0xFF, 255),
+      "regexp"               => Color32.rgba(0xA5, 0xD6, 0xFF, 255),
+      "comment"              => Color32.rgba(0x8B, 0x94, 0x9E, 255),
+      "doctag"               => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "meta"                 => Color32.rgba(0xFF, 0x7B, 0x72, 255),
+      "section"              => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "name"                 => Color32.rgba(0x7E, 0xE7, 0x87, 255),
+      "tag"                  => Color32.rgba(0x7E, 0xE7, 0x87, 255),
+      "attr"                 => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "attribute"            => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "symbol"               => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "bullet"               => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "variable"             => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "variable.language"    => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "variable.constant"    => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "title.function"       => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "title.function.invoke" => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "title.class"          => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "title.class.inherited" => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "title"                => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "type"                 => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "built_in"             => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "number"               => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "params"               => Color32.rgba(0xFF, 0xA6, 0x57, 255),
+      "property"             => Color32.rgba(0x79, 0xC0, 0xFF, 255),
+      "selector-tag"         => Color32.rgba(0x7E, 0xE7, 0x87, 255),
+      "selector-id"          => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "selector-class"       => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "selector-attr"        => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "selector-pseudo"      => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+      "addition"             => Color32.rgba(0x7E, 0xE7, 0x87, 255),
+      "deletion"             => Color32.rgba(0xD2, 0xA8, 0xFF, 255),
+    } of String => Color32
+
+    # Palette lookup for a token scope: exact match first, then the
+    # scope's first dotted segment (e.g. `title.function.invoke`
+    # resolves through `title` when unmapped). nil → plain text color.
+    def self.hl_color(scope : String?, dark : Bool) : Color32?
+      return nil if scope.nil?
+      return nil if scope.starts_with?("language-") # sublanguage wrapper
+      table = dark ? HL_DARK : HL_LIGHT
+      table[scope]? || table[scope.split('.').first]?
+    end
 
     # Block model of a markdown source. Pure string surgery — the
     # rendering side never re-reads the source.
@@ -147,13 +288,15 @@ module Egui
           next
         end
 
-        # Fenced code block: ``` (or longer) … matching close. The
-        # info string after the opening fence is ignored (no syntax
-        # highlighting). Content is verbatim — no markup, no stripping
+        # Fenced code block: ``` (or longer) … matching close. The info
+        # string's first word names the language (downcased) for syntax
+        # highlighting. Content is verbatim — no markup, no stripping
         # beyond the trailing newline.
         if stripped.starts_with?("```")
           flush_paragraph.call
           fence = stripped[/^`+/]
+          info = stripped[fence.size..].strip
+          lang = info.empty? ? nil : info.split(/\s+/).first.downcase
           code = [] of String
           i += 1
           while i < lines.size && !lines[i].strip.starts_with?(fence)
@@ -161,7 +304,7 @@ module Egui
             i += 1
           end
           i += 1 # past the closing fence (or EOF)
-          blocks << Block.new(:code, code.join("\n"))
+          blocks << Block.new(:code, code.join("\n"), lang: lang)
           next
         end
 
@@ -446,9 +589,11 @@ module Egui
         style.visuals.fade_color(style.visuals.text_color, 0.4))
     end
 
-    # Code block: a selectable monospace Label (verbatim text — no
-    # markup parsing, no highlighting) on a subtle rounded rect. No
-    # wrap: long lines stay on one row, clipped like code editors.
+    # Code block: a selectable monospace Label on a subtle rounded
+    # rect. Syntax-highlighted when the fence named a language (or
+    # autodetect scored one): one colored TextRun per highlight token,
+    # baked as the Label's preset runs. No wrap: long lines stay on
+    # one row, clipped like code editors.
     private def render_code(ui : Ui, block : Block, style : Style) : Nil
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       fonts = ui.ctx.fonts_for(style.font_family)
@@ -456,8 +601,19 @@ module Egui
       # 14px monospace at the default 16px body (0.875 — the same
       # ratio as inline code chips).
       rich = rich.size(style.font_size * 0.875)
+      preset =
+        if (tokens = Markdown.tokens_cached(block.text, block.lang))
+          base = style.visuals.text_color
+          dark = style.visuals.dark
+          tokens.map { |scope, text|
+            TextRun.new(text, style.font_size * 0.875,
+              Markdown.hl_color(scope, dark) || base,
+              family: "monospace")
+          }
+        end
       galley = fonts.layout(
-        rich.runs(style.font_size, style.visuals.text_color), nil, resolve)
+        preset || rich.runs(style.font_size, style.visuals.text_color),
+        nil, resolve)
 
       pad = 8.0
       size = Vec2.new(galley.size.x + pad * 2.0, galley.size.y + pad * 2.0)
@@ -465,7 +621,7 @@ module Egui
       ui.painter.rect(rect, 4.0, CODE_BG)
       inner = ui.child_ui(Rect.from_min_size(
         Pos2.new(rect.left + pad, rect.top + pad), galley.size))
-      inner.add(Label.new(rich, wrap: false))
+      inner.add(Label.new(rich, wrap: false, preset_runs: preset))
     end
 
     # GFM table: delegated to TableTextRenderer (min/max column

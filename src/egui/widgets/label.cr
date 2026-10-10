@@ -28,6 +28,10 @@ module Egui
     getter rich : RichText
     getter wrap : Bool?
     getter? userselect : Bool
+    # Preset layout runs (markdown syntax highlighting: one TextRun per
+    # token). When set they replace `rich.runs` verbatim — the RichText
+    # only carries the plain text (selection/measure fallback).
+    getter preset_runs : Array(TextRun)?
 
     def initialize(text : String, size : Float64? = nil, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil)
@@ -36,10 +40,12 @@ module Egui
       @wrap = wrap
       @userselect = userselect
       @id_name = id
+      @preset_runs = nil
     end
 
     def initialize(@rich : RichText, wrap : Bool? = nil,
-                   userselect : Bool = true, id : String? = nil)
+                   userselect : Bool = true, id : String? = nil,
+                   @preset_runs : Array(TextRun)? = nil)
       @wrap = wrap
       @userselect = userselect
       @id_name = id
@@ -92,11 +98,17 @@ module Egui
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, weight, @rich.bold?)
       run_bold = weight.nil? ? nil : face_bold
-      runs = @rich.runs(style.font_size, style.visuals.text_color,
-        run_size, run_bold)
-      # Code blocks share the inline-code fallback: without a mono
-      # stack they draw in the proportional font — retint them.
-      runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
+      if (preset = @preset_runs)
+        # Preset runs (syntax-highlighted code): colors already baked
+        # in — the no-mono-stack retint would erase them.
+        runs = preset
+      else
+        runs = @rich.runs(style.font_size, style.visuals.text_color,
+          run_size, run_bold)
+        # Code blocks share the inline-code fallback: without a mono
+        # stack they draw in the proportional font — retint them.
+        runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
+      end
       # Default (nil): wrap only where the label owns the rest of the
       # line — a vertical layout (upstream `TextWrapMode::Wrap`); a
       # label inside a horizontal row stays inline (`Extend`). A zero

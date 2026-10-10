@@ -164,9 +164,13 @@ describe "Markdown widget" do
     end
 
     texts = ctx.painter.commands.select(Egui::TextCmd)
-    texts.size.should eq(1)
-    texts.first.text.should eq("puts \"hi\"")
-    texts.first.family.should eq("monospace")
+    # Syntax highlighting (```crystal fence): one TextRun per token —
+    # `puts` keyword-red, "hi" string-blue — all in the monospace
+    # family, spelling out the source verbatim.
+    texts.size.should be >= 2
+    texts.map(&.text).join.should eq("puts \"hi\"")
+    texts.all? { |t| t.family == "monospace" }.should be_true
+    texts.map(&.color).uniq.size.should be >= 2
 
     rects = ctx.painter.commands.select(Egui::RectCmd)
     rects.count(&.fill.==(Egui::Markdown::CODE_BG))

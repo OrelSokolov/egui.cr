@@ -27,6 +27,8 @@ module Egui
     Eight      =  56
     Nine       =  57
     Comma      =  44 # SAPP_KEYCODE_COMMA (Win11-style "Ctrl+," bindings)
+    Minus      =  45 # SAPP_KEYCODE_MINUS (font zoom "Ctrl+-" bindings)
+    Equal      =  61 # SAPP_KEYCODE_EQUAL (its "Ctrl+=" zoom-in twin)
     A          =  65
     B          =  66
     C          =  67

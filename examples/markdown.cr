@@ -3,8 +3,9 @@
 # supported: standalone `![alt](path)` lines load through the texture
 # registry and scale down to the available width; relative paths
 # resolve against the repo root. Inline `**bold**`, *italic*, `code`
-# and links through RichLabel; fenced code renders as plain
-# monospace blocks (no syntax highlighting).
+# and links through RichLabel; fenced code is syntax highlighted
+# (highlight_cr — the fence's info string names the language, a
+# missing or unknown one falls back to autodetect).
 
 require "../src/egui"
 require "../src/egui/backend/sokol"

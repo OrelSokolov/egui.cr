@@ -16,6 +16,10 @@ dependencies:
   # no libfreetype dependency in shipped binaries.
   freetype-cr:
     github: OrelSokolov/freetype.cr
+  # Синтаксическая подсветка fenced-code в markdown-виджете (порт
+  # highlight.js 11.12.0).
+  highlight_cr:
+    github: OrelSokolov/highlight.cr
 
 # Demos only (examples/ + spec/) — never pulled in when egui-cr is
 # used as a library. examples/system_monitor.cr reads RAM, CPU and
