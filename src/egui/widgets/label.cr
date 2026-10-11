@@ -130,9 +130,25 @@ module Egui
       response = ui.interact(rect, id,
         @userselect ? Sense.click_and_drag : Sense.none)
 
-      # The text lives in the content box (rect minus padding).
+      # The text lives in the content box (rect minus padding),
+      # vertically centered. A host may clamp the rect below the
+      # galley's height (the max-size rule at a region edge — a status
+      # strip shorter than the label): top-aligning from the padding
+      # then spills the text past the panel's clip and cuts its
+      # descenders, so the row centers in the WHOLE rect instead — the
+      # same too-tight-cell fallback Button uses. The fit test carries
+      # a half-pixel tolerance: the unclamped case computes room as
+      # (galley_h + pad) - pad, a float round-trip that can land a hair
+      # under galley_h and would falsely take the fallback.
+      room = rect.height - pad.vertical
+      if room + 0.5 >= galley.size.y
+        slack = {room - galley.size.y, 0.0}.max
+        text_top = rect.min.y + pad.top + slack / 2.0
+      else
+        text_top = rect.center.y - galley.size.y / 2.0
+      end
       content = Rect.from_min_size(
-        rect.min + Vec2.new(pad.left, pad.top), galley.size)
+        Pos2.new(rect.min.x + pad.left, text_top), galley.size)
       if @userselect
         paint_selectable(ui, response, id, content, galley, fonts,
           face_family, style)

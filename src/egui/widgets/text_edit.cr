@@ -184,6 +184,24 @@ module Egui
       end
 
       inner = rect.min + inset
+      # The content row centers in the field's inner box (rect minus
+      # the border + padding inset). A host may clamp the rect below
+      # the natural height (the max-size rule at a region edge — the
+      # 44px toolbar strip in the tableview demo): the inner box is
+      # then shorter than the row, and top-aligning from #inner spills
+      # the text past the field's bottom border. Center in the whole
+      # rect instead — the same too-tight-cell fallback Button uses.
+      # The fit test carries a half-pixel tolerance: the unclamped
+      # case computes inner_h as (line_h + 2*inset) - 2*inset, a float
+      # round-trip that can land a hair under line_h and would
+      # falsely take the fallback (and its looser content clip).
+      inner_h = rect.height - inset.y * 2.0
+      tight = inner_h + 0.5 < line_h
+      text_top = if tight
+        rect.center.y - line_h / 2.0
+      else
+        inner.y + {inner_h - line_h, 0.0}.max / 2.0
+      end
       color = if new_text.empty? && @hint
                 visuals.fade_color(visuals.text_color, 0.55)
               else
@@ -194,13 +212,18 @@ module Egui
       # horizontal scroll and clipped to the field's INNER rect (inside
       # the border + padding) — a scrolled row must cut at the content
       # edge, never paint over the padding/border zone (a wide mask
-      # glyph bleeding into the border reads as misaligned).
+      # glyph bleeding into the border reads as misaligned). When the
+      # rect was clamped below the natural height the inner box is
+      # shorter than the row itself — clip to the whole rect there so
+      # the centered row is not cut top AND bottom (see #text_top).
+      clip_top = tight ? rect.min.y : rect.min.y + inset.y
+      clip_bottom = tight ? rect.max.y : rect.max.y - inset.y
       outer_clip = ui.painter.clip
       content_clip = Rect.new(
         Pos2.new({outer_clip.min.x, rect.min.x + inset.x}.max,
-          {outer_clip.min.y, rect.min.y + inset.y}.max),
+          {outer_clip.min.y, clip_top}.max),
         Pos2.new({outer_clip.max.x, rect.max.x - inset.x}.min,
-          {outer_clip.max.y, rect.max.y - inset.y}.min))
+          {outer_clip.max.y, clip_bottom}.min))
       ui.painter.clip = content_clip
 
       # Selection highlight behind the text (the galley is laid out on
@@ -210,7 +233,7 @@ module Egui
       if anchor >= 0 && anchor != cursor && !new_text.empty?
         x0 = galley.x_at(0, d_idx.call(sel_min), fonts)
         x1 = galley.x_at(0, d_idx.call(sel_max), fonts)
-        top = inner.y + 1.0
+        top = text_top + 1.0
         height = {galley.size.y - 2.0, 2.0}.max
         ui.painter.rect(
           Rect.from_min_size(Pos2.new(inner.x + x0 - scroll, top),
@@ -219,7 +242,7 @@ module Egui
       end
 
       ui.painter.paint_galley(
-        Pos2.new(inner.x - scroll, inner.y), galley, fonts, color,
+        Pos2.new(inner.x - scroll, text_top), galley, fonts, color,
         style.font_family)
 
       ui.painter.clip = outer_clip
@@ -245,21 +268,21 @@ module Egui
           w = galley.x_at(0, col + 1, fonts) - caret_x
           w = {fonts.measure(" ", font_size).x, font_size * 0.5}.max if w <= 0.0
           ui.painter.rect(
-            Rect.from_min_size(Pos2.new(inner.x + caret_x - scroll, inner.y + 1.0),
+            Rect.from_min_size(Pos2.new(inner.x + caret_x - scroll, text_top + 1.0),
               Vec2.new(w, line_h - 2.0)), 0.0, visuals.text_color)
           if (ch = display[col]?)
             glyph_bg = @frame ? bg : visuals.window_fill
             row_h = galley.rows[0]?.try(&.height) || line_h
             ui.painter.clip = content_clip
             ui.painter.text(
-              Pos2.new(inner.x + caret_x - scroll, inner.y + row_h / 2.0),
+              Pos2.new(inner.x + caret_x - scroll, text_top + row_h / 2.0),
               ch.to_s, font_size, glyph_bg, family: style.font_family)
             ui.painter.clip = outer_clip
           end
         else
           caret_x = inner.x + galley.x_at(0, d_idx.call(cursor), fonts) - scroll
-          top = inner.y + 1.0
-          bottom = inner.y + line_h - 1.0
+          top = text_top + 1.0
+          bottom = text_top + line_h - 1.0
           ui.painter.line(Pos2.new(caret_x, top), Pos2.new(caret_x, bottom),
             1.0, visuals.text_color)
         end

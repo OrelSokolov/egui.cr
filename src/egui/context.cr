@@ -1378,8 +1378,18 @@ module Egui
         RectCmd.new(rect, rect, 0.0, fill || style.visuals.panel_fill,
           style.visuals.window_stroke, 1.0))
 
+      # Panel margin (upstream `Panel` margin, default
+      # `Spacing::window_padding`): per-axis — x by window_padding.x,
+      # y by window_padding.y. #default_strip_height sizes the default
+      # strip for exactly this vertical padding; a scalar shrink by
+      # pad.x stole 2px more per vertical side and left the interior
+      # shorter than a text line (every fixed-height toolbar/status
+      # strip then clamped its widgets — see the max-size rule).
+      inner_rect = Rect.new(
+        Pos2.new(rect.min.x + pad.x, rect.min.y + pad.y),
+        Pos2.new(rect.max.x - pad.x, rect.max.y - pad.y))
       ui = Ui.new(self, Id.from("panel/#{id}"),
-        rect.shrink(pad.x), layout)
+        inner_rect, layout)
       ui.clip = rect
       ui.layer = layer if layer
       # CSS `overflow-y: auto` by default for top-down panels (egui.cr
