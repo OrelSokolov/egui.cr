@@ -8,6 +8,10 @@ description: |
   Reference clone: egui-upstream/ (read-only). Native vendor code:
   vendor/sokol, vendor/fontstash.
 
+# SPDX: the open-source leg of the dual license; the commercial
+# alternative is described in LICENSE and the README.
+license: AGPL-3.0
+
 dependencies:
   nanosvg:
     github: OrelSokolov/nanosvg.cr

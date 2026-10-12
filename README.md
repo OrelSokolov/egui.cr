@@ -304,3 +304,17 @@ layout, `Label` and `Button` widgets, sokol_app window + sokol_gfx
 rendering, and the pure-Crystal text stack (freetype-cr with TrueType
 hinting; C-FFI FreeType as an opt-in dev accelerator). See
 `docs/ANALYSIS.md` for the full upstream map and what is next.
+
+## License
+
+Dual-licensed — the Qt / MySQL model:
+
+- **AGPL-3.0** for open-source use (see [LICENSE](LICENSE)). Note the
+  Affero clause: a network service built on egui.cr must offer its
+  source to users, and shipping a closed-source app that embeds
+  egui.cr violates the license.
+- **Commercial license** for everything else — if you cannot or do not
+  want to open your application's source, contact
+  Oleg Orlov <orelcokolov@gmail.com>.
+
+Vendored third-party code (`vendor/`) keeps its upstream licenses.
