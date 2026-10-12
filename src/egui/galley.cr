@@ -57,13 +57,19 @@ module Egui
       getter width : Float64
       getter height : Float64
       getter y : Float64
+      # Baseline offset from the row's TOP — the SHARED baseline every
+      # run in the row aligns on, computed by `Fonts#layout` from the
+      # union em-box of the row's stacks (see WrapState#emit_row).
+      # `Painter#paint_galley` converts it back into each run's
+      # left-center anchor through that run's own metrics.
+      getter ascent : Float64
       # True when a '\n' in the source text immediately precedes this
       # row (blank-line preservation and byte-offset mapping in
       # TextArea — wrap-broken rows are not preceded by a newline).
       getter? newline_before : Bool
 
       def initialize(@runs : Array(RowRun), @width : Float64,
-                     @height : Float64, @y : Float64,
+                     @height : Float64, @y : Float64, @ascent : Float64,
                      @newline_before : Bool = false)
       end
 
@@ -106,15 +112,47 @@ module Egui
     end
 
     # Character x-offset inside a row (caret geometry for TextEdit):
-    # measured on the row's text prefix with the row's dominant size.
-    # An empty galley has no rows — the caret just sits at x=0.
+    # with a `resolve` closure each run's slice measures through ITS
+    # stack (mono code, bold faces) at ITS size — the drawn widths; the
+    # fallback measures the whole prefix with the row's dominant size
+    # on one stack (callers whose rows are single-font: TextEdit,
+    # TextArea). An empty galley has no rows — the caret sits at x=0.
+    # Chip margins (Fonts#layout's add_margin) reserve advance width a
+    # plain prefix measurement misses: each crossed chip contributes
+    # its side paddings back, so the caret tracks the DRAWN positions.
     def x_at(row_index : Int32, char_index : Int32,
-             fonts : Fonts) : Float64
+             fonts : Fonts,
+             resolve : ((String?, Bool, Bool) -> Fonts)? = nil) : Float64
       row = @rows[row_index]?
       return 0.0 unless row
-      size = row.runs.map(&.size).max? || fonts_default
-      prefix = row.text[0, {char_index, row.text.size}.min]
-      fonts.measure(prefix, size).x
+      chars = {char_index, row.text.size}.min
+      if resolve
+        x = 0.0
+        consumed = 0
+        row.runs.each do |run|
+          break if consumed >= chars
+          take = {chars - consumed, run.text.size}.min
+          stack = resolve.call(run.family, run.bold?, run.italic?)
+          x += stack.measure(run.text[0, take], run.size).x
+          consumed += take
+        end
+      else
+        size = row.runs.map(&.size).max? || fonts_default
+        x = fonts.measure(row.text[0, chars], size).x
+      end
+      consumed = 0
+      row.runs.each do |run|
+        len = run.text.size
+        if run.background
+          if consumed + len <= char_index
+            x += 2 * run.size * 0.4 # whole chip crossed: both pads
+          elsif consumed < char_index
+            x += run.size * 0.4     # caret inside the chip: left pad
+          end
+        end
+        consumed += len
+      end
+      x
     end
 
     private def fonts_default : Float64

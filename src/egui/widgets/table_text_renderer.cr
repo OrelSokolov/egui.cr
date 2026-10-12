@@ -29,7 +29,11 @@ module Egui
                    @min_col : Float64 = 24.0)
     end
 
-    def render(ui : Ui, style : Style,
+    # `line_height` must match what the cell WIDGETS will lay out with
+    # (markdown passes its body factor): heights and wrap points are
+    # reserved from these layouts, and a mismatch makes taller cells
+    # overflow their box onto the next row.
+    def render(ui : Ui, style : Style, line_height : Float64? = nil,
                &cell : String, Bool -> Widget) : Rect
       return Rect.new(ui.cursor, ui.cursor) if @rows.empty?
       ctx = ui.ctx
@@ -39,14 +43,16 @@ module Egui
       cols = @rows.map(&.size).max
       avail = ui.available_width
 
-      # Styled runs per cell, once (measurement and wrap reuse them).
+      # Styled runs per cell, once (measurement and wrap reuse them) —
+      # through the SAME chip marking RichLabel applies, so wrap points
+      # (and their reserved side margins) match what renders.
       runs_by_cell = @rows.map do |row|
         row.map do |text|
           rich = RichText.new(text)
           runs = rich.styled_runs(style.font_size, visuals.text_color,
             visuals.hyperlink_color)
           runs = RichText.fade_code_runs(runs, visuals) if ctx.mono_fonts.nil?
-          runs
+          RichLabel.apply_code_chips(runs)
         end
       end
 
@@ -59,9 +65,12 @@ module Egui
           wmax = 0.0
           runs.each do |r|
             stack = resolve.call(r.family, r.bold?, r.italic?)
-            wmax += stack.measure(r.text, r.size).x
+            # A chip's layout-reserved side margins (2 × 0.4em) ride
+            # both the single-line width and every unbreakable word.
+            chip = r.background ? r.size * 0.8 : 0.0
+            wmax += stack.measure(r.text, r.size).x + chip
             r.text.split(' ').each do |word|
-              w = stack.measure(word, r.size).x
+              w = stack.measure(word, r.size).x + chip
               wmin = {wmin, w}.max
             end
           end
@@ -78,7 +87,7 @@ module Egui
         h = 0.0
         row.each_with_index do |_text, ci|
           galley = fonts.layout(runs_by_cell[ri][ci],
-            {widths[ci] - @padding.x * 2.0, 1.0}.max, resolve)
+            {widths[ci] - @padding.x * 2.0, 1.0}.max, resolve, line_height)
           h = {h, galley.size.y}.max
         end
         h + @padding.y * 2.0

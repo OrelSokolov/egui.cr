@@ -308,52 +308,83 @@ module Egui
     # overrides it per run — `resolve` (a `Context#fonts_for` closure)
     # supplies that stack for the underline/strike/chip width
     # measurement, exactly like `Fonts#layout` did for the wrap.
+    #
+    # `selection` paints per-row highlight strips (row index, x0, x1 in
+    # galley coordinates) BETWEEN the chips and the glyphs — an opaque
+    # chip painted over the highlight is what made selected inline code
+    # look unselectable.
     def paint_galley(pos : Pos2, galley : Galley, fonts : Fonts,
                      default_color : Color32, family : String? = nil,
-                     resolve : ((String?, Bool, Bool) -> Fonts)? = nil) : Nil
+                     resolve : ((String?, Bool, Bool) -> Fonts)? = nil,
+                     selection : Array(Tuple(Int32, Float64, Float64))? = nil,
+                     selection_color : Color32? = nil) : Nil
       # Cull rows outside the clip rect: a scrolled textarea with a
       # multi-megabyte galley must not tessellate (and rasterize) every
       # row of the buffer each frame — only the visible window. Rows
       # are laid out top-to-bottom, so the scan can stop at the bottom.
       clip_top = @clip.min.y
       clip_bottom = @clip.max.y
-      galley.rows.each do |row|
+      galley.rows.each_with_index do |row, ri|
         row_top = pos.y + row.y
         next if row_top + row.height < clip_top
         break if row_top > clip_bottom
-        row_center_y = row_top + row.height / 2.0
+        # The row's SHARED baseline (see Galley::Row#ascent): every run
+        # aligns on it, whatever stack it draws through. Each run's
+        # TextCmd still anchors the em-box CENTER (`#text` semantics the
+        # terminal and other direct callers rely on), so the baseline
+        # converts back per run through that run's own metrics — for a
+        # single-stack row this is exactly the old row-center anchor.
+        baseline = row_top + row.ascent
+        # Pass 1: chips (backgrounded runs) — under everything else.
         row.runs.each do |run|
-          run_pos = Pos2.new(pos.x + run.x, row_center_y)
+          next unless (bg = run.background)
+          run_fonts = resolve ? resolve.not_nil!.call(run.family, run.bold?, run.italic?) : fonts
+          asc, desc = run_fonts.metrics_at(run.size)
+          w = run_fonts.measure(run.text, run.size).x
+          pad_x = run.size * 0.4
+          chip_h = {run.size * 1.4, row.height}.min
+          # The chip centers on the run's em-box (baseline-derived) and
+          # clamps into the row box so it never bleeds into
+          # neighboring lines or blocks; a roomier line_height (markdown
+          # body: 1.5) leaves the leading the chip needs. `Fonts#layout`
+          # reserved pad_x of advance on each side (add_margin), so the
+          # chip's edges meet the neighbouring text without overlap.
+          chip_cy = {baseline - (asc + desc) / 2.0,
+                     row_top + row.height - chip_h / 2.0}.min
+          chip_cy = {chip_cy, row_top + chip_h / 2.0}.max
+          rect(Rect.from_min_size(
+            Pos2.new(pos.x + run.x - pad_x, chip_cy - chip_h / 2.0),
+            Vec2.new(w + pad_x * 2.0, chip_h)),
+            6.0, bg)
+        end
+        # Selection strips: over the chips, under the glyphs.
+        if selection && (color = selection_color)
+          selection.each do |sri, x0, x1|
+            next unless sri == ri && x1 > x0
+            rect(Rect.from_min_size(
+              Pos2.new(pos.x + x0, row_top + 1.0),
+              Vec2.new(x1 - x0, row.height - 2.0)),
+              0.0, color)
+          end
+        end
+        # Pass 2: glyphs + decorations.
+        row.runs.each do |run|
+          run_fonts = resolve ? resolve.not_nil!.call(run.family, run.bold?, run.italic?) : fonts
+          asc, desc = run_fonts.metrics_at(run.size)
+          run_pos = Pos2.new(pos.x + run.x, baseline - (asc + desc) / 2.0)
           color = run.color || default_color
           run_family = run.family || family
-          run_fonts = resolve ? resolve.not_nil!.call(run.family, run.bold?, run.italic?) : fonts
-          # Chip behind a backgrounded run (inline code): a rounded
-          # rect under the text, padded around the glyphs the way
-          # GitHub does (`code { padding: 0.2em 0.4em; border-radius:
-          # 6px }`) — the padding scales with the run's font size.
-          # Height clamps to the row box so the chip never bleeds
-          # into neighboring lines or blocks.
-          if (bg = run.background)
-            w = run_fonts.measure(run.text, run.size).x
-            pad_x = run.size * 0.4
-            chip_h = {run.size * 1.4, row.height}.min
-            rect(Rect.from_min_size(
-              Pos2.new(run_pos.x - pad_x,
-                row_top + row.height / 2.0 - chip_h / 2.0),
-              Vec2.new(w + pad_x * 2.0, chip_h)),
-              6.0, bg)
-          end
           text(run_pos, run.text, run.size, color, run_family,
             run.bold?, run.italic?)
           if run.underline?
             w = run_fonts.measure(run.text, run.size).x
-            underline_y = pos.y + row.y + row.height - 2.0
+            underline_y = baseline + {1.5, run.size * 0.1}.max
             line(Pos2.new(run_pos.x, underline_y),
               Pos2.new(run_pos.x + w, underline_y), 1.0, color)
           end
           if run.strikethrough?
             w = run_fonts.measure(run.text, run.size).x
-            strike_y = pos.y + row.y + row.height * 0.58
+            strike_y = baseline - run.size * 0.3
             line(Pos2.new(run_pos.x, strike_y),
               Pos2.new(run_pos.x + w, strike_y), 1.0, color)
           end
