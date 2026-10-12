@@ -11,7 +11,22 @@
 #define _GNU_SOURCE
 #endif
 
+// iOS (simulator + device): sokol_app's UIKit backend with OpenGLES 3
+// (GLKit/EAGL). Everything window-manager-ish (AppKit NSWindow/NSCursor)
+// is macOS-only; the SH_IOS branches below fall back to the same no-op
+// stubs the "other backends" path already provides.
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#if TARGET_OS_IPHONE
+#define SOKOL_GLES3
+#define SH_IOS 1
+#else
 #define SOKOL_GLCORE
+#endif
+#else
+#define SOKOL_GLCORE
+#endif
+
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
 #define SOKOL_IMPL
 #if !defined(__APPLE__) && !defined(_WIN32)
@@ -294,6 +309,50 @@ static void sh_frame_cb(void) {
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
 static void sh_event_cb(const sapp_event* ev) {
+#if defined(SH_IOS)
+    // iOS reports touches as TOUCHES_* only (sokol_app's UIKit backend does
+    // no mouse synthesis), while the Crystal event path speaks MOUSE_*.
+    // Translate the first/changed touch into the mouse triplet; positions
+    // are framebuffer pixels (pos * dpi_scale), same contract as the
+    // macOS mouse path (Crystal divides by sapp_dpi_scale).
+    if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN ||
+        ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED ||
+        ev->type == SAPP_EVENTTYPE_TOUCHES_ENDED ||
+        ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+        float mx = 0.0f, my = 0.0f;
+        int have = 0;
+        for (int i = 0; i < ev->num_touches; i++) {
+            if (ev->touches[i].changed) {
+                mx = ev->touches[i].pos_x;
+                my = ev->touches[i].pos_y;
+                have = 1;
+                break;
+            }
+        }
+        if (!have && ev->num_touches > 0) {
+            mx = ev->touches[0].pos_x;
+            my = ev->touches[0].pos_y;
+            have = 1;
+        }
+        if (have) {
+            if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN) {
+                g_event((int)SAPP_EVENTTYPE_MOUSE_MOVE, mx, my,
+                        0.0f, 0.0f, 0, 0, 0, 0);
+                g_event((int)SAPP_EVENTTYPE_MOUSE_DOWN, mx, my,
+                        0.0f, 0.0f, 0, 0, 0, 0);
+            } else if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED) {
+                g_event((int)SAPP_EVENTTYPE_MOUSE_MOVE, mx, my,
+                        0.0f, 0.0f, 0, 0, 0, 0);
+            } else {
+                // ENDED / CANCELLED: release; a trailing move keeps the
+                // hover position in sync for the next interaction.
+                g_event((int)SAPP_EVENTTYPE_MOUSE_UP, mx, my,
+                        0.0f, 0.0f, 0, 0, 0, 0);
+            }
+        }
+        return;
+    }
+#endif
     g_event((int)ev->type, ev->mouse_x, ev->mouse_y, ev->scroll_x, ev->scroll_y,
             ev->modifiers, (unsigned)ev->mouse_button,
             (unsigned)ev->key_code, ev->char_code);
@@ -637,6 +696,16 @@ void egui_cr_begin_pass(int w, int h) {
     // Refresh from the live dpi scale every frame.
     float d = sapp_dpi_scale();
     if (d > 0.0f) g_pkt_ppp = d;
+#if defined(SH_IOS)
+    // sgl_draw() leaves GL_SCISSOR_TEST enabled with the frame's last
+    // clip rect, and on the GLES3 backend the pass clear respects the
+    // scissor — the backdrop then only clears inside that stale rect
+    // (everything outside keeps the drawable's previous content, which
+    // shows up as black background and "ghost" trails of earlier
+    // frames). Reset the scissor to the full pass before sg_begin_pass.
+    glDisable(GL_SCISSOR_TEST);
+    glScissor(0, 0, w, h);
+#endif
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
         .action = {
@@ -725,6 +794,10 @@ void egui_cr_set_transparent(void) {
 
 #elif defined(__APPLE__)
 
+#if defined(SH_IOS)
+// iOS: no NSWindow; the GLKView composites its own alpha — nothing to do.
+void egui_cr_set_transparent(void) {}
+#else
 void egui_cr_set_transparent(void) {
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
     if (!win) return;
@@ -740,6 +813,7 @@ void egui_cr_set_transparent(void) {
     GLint surface_opacity = 0;
     [ctx setValues:&surface_opacity forParameter:NSOpenGLContextParameterSurfaceOpacity];
 }
+#endif
 
 #else
 
@@ -769,6 +843,11 @@ void egui_cr_present_clear(void) {
 
 #elif defined(__APPLE__)
 
+#if defined(SH_IOS)
+// iOS: GLKViewController drives presents; the clear happens on the first
+// display-link tick anyway.
+void egui_cr_present_clear(void) {}
+#else
 void egui_cr_present_clear(void) {
     if (!sh_run_direct()) return;
     sh_clear_pass();
@@ -777,6 +856,7 @@ void egui_cr_present_clear(void) {
     NSOpenGLContext* ctx = view ? view.openGLContext : NULL;
     if (ctx) { [ctx makeCurrentContext]; [ctx flushBuffer]; }
 }
+#endif
 
 #else
 
@@ -1666,7 +1746,7 @@ void egui_cr_set_cursor_image(const unsigned char* rgba, int w, int h, int hx, i
     sh_custom_remember(rgba, w, h, hx, hy);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 // macOS: NSCursor mapping. The frame callback runs on the main thread (as
 // NSCursor requires). CSS `none` hides the cursor until the mouse moves,
@@ -1958,7 +2038,7 @@ void egui_cr_screen_size(int* w, int* h) {
     *h = GetSystemMetrics(SM_CYSCREEN);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 // macOS: the sokol_app NSWindow, driven through AppKit. Zoom stands in
 // for maximize (it toggles between the user frame and a frame filling
@@ -2073,7 +2153,7 @@ void egui_cr_set_decorations(int decorated) {
                  SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 void egui_cr_set_decorations(int decorated) {
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
@@ -2155,7 +2235,7 @@ void egui_cr_set_window_opacity(float opacity) {
     SetLayeredWindowAttributes(hwnd, 0, alpha, LWA_ALPHA);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 void egui_cr_set_window_opacity(float opacity) {
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
@@ -2208,7 +2288,7 @@ int egui_cr_window_position(int* x, int* y) {
     return 1;
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 int egui_cr_window_position(int* x, int* y) {
     *x = 0; *y = 0;
@@ -2322,7 +2402,7 @@ void egui_cr_window_resize_start(int direction) {
     SendMessageW(hwnd, WM_NCLBUTTONDOWN, sh_win_ht[direction], 0);
 }
 
-#elif defined(__APPLE__)
+#elif defined(__APPLE__) && !defined(SH_IOS)
 
 // performWindowResizeWithEvent: exists at runtime but is not in the public
 // AppKit headers; declare the signature so -Wobjc-method-access stays quiet.
@@ -4135,6 +4215,9 @@ void egui_cr_request_quit(void) {
 // Legacy-path entry points that the detached section above defines for
 // Linux/Win32: on macOS everything runs on the one thread, so they are
 // plain sapp pass-throughs.
+#if defined(SH_IOS)
+#include <stdlib.h>
+#endif
 void egui_cr_set_window_title(const char* title) { sapp_set_window_title(title); }
 void egui_cr_clipboard_set(const char* text) { sapp_set_clipboard_string(text); }
 char* egui_cr_clipboard_get(void) {
@@ -4143,5 +4226,16 @@ char* egui_cr_clipboard_get(void) {
 }
 void egui_cr_toggle_fullscreen(void) { sapp_toggle_fullscreen(); }
 int egui_cr_fullscreen_q(void) { return sapp_is_fullscreen(); }
-void egui_cr_request_quit(void) { sapp_quit(); }
+void egui_cr_request_quit(void) {
+#if defined(SH_IOS)
+    /* sokol_app's UIKit backend never checks quit_requested (the frame
+       loop is CADisplayLink-driven and has no quit path), so sapp_quit()
+       is a no-op there. Apple forbids programmatic exit in App Store
+       builds, but for the dev/simulator port an immediate exit(0) is
+       the expected "Quit" behavior. */
+    exit(0);
+#else
+    sapp_quit();
+#endif
+}
 #endif

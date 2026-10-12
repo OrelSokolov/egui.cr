@@ -1,7 +1,14 @@
 # iOS support plan (egui.cr)
 
-**Статус:** ничего не начато. Этот документ — handoff для сессии на MacBook с
-iOS-симулятором. Самодостаточный: весь контекст ниже.
+**Статус:**
+- Phase 0 ✅ (arm64, Xcode 26.6 через `DEVELOPER_DIR`, SDK iphonesimulator 26.5)
+- Phase 1 ✅ (`tmp/ios/phase1/` + `tmp/ios/build_phase1.sh`, оранжевый
+  прямоугольник проверен пиксельно на скриншоте)
+- Phase 2 ✅ (см. «Результаты фазы 2» ниже; детали патча компилятора и
+  артефакты — в `tmp/ios/`)
+- Phase 3 ✅ (см. «Результаты фазы 3» ниже)
+- Phase 4 ✅ (см. «Результаты фазы 4» ниже; hello рендерится стабильно)
+- Phase 5 — не начата (устройство, Metal, полировка — см. ниже).
 
 **Цель:** запустить egui.cr-приложение в iOS-симуляторе, затем на устройстве.
 Порядок: сначала чистый C, потом рантайм Crystal, потом sokol, потом egui.cr.
@@ -43,113 +50,130 @@ iOS-симулятором. Самодостаточный: весь конте�
 - части `sysinfo` (может собраться, может нет — проверять).
 - Пути окружения: HOME недоступен, свои контейнеры — всё через Apple-фреймворки.
 
-## Phase 0 — рекогносцировка на макбуке
+## Phase 0 — рекогносцировка на макбуке ✅
 
-```bash
-uname -m                      # arm64 (Apple Silicon) => симулятор arm64; x86_64 => симулятор x86_64
-xcodebuild -version
-xcrun simctl list devices available | head -20
-crystal --version             # стоит ли 1.21; исходники в tmp/crystal-1.21.0
-llc --version | grep -i ios   # какие iOS-тройки поддерживает LLVM кристалла
-```
+Зафиксировано: `arm64-apple-ios17.0-simulator`, SDK
+`/Applications/Xcode.app/.../iPhoneSimulator26.5.sdk`, Xcode 26.6 (активировать
+через `export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer`,
+т.к. `xcode-select` указывает на CommandLineTools). Симуляторы: iPhone 17 Pro
+и др. (iOS 26.5). Компилятор: homebrew Crystal 1.20.2 + LLVM 22.1.7.
 
-Зафиксировать: тройку симулятора (например `arm64-apple-ios17.0-simulator`),
-SDK (`xcrun --sdk iphonesimulator --show-sdk-path`).
+## Phase 1 — чистый C в симуляторе (проверка тулчейна) ✅
 
-## Phase 1 — чистый C в симуляторе (проверка тулчейна)
+Артефакты: `tmp/ios/phase1/{main.m,Info.plist}`, `tmp/ios/build_phase1.sh`.
+Скриншот `tmp/ios/phase1_shot.png` проверен пиксельно (оранжевый
+прямоугольник 242/140/38 в центре). Сборка/установка/запуск без Xcode-проекта
+работают.
 
-Минимальное UIKit-приложение на C/objc без Xcode-проекта:
+## Результаты фазы 2 (рантайм Crystal в симуляторе) ✅
 
-- `main.m`: `UIApplicationMain` + AppDelegate с `window` + root view
-  controller, рисующий цветной прямоугольник через `UIView`.
-- Сборка:
-  ```bash
-  clang -target arm64-apple-ios17.0-simulator -isysroot $(xcrun --sdk iphonesimulator --show-sdk-path) \
-    -fobjc-arc main.m -o MyApp -framework UIKit -framework Foundation
-  ```
-- Бандл: каталог с `MyApp`, `Info.plist` (минимальный: CFBundleIdentifier,
-  CFBundleExecutable, UIApplicationSceneManifest не обязателен для простого случая).
-- Запуск: `xcrun simctl boot <device>; xcrun simctl install booted <bundle>; xcrun simctl launch booted <bundle-id>`.
-- Скриншот для проверки: `xcrun simctl io booted screenshot /tmp/ios1.png`.
+1. **Патч компилятора.** Клон Crystal 1.20.2 в `tmp/crystal-ios`, собран
+   homebrew-кристаллом 1.20.2 + LLVM 22.1.7 (`make CRYSTAL=/opt/homebrew/bin/crystal
+   LLVM_CONFIG=/opt/homebrew/opt/llvm/bin/llvm-config`). Патч:
+   - `src/compiler/crystal/codegen/target.cr`: `def ios?`
+     (`environment.starts_with?("ios")`, покрывает `ios*-simulator` и
+     `ios-macabi`), `os_name` → `"darwin"` для ios, `unix?` включает ios;
+   - `src/compiler/crystal/semantic/flags.cr`: флаги `darwin`+`ios` для ios-цели.
+   Следствие: переиспользуются `lib_c/aarch64-darwin`, kqueue event loop,
+   `_`-префикс символов — ничего из stdlib патчить не пришлось.
+   Запуск: `CRYSTAL_PATH=tmp/crystal-ios/src tmp/crystal-ios/.build/crystal …`.
+2. **Точка входа.** `src/crystal/system/unix/main.cr` + `src/crystal/main.cr`
+   патчены: под `flag?(:ios)` entry-символ — `crystal_main_entry` (процессный
+   `main` принадлежит UIKit-драйверу, кристалл запускается на фоновом
+   pthread'е — планировщик Crystal не блокирует главный/UI-поток; это же
+   модель для sokol-фазы).
+3. **Boehm.** bdwgc v8.2.6 + libatomic_ops v7.8.0 в `tmp/ios/bdwgc`, cmake
+   `-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphonesimulator` →
+   `build-ios-sim/libgc.a` (arm64, GC_DARWIN_THREADS с перехватом pthread).
+4. **Smoke** (`tmp/ios/smoke/`): `ios_smoke.cr` + ObjC-драйвер `main.m`
+   (окно с root view controller — без него UIKit убивает процесс
+   NSInternalInconsistencyException'ом!) + `build_smoke.sh [--gc-none]`.
+   Вывод — через NSLog с CFString-обёрткой (первый аргумент NSLog —
+   NSString*, не C-строка; `puts` в ос log не попадает).
+   Проверено с `-Dgc_none` и с Boehm: 10 000 аллокаций пережиты
+   (`heap_size=3358720` с Boehm), spawn/sleep/channel и kqueue-таймеры
+   (100 мс / 250 мс) доставлены точно по расписанию.
 
-**DoD:** цветной прямоугольник на скриншоте. Это доказывает, что умеем
-собирать/ставить/запускать без Xcode-проекта.
+## Phase 3 — sokol-окно в симуляторе ✅
 
-## Phase 2 — рантайм Crystal в симуляторе
+Артефакты: `tmp/ios/phase3/{frame.cr,main.c,Info.plist,build.sh}`.
+Результаты:
 
-Цель: Boehm + файберы + kqueue + (опц.) pcre2 под симулятором.
+1. **Патч `backend/sokol_shim.c`** (не ломает macOS-сборку — проверено):
+   - платформенный выбор GL-бэкенда: `TARGET_OS_IPHONE` → `SOKOL_GLES3`
+     + `SH_IOS`, иначе `SOKOL_GLCORE`;
+   - все AppKit-секции (transparent, present_clear, NSCursor, window
+     management, decorations, opacity, window_position, drag/resize)
+     получили `&& !defined(SH_IOS)` — iOS падает в существующие no-op
+     заглушки; transparent/present_clear — внутренние `SH_IOS` no-op;
+   - остальные секции (detached render loop — Linux/Win32-only, X11,
+     Win32) не тронуты.
+2. **Точка входа** — драйвер `main.c` зовёт `crystal_main_entry` на
+   главном потоке; `sapp_run` → `UIApplicationMain` (sokol UIKit-бэкенд,
+   GLKView/EAGL/GLES3, свой scene delegate) — тот же «direct»-путь, что
+   на macOS: кадровые коллбэки зовут Crystal-замыкания на главном потоке,
+   планировщик качается через `Runtime.frame_scheduler_pass`.
+3. Скриншот проверен пиксельно: центр 242/140/38 (оранжевый), петля
+   идёт ровно 60 fps (CADisplayLink + vsync). Сборка нативных либ:
+   `libegui_cr_sokol_ios.a` (sokol_shim + nanosvg_shim, arm64 simulator).
 
-1. **Boehm:**
-   ```bash
-   git clone -b v8.2.6 https://github.com/ivmai/bdwgc.git && cd bdwgc
-   git clone -b v7.8.0 https://github.com/ivmai/libatomic_ops.git libatomic_ops
-   cmake -B build -DCMAKE_SYSTEM_NAME=iOS \
-     -DCMAKE_OSX_SYSROOT=iphonesimulator -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
-     -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF
-   cmake --build build   # => build/libgc.a
-   ```
-2. **pcre2** (нужен, только если тянется `Regex`; собрать на всякий случай,
-   как в андроид-репо: cmake `-DCMAKE_SYSTEM_NAME=iOS`, `PCRE2_SUPPORT_JIT=OFF`
-   — JIT в iOS-процессе под W^X может не работать):
-   аналогично, получаем `libpcre2-8.a`.
-3. **Кросс-компиляция** smoke-программы:
-   ```crystal
-   # smoke.cr: аллокации в цикле + GC.stat / spawn + sleep + канал
-   ```
-   ```bash
-   crystal build --cross-compile --target=arm64-apple-ios17.0-simulator -Duse_pcre2 -o smoke smoke.cr
-   # печатает команду линковки; линковать clang'ом симулятора + libgc.a (+pcre2)
-   ```
-   Если компилятор отвергает тройку или выбирает неверный event loop —
-   смотреть патч HertzDevil для Android (ссылка в README андроид-репо) и
-   делать зеркальный для iOS: mapping тройки, `flag?(:ios)`, дефолт kqueue
-   вместо libevent. Исходники компилятора: `tmp/crystal-1.21.0`.
-4. Полученный `.o` влинковать в бандл фазы 1 (main.m вызывает crystal-main:
-  символ `main` кристалла переименовать/обернуть, напр. через `wmain`-подобный
-  shim: в андроид-репо точка входа — `ANativeActivity_onCreate`, у нас будет
-  обычный вызов из `application:didFinishLaunchingWithOptions:`).
-5. Вывод — в `os_log` (`NSLog`), читать `xcrun simctl spawn booted log stream`.
+## Phase 4 — egui.cr hello в симуляторе ✅
 
-**Изоляция сбоев:** сначала `-Dgc_none` (проверяет всё, кроме Boehm), затем с
-Boehm. Если падает только Boehm — смотреть `GC_set_max_heap_size`, win-стиль
-ограничения роста кучи (для устройства это станет обязательным из-за jetsam).
+Артефакты: `tmp/ios/phase4/{main.c,Info.plist,build.sh}` + `hello.o`.
 
-**DoD:** логи показывают: N аллокаций пережили сборку (память не растёт),
-spawn/sleep отработали, событие по таймеру пришло через kqueue-цикл.
+1. **FreeType не потребовался**: основной стек шрифтов — чистый
+   Crystal-порт (`backend/crystalfonts.cr`, freetype-cr shard); C-FFI
+   FreeType — только dev-ускоритель за `C_EXTENSIONS` (выключен).
+   `SystemPorts::Fonts.search_paths` darwin-ветка находит
+   `/System/Library/Fonts/SFNS.ttf` (симулятор делит ФС с macOS).
+2. **PCRE2** нужен (ядро egui тянет `Regex`): собран из pcre2-10.45,
+   cmake `-DCMAKE_SYSTEM_NAME=iOS -DPCRE2_SUPPORT_JIT=OFF` →
+   `tmp/ios/pcre2/build-ios-sim/libpcre2-8.a`.
+3. Кросс-компиляция: `CRYSTAL_PATH="lib:tmp/crystal-ios/src" …
+   --cross-compile --target=arm64-apple-ios17.0-simulator` —
+   `examples/hello.cr` (10 МБ .o) собирается БЕЗ правок egui.cr
+   (патчить пришлось только шим, фаза 3).
+4. Линковка: hello.o + libegui_cr_sokol_ios.a + libpcre2-8.a + libgc.a
+   + `-liconv` + фреймворки UIKit/Foundation/OpenGLES/GLKit/
+   QuartzCore/CoreGraphics. Драйвер — как в фазе 3 (`crystal_main_entry`
+   из `main`).
+5. Рендер подтверждён пиксельным анализом скриншотов: тёмная тема,
+   окно с ~12 текстовыми строками (заголовок, «Hello World!», кнопки,
+   CollapsingHeader, FPS/GC-панель). Стабильно 30+ с, 60 fps.
+   Маппинг тач→мышь — upstream-код sokol_app; в симуляторе без
+   `simctl tap` автоматически не проверен.
 
-## Phase 3 — sokol-окно в симуляторе
+**Известные iOS-особенности (Phase 5):**
+- `EGUI_SHOT` (отладочный glReadPixels-захват, `sh_shot_legacy`) валит
+  приложение на следующем кадре (assert в `sg_begin_pass` — чтение
+  после `sg_commit` ломает GL-состояние на GLES3). Обычный рендер не
+  затрагивает; при необходимости — guard `SH_IOS` в `sh_shot_legacy`.
+- Ранние кадры идут в поверхность 960×1440 (до layout'а GLKView на весь
+  экран); после resize рендер пересчитывается сам.
+- `Info.plist` без scene-manifest: sokol-конфигурация сцены берётся из
+  делегата (warning в логе, не блокер).
+- **`UILaunchScreen` обязателен** в `Info.plist` (пустой `<dict/>`
+  достаточно): без него UIKit даёт legacy-геометрию 320×480 pt.
+- **Scissor-баг (вылечен)**: `sgl_draw()` оставляет `GL_SCISSOR_TEST`
+  включённым с последним clip-ректом кадра; на GLES3 clear в
+  `sg_begin_pass` обрезается этими ножницами → чёрный фон и «призраки»
+  прошлых кадров. Фикс в `egui_cr_begin_pass` (шим): под `SH_IOS` перед
+  `sg_begin_pass` — `glDisable(GL_SCISSOR_TEST); glScissor(0,0,w,h);`.
+- **Тач→мышь (добавлено)**: upstream sokol_app на iOS шлёт только
+  TOUCHES_*; шим синтезирует MOUSE_MOVE/DOWN/UP из них (BEGAN/MOVED/
+  ENDED/CANCELLED), координаты — fb-пиксели. Кристалловский путь делит
+  на `dpi_scale` сам.
+- **Quit (добавлено)**: UIKit-бэкенд sokol_app никогда не проверяет
+  `quit_requested` (кадры гонит CADisplayLink, quit-пути нет), поэтому
+  `sapp_quit()` — no-op. `egui_cr_request_quit` под `SH_IOS` делает
+  `exit(0)` (программный выход запрещён App Store, но для dev-билда —
+  ожидаемое поведение).
+- **Файловые диалоги (добавлено)**: на iOS нет osascript/zenity и нет
+  spawn'а подпроцессов; `Dialogs.open/save/pick_folder` под
+  `flag?(:ios)` сразу возвращают nil (отмена) — fail-fast вместо
+  зависшего «opening…» (коллбэк доставляется на следующем кадре).
 
-1. Скомпилировать `vendor/sokol/sokol_app.h` (+ `sokol_gfx.h`, `sokol_gl.h`)
-   как ObjC: `-x objective-c -fobjc-arc -DSOKOL_GLES3`, таргет симулятора.
-   `backend/sokol_shim.c` сейчас заточен под X11/Cocoa — нужна iOS-ветка
-   (`#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE`): main-петля отдаётся
-   UIApplicationMain + CADisplayLink, кадр зовёт существующий
-   `sh_frame_cb`-путь (как в Cocoa-ветке).
-2. Rakefile: новая ветка сборки `sokol_shim` для iOS по образцу macOS-ветки
-   (~строки 72–75, 154–156): компиляция .m, `-isysroot iphonesimulator`.
-3. Нарисовать очищенный цветом кадр через `sg_apply_viewport + sg_begin_pass`.
-
-**DoD:** sokol-окно с чистым цветом/треугольником в симуляторе, скриншот.
-
-## Phase 4 — egui.cr hello в симуляторе
-
-1. FreeType для симулятора (cmake, `-DCMAKE_SYSTEM_NAME=iOS`; или взять
-   freetype-cr и его sysroot-сборку — как собирается сейчас под macOS,
-   см. `Rakefile` ~154–156).
-2. Собрать нативные либы: `libegui_cr_sokol.a` (sokol_shim + nanosvg_shim как
-   обычно) + freetype — всё таргетом симулятора.
-3. Кросс-компилировать `examples/hello.cr` тем же `--cross-compile`, влинковать
-   в бандл. Волокна рантайма поверх CADisplayLink-петли: убедиться, что
-   блокирующий стиль главного цикла (как на десктопе) заменяется на
-   «один кадр за тик display link» — при необходимости через тот же механизм,
-   что в Cocoa-ветке шима.
-4. Скриншоты: `xcrun simctl io booted screenshot`; сравнить с десктопным
-   `bin/hello`.
-
-**DoD:** hello.cr рисует текст и виджеты в симуляторе, реакция на тач
-(маппинг touch → mouse-события sokol уже есть в sokol_app).
-
-## Phase 5 — устройство и полировка
+## Phase 5 — устройство и полировка (не начата)
 
 - Таргет `arm64-apple-ios` (устройство), подпись, provisioning.
 - Jetsam: ограничить кучу Boehm (`GC_set_max_heap_size`,

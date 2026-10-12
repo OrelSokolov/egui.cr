@@ -6,8 +6,9 @@
 # runs the WinForms picker through PowerShell (`System.Windows.Forms` —
 # part of the OS, no extra dependency); the script travels base64-
 # encoded (`-EncodedCommand`) so titles, filters and paths need no
-# quoting gymnastics. Other platforms are not wired yet: the request
-# completes with nil on the next frame.
+# quoting gymnastics. iOS has no dialog tool (and no subprocess spawn):
+# the request completes with nil on the next frame — fail-fast, the
+# same contract as "tool unavailable" on other platforms.
 #
 # The call is NEVER blocking: `show` only starts a request and returns
 # immediately. The dialog itself runs in its own fiber (`AsyncDialogs`)
@@ -218,6 +219,12 @@ module Egui
 
       protected def self.open(title : String, filters : Array(String),
                               directory : String?) : String?
+        {% if flag?(:ios) %}
+          # iOS: no osascript/zenity and no useful subprocess spawn —
+          # complete with nil (cancel) right away instead of hanging the
+          # worker fiber on a Process.run that can never succeed.
+          nil
+        {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
             runner.call(false, title, filters, directory, nil)
@@ -240,10 +247,15 @@ module Egui
             run("kdialog", args)
           end
         {% end %}
+        {% end %}
       end
 
       protected def self.save(title : String, filters : Array(String),
                               directory : String?, default_name : String?) : String?
+        {% if flag?(:ios) %}
+          # iOS: same as open — fail fast with nil (cancel).
+          nil
+        {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
             runner.call(true, title, filters, directory, default_name)
@@ -267,12 +279,17 @@ module Egui
             run("kdialog", args)
           end
         {% end %}
+        {% end %}
       end
 
       # Pick a directory (zenity `--directory`, kdialog
       # `--getexistingdirectory`, AppleScript `choose folder`, WinForms
       # FolderBrowserDialog on Windows): nil on cancel.
       protected def self.pick_folder(title : String, directory : String?) : String?
+        {% if flag?(:ios) %}
+          # iOS: same as open — fail fast with nil (cancel).
+          nil
+        {% else %}
         {% if flag?(:win32) %}
           script = String.build do |s|
             s << "Add-Type -AssemblyName System.Windows.Forms\n"
@@ -301,6 +318,7 @@ module Egui
             args.concat(["--title", title])
             run("kdialog", args)
           end
+        {% end %}
         {% end %}
       end
 
