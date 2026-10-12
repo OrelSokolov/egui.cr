@@ -80,6 +80,13 @@ module Egui
           handle_keyboard(ui.ctx, @text, cursor, anchor)
         ui.ctx.request_repaint if @cursor_blinks # caret blink
       end
+      # Clipboard context menu commands (TextEditMenu — long-press /
+      # secondary): applied after the keyboard pass; the returned flag
+      # ORs in so a menu edit keeps the changed pipeline alive.
+      new_text, cursor, anchor, menu_changed =
+        TextEditMenu.apply(ui.ctx, id, new_text, cursor, anchor,
+          single_line: true)
+      changed |= menu_changed
 
       # Password mode replaces every character with MASK_CHAR for
       # display; the masked galley has exactly one circle per
@@ -127,11 +134,19 @@ module Egui
 
       # Press places the caret immediately (real input); a synthetic
       # same-frame press+release arrives classified as a click and does
-      # the same on release. Double-click selects a word.
-      if response.pressed? || response.clicked?
+      # the same on release. Double-click selects a word. The touch
+      # LONG-PRESS focuses and places the caret too — the context menu
+      # it opens (TextEditMenu below) works on a live caret.
+      lp_fired = ui.ctx.memory.long_press_fired? &&
+                 (lpos = ui.ctx.memory.long_press_pos) &&
+                 rect.contains?(lpos) ? true : false
+      if response.pressed? || response.clicked? || lp_fired
         response.request_focus
         if (pos = ui.ctx.input.pointer_pos)
-          if response.double_clicked?
+          # Long-press selects the WORD under the finger (Android
+          # semantics) — same as double-click — so Copy/Cut in the
+          # menu it opens are live.
+          if response.double_clicked? || lp_fired
             cursor, anchor = word_range(new_text,
               r_idx.call(cursor_at(fonts, galley, rect, inset, scroll, pos.x)))
           else
@@ -290,6 +305,9 @@ module Egui
 
       response.widget_text = new_text
       response.mark_changed if changed
+      # Clipboard context menu (Copy/Cut/Paste/Select All) — long-press
+      # on touch, secondary press on the mouse.
+      TextEditMenu.show(ui, id, response, new_text, cursor, anchor)
       # Soft-keyboard profile + editor mirror: focus here → the Android
       # IME opens in the matching mode (masked input, DONE as Enter), and
       # the focused field's text/cursor feed the IME's editor queries

@@ -364,6 +364,10 @@ module Egui
       end
 
       @memory.begin_frame(@input)
+      # A touch hold generates no events of its own — keep frames coming
+      # while a press sits inside the long-press window, or the timeout
+      # could never fire (Memory#long_press_armed?).
+      request_repaint if @memory.long_press_armed?
       @painter.clear
       @claimed_ids.clear
       @popup_opened_this_frame = false

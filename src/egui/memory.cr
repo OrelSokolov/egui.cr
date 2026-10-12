@@ -113,6 +113,17 @@ module Egui
     @canvas_drag_owner : Id?
     @canvas_drag_delta : Vec2 = Vec2.zero
 
+    # Long-press (Android semantics): a primary press held stationary
+    # for LONG_PRESS_TIME synthesizes a secondary press at the pointer —
+    # the gesture every context menu opens on (Response#context_menu).
+    # The original press's pending click/drag are cancelled (an Android
+    # long-press never also clicks); the widget under the pointer keeps
+    # seeing plain down/hover.
+    LONG_PRESS_TIME = 0.5
+    @long_press_done : Bool = false
+    @long_press_fired : Bool = false
+    @long_press_pos : Pos2? = nil
+
     # Geometry/sense/layer of the previous frame (hit-test input)…
     getter prev_widget_rects : Hash(Id, Rect)
     getter prev_widget_senses : Hash(Id, Sense)
@@ -214,6 +225,9 @@ module Egui
       @drag_started_id = nil
       @drag_stopped_id = nil
       @moved_too_much_for_click = false
+      @long_press_done = false
+      @long_press_fired = false
+      @long_press_pos = nil
       @clicked_id = nil
       @clicked_count = 0
       @any_click_pos = nil
@@ -297,12 +311,15 @@ module Egui
       @any_click_pos = nil
       @drag_started_id = nil
       @drag_stopped_id = nil
+      @long_press_fired = false
 
       # --- press: record both candidates, like egui InteractionState ---
       if input.pointer_pressed?
         @press_pos = input.pointer_pos
         @press_time = input.time
         @moved_too_much_for_click = false
+        @long_press_done = false
+        @long_press_pos = nil
         @potential_click_id = topmost_at(input.pointer_pos) { |s| s.click? }
         @potential_drag_id = topmost_at(input.pointer_pos) { |s| s.drag? }
         @dragging_id = nil
@@ -333,10 +350,12 @@ module Egui
       if input.pointer_released?
         # A completed click gesture anywhere on screen — even when no
         # widget was hit (empty space), which is exactly the case
-        # close-on-outside-click must catch.
-        @any_click_pos = input.pointer_pos unless @moved_too_much_for_click
+        # close-on-outside-click must catch. A release that ends a
+        # LONG-PRESS is not a click: it must not act anywhere (not
+        # close the menu it just opened, not press a button).
+        @any_click_pos = input.pointer_pos unless @moved_too_much_for_click || @long_press_done
         click_id = @potential_click_id
-        if click_id && !@moved_too_much_for_click &&
+        if click_id && !@moved_too_much_for_click && !@long_press_done &&
            rect_contains?(click_id, input.pointer_pos)
           count = 1
           if (last_pos = @last_click_pos) && @last_click_time >= 0.0 &&
@@ -355,6 +374,24 @@ module Egui
         @press_pos = nil
         @potential_click_id = nil
         @potential_drag_id = nil
+      end
+
+      # --- long-press → synthetic secondary press (context menus) ---
+      # Fires once per press, only while the pointer stayed put (the
+      # click-vs-drag threshold doubles as the wiggle room) and no
+      # widget drag engaged. It must NOT disturb the press state:
+      # hold-repeat widgets (NumberInput spin buttons) read `pressed?`
+      # while held, and the drag candidate lets a long-press-then-drag
+      # extend a text selection. The release CLICK is suppressed in
+      # the release block below via `@long_press_done` instead (an
+      # Android long-press never also clicks).
+      if (origin = @press_pos) && input.pointer_down? &&
+         !@long_press_done && !@moved_too_much_for_click &&
+         @dragging_id.nil? &&
+         input.time - @press_time >= LONG_PRESS_TIME
+        @long_press_done = true
+        @long_press_fired = true
+        @long_press_pos = input.pointer_pos
       end
 
       @pointer_down = input.pointer_down?
@@ -697,8 +734,27 @@ module Egui
       hits.map(&.[0])
     end
 
-    # --- canvas drag-to-scroll (see the field comment above) ----------
+    # --- long-press (see the field comment above) ----------------------
 
+    # True on the frame the long-press timeout fired (one-frame flag —
+    # the synthetic secondary press for context menus).
+    def long_press_fired? : Bool
+      @long_press_fired
+    end
+
+    # Where the long-press fired (the held pointer position).
+    def long_press_pos : Pos2?
+      @long_press_pos
+    end
+
+    # A press is still within the long-press window (pending): the
+    # frame loop keeps frames coming so the timeout can fire without
+    # any further input (touch holds generate no events).
+    def long_press_armed? : Bool
+      !@press_pos.nil? && !@long_press_done
+    end
+
+    # --- canvas drag-to-scroll (see the field comment above) ----------
     # True while the drag-to-scroll gesture is owned by scroll area
     # `id` (finger/mouse down on its empty canvas).
     def canvas_drag_active?(id : Id) : Bool
