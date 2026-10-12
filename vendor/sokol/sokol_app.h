@@ -2562,6 +2562,7 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
     #include <time.h>
     #include <android/native_activity.h>
     #include <android/looper.h>
+    #include <android/log.h>
     #if __ANDROID_API__ >= 29
         #include <android/choreographer.h>
     #endif
@@ -10698,9 +10699,11 @@ _SOKOL_PRIVATE bool _sapp_android_init_egl(void) {
 
     EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) {
+        __android_log_print(ANDROID_LOG_ERROR, "sokol_app", "eglGetDisplay failed: 0x%x", (int)eglGetError());
         return false;
     }
     if (eglInitialize(display, NULL, NULL) == EGL_FALSE) {
+        __android_log_print(ANDROID_LOG_ERROR, "sokol_app", "eglInitialize failed: 0x%x", (int)eglGetError());
         return false;
     }
 
@@ -10717,7 +10720,10 @@ _SOKOL_PRIVATE bool _sapp_android_init_egl(void) {
     EGLint stencil_size = wants_stencil ? 8 : 0;
     const EGLint cfg_attributes[] = {
         EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        // ES2-bit config + ES3 context (below) is the widespread Android
+        // pattern: several drivers/translator stacks reject configs with
+        // the ES3 bit but happily create ES3 contexts on ES2 configs.
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
         EGL_RED_SIZE, 8,
         EGL_GREEN_SIZE, 8,
         EGL_BLUE_SIZE, 8,
@@ -10731,7 +10737,12 @@ _SOKOL_PRIVATE bool _sapp_android_init_egl(void) {
     EGLConfig available_cfgs[32];
     EGLint cfg_count;
     eglChooseConfig(display, cfg_attributes, available_cfgs, 32, &cfg_count);
-    SOKOL_ASSERT(cfg_count > 0);
+    if (cfg_count <= 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "sokol_app",
+            "eglChooseConfig failed: 0x%x (alpha=%d depth=%d stencil=%d)",
+            (int)eglGetError(), (int)alpha_size, (int)depth_size, (int)stencil_size);
+        return false;
+    }
     SOKOL_ASSERT(cfg_count <= 32);
 
     /* find config with 8-bit rgb buffer if available, ndk sample does not trust egl spec */
@@ -10757,13 +10768,17 @@ _SOKOL_PRIVATE bool _sapp_android_init_egl(void) {
         }
     }
 
+    // ES3 request via CLIENT_VERSION (EGL 1.4 attr — the widest-supported
+    // way; some drivers reject the 1.5 MAJOR/MINOR attrs).
     EGLint ctx_attributes[] = {
-        EGL_CONTEXT_MAJOR_VERSION, _sapp.desc.gl.major_version,
-        EGL_CONTEXT_MINOR_VERSION, _sapp.desc.gl.minor_version,
+        EGL_CONTEXT_CLIENT_VERSION, _sapp.desc.gl.major_version,
         EGL_NONE,
     };
     EGLContext context = eglCreateContext(display, config, EGL_NO_CONTEXT, ctx_attributes);
     if (context == EGL_NO_CONTEXT) {
+        __android_log_print(ANDROID_LOG_ERROR, "sokol_app",
+            "eglCreateContext failed: 0x%x (gl %d.%d)",
+            (int)eglGetError(), (int)_sapp.desc.gl.major_version, (int)_sapp.desc.gl.minor_version);
         return false;
     }
 

@@ -22,6 +22,23 @@ require "./crystalfonts"
 {% if flag?(:win32) %}
   require "socket"
 {% end %}
+{% if flag?(:android) %}
+  # TEMP DIAGNOSTIC (phase 3): logcat breadcrumbs through the boot path.
+  @[Link("log")]
+  lib LibEguiCrDbg
+    fun __android_log_print(prio : Int32, tag : UInt8*, text : UInt8*) : Int32
+  end
+
+  def egui_android_log(msg)
+    LibEguiCrDbg.__android_log_print(4, "egui_cr", msg)
+  end
+{% end %}
+
+# Android: exported bootstrap the C shim's sokol_main calls (see
+# backend/sokol_shim.c and ANDROID_SUPPORT_PLAN.md).
+{% if flag?(:android) %}
+  require "./android_boot"
+{% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
 # bounds checks on every array access), while the C code is cc -O2
@@ -122,6 +139,12 @@ lib LibEguiCr
   fun sapp_width : Int32
   fun sapp_height : Int32
   fun sapp_dpi_scale : Float32
+  # Android-only: sapp_dpi_scale() is hardcoded to 1.0 on Android, so
+  # the shim's egui_cr_dpi_scale exposes the AConfiguration density
+  # probe instead. Only referenced under flag?(:android) — desktop
+  # binaries link the prebuilt libegui_cr_sokol.a, which may predate
+  # the symbol (see #dpi_scale below).
+  fun android_dpi_scale = egui_cr_dpi_scale : Float32
   fun request_quit = egui_cr_request_quit
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
@@ -226,7 +249,6 @@ module Egui
     # The sokol_gfx rendering backend (eframe/glow_integration role).
     module Sokol
       class_getter app : Egui::App?
-
       @@events = [] of Egui::Event
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
@@ -497,7 +519,7 @@ module Egui
         end
 
         def dpi_scale : Float64
-          LibEguiCr.sapp_dpi_scale.to_f64
+          Sokol.dpi_scale.to_f64
         end
       end
 
@@ -595,6 +617,8 @@ module Egui
                    chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
                    inspector : Symbol = :off,
                    vsync : Bool = true) : Nil
+        # Android stage log: breadcrumbs for `adb logcat -s egui_cr`.
+        {% if flag?(:android) %} egui_android_log("run: entered") {% end %}
         @@app = app
         @@icon = icon
         @@transparent = transparent
@@ -669,8 +693,12 @@ module Egui
         # Disable with EGUI_RENDER_THREAD=0 (bisecting / regression
         # hunting). macOS stays on the legacy loop: AppKit requires the
         # process main thread, which is where the Crystal scheduler
-        # lives (see loop_redesign.md §8).
-        {% if flag?(:linux) || flag?(:win32) %}
+        # lives (see loop_redesign.md §8). Android also stays on the
+        # legacy path — sokol owns the event loop and called our
+        # sokol_main up the stack; note flag?(:linux) is true on the
+        # aarch64-linux-android target (the triple's vendor), so it must
+        # be excluded explicitly.
+        {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
             run_detached(title, width, height, decorations, transparent,
               vsync)
@@ -678,6 +706,7 @@ module Egui
           end
         {% end %}
 
+        {% if flag?(:android) %} egui_android_log("run: before sapp_run") {% end %}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
           vsync ? 1 : 0)
@@ -894,7 +923,7 @@ module Egui
           dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves}")
           frame_t0 = Time.instant if @@frame_debug
 
-          ppp = LibEguiCr.sapp_dpi_scale.to_f64
+          ppp = dpi_scale.to_f64
           @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
           LibEguiCr.set_ppp(@@pixels_per_point.to_f32)
           set_stack_scales
@@ -970,6 +999,7 @@ module Egui
       end
 
       protected def self.on_init(skip_gl : Bool = false) : Nil
+        {% if flag?(:android) %} egui_android_log("on_init: start") {% end %}
         # sg_setup + sgl_setup + the text pipelines are GL work: on the
         # detached path they belong to the render thread's init callback
         # (already run by the time we get here).
@@ -1215,6 +1245,20 @@ module Egui
       # (#on_event) and the detached loop's ring drain (#drain_events).
       # `payload` carries the dropped-files path list on the detached
       # path; nil on legacy (the paths are queried through sapp then).
+      # The backend's pixels_per_point source: sokol's dpi scale on
+      # desktop, the shim's density probe on Android (sokol returns 1.0
+      # there, which would render the UI at mdpi size on 400+dpi panels).
+      # Flag-conditional so desktop binaries keep referencing only
+      # sapp_dpi_scale — the prebuilt libegui_cr_sokol.a may not contain
+      # the newer egui_cr_dpi_scale symbol.
+      protected def self.dpi_scale : Float32
+        {% if flag?(:android) %}
+          LibEguiCr.android_dpi_scale
+        {% else %}
+          LibEguiCr.sapp_dpi_scale
+        {% end %}
+      end
+
       protected def self.translate_event(type : Int32, mx : Float32,
                                          my : Float32, sx : Float32,
                                          sy : Float32, mods : UInt32,
@@ -1224,7 +1268,7 @@ module Egui
         # sokol reports pointer positions in framebuffer pixels (macOS
         # multiplies by the backing scale); the UI works in points
         # (sapp_width), like upstream egui's pixels_per_point conversion.
-        if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
+        if (scale = dpi_scale) > 1.0f32
           mx /= scale
           my /= scale
         end
@@ -1330,7 +1374,7 @@ module Egui
           @@dbg_last_entry = now
         end
 
-        ppp = LibEguiCr.sapp_dpi_scale.to_f64
+        ppp = dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
         set_stack_scales
         fb_w = LibEguiCr.sapp_width

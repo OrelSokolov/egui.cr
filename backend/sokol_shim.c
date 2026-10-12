@@ -11,10 +11,18 @@
 #define _GNU_SOURCE
 #endif
 
+#if defined(__ANDROID__)
+// Android: sokol_app owns ANativeActivity_onCreate and calls sokol_main()
+// synchronously on the activity thread; SOKOL_NO_ENTRY/sapp_run are not
+// supported there (sokol_app.h:1158). The desc registered by Crystal's
+// egui_cr_sapp_run is handed over from our sokol_main below.
+#define SOKOL_GLES3
+#else
 #define SOKOL_GLCORE
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
+#endif
 #define SOKOL_IMPL
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__ANDROID__)
 #include <X11/Xlib.h>
 #include <X11/Xcursor/Xcursor.h>
 #endif
@@ -40,6 +48,36 @@ typedef void (*cr_event_cb)(int type, float mx, float my, float sx, float sy,
                             unsigned mods, unsigned mouse_button,
                             unsigned key_code, unsigned char_code);
 
+#if defined(__ANDROID__)
+// Implemented in Crystal (src/egui/backend/android_boot.cr); called from
+// sh_init_cb — the first code sokol runs on its event-loop thread.
+extern void egui_cr_android_boot(void);
+
+#include <android/configuration.h>
+#include <android/native_activity.h>
+
+// Phase 5 (ANDROID_SUPPORT_PLAN.md): sokol's sapp_dpi_scale() is fixed
+// at 1.0 on Android, so the UI would render at mdpi size on a 400+dpi
+// panel. Probe the real density once at init (AConfiguration from the
+// activity's asset manager): pixels_per_point = density_dpi / 160,
+// like upstream egui. Exposed to Crystal via egui_cr_dpi_scale().
+static float g_android_ppp = 1.0f;
+
+static void sh_android_init_ppp(void) {
+    ANativeActivity* act =
+        (ANativeActivity*)sapp_android_get_native_activity();
+    if (!act || !act->assetManager) return;
+    AConfiguration* cfg = AConfiguration_new();
+    if (!cfg) return;
+    AConfiguration_fromAssetManager(cfg, act->assetManager);
+    int32_t dpi = AConfiguration_getDensity(cfg);
+    AConfiguration_delete(cfg);
+    // 120..640 spans ldpi..xxxhdpi; ACONFIGURATION_DENSITY_NONE/ANY
+    // and friends are ≤0 sentinels — keep the 1.0 fallback for those.
+    if (dpi >= 120 && dpi <= 640) g_android_ppp = (float)dpi / 160.0f;
+}
+#endif
+
 static cr_init_cb   g_init;
 static cr_frame_cb  g_frame;
 static cr_cleanup_cb g_cleanup;
@@ -48,7 +86,6 @@ static cr_event_cb  g_event;
 // from egui_cr_sapp_run: strip the system window chrome in init_cb,
 // before the first frame paints (custom title bar apps draw their own).
 static int g_borderless;
-
 // from egui_cr_sapp_run: make the window per-pixel transparent (the
 // swapchain alpha becomes the window alpha — splash screens, custom
 // chrome).
@@ -172,7 +209,65 @@ static void sh_x11_sync_request_init(void);
 static void sh_x11_sync_request_confirm(void);
 #endif
 
+#if defined(__ANDROID__)
+// Forward the process stdout/stderr into logcat (tag egui_cr_io).
+// Android apps have both fds pointing at /dev/null, so Crystal's crash
+// handler (Exception::CallStack.setup_crash_handler → stderr) and any
+// STDERR.puts diagnostics silently vanish — the single biggest blind
+// spot when debugging on real devices.
+#include <unistd.h>
+#include <pthread.h>
+static int sh_logcat_read_fd = -1;
+static void* sh_logcat_thread(void* unused) {
+    (void)unused;
+    char buf[4096];
+    char line[4096];
+    size_t line_len = 0;
+    ssize_t n;
+    while ((n = read(sh_logcat_read_fd, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            char c = buf[i];
+            if (c == '\n') {
+                line[line_len] = 0;
+                if (line_len) __android_log_print(ANDROID_LOG_INFO, "egui_cr_io", "%s", line);
+                line_len = 0;
+            } else if (line_len + 1 < sizeof(line)) {
+                line[line_len++] = c;
+            }
+        }
+    }
+    return NULL;
+}
+static void sh_redirect_stdio_to_logcat(void) {
+    int fds[2];
+    if (pipe(fds) != 0) return;
+    dup2(fds[1], STDOUT_FILENO);
+    dup2(fds[1], STDERR_FILENO);
+    close(fds[1]);
+    sh_logcat_read_fd = fds[0];
+    pthread_t t;
+    if (pthread_create(&t, NULL, sh_logcat_thread, NULL) == 0)
+        pthread_detach(t);
+    else
+        close(fds[0]);
+}
+#endif
+
 static void sh_init_cb(void) {
+#if defined(__ANDROID__)
+    // First code sokol runs on its event-loop thread: make stdout/stderr
+    // visible (logcat), then boot the Crystal program NOW (user
+    // top-level → Sokol.run → registers g_init and friends below), so
+    // the runtime's per-thread state (fiber TLS, GC registration) binds
+    // to the thread every callback runs on.
+    sh_redirect_stdio_to_logcat();
+    // Symbolized exception backtraces (Exception::CallStack reads this
+    // at startup): the .so ships with debug info, but on Android dladdr
+    // alone yields '??' frames without it.
+    setenv("CRYSTAL_LOAD_DEBUG_INFO", "1", 1);
+    sh_android_init_ppp();
+    egui_cr_android_boot();
+#endif
     // X11 borderless is applied before the window is mapped (the
     // egui_cr_x11_pre_map_hook sokol patch); other platforms undecorate
     // here, once the window exists.
@@ -293,11 +388,151 @@ static void sh_frame_cb(void) {
 }
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
+#if defined(__ANDROID__)
+// ---- Touch → pointer/scroll mapping (phase 5, ANDROID_SUPPORT_PLAN.md) --
+// sokol delivers TOUCHES_* with positions in framebuffer pixels and no
+// synthesized mouse events. We re-emit them through the same flattened
+// callback the desktop mouse path uses, so egui.cr sees plain pointer
+// events and full click/drag interaction works unmodified:
+//   1 finger  → pointer down/move/up (click + drag)
+//   2 fingers → pan: centroid delta re-emitted as MOUSE_SCROLL, in
+//               points (fb px / ppp, like desktop wheel ticks). A second
+//               finger landing mid-drag releases the pointer first
+//               (same behaviour as upstream egui mobile); when the pan
+//               finger lifts, the remaining finger re-presses on its
+//               next move.
+static float     g_tch_x, g_tch_y;        // last first-finger pos (fb px)
+static uintptr_t g_tch_id = (uintptr_t)-1;
+static bool      g_tch_down = false;
+static bool      g_tch_pan = false;
+static float     g_tch_pan_x, g_tch_pan_y; // last 2-finger centroid (fb px)
+
+static void sh_tch_pointer(int type, float x, float y) {
+    g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
+}
+static void sh_tch_scroll(float dx_px, float dy_px) {
+    g_event(SAPP_EVENTTYPE_MOUSE_SCROLL, 0.0f, 0.0f,
+            dx_px / g_android_ppp, dy_px / g_android_ppp, 0, 0, 0, 0);
+}
+
+static void sh_handle_touch(const sapp_event* ev) {
+    const int n = ev->num_touches;
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_TOUCHES_BEGAN:
+        if (n == 1) {
+            g_tch_id = ev->touches[0].identifier;
+            g_tch_x = ev->touches[0].pos_x;
+            g_tch_y = ev->touches[0].pos_y;
+            g_tch_down = true;
+            sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_DOWN, g_tch_x, g_tch_y);
+        } else {
+            // second finger: release the pointer, pan takes over
+            if (g_tch_down) {
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_tch_x, g_tch_y);
+                g_tch_down = false;
+                g_tch_id = (uintptr_t)-1;
+            }
+            if (n >= 2) {
+                g_tch_pan = true;
+                g_tch_pan_x = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
+                g_tch_pan_y = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+            }
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_MOVED:
+        if (n >= 2) {
+            if (g_tch_pan) {
+                float cx = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
+                float cy = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+                // scroll convention: positive = content moves down/left
+                sh_tch_scroll(g_tch_pan_x - cx, g_tch_pan_y - cy);
+                g_tch_pan_x = cx; g_tch_pan_y = cy;
+            }
+        } else if (n == 1) {
+            // continue the drag, or restart one after the pan finger
+            // lifted while a finger is still on screen
+            if (!g_tch_down && !g_tch_pan) {
+                g_tch_id = ev->touches[0].identifier;
+                g_tch_down = true;
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_DOWN,
+                               ev->touches[0].pos_x, ev->touches[0].pos_y);
+            }
+            if (g_tch_down && ev->touches[0].identifier == g_tch_id) {
+                g_tch_x = ev->touches[0].pos_x;
+                g_tch_y = ev->touches[0].pos_y;
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_MOVE, g_tch_x, g_tch_y);
+            }
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_ENDED:
+    case SAPP_EVENTTYPE_TOUCHES_CANCELLED: {
+        // touches[] still includes the lifting finger(s)
+        int remain = (ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED)
+                         ? 0 : n - 1;
+        if (remain <= 0) {
+            if (g_tch_down) {
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_tch_x, g_tch_y);
+                g_tch_down = false;
+            }
+            g_tch_id = (uintptr_t)-1;
+            g_tch_pan = false;
+        } else {
+            // pinch/pan over; a fresh single-finger move re-presses
+            g_tch_pan = false;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+#endif
+
 static void sh_event_cb(const sapp_event* ev) {
+#if defined(__ANDROID__)
+    if (ev->type >= SAPP_EVENTTYPE_TOUCHES_BEGAN &&
+        ev->type <= SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+        sh_handle_touch(ev);
+        return;
+    }
+#endif
     g_event((int)ev->type, ev->mouse_x, ev->mouse_y, ev->scroll_x, ev->scroll_y,
             ev->modifiers, (unsigned)ev->mouse_button,
             (unsigned)ev->key_code, ev->char_code);
 }
+
+// The desc built by egui_cr_sapp_run on desktop. Android never uses it:
+// there sokol_main returns a static desc before the Crystal program has
+// even run (see below).
+static sapp_desc g_main_desc;
+
+#if defined(__ANDROID__)
+// sokol_app entry point on Android: called synchronously from its own
+// ANativeActivity_onCreate. The Crystal runtime CANNOT boot here: it
+// would land on the activity's main thread, while every callback
+// (init/frame/event/cleanup) runs on sokol's event-loop thread — the
+// scheduler's fiber TLS and the GC thread registration would be bound
+// to the wrong thread. So sokol_main returns a static desc and the
+// actual boot happens in sh_init_cb, the first code sokol runs on its
+// own thread (same pattern as android-ndk.cr's android_main).
+sapp_desc sokol_main(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    return (sapp_desc){
+        .init_cb = sh_init_cb,
+        .frame_cb = sh_frame_cb,
+        .event_cb = sh_event_cb,
+        .cleanup_cb = sh_cleanup_cb,
+        .high_dpi = true,
+        // MSAA off: eglChooseConfig with ES3 + samples>0 returns no
+        // config on many devices/emulators, and _sapp_android_init_egl
+        // asserts on that. GLES 3.0 exactly — sokol's Android default
+        // asks for 3.1, which older translators reject.
+        .sample_count = 1,
+        .gl = { .major_version = 3, .minor_version = 0 },
+        .logger.func = slog_func,
+    };
+}
+#endif
 
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
@@ -329,7 +564,13 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         setenv("LIBGL_DRI3_DISABLE", "1", 1);
     }
 #endif
-    sapp_desc desc = {
+#if defined(__ANDROID__)
+    // Android: registration only. The event loop already runs (sokol
+    // called sh_init_cb on its thread, which booted the Crystal program
+    // that got us here); the static desc from sokol_main drives it.
+    (void)title; (void)width; (void)height; (void)swap_interval;
+#else
+    g_main_desc = (sapp_desc){
         .init_cb = sh_init_cb,
         .frame_cb = sh_frame_cb,
         .event_cb = sh_event_cb,
@@ -359,7 +600,8 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .max_dropped_file_path_length = 8192,
         .logger.func = slog_func,
     };
-    sapp_run(&desc);
+    sapp_run(&g_main_desc);
+#endif
 }
 
 void egui_cr_gfx_init(void) {
@@ -626,6 +868,17 @@ static void sh_shot_legacy(void) {
 // viewport after a 3D draw.
 static int g_fb_w, g_fb_h;
 
+// The backend's pixels_per_point source. Desktop: sokol's own dpi
+// scale. Android: sapp_dpi_scale() is hardcoded to 1.0 there, so the
+// AConfiguration density probe (sh_android_init_ppp) owns the value.
+float egui_cr_dpi_scale(void) {
+#if defined(__ANDROID__)
+    return g_android_ppp;
+#else
+    return sapp_dpi_scale();
+#endif
+}
+
 void egui_cr_begin_pass(int w, int h) {
     g_fb_w = w;
     g_fb_h = h;
@@ -635,7 +888,7 @@ void egui_cr_begin_pass(int w, int h) {
     // restore divides by it — a stale 0 turns the restored ortho into
     // NaN and silently drops every 2D draw after the first 3D mesh.
     // Refresh from the live dpi scale every frame.
-    float d = sapp_dpi_scale();
+    float d = egui_cr_dpi_scale();
     if (d > 0.0f) g_pkt_ppp = d;
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
@@ -746,6 +999,13 @@ void egui_cr_set_transparent(void) {
 // X11: handled by the visual choice alone (see above).
 void egui_cr_set_transparent(void) {}
 
+#endif
+
+#if defined(__ANDROID__)
+// Android runs the legacy direct loop only (no detached render thread),
+// and drag&drop does not exist there — but Crystal binds the payload
+// free unconditionally, so the symbol must exist.
+void egui_cr_drop_payload_free(void* payload) { (void)payload; }
 #endif
 
 // Present the backdrop color once, right after gfx init and BEFORE the
