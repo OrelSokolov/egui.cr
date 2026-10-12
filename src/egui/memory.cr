@@ -440,7 +440,22 @@ module Egui
       dragged = sense.drag? && @dragging_id == id
       drag_started = dragged && @drag_started_id == id
       drag_stopped = sense.drag? && @drag_stopped_id == id
-      drag_delta = dragged ? @pointer_delta : Vec2.zero
+      # Drag engages only after the CLICK_MAX_DIST click-vs-drag
+      # threshold; @pointer_delta on that engagement frame covers just
+      # the last frame's motion, silently dropping the sub-threshold
+      # distance. On a mouse that's imperceptible; on touch it reads as
+      # "the window doesn't grab / lags" — a dead zone on every grab.
+      # Backfill on the engagement frame: delta = press → current.
+      drag_delta = if dragged
+                     if drag_started && (origin = @press_pos) &&
+                        (p = @pointer_pos)
+                       p - origin
+                     else
+                       @pointer_delta
+                     end
+                   else
+                     Vec2.zero
+                   end
       active = pressed || dragged
 
       InteractionVerdict.new(hovered, clicked, click_count, pressed,
