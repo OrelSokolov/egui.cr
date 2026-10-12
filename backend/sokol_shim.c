@@ -5179,22 +5179,33 @@ void egui_cr_ios_kb_profile(int kind, int action) {
 // ---------------------------------------------------------------------------
 // Local notification via UNUserNotificationCenter (the iOS counterpart
 // of the desktop notification tools). The first call also requests
-// authorization — iOS shows the permission alert once; a notification
-// fired in the same runloop turn as the request may be dropped, later
-// ones always go through. Fire-and-forget: returns 1 when scheduled.
+// authorization — iOS shows the permission alert once — and fires the
+// notification only once granted (firing in the same runloop turn as
+// the request would silently drop it). While the app is FOREGROUND iOS
+// suppresses banners unless a UNUserNotificationCenterDelegate opts in
+// from willPresent — sh_notif_delegate does exactly that, so the demo
+// shows notifications the way Android's heads-up does.
+// Fire-and-forget: returns 1 when scheduled.
 #import <UserNotifications/UserNotifications.h>
 
-int egui_cr_notify(const char* title, const char* body) {
-    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
-    static BOOL auth_requested = NO;
-    if (!auth_requested) {
-        auth_requested = YES;
-        [center requestAuthorizationWithOptions:
-            (UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
-            completionHandler:^(BOOL granted, NSError* _Null_unspecified err) {
-                (void)granted; (void)err;
-            }];
-    }
+@interface sh_notif_delegate : NSObject <UNUserNotificationCenterDelegate>
+@end
+
+static sh_notif_delegate* sh_notif_dlg = nil;
+
+@implementation sh_notif_delegate
+- (void)userNotificationCenter:(UNUserNotificationCenter*)center
+       willPresentNotification:(UNNotification*)notification
+         withCompletionHandler:(void (^)(UNNotificationPresentationOptions))handler {
+    (void)center; (void)notification;
+    // iOS 14+: .banner (the old name is .alert)
+    handler(UNNotificationPresentationOptionBanner |
+            UNNotificationPresentationOptionSound);
+}
+@end
+
+static void sh_fire_note(UNUserNotificationCenter* center,
+                         const char* title, const char* body) {
     UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
     content.title = [NSString stringWithUTF8String:(title && title[0]) ? title : "egui.cr"];
     content.body = [NSString stringWithUTF8String:(body && body[0]) ? body : ""];
@@ -5204,6 +5215,28 @@ int egui_cr_notify(const char* title, const char* body) {
                        content:content
                        trigger:nil];
     [center addNotificationRequest:req withCompletionHandler:nil];
+}
+
+int egui_cr_notify(const char* title, const char* body) {
+    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    if (nil == sh_notif_dlg) {
+        sh_notif_dlg = [[sh_notif_delegate alloc] init];
+        [center setDelegate:sh_notif_dlg];
+    }
+    static BOOL auth_requested = NO;
+    if (!auth_requested) {
+        auth_requested = YES;
+        [center requestAuthorizationWithOptions:
+            (UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+            completionHandler:^(BOOL granted, NSError* _Null_unspecified err) {
+                (void)err;
+                // The completion runs on a background queue; firing from
+                // there is fine (addNotificationRequest is thread-safe).
+                if (granted) sh_fire_note(center, title, body);
+            }];
+        return 1; // scheduled on grant
+    }
+    sh_fire_note(center, title, body);
     return 1;
 }
 #endif // SH_IOS

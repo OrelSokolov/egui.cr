@@ -247,6 +247,16 @@ callback'и UIKit приходят между кадрами).
   обычный `File.read`.
 - **Контекстное меню текста** (Copy/Cut/Paste/Select All) —
   кроссплатформенное из android-ветки, работает поверх clipboard-порта.
+- **Нотификации в foreground**: iOS по умолчанию глотает баннеры, пока
+  приложение активно — шим ставит UNUserNotificationCenterDelegate
+  (`willPresent` → `.banner|.sound`), и первая нотификация теперь
+  уходит только после выдачи разрешения (auth-then-fire; раньше она
+  молча терялась в гонке с системным запросом). Проверено: баннер
+  виден поверх активного приложения и авто-скрывается (два прогона,
+  яркая плашка y=200-360 на скриншоте через 2с после запуска).
+  `simctl privacy grant/reset notifications` в этом рантайме запрещён
+  («Operation not permitted») — состояние разрешения только через
+  реальный системный запрос.
 
 Демо: `examples/ios_demo.cr` (зеркало `android_demo.cr` по секциям) +
 `tmp/ios/phase4/build_demo.sh` (бандл `cr.egui.iosdemo`; Info.plist
