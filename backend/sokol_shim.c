@@ -5319,8 +5319,14 @@ int egui_cr_docpick_start(int mode, const char* comma_exts,
         picker = [[UIDocumentPickerViewController alloc]
             initForExportingURLs:@[[NSURL fileURLWithPath:tmp]] asCopy:NO];
     } else if (mode == 2) { // pick folder
+        // NOT [UTType folder]: that class property crashes in the
+        // simulator runtime when its declaration isn't visible to this
+        // translation unit (header-only category in UTCoreTypes.h);
+        // the explicit identifier lookup is equivalent and robust.
+        UTType* ft = [UTType typeWithIdentifier:@"public.folder"];
+        if (nil == ft) { sh_docpick_state = 0; return -1; }
         picker = [[UIDocumentPickerViewController alloc]
-            initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
+            initForOpeningContentTypes:@[ft] asCopy:NO];
     } else { // open
         NSMutableArray<UTType*>* types = [NSMutableArray array];
         if (comma_exts && comma_exts[0]) {
@@ -5332,7 +5338,9 @@ int egui_cr_docpick_start(int mode, const char* comma_exts,
             }
             free(dup);
         }
-        if (types.count == 0) [types addObject:[UTType data]]; // any file
+        if (types.count == 0) {
+            [types addObject:[UTType typeWithIdentifier:@"public.data"]];
+        }
         picker = [[UIDocumentPickerViewController alloc]
             initForOpeningContentTypes:types asCopy:YES];
     }

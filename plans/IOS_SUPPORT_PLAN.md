@@ -239,8 +239,18 @@ callback'и UIKit приходят между кадрами).
 - **Диалоги**: docpick получил режимы — open (asCopy, как раньше), save
   (export-пикер: пустой temp-файл с default_name система ПЕРЕНОСИТ в
   выбранное место — колбэк получает путь; последующая запись может
-  требовать security scope), folder (`UTType.folder`, asCopy:NO).
+  требовать security scope), folder (`public.folder`, asCopy:NO).
   Путь через AsyncDialogs worker-fiber (sleep-poll), как open.
+  Грабли: `[UTType folder]` (классовое свойство из категории
+  UTCoreTypes.h, объявление не видно нашему TU — компилятор
+  предупреждал «+folder not found») ронял процесс с SIGSEGV при
+  первом же вызове в симуляторе. Фикс: `[UTType typeWithIdentifier:
+  @"public.folder"]` (тот же UTI, обычный объявленный метод); тот же
+  класс риска — fallback `[UTType data]` в open — заменён на
+  typeWithIdentifier:@"public.data". Первый авто-прогон folder был
+  ЛОЖНЫМ PASS: процесс падал, а светлый скриншот (спрингборд после
+  крэша) принимался за пикер — после фикса модальные режимы
+  проверяются и пиксельно, и живостью процесса (launchctl).
 - **UserDirs**: без правок — `flag?(:darwin)` истинен на iOS, а
   ENV["HOME"]/Documents/Library в песочнице совпадают с нужным.
 - **read_uri_text**: не нужен — пикер asCopy кладёт файл в песочницу,
@@ -270,8 +280,9 @@ callback'и UIKit приходят между кадрами).
 clipboard PASS (зелёная панель, раундтрип UIPasteboard), url PASS
 (Safari открылся, процесс mobilesafari жив), msgbox PASS (белый алерт
 ~185 на затемнённом 18 фоне), confirm PASS (тот же алерт),
-open/save PASS (Files-пикер, 97% светлого), folder PASS (пикер
-показан). Спеки: 665 examples, 0 failures (3 ошибки font_cuts —
+open/save/folder PASS (Files-пикер, mean 252, процесс жив — folder
+перепроверен после фикса крэша; изначальный PASS был ложным). Спеки:
+665 examples, 0 failures (3 ошибки font_cuts —
 pre-existing на b54289e, окружение Noto Sans).
 
 ## Phase 5 — устройство и полировка (не начата)
