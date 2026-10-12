@@ -5,7 +5,10 @@
 # through the WinForms `NotifyIcon` (System.Windows.Forms is part of the
 # OS). iOS goes through a native runner installed by the backend
 # (UNUserNotificationCenter local notifications — no subprocess tools
-# exist there). Fire-and-forget; returns false when the backend is
+# exist there). Android posts through the sysport JNI bridge
+# (NotificationManager; on API 33+ the first call triggers the
+# POST_NOTIFICATIONS request — until granted the system silently drops
+# the notification). Fire-and-forget; returns false when the backend is
 # missing. Non-blocking — it returns as soon as the notification is
 # dispatched.
 
@@ -59,6 +62,9 @@ module Egui
           script = %(display notification "#{Dialogs.as_quote(body)}" ) +
                    %(with title "#{Dialogs.as_quote(summary)}")
           Dialogs.run?("osascript", ["-e", script])
+        {% elsif flag?(:android) %}
+          Android.notify(summary, body)
+          true
         {% else %}
           return false unless Dialogs.which("notify-send")
           args = [summary]

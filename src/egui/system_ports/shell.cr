@@ -5,7 +5,10 @@
 #
 # Windows calls `ShellExecuteW` (shell32) directly — the documented way
 # to launch a URL or folder with the default handler. Linux/BSD shells
-# out to `xdg-open`, macOS to `open` / `open -R`. The call blocks only
+# out to `xdg-open`, macOS to `open` / `open -R`. Android resolves the
+# URL through an ACTION_VIEW Intent (sysport JNI bridge); FileOpen and
+# RevealInFolder would need content:// URIs through a FileProvider
+# manifest declaration — not wired (returns false). The call blocks only
 # for the launcher itself, not for the app it spawns.
 
 module Egui
@@ -28,6 +31,8 @@ module Egui
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", [url])
+        {% elsif flag?(:android) %}
+          Android.open_url(url)
         {% else %}
           return false unless Dialogs.which("xdg-open")
           Dialogs.run?("xdg-open", [url])
@@ -47,6 +52,10 @@ module Egui
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", ["-R", File.expand_path(path)])
+        {% elsif flag?(:android) %}
+          # No ACTION_VIEW equivalent without a content:// URI — see the
+          # module comment.
+          false
         {% else %}
           return false unless Dialogs.which("xdg-open")
           Dialogs.run?("xdg-open", [File.dirname(File.expand_path(path))])
@@ -65,6 +74,11 @@ module Egui
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", [path])
+        {% elsif flag?(:android) %}
+          # file:// URIs are blocked (FileUriExposedException) and a
+          # FileProvider needs manifest + res/xml wiring — see the
+          # module comment.
+          false
         {% else %}
           return false unless Dialogs.which("xdg-open")
           Dialogs.run?("xdg-open", [path])

@@ -18,14 +18,21 @@ module Egui
       menu_id = "context_menu_#{@id.value}"
 
       # Open on secondary press (upstream opens on click; press feels
-      # snappier and needs no per-button click classification). Checks
-      # pointer-in-rect rather than `hovered?` so it works on widgets
-      # without hover sense (labels). The anchor rides `Areas` —
-      # unpruned per-frame state — so the popup stays where it was
-      # opened, not where the pointer wanders.
+      # snappier and needs no per-button click classification) — or on
+      # the touch LONG-PRESS Memory synthesizes into the same gesture
+      # (see Memory#long_press_fired?). Checks pointer-in-rect rather
+      # than `hovered?` so it works on widgets without hover sense
+      # (labels). The anchor rides `Areas` — unpruned per-frame state —
+      # so the popup stays where it was opened, not where the pointer
+      # wanders.
       pop_id = Id.from("popup/#{menu_id}")
-      if @ctx.input.secondary_pressed? &&
-         (pos = @ctx.input.secondary_pos) && @rect.contains?(pos)
+      pos = nil
+      if @ctx.input.secondary_pressed?
+        pos = @ctx.input.secondary_pos
+      elsif @ctx.memory.long_press_fired?
+        pos = @ctx.memory.long_press_pos
+      end
+      if pos && @rect.contains?(pos)
         @ctx.memory.areas.set_pos(pop_id, pos)
         @ctx.open_popup(menu_id)
       end

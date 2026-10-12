@@ -4,8 +4,13 @@
 # subprocess. Linux/BSD shells out to zenity (--info/--warning/--error/
 # --question) or kdialog (--msgbox/--sorry/--error/--yesno), whichever
 # is on PATH. macOS uses `display dialog` through osascript (icon
-# note/caution/stop/question). Like the file dialogs, the call blocks
-# (modal): the frame loop freezes until the user dismisses the box.
+# note/caution/stop/question). Android shows an AlertDialog through the
+# sysport JNI bridge: info/warning/error are fire-and-forget, and the
+# confirm answer — delivered by the OS on its UI thread — can only
+# return through the callback overload of #confirm (use it on Android;
+# the blocking #confirm there shows the dialog but returns false).
+# Like the file dialogs, the call blocks (modal): the frame loop
+# freezes until the user dismisses the box.
 
 module Egui
   module SystemPorts
@@ -39,6 +44,8 @@ module Egui
           win32_box(message, title, MB_ICONINFO)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "note", false)
+        {% elsif flag?(:android) %}
+          Android.msgbox(Android::MSG_INFO, title, message)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--info", "--title=#{title}", "--text=#{message}"])
@@ -54,6 +61,8 @@ module Egui
           win32_box(message, title, MB_ICONWARNING)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "caution", false)
+        {% elsif flag?(:android) %}
+          Android.msgbox(Android::MSG_WARNING, title, message)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--warning", "--title=#{title}", "--text=#{message}"])
@@ -69,6 +78,8 @@ module Egui
           win32_box(message, title, MB_ICONERROR)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "stop", false)
+        {% elsif flag?(:android) %}
+          Android.msgbox(Android::MSG_ERROR, title, message)
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--error", "--title=#{title}", "--text=#{message}"])
@@ -79,13 +90,19 @@ module Egui
       end
 
       # Yes/no question; true only when the user confirms. False on
-      # cancel or when no dialog tool is available.
+      # cancel or when no dialog tool is available. On Android this only
+      # SHOWS the dialog — the answer cannot return synchronously (the
+      # OS delivers it on the UI thread; blocking the frame loop would
+      # stall input dispatch → ANR); use the callback overload below.
       def self.confirm(message : String, title : String = "Confirm") : Bool
         {% if flag?(:win32) %}
           LibUser32.MessageBoxW(LibUser32.GetActiveWindow,
             message.to_utf16, title.to_utf16, MB_YESNO) == IDYES
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "question", true)
+        {% elsif flag?(:android) %}
+          Android.confirm_box(title, message)
+          false
         {% else %}
           case Dialogs.tool
           when "zenity"  then Dialogs.run?("zenity", ["--question", "--title=#{title}", "--text=#{message}"])
@@ -94,6 +111,24 @@ module Egui
           end
         {% end %}
       end
+
+      # Non-blocking confirm: `on_result` fires with the answer. On
+      # Android the native dialog is asynchronous by nature — the
+      # callback lands between frames via the sysport ring; on the
+      # desktop platforms this wraps the blocking #confirm and calls
+      # back immediately. (Two defs, not an {% if %} inside one: block
+      # arguments don't resolve through in-method macro branches.)
+      {% if flag?(:android) %}
+        def self.confirm(message : String, title : String = "Confirm",
+                         &on_result : Bool ->) : Nil
+          Android.confirm_async(title, message) { |ok| on_result.call(ok) }
+        end
+      {% else %}
+        def self.confirm(message : String, title : String = "Confirm",
+                         &on_result : Bool ->) : Nil
+          on_result.call(confirm(message, title))
+        end
+      {% end %}
     end
   end
 end

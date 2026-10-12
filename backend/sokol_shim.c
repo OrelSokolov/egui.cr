@@ -371,6 +371,336 @@ void egui_cr_android_ime_set_state(int show, int kind, int action) {
 
 int egui_cr_android_ime_shown(void) { return g_ime_shown; }
 void egui_cr_android_ime_hide(void) { egui_cr_android_ime_set_state(0, 0, 0); }
+
+// ---- System-ports bridge (ANDROID_SUPPORT_PLAN.md, phase 7) --------------
+// Same pattern as the IME bridge above, for the rest of the system ports:
+// Crystal (sokol loop thread) calls static helpers on EguiCrActivity
+// through egui_cr_android_* below; results the OS delivers on the Java
+// UI thread (SAF picker onActivityResult, MessageBox confirm buttons,
+// clipboard changes) land in this mutex ring, drained by Sokol#on_frame
+// via egui_cr_android_sys_pop → SystemPorts::Android.pump.
+//
+// Clipboard reads are pull-only from the sokol thread, but the system
+// clipboard can only be read on the UI thread — so the Java side owns
+// the text: an OnPrimaryClipChangedListener pushes every change here
+// (nativeClipboardChanged), and our own sets update the cache too.
+enum { EGUI_SYS_SAF = 1, EGUI_SYS_MSGBOX = 2 };
+typedef struct {
+    int type;        // EGUI_SYS_*
+    int seq;         // SAF: request id (Crystal's registry key)
+    int value;       // SAF: 1 = picked; MSGBOX: 1 = confirmed
+    char path[1040]; // SAF: content:// uri utf8
+} egui_sys_rec_t;
+
+#define EGUI_SYS_RING 32
+static egui_sys_rec_t g_sys_ring[EGUI_SYS_RING];
+static volatile int g_sys_head, g_sys_tail;
+static pthread_mutex_t g_sys_mu = PTHREAD_MUTEX_INITIALIZER;
+
+static void sh_sys_push(const egui_sys_rec_t* rec) {
+    pthread_mutex_lock(&g_sys_mu);
+    int next = (g_sys_head + 1) % EGUI_SYS_RING;
+    if (next != g_sys_tail) {
+        g_sys_ring[g_sys_head] = *rec;
+        g_sys_head = next;
+    }
+    pthread_mutex_unlock(&g_sys_mu);
+}
+
+int egui_cr_android_sys_pop(egui_sys_rec_t* out, int cap) {
+    int n = 0;
+    pthread_mutex_lock(&g_sys_mu);
+    while (n < cap && g_sys_tail != g_sys_head) {
+        out[n++] = g_sys_ring[g_sys_tail];
+        g_sys_tail = (g_sys_tail + 1) % EGUI_SYS_RING;
+    }
+    pthread_mutex_unlock(&g_sys_mu);
+    return n;
+}
+
+// The system-clipboard text as last seen (malloc'd utf8, NULL = empty).
+static pthread_mutex_t g_clip_mu = PTHREAD_MUTEX_INITIALIZER;
+static char* g_clip_cache;
+
+static void sh_clip_cache_set(const char* utf8) {
+    char* copy = (utf8 && utf8[0]) ? strdup(utf8) : NULL;
+    pthread_mutex_lock(&g_clip_mu);
+    char* old = g_clip_cache;
+    g_clip_cache = copy;
+    pthread_mutex_unlock(&g_clip_mu);
+    free(old);
+}
+
+// Lazy JavaVM/activity grab shared by the sys calls (sh_ime_call_java
+// keeps its own inline copy — it predates this section).
+static int sh_jvm_ready(void) {
+    if (g_ime_jvm) return 1;
+    ANativeActivity* act =
+        (ANativeActivity*)sapp_android_get_native_activity();
+    if (!act || !act->vm) return 0;
+    g_ime_jvm = act->vm;
+    g_ime_act = act;
+    return 1;
+}
+
+static JNIEnv* sh_sys_env(void) {
+    if (!sh_jvm_ready()) return NULL;
+    JNIEnv* env = NULL;
+    if ((*g_ime_jvm)->GetEnv(g_ime_jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_ime_jvm)->AttachCurrentThread(g_ime_jvm, &env, NULL) != JNI_OK)
+            return NULL;
+        g_ime_attached = 1;
+    }
+    return env;
+}
+
+static jclass sh_act_class(JNIEnv* env) {
+    return (*env)->GetObjectClass(env, g_ime_act->clazz);
+}
+
+// utf8 → Java String through explicit UTF-16: NewStringUTF wants MODIFIED
+// utf8 (4-byte sequences invalid). UTF-16 units never exceed the utf8
+// byte count, so strlen+1 jchars always fit.
+static jstring sh_utf8_to_jstr(JNIEnv* env, const char* utf8) {
+    if (!utf8) return NULL;
+    size_t n = strlen(utf8);
+    unsigned short* buf = (unsigned short*)malloc((n + 1) * sizeof(unsigned short));
+    if (!buf) return NULL;
+    size_t len = 0;
+    const unsigned char* p = (const unsigned char*)utf8;
+    while (*p) {
+        unsigned c;
+        if (p[0] < 0x80) {
+            c = p[0]; p += 1;
+        } else if ((p[0] & 0xE0) == 0xC0) {
+            c = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2;
+        } else if ((p[0] & 0xF0) == 0xE0) {
+            c = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F); p += 3;
+        } else {
+            c = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) |
+                ((p[2] & 0x3F) << 6) | (p[3] & 0x3F); p += 4;
+        }
+        if (c < 0x10000) {
+            buf[len++] = (unsigned short)c;
+        } else {
+            c -= 0x10000;
+            buf[len++] = (unsigned short)(0xD800 + (c >> 10));
+            buf[len++] = (unsigned short)(0xDC00 + (c & 0x3FF));
+        }
+    }
+    jstring js = (*env)->NewString(env, (const jchar*)buf, (jsize)len);
+    free(buf);
+    if (!js) (*env)->ExceptionClear(env);
+    return js;
+}
+
+// The one-argument shapes used by the sys calls; every helper clears a
+// pending Java exception so a missing OS feature degrades to "refused"
+// instead of crashing the VM.
+int egui_cr_android_open_url(const char* url) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return 0;
+    jclass cls = sh_act_class(env);
+    jstring ju = sh_utf8_to_jstr(env, url);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "openUrl",
+                                                  "(Ljava/lang/String;)Z") : NULL;
+    int ok = 0;
+    if (m && ju) ok = (*env)->CallStaticBooleanMethod(env, cls, m, ju) ? 1 : 0;
+    if ((*env)->ExceptionCheck(env)) { ok = 0; (*env)->ExceptionClear(env); }
+    if (ju) (*env)->DeleteLocalRef(env, ju);
+    return ok;
+}
+
+void egui_cr_android_notify(const char* title, const char* body) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    jstring jt = sh_utf8_to_jstr(env, title);
+    jstring jb = sh_utf8_to_jstr(env, body);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "showNotification",
+        "(Ljava/lang/String;Ljava/lang/String;)V") : NULL;
+    if (m && jt) (*env)->CallStaticVoidMethod(env, cls, m, jt, jb);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (jt) (*env)->DeleteLocalRef(env, jt);
+    if (jb) (*env)->DeleteLocalRef(env, jb);
+}
+
+// level: 0 info / 1 warning / 2 error / 3 question; confirm=1 → yes/no
+// buttons whose answer arrives via nativeMsgboxResult.
+void egui_cr_android_msgbox(int level, const char* title, const char* msg,
+                            int confirm) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    jstring jt = sh_utf8_to_jstr(env, title);
+    jstring jm = sh_utf8_to_jstr(env, msg);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "showMessageBox",
+        "(ILjava/lang/String;Ljava/lang/String;Z)V") : NULL;
+    if (m && jt && jm)
+        (*env)->CallStaticVoidMethod(env, cls, m, (jint)level, jt, jm,
+                                     confirm ? JNI_TRUE : JNI_FALSE);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (jt) (*env)->DeleteLocalRef(env, jt);
+    if (jm) (*env)->DeleteLocalRef(env, jm);
+}
+
+void egui_cr_android_clipboard_set(const char* utf8) {
+    sh_clip_cache_set(utf8);
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    jstring jt = sh_utf8_to_jstr(env, utf8);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "setClipboardText",
+                                                  "(Ljava/lang/String;)V") : NULL;
+    if (m && jt) (*env)->CallStaticVoidMethod(env, cls, m, jt);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    if (jt) (*env)->DeleteLocalRef(env, jt);
+}
+
+// malloc'd copy (free with egui_cr_mem_free); NULL when empty/unknown.
+// Pulls fresh text through the UI thread first (bounded wait — see
+// pullClipboardText): OEM builds (Huawei EMUI &c.) don't reliably fire
+// the clip-change listener, so the cache alone under-reports there.
+char* egui_cr_android_clipboard_get(void) {
+    JNIEnv* env = sh_sys_env();
+    if (env) {
+        jclass cls = sh_act_class(env);
+        jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "pullClipboardText",
+                                                      "()Ljava/lang/String;") : NULL;
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        if (m) {
+            jstring s = (*env)->CallStaticObjectMethod(env, cls, m);
+            if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); s = NULL; }
+            if (s) {
+                jsize n = (*env)->GetStringLength(env, s);
+                char* buf = (char*)malloc((size_t)n * 4 + 1);
+                if (buf) {
+                    buf[0] = 0;
+                    sh_ime_jstr_utf8(env, s, buf, (size_t)n * 4 + 1);
+                }
+                (*env)->DeleteLocalRef(env, s);
+                if (buf) {
+                    sh_clip_cache_set(buf[0] ? buf : NULL);
+                    free(buf);
+                }
+            }
+        }
+    }
+    pthread_mutex_lock(&g_clip_mu);
+    char* r = g_clip_cache ? strdup(g_clip_cache) : NULL;
+    pthread_mutex_unlock(&g_clip_mu);
+    return r;
+}
+
+// which: 0 files(config/data) / 1 cache / 2 home / 3 documents /
+// 4 downloads / 5 pictures / 6 music / 7 videos.
+int egui_cr_android_dir(int which, char* out, int cap) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return 0;
+    jclass cls = sh_act_class(env);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "sysDir",
+                                                  "(I)Ljava/lang/String;") : NULL;
+    if (!m) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return 0; }
+    jstring s = (*env)->CallStaticObjectMethod(env, cls, m, (jint)which);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return 0; }
+    int ok = 0;
+    if (s) {
+        out[0] = 0;
+        sh_ime_jstr_utf8(env, s, out, (size_t)cap);
+        ok = out[0] != 0;
+        (*env)->DeleteLocalRef(env, s);
+    }
+    return ok;
+}
+
+// kind: 1 ACTION_OPEN_DOCUMENT / 2 ACTION_CREATE_DOCUMENT /
+// 3 ACTION_OPEN_DOCUMENT_TREE. Returns 1 when launched; the pick (or
+// cancel) arrives as a nativeSafResult record for `seq`.
+int egui_cr_android_saf_start(int seq, int kind, const char* title,
+                              const char* mime, const char* default_name) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return 0;
+    jclass cls = sh_act_class(env);
+    jstring jt = sh_utf8_to_jstr(env, title);
+    jstring jm = sh_utf8_to_jstr(env, mime);
+    jstring jn = sh_utf8_to_jstr(env, default_name);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "safStart",
+        "(IILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V") : NULL;
+    int ok = 0;
+    if (m && jt && jm)
+        (*env)->CallStaticVoidMethod(env, cls, m, (jint)seq, (jint)kind, jt, jm, jn);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    else ok = 1;
+    if (jt) (*env)->DeleteLocalRef(env, jt);
+    if (jm) (*env)->DeleteLocalRef(env, jm);
+    if (jn) (*env)->DeleteLocalRef(env, jn);
+    return ok;
+}
+
+// Up to ~64 KB of a content-resolved document as utf8 (malloc'd, free
+// with egui_cr_mem_free); NULL when unreadable.
+char* egui_cr_android_read_uri_text(const char* uri) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return NULL;
+    jclass cls = sh_act_class(env);
+    jstring ju = sh_utf8_to_jstr(env, uri);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "readUriText",
+        "(Ljava/lang/String;)Ljava/lang/String;") : NULL;
+    if (!m || !ju) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return NULL; }
+    jstring s = (*env)->CallStaticObjectMethod(env, cls, m, ju);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); s = NULL; }
+    if (ju) (*env)->DeleteLocalRef(env, ju);
+    if (!s) return NULL;
+    jsize n = (*env)->GetStringLength(env, s);
+    char* out = (char*)malloc((size_t)n * 4 + 1);
+    if (out) {
+        out[0] = 0;
+        sh_ime_jstr_utf8(env, s, out, (size_t)n * 4 + 1);
+    }
+    (*env)->DeleteLocalRef(env, s);
+    return out;
+}
+
+// --- Java UI thread → sokol loop thread (results) --------------------------
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeSafResult(JNIEnv* env, jclass cls,
+                                                   jint seq, jint ok,
+                                                   jstring uri) {
+    (void)cls;
+    egui_sys_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_SYS_SAF;
+    rec.seq = (int)seq;
+    rec.value = ok ? 1 : 0;
+    if (uri) sh_ime_jstr_utf8(env, uri, rec.path, sizeof(rec.path));
+    sh_sys_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeMsgboxResult(JNIEnv* env, jclass cls,
+                                                      jint value) {
+    (void)env; (void)cls;
+    egui_sys_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_SYS_MSGBOX;
+    rec.value = value ? 1 : 0;
+    sh_sys_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeClipboardChanged(JNIEnv* env,
+                                                          jclass cls,
+                                                          jstring text) {
+    (void)cls;
+    if (!text) { sh_clip_cache_set(NULL); return; }
+    jsize n = (*env)->GetStringLength(env, text);
+    char* buf = (char*)malloc((size_t)n * 4 + 1);
+    if (!buf) return;
+    buf[0] = 0;
+    sh_ime_jstr_utf8(env, text, buf, (size_t)n * 4 + 1);
+    sh_clip_cache_set(buf);
+    free(buf);
+}
 #endif
 
 static cr_init_cb   g_init;

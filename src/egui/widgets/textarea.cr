@@ -255,11 +255,19 @@ module Egui
       changed = false
 
       # Press places the caret, double-click selects a word, dragging
-      # extends the selection (anchor latched at the press).
-      if response.pressed? || response.clicked?
+      # extends the selection (anchor latched at the press). The touch
+      # LONG-PRESS focuses and places the caret too — the context menu
+      # it opens (TextEditMenu below) works on a live caret.
+      lp_fired = memory.long_press_fired? &&
+                 (lpos = memory.long_press_pos) &&
+                 rect.contains?(lpos) ? true : false
+      if response.pressed? || response.clicked? || lp_fired
         response.request_focus
         if (pos = input.pointer_pos)
-          if response.double_clicked?
+          # Long-press selects the WORD under the finger (Android
+          # semantics) — same as double-click — so Copy/Cut in the
+          # menu it opens are live.
+          if response.double_clicked? || lp_fired
             cursor, anchor = word_range(@text,
               caret_at(galley, row_starts, fonts, inner, offset, pos))
           else
@@ -306,6 +314,16 @@ module Egui
             galley, row_starts, fonts, view_h)
         ui.ctx.request_repaint if @cursor_blinks # caret blink
       end
+
+      # Clipboard context menu commands (TextEditMenu — long-press /
+      # secondary): applied after the keyboard pass but BEFORE the
+      # re-lay below, so a paste/select-all edit re-lays the galley
+      # against the NEW buffer this same frame. The returned flag ORs
+      # in so a menu edit re-lays and flows out as changed.
+      new_text, cursor, anchor, menu_changed =
+        TextEditMenu.apply(ui.ctx, id, new_text, cursor, anchor,
+          single_line: false)
+      changed |= menu_changed
 
       # The galley was laid out from the OLD buffer before the keyboard
       # pass — after an edit the new caret index maps onto stale rows
@@ -523,6 +541,9 @@ module Egui
 
       response.widget_text = new_text
       response.mark_changed if changed
+      # Clipboard context menu (Copy/Cut/Paste/Select All) — long-press
+      # on touch, secondary press on the mouse.
+      TextEditMenu.show(ui, id, response, new_text, cursor, anchor)
       # Soft-keyboard profile + editor mirror: multiline mode, Enter =
       # newline; the focused field's text/cursor feed the IME's editor
       # queries (registered AFTER the keyboard pass so this frame's

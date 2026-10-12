@@ -8,9 +8,11 @@
 # encoded (`-EncodedCommand`) so titles, filters and paths need no
 # quoting gymnastics. iOS opens through UIDocumentPickerViewController
 # (the system Files browser; the pick is copied into the sandbox — no
-# permission entries needed). Save/pick-folder on iOS complete with nil
-# on the next frame — fail-fast, the same contract as "tool
-# unavailable" on other platforms.
+# permission entries needed); save/pick-folder fail fast with nil when
+# the backend runner is missing. Android runs the SAF pickers
+# (ACTION_OPEN_DOCUMENT &c) through the sysport JNI bridge
+# (system_ports/android.cr) — the result is a content:// URI delivered
+# on a later frame.
 #
 # The call is NEVER blocking: `show` only starts a request and returns
 # immediately. The dialog itself runs in its own fiber (`AsyncDialogs`)
@@ -35,7 +37,18 @@ module Egui
                     filters : Array(String) = [] of String,
                     directory : String? = nil,
                     &on_done : String? ->) : Nil
-        AsyncDialogs.start(->{ Dialogs.open(title, filters, directory) }, on_done)
+        cb = on_done # block args don't resolve through {% if %} branches
+        {% if flag?(:android) %}
+          # SAF picker (ACTION_OPEN_DOCUMENT); the pick arrives via the
+          # sysport ring as a content:// URI — read it with
+          # Android.read_uri_text. `directory` is not mappable to SAF
+          # (EXTRA_INITIAL_URI needs a document tree grant) — ignored.
+          req = AsyncDialogs.start_detached(cb)
+          Android.saf_open(Android::SAF_OPEN, title,
+                           Android.mime_for(filters), nil, req)
+        {% else %}
+          AsyncDialogs.start(->{ Dialogs.open(title, filters, directory) }, cb)
+        {% end %}
       end
     end
 
@@ -48,8 +61,17 @@ module Egui
                     directory : String? = nil,
                     default_name : String? = nil,
                     &on_done : String? ->) : Nil
-        AsyncDialogs.start(
-          ->{ Dialogs.save(title, filters, directory, default_name) }, on_done)
+        cb = on_done # block args don't resolve through {% if %} branches
+        {% if flag?(:android) %}
+          # SAF ACTION_CREATE_DOCUMENT; `default_name` pre-fills the
+          # suggested name (EXTRA_TITLE), `directory` — as above.
+          req = AsyncDialogs.start_detached(cb)
+          Android.saf_open(Android::SAF_SAVE, title,
+                           Android.mime_for(filters), default_name, req)
+        {% else %}
+          AsyncDialogs.start(
+            ->{ Dialogs.save(title, filters, directory, default_name) }, cb)
+        {% end %}
       end
     end
 
@@ -64,7 +86,14 @@ module Egui
       def self.show(title : String = "Choose folder",
                     directory : String? = nil,
                     &on_done : String? ->) : Nil
-        AsyncDialogs.start(->{ Dialogs.pick_folder(title, directory) }, on_done)
+        cb = on_done # block args don't resolve through {% if %} branches
+        {% if flag?(:android) %}
+          # SAF ACTION_OPEN_DOCUMENT_TREE — a tree content:// URI.
+          req = AsyncDialogs.start_detached(cb)
+          Android.saf_open(Android::SAF_TREE, title, "*/*", nil, req)
+        {% else %}
+          AsyncDialogs.start(->{ Dialogs.pick_folder(title, directory) }, cb)
+        {% end %}
       end
     end
 
@@ -112,6 +141,26 @@ module Egui
           Egui::Runtime.wake.try &.call
         end
         req
+      end
+
+      # Start a request whose result arrives from OUTSIDE a worker fiber:
+      # a backend event drain (Android SAF — onActivityResult → native
+      # ring → backend pump) calls #complete with the result between
+      # frames. Desktop/dialog-tool paths never touch this.
+      def self.start_detached(on_done : String? ->) : Request
+        req = Request.new(on_done)
+        @@pending << req
+        req
+      end
+
+      # Deliver a detached request's result (idempotent per request).
+      def self.complete(req : Request, result : String?) : Nil
+        return if req.done?
+        req.result = result
+        req.done = true
+        @@pending.delete(req)
+        @@delivered += 1
+        req.complete
       end
 
       # True while at least one dialog is open — for spinners etc.
