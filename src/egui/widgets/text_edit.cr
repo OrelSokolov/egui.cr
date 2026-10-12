@@ -76,6 +76,7 @@ module Egui
       # (a focusing click types from the next frame on).
       if ui.ctx.memory.focus.has_focus?(id)
         ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
+        ui.ctx.memory.focus.text_input! # raises the on-screen keyboard
         new_text, cursor, anchor, changed =
           handle_keyboard(ui.ctx, @text, cursor, anchor)
         ui.ctx.request_repaint if @cursor_blinks # caret blink
@@ -139,6 +140,11 @@ module Egui
             anchor = cursor
           end
         end
+      end
+      # egui: a press outside the field surrenders focus (this is what
+      # lowers the on-screen keyboard on touch platforms).
+      if response.has_focus? && response.clicked_elsewhere?
+        ui.ctx.memory.focus.clear
       end
       # Drag-select: the anchor stays where the press put it, the caret
       # follows the pointer (a drag with no prior press anchors here).

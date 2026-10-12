@@ -6172,6 +6172,15 @@ _SOKOL_PRIVATE void _sapp_macos_frame(void) {
     _sapp_macos_mtl_timing_update();
     #endif
     #if defined(_SAPP_ANY_GL)
+    /* egui-cr patch (macOS 26): NSOpenGLView is force layer-backed, so
+       _NSOpenGLViewBackingLayer may invoke drawRect — and thus this
+       frame function — on a CoreAnimation GCD thread, where the GL
+       context is not current (prepareOpenGL made it current on the
+       main thread only). The GL call below would dereference a NULL
+       TLS context (nondeterministic EXC_BAD_ACCESS at startup). Bind
+       the context on whichever thread runs the frame; AppKit serializes
+       display, so this is race-free. */
+    [[_sapp.macos.view openGLContext] makeCurrentContext];
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&_sapp.gl.framebuffer);
     #endif
     @autoreleasepool {

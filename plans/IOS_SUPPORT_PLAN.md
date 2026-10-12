@@ -180,6 +180,31 @@
   sleep-poll'ит `docpick_done` — блокируется только файбер, кадры
   рендерятся. Save/pick_folder на iOS пока fail-fast nil (нужен export-
   picker + security-scope запись).
+- **Клавиатура (ввод работает)**: тап по текстовому полю → egui-фокус
+  → `Focus#wants_text_input?` (ежекадровый флаг от TextEdit/TextArea) →
+  бэкенд зовёт `egui_cr_show_keyboard` (sokol's hidden UITextField →
+  системная клавиатура; ввод приходит CHAR/KEY-событиями, пробел
+  синтезируется из KEY_DOWN(Space) — делегат sokol не шлёт CHAR для
+  c <= 32). Тап мимо поля → `Response#clicked_elsewhere?` →
+  `focus.clear` → клавиатура убирается (Esc тоже). Пример:
+  `examples/text_input.cr` (автофокус при старте; сборка под сим:
+  `tmp/ios/phase4/build_text.sh`, bundle `cr.egui.textinput`).
+  Грабли симулятора: при включённом «Connect Hardware Keyboard» экранная
+  клавиатура не показывается, хотя фокус есть (отключение требует
+  ребута Simulator.app). Канвас НЕ сжимается под клавиатуру
+  (keyboard_resizes_canvas в scene-режиме меряет экран, а не фрейм
+  view) — текстовые поля держать вверху.
+
+**Известные macOS-особенности (после мержа ios):**
+- Флейковый стартовый крэш на macOS 26 (не iOS): NSOpenGLView
+  принудительно layer-backed, и CoreAnimation иногда исполняет drawRect
+  (и GL-кадр) на фоновом GCD-потоке ('DEFAULT-N'), где GL-контекст не
+  текущий → SIGSEGV по NULL TLS-контексту libGL (адрес 0x338) при
+  первом `sg_make_image`, либо порча autorelease pool. Частота ~2-3/10
+  запусков, существует и в закоммиченном HEAD (не регрессия iOS-работ).
+  Частичный фикс: egui-cr патч в `vendor/sokol/sokol_app.h`
+  (`_sapp_macos_frame` делает `makeCurrentContext` до первого GL-вызова)
+  — падений меньше, но не ноль; расследование продолжается.
 
 ## Phase 5 — устройство и полировка (не начата)
 

@@ -4226,6 +4226,19 @@ char* egui_cr_clipboard_get(void) {
 }
 void egui_cr_toggle_fullscreen(void) { sapp_toggle_fullscreen(); }
 int egui_cr_fullscreen_q(void) { return sapp_is_fullscreen(); }
+
+// On-screen keyboard (iOS/Android; no-op elsewhere): the backend calls
+// this when a text widget gains/loses focus (Focus#wants_text_input?).
+// sokol_app drives a hidden UITextField — becoming first responder
+// raises the system keyboard, and its delegate maps input to CHAR /
+// KEY_DOWN(Enter, Space, Backspace) events.
+void egui_cr_show_keyboard(int shown) {
+#if defined(SH_IOS)
+    NSLog(CFSTR("egui.cr ios: show_keyboard(%d)"), shown);
+#endif
+    sapp_show_keyboard(shown != 0);
+}
+
 void egui_cr_request_quit(void) {
 #if defined(SH_IOS)
     /* sokol_app's UIKit backend never checks quit_requested (the frame

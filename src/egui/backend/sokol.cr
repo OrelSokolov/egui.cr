@@ -123,6 +123,7 @@ lib LibEguiCr
   fun sapp_height : Int32
   fun sapp_dpi_scale : Float32
   fun request_quit = egui_cr_request_quit
+  fun show_keyboard = egui_cr_show_keyboard(shown : Int32)
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
   fun set_window_title = egui_cr_set_window_title(title : UInt8*)
@@ -237,6 +238,9 @@ module Egui
       class_getter app : Egui::App?
 
       @@events = [] of Egui::Event
+      # On-screen keyboard state (iOS): text focus → show/hide, edge-
+      # triggered so sapp_show_keyboard is only called on transitions.
+      @@kb_shown = false
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
       @@mono_fonts : Egui::Backend::AtlasFonts? = nil
@@ -1299,6 +1303,13 @@ module Egui
           modifiers = Egui::Modifiers.from_mask(mods)
           if type == KEY_DOWN
             @@events << Egui::Event.key_pressed(code, modifiers)
+            {% if flag?(:ios) %}
+              # sokol's on-screen keyboard reports Space only as
+              # KEY_DOWN (its textfield delegate skips the CHAR event
+              # for c <= 32) — synthesize the text event so focused
+              # text widgets insert the space.
+              @@events << Egui::Event.text_input(" ") if key == 32
+            {% end %}
           else
             @@events << Egui::Event.key_released(code, modifiers)
           end
@@ -1420,6 +1431,19 @@ module Egui
         # press and the inspector yields to it (no second popup; the
         # «Inspect …» row rides as that menu's last item instead).
         commands = app.ctx.end_frame
+
+        {% if flag?(:ios) %}
+          # Text focus drives the on-screen keyboard (sokol's hidden
+          # UITextField → CHAR / KEY events). NOTE: the canvas does
+          # NOT shrink under the keyboard — sokol_app's scene-based
+          # resize path measures the screen, not the view frame — so
+          # keep text fields near the top of the screen.
+          want_kb = app.ctx.memory.focus.wants_text_input?
+          if want_kb != @@kb_shown
+            @@kb_shown = want_kb
+            LibEguiCr.show_keyboard(want_kb ? 1 : 0)
+          end
+        {% end %}
 
         @@last_commands = commands
         @@last_fb_w = fb_w
