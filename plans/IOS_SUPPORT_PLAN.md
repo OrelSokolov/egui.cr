@@ -197,14 +197,20 @@
 
 **Известные macOS-особенности (после мержа ios):**
 - Флейковый стартовый крэш на macOS 26 (не iOS): NSOpenGLView
-  принудительно layer-backed, и CoreAnimation иногда исполняет drawRect
-  (и GL-кадр) на фоновом GCD-потоке ('DEFAULT-N'), где GL-контекст не
-  текущий → SIGSEGV по NULL TLS-контексту libGL (адрес 0x338) при
-  первом `sg_make_image`, либо порча autorelease pool. Частота ~2-3/10
-  запусков, существует и в закоммиченном HEAD (не регрессия iOS-работ).
-  Частичный фикс: egui-cr патч в `vendor/sokol/sokol_app.h`
-  (`_sapp_macos_frame` делает `makeCurrentContext` до первого GL-вызова)
-  — падений меньше, но не ноль; расследование продолжается.
+  принудительно layer-backed, и `_NSOpenGLViewBackingLayer.display`
+  иногда исполняется на фоновом GCD-потоке ('DEFAULT-N'). Вкус 1
+  (вылечен): GL-вызовы без текущего контекста → SIGSEGV по NULL
+  TLS-контексту libGL (адрес 0x338) при первом `sg_make_image` —
+  фикс: self-heal ребинд `sh_gl_rebind()` в шиме
+  (begin_pass/end_pass/atlas_create перепривязывают контекст, если
+  он не текущий; контекст общий, бинд с любого потока валиден).
+  Вкус 2 (остался, ~10% запусков): порча autorelease pool в
+  `_sapp_macos_frame` (SIGSEGV 0x10 в objc_autoreleasePoolPop) и
+  SIGTRAP в `NSGraphicsContext restoreGraphicsState` — это
+  внутренний небаланс самой AppKit-машины layer'а на GCD-потоке;
+  патчи drawRect/timer/лока не лечат (перепробованы и откачены).
+  Полное лечение — Metal-рендерер (см. Phase 5), на GLES/GLCORE
+  платформы не влияет. Частота до фиксов была ~20-50%.
 
 ## Phase 5 — устройство и полировка (не начата)
 

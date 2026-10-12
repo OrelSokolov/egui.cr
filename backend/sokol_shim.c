@@ -685,10 +685,29 @@ static void sh_shot_legacy(void) {
 // viewport after a 3D draw.
 static int g_fb_w, g_fb_h;
 
+#if defined(__APPLE__) && !defined(SH_IOS)
+// macOS 26 self-heal: the frame may be entered through an AppKit path we
+// do not fully control (NSOpenGLView is force layer-backed, and its
+// backing layer can drive display on a CoreAnimation GCD thread), on a
+// thread where the GL context is not current — GL calls then fail on a
+// nil libGL TLS context (the sokol assert / SIGSEGV seen at the first
+// glyph bake). Re-assert the binding at the GL entry points; the context
+// object is shared, so binding from whichever thread does the work is
+// valid GL usage.
+static void sh_gl_rebind(void) {
+    if (nil == [NSOpenGLContext currentContext]) {
+        [[_sapp.macos.view openGLContext] makeCurrentContext];
+    }
+}
+#else
+static void sh_gl_rebind(void) { }
+#endif
+
 void egui_cr_begin_pass(int w, int h) {
     g_fb_w = w;
     g_fb_h = h;
     if (!sh_run_direct()) { egui_cr_pkt_begin(w, h); return; }
+    sh_gl_rebind();
     // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
     // is only called by the detached produce loop), yet the mesh3d
     // restore divides by it — a stale 0 turns the restored ortho into
@@ -719,6 +738,7 @@ void egui_cr_begin_pass(int w, int h) {
 
 void egui_cr_end_pass(void) {
     if (!sh_run_direct()) { egui_cr_pkt_publish(); return; }
+    sh_gl_rebind();
     sgl_draw();
     sg_end_pass();
     sg_commit();
@@ -1365,6 +1385,9 @@ static struct {
 static int g_atlas_count = 0;
 
 uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
+#if defined(__APPLE__) && !defined(SH_IOS)
+    sh_gl_rebind(); // see sh_gl_rebind: nil-context entry on macOS 26
+#endif
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
     if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
     // stream images cannot be created with initial data (sokol validation:
