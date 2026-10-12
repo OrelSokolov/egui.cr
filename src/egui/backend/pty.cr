@@ -23,6 +23,14 @@
 #
 # All parser work happens on the frame fiber via the channel, so no
 # locking is needed around the emulator.
+#
+# NOT PORTABLE TO MOBILE: app sandboxes have no fork/exec or ptmx
+# (iOS kills processes that fork; Android SELinux denies exec), and the
+# mobile build scripts never compile/link the pty shim. Fail the build
+# loudly here instead of dying at link time with missing symbols.
+{% if flag?(:android) || flag?(:ios) %}
+  {% raise "egui-cr: backend/pty (Terminal::Session) is not available on mobile — no fork/exec or ptmx in the app sandbox. The terminal widget itself compiles; feed it a custom Terminal::Backend if you need one." %}
+{% end %}
 
 @[Link("egui_cr_pty")]
 lib LibPty
