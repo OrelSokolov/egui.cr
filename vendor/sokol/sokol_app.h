@@ -7021,6 +7021,17 @@ _SOKOL_PRIVATE void _sapp_ios_show_keyboard(bool shown) {
         _sapp.ios.textfield.text = @"x";
         _sapp.ios.textfield.delegate = _sapp.ios.textfield_dlg;
         [_sapp.ios.view_ctrl.view addSubview:_sapp.ios.textfield];
+#if defined(SH_IOS)
+        /* egui-cr patch: apply the focused text widget's profile
+           (keyboard type / return key / secure entry — see
+           sh_ios_kb_apply in backend/sokol_shim.c) BEFORE the field
+           becomes first responder, so even the very first keyboard
+           shows the right layout. */
+        {
+            extern void sh_ios_kb_apply(UITextField* textfield);
+            sh_ios_kb_apply(_sapp.ios.textfield);
+        }
+#endif
 
 #if !defined(_SAPP_TVOS)
         [[NSNotificationCenter defaultCenter] addObserver:_sapp.ios.textfield_dlg

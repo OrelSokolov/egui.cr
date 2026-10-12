@@ -4796,11 +4796,87 @@ int egui_cr_fullscreen_q(void) { return sapp_is_fullscreen(); }
 // raises the system keyboard, and its delegate maps input to CHAR /
 // KEY_DOWN(Enter, Space, Backspace) events.
 void egui_cr_show_keyboard(int shown) {
-#if defined(SH_IOS)
-    NSLog(CFSTR("egui.cr ios: show_keyboard(%d)"), shown);
-#endif
     sapp_show_keyboard(shown != 0);
 }
+
+#if defined(SH_IOS)
+// ---------------------------------------------------------------------------
+// Soft-keyboard profile (Egui::TextInputKind / TextInputAction, mirror
+// of the Android IME bridge): applied to sokol's hidden textfield at
+// creation (vendor patch in _sapp_ios_show_keyboard) and whenever the
+// focused widget's profile changes, so the keyboard layout (default /
+// number pad / secure) and the return key (Done/Go/Search/Send/Next)
+// match the widget before the first show.
+static int sh_kb_kind = 0;   // Egui::TextInputKind (0 = Plain)
+static int sh_kb_action = 1; // Egui::TextInputAction (1 = Done)
+
+void sh_ios_kb_apply(UITextField* tf) {
+    if (nil == tf) return;
+    switch (sh_kb_kind) {
+        case 1: // Password: default layout, masked entry
+            tf.keyboardType = UIKeyboardTypeDefault;
+            tf.secureTextEntry = YES;
+            break;
+        case 3: // Number: digits+punctuation keeps a return key (the
+                // pure pads have none, leaving no way to defocus)
+            tf.keyboardType = UIKeyboardTypeNumbersAndPunctuation;
+            tf.secureTextEntry = NO;
+            break;
+        default: // Plain / Multiline
+            tf.keyboardType = UIKeyboardTypeDefault;
+            tf.secureTextEntry = NO;
+            break;
+    }
+    switch (sh_kb_action) {
+        case 1: tf.returnKeyType = UIReturnKeyDone; break;
+        case 2: tf.returnKeyType = UIReturnKeyGo; break;
+        case 3: tf.returnKeyType = UIReturnKeySearch; break;
+        case 4: tf.returnKeyType = UIReturnKeySend; break;
+        case 5: tf.returnKeyType = UIReturnKeyNext; break;
+        default: tf.returnKeyType = UIReturnKeyDefault; break;
+    }
+}
+
+// Called by the backend BEFORE showing the keyboard for a newly focused
+// widget (and on every profile change); before the textfield exists the
+// values are stored and applied at its creation.
+void egui_cr_ios_kb_profile(int kind, int action) {
+    sh_kb_kind = kind;
+    sh_kb_action = action;
+    sh_ios_kb_apply(_sapp.ios.textfield);
+}
+
+// ---------------------------------------------------------------------------
+// Local notification via UNUserNotificationCenter (the iOS counterpart
+// of the desktop notification tools). The first call also requests
+// authorization — iOS shows the permission alert once; a notification
+// fired in the same runloop turn as the request may be dropped, later
+// ones always go through. Fire-and-forget: returns 1 when scheduled.
+#import <UserNotifications/UserNotifications.h>
+
+int egui_cr_notify(const char* title, const char* body) {
+    UNUserNotificationCenter* center = [UNUserNotificationCenter currentNotificationCenter];
+    static BOOL auth_requested = NO;
+    if (!auth_requested) {
+        auth_requested = YES;
+        [center requestAuthorizationWithOptions:
+            (UNAuthorizationOptionAlert | UNAuthorizationOptionSound)
+            completionHandler:^(BOOL granted, NSError* _Null_unspecified err) {
+                (void)granted; (void)err;
+            }];
+    }
+    UNMutableNotificationContent* content = [[UNMutableNotificationContent alloc] init];
+    content.title = [NSString stringWithUTF8String:(title && title[0]) ? title : "egui.cr"];
+    content.body = [NSString stringWithUTF8String:(body && body[0]) ? body : ""];
+    static int seq = 0;
+    UNNotificationRequest* req = [UNNotificationRequest
+        requestWithIdentifier:[NSString stringWithFormat:@"egui-cr-%d", ++seq]
+                       content:content
+                       trigger:nil];
+    [center addNotificationRequest:req withCompletionHandler:nil];
+    return 1;
+}
+#endif // SH_IOS
 
 void egui_cr_request_quit(void) {
 #if defined(SH_IOS)

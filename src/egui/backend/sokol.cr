@@ -210,6 +210,15 @@ lib LibEguiCr
     fun docpick_done = egui_cr_docpick_done : Int32
     fun docpick_take = egui_cr_docpick_take : UInt8*
     fun docpick_free = egui_cr_docpick_free(path : UInt8*)
+
+    # Soft-keyboard profile (TextInputKind / TextInputAction — the iOS
+    # counterpart of the Android IME bridge): applied before the
+    # keyboard comes up so the layout and return key match the widget.
+    fun ios_kb_profile = egui_cr_ios_kb_profile(kind : Int32, action : Int32)
+
+    # Local notification (UNUserNotificationCenter; the iOS counterpart
+    # of notify-send / osascript).
+    fun notify = egui_cr_notify(title : UInt8*, body : UInt8*) : Int32
   {% end %}
 
   # sokol_gl (shim wrappers: on the detached path these become packet
@@ -280,6 +289,8 @@ module Egui
       # On-screen keyboard state (iOS): text focus → show/hide, edge-
       # triggered so sapp_show_keyboard is only called on transitions.
       @@kb_shown = false
+      # Last soft-keyboard profile pushed to the shim ({kind, action}).
+      @@kb_profile = {TextInputKind::Plain, TextInputAction::Done}
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
       @@mono_fonts : Egui::Backend::AtlasFonts? = nil
@@ -699,6 +710,11 @@ module Egui
           # flow needs the export picker + security-scope writes.
           Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
             save ? nil : ios_document_picker(filters)
+          end
+          # UNUserNotificationCenter local notifications (the osascript
+          # tool path obviously does not exist on iOS).
+          Egui::SystemPorts::Notification.use_native do |summary, body|
+            LibEguiCr.notify(summary.to_unsafe, body.to_unsafe) == 1
           end
         {% end %}
 
@@ -1519,10 +1535,20 @@ module Egui
 
         {% if flag?(:ios) %}
           # Text focus drives the on-screen keyboard (sokol's hidden
-          # UITextField → CHAR / KEY events). NOTE: the canvas does
-          # NOT shrink under the keyboard — sokol_app's scene-based
-          # resize path measures the screen, not the view frame — so
-          # keep text fields near the top of the screen.
+          # UITextField → CHAR / KEY events), with the focused widget's
+          # profile (kind/action — same registry the Android IME sync
+          # reads) applied first so the keyboard layout and return key
+          # match the field. NOTE: the canvas does NOT shrink under the
+          # keyboard — sokol_app's scene-based resize path measures the
+          # screen, not the view frame — so keep text fields near the
+          # top of the screen.
+          if (ti = app.ctx.memory.focused_text_input)
+            profile = {ti[:kind], ti[:action]}
+            if profile != @@kb_profile
+              @@kb_profile = profile
+              LibEguiCr.ios_kb_profile(ti[:kind].value, ti[:action].value)
+            end
+          end
           want_kb = app.ctx.memory.focus.wants_text_input?
           if want_kb != @@kb_shown
             @@kb_shown = want_kb
