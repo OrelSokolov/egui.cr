@@ -188,6 +188,7 @@ module Egui
               when 2 # MessageBox confirm
                 if (cb = @@confirm_cb)
                   @@confirm_cb = nil
+                  AsyncDialogs.note_delivered
                   cb.call(r.value == 1)
                 end
               end

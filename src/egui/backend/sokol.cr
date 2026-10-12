@@ -204,9 +204,10 @@ lib LibEguiCr
   fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
 
   {% if flag?(:ios) %}
-    # UIDocumentPickerViewController (shim): the system Files browser.
-    # Same polled-from-a-fiber protocol as the Win32 dialogs above.
-    fun docpick_start = egui_cr_docpick_start(comma_exts : UInt8*) : Int32
+    # UIDocumentPickerViewController (shim): the system Files browser —
+    # mode 0 open / 1 save (export) / 2 pick folder. Same
+    # polled-from-a-fiber protocol as the Win32 dialogs above.
+    fun docpick_start = egui_cr_docpick_start(mode : Int32, comma_exts : UInt8*, default_name : UInt8*) : Int32
     fun docpick_done = egui_cr_docpick_done : Int32
     fun docpick_take = egui_cr_docpick_take : UInt8*
     fun docpick_free = egui_cr_docpick_free(path : UInt8*)
@@ -567,9 +568,10 @@ module Egui
       # System port Clipboard → sokol_app set/get clipboard string. The
       # get goes through the shim's mailbox on the detached path (the X
       # connection lives on the render thread) and returns a malloc'd
-      # copy that we free after building the String. On Android sokol
-      # has no clipboard — the sysport JNI bridge takes over
-      # (ClipboardManager, with a listener-fed native cache for reads).
+      # copy that we free after building the String. On Android and iOS
+      # sokol has no clipboard — the sysport bridges take over
+      # (ClipboardManager with a listener-fed native cache /
+      # UIPasteboard).
       class ClipboardPort < Egui::SystemPorts::Clipboard::Implementation
         # The last text WE set: when the X read fails (a stalled
         # compositor path), fall back to it — the same owner shortcut
@@ -580,6 +582,9 @@ module Egui
           {% if flag?(:android) %}
             @last_set = text
             Egui::SystemPorts::Android.clipboard_set(text)
+          {% elsif flag?(:ios) %}
+            @last_set = text
+            Egui::SystemPorts::Ios.clipboard_set(text)
           {% else %}
             text.to_unsafe # ensure a contiguous buffer
             @last_set = text
@@ -590,6 +595,8 @@ module Egui
         def get : String?
           {% if flag?(:android) %}
             Egui::SystemPorts::Android.clipboard_get || @last_set
+          {% elsif flag?(:ios) %}
+            Egui::SystemPorts::Ios.clipboard_get || @last_set
           {% else %}
             ptr = LibEguiCr.clipboard_get
             return @last_set if ptr.null?
@@ -1073,7 +1080,7 @@ module Egui
         # fiber — blocking it alone is the contract.
         private def self.ios_document_picker(filters : Array(String)) : String?
           exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact.join(",")
-          return nil if LibEguiCr.docpick_start(exts.to_unsafe) != 0
+          return nil if LibEguiCr.docpick_start(0, exts.to_unsafe, "".to_unsafe) != 0
           until LibEguiCr.docpick_done != 0
             sleep 20.milliseconds
           end
@@ -1470,6 +1477,11 @@ module Egui
           # delivered here so a completion forces this frame to be full
           # (same contract as the fiber deliveries below).
           Egui::SystemPorts::Android.pump
+        {% end %}
+        {% if flag?(:ios) %}
+          # MessageBox confirm answers queued by the UIKit run loop —
+          # same contract as the Android ring drain above.
+          Egui::SystemPorts::Ios.pump
         {% end %}
         Egui::SystemPorts::AsyncDialogs.pump_pass
         # Same slot for native reader fibers (PTY sessions) — nil (a

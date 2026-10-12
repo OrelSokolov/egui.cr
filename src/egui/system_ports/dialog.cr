@@ -6,10 +6,11 @@
 # runs the WinForms picker through PowerShell (`System.Windows.Forms` —
 # part of the OS, no extra dependency); the script travels base64-
 # encoded (`-EncodedCommand`) so titles, filters and paths need no
-# quoting gymnastics. iOS opens through UIDocumentPickerViewController
-# (the system Files browser; the pick is copied into the sandbox — no
-# permission entries needed); save/pick-folder fail fast with nil when
-# the backend runner is missing. Android runs the SAF pickers
+# quoting gymnastics. iOS goes through UIDocumentPickerViewController
+# (the system Files browser): open copies the pick into the sandbox, so
+# the returned path needs no permissions; save moves a temp file to
+# the chosen destination and returns that path; pick-folder returns a
+# folder URL (security-scoped). Android runs the SAF pickers
 # (ACTION_OPEN_DOCUMENT &c) through the sysport JNI bridge
 # (system_ports/android.cr) — the result is a content:// URI delivered
 # on a later frame.
@@ -68,6 +69,13 @@ module Egui
           req = AsyncDialogs.start_detached(cb)
           Android.saf_open(Android::SAF_SAVE, title,
                            Android.mime_for(filters), default_name, req)
+        {% elsif flag?(:ios) %}
+          # UIDocumentPickerViewController export mode: the system moves
+          # an empty temp file named `default_name` to the chosen
+          # destination — the callback receives that destination path
+          # (later writes to it may need security scope).
+          AsyncDialogs.start(->{ Ios.document_pick(Ios::PICK_SAVE, "",
+                                                   default_name) }, cb)
         {% else %}
           AsyncDialogs.start(
             ->{ Dialogs.save(title, filters, directory, default_name) }, cb)
@@ -91,6 +99,10 @@ module Egui
           # SAF ACTION_OPEN_DOCUMENT_TREE — a tree content:// URI.
           req = AsyncDialogs.start_detached(cb)
           Android.saf_open(Android::SAF_TREE, title, "*/*", nil, req)
+        {% elsif flag?(:ios) %}
+          # UIDocumentPickerViewController with UTType.folder — a
+          # folder URL (access needs a security-scoped bookmark).
+          AsyncDialogs.start(->{ Ios.document_pick(Ios::PICK_FOLDER, "") }, cb)
         {% else %}
           AsyncDialogs.start(->{ Dialogs.pick_folder(title, directory) }, cb)
         {% end %}
@@ -163,6 +175,13 @@ module Egui
         req.complete
       end
 
+      # Count an out-of-band port delivery — a completion that ran
+      # outside a Request (the MessageBox confirm answers) — so the
+      # backend's idle check still runs a full frame for it.
+      def self.note_delivered : Nil
+        @@delivered += 1
+      end
+
       # True while at least one dialog is open — for spinners etc.
       def self.pending? : Bool
         !@@pending.empty?
@@ -201,8 +220,9 @@ module Egui
       # a platform picker (Win32 IFileDialog via the sokol shim thread —
       # instant, Explorer-native, no PowerShell/.NET startup cost;
       # UIDocumentPickerViewController on iOS — the system Files
-      # browser, open only: the save flow needs the export picker +
-      # security-scope writes, so save stays nil there).
+      # browser, open only here: save and pick-folder go through
+      # system_ports/ios.cr directly, they have no filter/directory
+      # plumbing to share).
       # Called inside the AsyncDialogs worker fiber: it may block that
       # fiber alone. Installed only on win32 and iOS; nil = headless
       # build → the fail-fast/PowerShell fallbacks take over.

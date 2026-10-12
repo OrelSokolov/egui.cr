@@ -215,6 +215,55 @@
   (text_input с мигающим каретом — каждая перерисовка инвалидирует
   layer и повышает шанс GCD-display).
 
+## Phase 4b — системные порты: паритет с android-system-ports ✅
+
+Зеркально фазе 7 Android-плана: каждый системный порт, который есть у
+Android-ветки, работает и на iOS (`src/egui/system_ports/ios.cr` —
+UIKit-мост вместо JNI; тот же паттерн доставки «результат из ОС падает
+в статику, `#pump` в `Sokol#on_frame` (рядом с Android-ring) доставляет
+между кадрами», но без мьютекс-ринга — приложение однопоточное,
+callback'и UIKit приходят между кадрами).
+
+- **clipboard**: sokol на iOS не имеет буфера → `UIPasteboard` в шиме
+  (`egui_cr_ios_clipboard_set/get`), ClipboardPort ветвится как на
+  Android.
+- **MessageBox**: `UIAlertController` над `_sapp.ios.view_ctrl`;
+  info/warning/error — один OK; confirm — OK+Cancel, ответ через
+  статику `egui_cr_ios_msgbox_take` → `Ios.pump` → callback;
+  `AsyncDialogs.note_delivered` форсирует полный кадр (добавлен и в
+  Android-pump — там confirm-ответы тоже не поднимали кадр).
+- **OpenUrl**: `[[UIApplication sharedApplication] openURL:]` без
+  canOpenURL (требует LSApplicationQueriesSchemes; без handlers система
+  сама сообщает). RevealInFolder/FileOpen — false (нет файлового
+  менеджера для песочницы).
+- **Диалоги**: docpick получил режимы — open (asCopy, как раньше), save
+  (export-пикер: пустой temp-файл с default_name система ПЕРЕНОСИТ в
+  выбранное место — колбэк получает путь; последующая запись может
+  требовать security scope), folder (`UTType.folder`, asCopy:NO).
+  Путь через AsyncDialogs worker-fiber (sleep-poll), как open.
+- **UserDirs**: без правок — `flag?(:darwin)` истинен на iOS, а
+  ENV["HOME"]/Documents/Library в песочнице совпадают с нужным.
+- **read_uri_text**: не нужен — пикер asCopy кладёт файл в песочницу,
+  обычный `File.read`.
+- **Контекстное меню текста** (Copy/Cut/Paste/Select All) —
+  кроссплатформенное из android-ветки, работает поверх clipboard-порта.
+
+Демо: `examples/ios_demo.cr` (зеркало `android_demo.cr` по секциям) +
+`tmp/ios/phase4/build_demo.sh` (бандл `cr.egui.iosdemo`; Info.plist
+копировать из Info_demo.plist, не тащить исходное имя).
+
+Верификация без тапов (simctl не умеет инъекцию тачей, accessibility
+закрыт): `tmp/ios/phase4/demo_auto.cr` — ENV["EGUI_AUTO"] дёргает порт
+на первом кадре; булевы режимы красят панель в зелёный/красный,
+модальные проверяются по системному UI на скриншоте
+(`check_shot.py`). Результаты (iPhone 17 Pro, simulator):
+clipboard PASS (зелёная панель, раундтрип UIPasteboard), url PASS
+(Safari открылся, процесс mobilesafari жив), msgbox PASS (белый алерт
+~185 на затемнённом 18 фоне), confirm PASS (тот же алерт),
+open/save PASS (Files-пикер, 97% светлого), folder PASS (пикер
+показан). Спеки: 665 examples, 0 failures (3 ошибки font_cuts —
+pre-existing на b54289e, окружение Noto Sans).
+
 ## Phase 5 — устройство и полировка (не начата)
 
 - Таргет `arm64-apple-ios` (устройство), подпись, provisioning.

@@ -8,7 +8,10 @@
 # out to `xdg-open`, macOS to `open` / `open -R`. Android resolves the
 # URL through an ACTION_VIEW Intent (sysport JNI bridge); FileOpen and
 # RevealInFolder would need content:// URIs through a FileProvider
-# manifest declaration — not wired (returns false). The call blocks only
+# manifest declaration — not wired (returns false). iOS opens URLs
+# through UIApplication (UIKit bridge); RevealInFolder/FileOpen have no
+# iOS counterpart (no user-visible file manager for sandbox paths) —
+# not wired (returns false). The call blocks only
 # for the launcher itself, not for the app it spawns.
 
 module Egui
@@ -28,6 +31,8 @@ module Egui
       def self.show(url : String) : Bool
         {% if flag?(:win32) %}
           Shell.execute("open", url)
+        {% elsif flag?(:ios) %}
+          Ios.open_url(url)
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", [url])
@@ -49,6 +54,10 @@ module Egui
           # immediately with a meaningless code — only the spawn counts.
           return false unless Dialogs.which("explorer")
           Dialogs.spawn("explorer", ["/select,#{File.expand_path(path)}"])
+        {% elsif flag?(:ios) %}
+          # No user-visible file manager exists for sandbox paths —
+          # see the module comment.
+          false
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", ["-R", File.expand_path(path)])
@@ -71,6 +80,10 @@ module Egui
         path = File.expand_path(path)
         {% if flag?(:win32) %}
           Shell.execute("open", path)
+        {% elsif flag?(:ios) %}
+          # No default-app dispatch for sandbox files — see the module
+          # comment.
+          false
         {% elsif flag?(:darwin) %}
           return false unless Dialogs.which("open")
           Dialogs.run?("open", [path])

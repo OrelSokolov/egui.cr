@@ -5258,29 +5258,51 @@ didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
 }
 @end
 
-// Present the Files picker; comma_exts is a comma-separated extension
-// list ("png,jpg") or NULL/"" for any file. 0 = presented, -1 = busy or
-// no view controller yet (too early in app lifecycle).
-int egui_cr_docpick_start(const char* comma_exts) {
+// Present the Files picker. mode: 0 = open (asCopy — the pick lands in
+// the sandbox, no security scope needed), 1 = save (the export picker:
+// an empty temp file named default_name is MOVED to the chosen
+// destination — the returned path is where the app should treat as
+// saved; later writes to it may need security scope), 2 = pick folder
+// (a folder URL, access needs a security-scoped bookmark). comma_exts
+// is a comma-separated extension list ("png,jpg") or NULL/"" for any
+// file (open mode only). 0 = presented, -1 = busy or no view
+// controller yet (too early in app lifecycle).
+int egui_cr_docpick_start(int mode, const char* comma_exts,
+                          const char* default_name) {
     if (sh_docpick_state == 1) return -1;
     if (nil == _sapp.ios.view_ctrl) return -1;
     if (nil == sh_docpick_dlg) sh_docpick_dlg = [[sh_docpick_delegate alloc] init];
     free(sh_docpick_path);
     sh_docpick_path = NULL;
     sh_docpick_state = 1;
-    NSMutableArray<UTType*>* types = [NSMutableArray array];
-    if (comma_exts && comma_exts[0]) {
-        char* dup = strdup(comma_exts);
-        for (char* tok = strtok(dup, ","); tok; tok = strtok(NULL, ",")) {
-            UTType* t = [UTType typeWithFilenameExtension:
-                                [NSString stringWithUTF8String:tok]];
-            if (t) [types addObject:t];
+    UIDocumentPickerViewController* picker = nil;
+    if (mode == 1) { // save: export an empty temp file under default_name
+        NSString* name = [NSString stringWithUTF8String:
+            (default_name && default_name[0]) ? default_name : "untitled.txt"];
+        NSString* tmp = [NSTemporaryDirectory() stringByAppendingPathComponent:name];
+        [[NSFileManager defaultManager] removeItemAtPath:tmp error:nil];
+        [[NSFileManager defaultManager] createFileAtPath:tmp
+            contents:[NSData data] attributes:nil];
+        picker = [[UIDocumentPickerViewController alloc]
+            initForExportingURLs:@[[NSURL fileURLWithPath:tmp]] asCopy:NO];
+    } else if (mode == 2) { // pick folder
+        picker = [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:@[[UTType folder]] asCopy:NO];
+    } else { // open
+        NSMutableArray<UTType*>* types = [NSMutableArray array];
+        if (comma_exts && comma_exts[0]) {
+            char* dup = strdup(comma_exts);
+            for (char* tok = strtok(dup, ","); tok; tok = strtok(NULL, ",")) {
+                UTType* t = [UTType typeWithFilenameExtension:
+                                    [NSString stringWithUTF8String:tok]];
+                if (t) [types addObject:t];
+            }
+            free(dup);
         }
-        free(dup);
+        if (types.count == 0) [types addObject:[UTType data]]; // any file
+        picker = [[UIDocumentPickerViewController alloc]
+            initForOpeningContentTypes:types asCopy:YES];
     }
-    if (types.count == 0) [types addObject:[UTType data]]; // any file
-    UIDocumentPickerViewController* picker =
-        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
     picker.delegate = sh_docpick_dlg;
     [_sapp.ios.view_ctrl presentViewController:picker animated:YES completion:nil];
     return 0;
@@ -5300,5 +5322,70 @@ char* egui_cr_docpick_take(void) {
 }
 
 void egui_cr_docpick_free(char* s) { free(s); }
+
+// ---------------------------------------------------------------------------
+// iOS system ports (the UIKit counterpart of the Android sysport section
+// above): clipboard (sokol_app has none on iOS), MessageBox via
+// UIAlertController, OpenUrl via UIApplication. The app is
+// single-threaded — UIKit delegate callbacks land between frames on the
+// main run loop, so results travel through plain statics polled by
+// Sokol#on_frame (SystemPorts::Ios.pump), no mutex ring needed.
+int egui_cr_ios_clipboard_set(const char* utf8) {
+    [UIPasteboard generalPasteboard].string =
+        [NSString stringWithUTF8String:utf8 ? utf8 : ""];
+    return 1;
+}
+
+char* egui_cr_ios_clipboard_get(void) {
+    NSString* s = [UIPasteboard generalPasteboard].string;
+    if (nil == s || s.length == 0) return NULL;
+    const char* utf8 = s.UTF8String;
+    return utf8 ? strdup(utf8) : NULL;
+}
+
+int egui_cr_ios_open_url(const char* url) {
+    NSURL* u = [NSURL URLWithString:[NSString stringWithUTF8String:url ? url : ""]];
+    if (nil == u) return 0;
+    // No canOpenURL: it needs LSApplicationQueriesSchemes entries; the
+    // system itself reports "cannot open" when no handler exists.
+    [[UIApplication sharedApplication] openURL:u options:@{}
+                             completionHandler:nil];
+    return 1;
+}
+
+static int sh_msgbox_answer = 0; // 0 none yet, 1 OK, 2 Cancel
+
+// Present an alert over sokol's view controller. With confirm the box
+// carries OK + Cancel and the pressed button lands in sh_msgbox_answer
+// (drained via egui_cr_ios_msgbox_take between frames); without it a
+// single OK button, fire-and-forget.
+void egui_cr_ios_msgbox(const char* title, const char* msg, int confirm) {
+    if (nil == _sapp.ios.view_ctrl) return;
+    sh_msgbox_answer = 0;
+    UIAlertController* alert = [UIAlertController
+        alertControllerWithTitle:[NSString stringWithUTF8String:title ? title : ""]
+                         message:[NSString stringWithUTF8String:msg ? msg : ""]
+                  preferredStyle:UIAlertControllerStyleAlert];
+    void (^ok)(UIAlertAction*) = ^(UIAlertAction* _unused) {
+        (void)_unused; sh_msgbox_answer = 1;
+    };
+    [alert addAction:[UIAlertAction actionWithTitle:@"OK"
+                                              style:UIAlertActionStyleDefault
+                                            handler:ok]];
+    if (confirm) {
+        [alert addAction:[UIAlertAction actionWithTitle:@"Cancel"
+                                                  style:UIAlertActionStyleCancel
+                                                handler:^(UIAlertAction* _unused) {
+                                                    (void)_unused; sh_msgbox_answer = 2;
+                                                }]];
+    }
+    [_sapp.ios.view_ctrl presentViewController:alert animated:YES completion:nil];
+}
+
+int egui_cr_ios_msgbox_take(void) {
+    int a = sh_msgbox_answer;
+    if (a) sh_msgbox_answer = 0;
+    return a;
+}
 #endif // SH_IOS
 #endif

@@ -9,6 +9,8 @@
 # confirm answer — delivered by the OS on its UI thread — can only
 # return through the callback overload of #confirm (use it on Android;
 # the blocking #confirm there shows the dialog but returns false).
+# iOS is the same shape through the UIKit bridge (UIAlertController:
+# the button press lands between frames via SystemPorts::Ios.pump).
 # Like the file dialogs, the call blocks (modal): the frame loop
 # freezes until the user dismisses the box.
 
@@ -42,6 +44,8 @@ module Egui
       def self.info(message : String, title : String = "Information") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONINFO)
+        {% elsif flag?(:ios) %}
+          Ios.msgbox(title, message)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "note", false)
         {% elsif flag?(:android) %}
@@ -59,6 +63,8 @@ module Egui
       def self.warning(message : String, title : String = "Warning") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONWARNING)
+        {% elsif flag?(:ios) %}
+          Ios.msgbox(title, message)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "caution", false)
         {% elsif flag?(:android) %}
@@ -76,6 +82,8 @@ module Egui
       def self.error(message : String, title : String = "Error") : Nil
         {% if flag?(:win32) %}
           win32_box(message, title, MB_ICONERROR)
+        {% elsif flag?(:ios) %}
+          Ios.msgbox(title, message)
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "stop", false)
         {% elsif flag?(:android) %}
@@ -90,14 +98,18 @@ module Egui
       end
 
       # Yes/no question; true only when the user confirms. False on
-      # cancel or when no dialog tool is available. On Android this only
-      # SHOWS the dialog — the answer cannot return synchronously (the
-      # OS delivers it on the UI thread; blocking the frame loop would
-      # stall input dispatch → ANR); use the callback overload below.
+      # cancel or when no dialog tool is available. On Android and iOS
+      # this only SHOWS the dialog — the answer cannot return
+      # synchronously (the OS delivers it on the UI thread; blocking
+      # the frame loop would stall input dispatch → ANR); use the
+      # callback overload below.
       def self.confirm(message : String, title : String = "Confirm") : Bool
         {% if flag?(:win32) %}
           LibUser32.MessageBoxW(LibUser32.GetActiveWindow,
             message.to_utf16, title.to_utf16, MB_YESNO) == IDYES
+        {% elsif flag?(:ios) %}
+          Ios.confirm_box(title, message)
+          false
         {% elsif flag?(:darwin) %}
           Dialogs.mac_display_dialog(message, title, "question", true)
         {% elsif flag?(:android) %}
@@ -113,15 +125,21 @@ module Egui
       end
 
       # Non-blocking confirm: `on_result` fires with the answer. On
-      # Android the native dialog is asynchronous by nature — the
-      # callback lands between frames via the sysport ring; on the
-      # desktop platforms this wraps the blocking #confirm and calls
-      # back immediately. (Two defs, not an {% if %} inside one: block
-      # arguments don't resolve through in-method macro branches.)
+      # Android and iOS the native dialog is asynchronous by nature —
+      # the callback lands between frames via the sysport ring / UIKit
+      # drain; on the desktop platforms this wraps the blocking
+      # #confirm and calls back immediately. (Two defs, not an
+      # {% if %} inside one: block arguments don't resolve through
+      # in-method macro branches.)
       {% if flag?(:android) %}
         def self.confirm(message : String, title : String = "Confirm",
                          &on_result : Bool ->) : Nil
           Android.confirm_async(title, message) { |ok| on_result.call(ok) }
+        end
+      {% elsif flag?(:ios) %}
+        def self.confirm(message : String, title : String = "Confirm",
+                         &on_result : Bool ->) : Nil
+          Ios.confirm_async(title, message) { |ok| on_result.call(ok) }
         end
       {% else %}
         def self.confirm(message : String, title : String = "Confirm",
