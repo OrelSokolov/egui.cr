@@ -8,7 +8,15 @@
 
 | macOS | Windows | Linux | Android | iOS |
 |---|---|---|---|---|
-| ✓ | ✓ | ✓ | ✗ | ✗ |
+| ✓ | ✓ | ✓ | ✓ | ✓ |
+
+One framework, one `update(ctx)` — five platforms. Desktop builds are a
+plain `crystal build` (Cocoa / Win32 / X11 through sokol_app); Android
+and iOS run the same core on the mobile toolchains (JNI / UIKit
+bridges) with the full system-port surface: soft keyboard (IME
+kind/action), clipboard, native file pickers, message boxes,
+notifications, URL opening and user directories. See
+[Android](#android) and [iOS](#ios) below.
 
 **Beautiful UI is already here.** A framework for beautiful UIs in
 Crystal — inspired by [egui](https://github.com/emilk/egui)'s
@@ -20,6 +28,7 @@ architecture (Rust) and its ideas, not a port of it.
 | **Immediate mode** | egui-style per-frame UI: declare widgets every frame, state lives in your app |
 | **CSS cascade** | dotted-path style classes (`sidebar.tab`) with state overlays (`:hover`, `:selected`), resolved like the CSS cascade |
 | **Widget Inspector** | right-click any widget to restyle it live — per-element overrides and class rules with `:hover`/`:active` states — then export the tweaks as `ctx.set_id_style(...)` / `ctx.stylesheet.rule(...)` snippets |
+| **System ports** | clipboard, file dialogs (Explorer / Files / SAF), message boxes, notifications, OpenUrl, user dirs — native per OS: Win32, osascript, JNI, UIKit |
 | **Font renderer** | [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — our pure-Crystal FreeType port (SFNT, TrueType hinting, ftgrays) |
 | **SVG renderer** | [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — our pure-Crystal NanoSVG port (fills, gradients, transforms, dashes) |
 | **Rendering backend** | [sokol_gfx](https://github.com/floooh/sokol) — window + GPU; the only native dependency |
@@ -141,6 +150,52 @@ Differences from the Linux build:
 - system ports shell out to `osascript`/`open` (dialogs, message
   boxes, notifications, URL opening, user dirs) and manage the window
   through AppKit (NSWindow/NSScreen from the ObjC shim)
+
+### Android
+
+The same core runs as an Android NativeActivity app: sokol's GLES
+backend on a Java activity (`tmp/android/java/…/EguiCrActivity.java`)
+with a JNI bridge for everything the OS delivers — soft keyboard (IME
+kind/action profiles), clipboard, SAF file pickers (open / save /
+folder, results land between frames through a mutex ring drained by
+the frame loop), AlertDialog message boxes with async confirm,
+NotificationManager notifications, ACTION_VIEW URL opening and the
+user directories. Canvas drag-to-scroll follows the finger (upstream
+egui touch semantics).
+
+```bash
+ANDROID_PLATFORM=33 crystal build --cross-compile \
+  --target=aarch64-linux-android -o android_demo.o examples/android_demo.cr
+tmp/android/build_apk.sh android_demo.o     # APK + install + launch
+```
+
+`examples/android_demo.cr` exercises every port on one scrollable
+sheet (it builds and runs on the desktop too). The port was
+device-verified on real hardware; the full story lives in
+`ANDROID_SUPPORT_PLAN.md`.
+
+### iOS
+
+The UIKit counterpart: sokol's GLES3 backend on a UIScene with a
+patched iOS Crystal toolchain (`tmp/crystal-ios`). The system ports
+mirror Android one-to-one through a UIKit bridge
+(`src/egui/system_ports/ios.cr`): soft keyboard with kind/action
+profiles, UIPasteboard clipboard, UIDocumentPickerViewController
+dialogs (open copies into the sandbox; save moves a temp file to the
+chosen destination; folder pick via `public.folder`),
+UIAlertController message boxes with between-frames confirm answers,
+UNUserNotificationCenter notifications (shown even while the app is
+foreground), UIApplication URL opening, and the sandbox user dirs.
+
+```bash
+# simulator app bundle (cr.egui.iosdemo) — build, install, launch
+tmp/ios/phase4/build_demo.sh
+```
+
+`examples/ios_demo.cr` mirrors the Android demo section by section.
+Verified end-to-end in the iOS simulator (iPhone 17 Pro): every port
+above, tap-free e2e harness included; the on-device step (signing,
+Metal renderer) is tracked in `plans/IOS_SUPPORT_PLAN.md`.
 
 ## Screenshots
 
@@ -298,12 +353,18 @@ with speed/wireframe controls.
 
 ## Status
 
-Core frame loop (RawInput → begin_frame → app update → end_frame →
-paint), `Id`/`Memory` interaction tracking, `Ui` with vertical/horizontal
-layout, `Label` and `Button` widgets, sokol_app window + sokol_gfx
-rendering, and the pure-Crystal text stack (freetype-cr with TrueType
-hinting; C-FFI FreeType as an opt-in dev accelerator). See
-`docs/ANALYSIS.md` for the full upstream map and what is next.
+Cross-platform core, shipped: frame loop (RawInput → begin_frame →
+app update → end_frame → paint), `Id`/`Memory` interaction tracking,
+`Ui` with vertical/horizontal layout, the full widget set (text edit
+with context menu, textarea, sliders, combos, menus, scroll areas
+with kinetic drag, tables, terminal, 3D viewport, …), the reactive
+layer, the CSS cascade, routing/modals, and the pure-Crystal text
+stack (freetype-cr with TrueType hinting; C-FFI FreeType as an opt-in
+dev accelerator). Desktop: Linux/X11, Windows/Win32, macOS/Cocoa.
+Mobile: Android (GLES, JNI system ports, device-verified) and iOS
+(GLES3, UIKit system ports, simulator-verified; on-device is tracked
+in `plans/IOS_SUPPORT_PLAN.md`). See `docs/ANALYSIS.md` for the
+upstream map and what is next.
 
 ## License
 
