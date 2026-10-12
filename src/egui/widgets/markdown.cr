@@ -36,6 +36,13 @@ module Egui
     # Default horizontal reading padding (the text never touches the
     # window edges); override per widget with `pad_x:`.
     DEFAULT_PAD_X = 10.0
+    # Body line-height (GitHub's `body { line-height: 1.5 }`): the roomy
+    # line box is what lets the inline-code chip (1.4em tall) sit inside
+    # the line instead of filling it edge to edge.
+    BODY_LINE_H = 1.5
+    # Headings keep it tighter (GitHub h1/h2 ≈ 1.25) — the large type
+    # already carries enough air.
+    HEADING_LINE_H = 1.25
     # Default page background — white, a reader page. nil via
     # `background: nil` disables it (transparent over the panel).
     DEFAULT_BG = Color32.rgba(255, 255, 255, 255)
@@ -463,7 +470,8 @@ module Egui
         ui.cursor = Pos2.new(ui.cursor.x, ui.cursor.y + 20.0) if block.level == 1
         top = ui.cursor
         ui.add(text_label(
-          RichText.new(block.text).size(style.font_size * scale).bold))
+          RichText.new(block.text).size(style.font_size * scale).bold,
+          true, HEADING_LINE_H))
         # GitHub-style: H1/H2 carry a rule under the heading text.
         if block.level <= 2
           y = ui.cursor.y - style.spacing.item_spacing.y
@@ -489,15 +497,18 @@ module Egui
     end
 
     # Every text block goes through here: a RichLabel with this
-    # widget's link handler wired in.
-    private def text_label(text : String, wrap : Bool? = true) : RichLabel
-      label = RichLabel.new(text, wrap: wrap)
+    # widget's link handler wired in. `lh` is the line-height factor
+    # (body default; headings pass 1.25).
+    private def text_label(text : String, wrap : Bool? = true,
+                           lh : Float64? = BODY_LINE_H) : RichLabel
+      label = RichLabel.new(text, wrap: wrap, line_height: lh)
       label.link_handler = ->open_link(String)
       label
     end
 
-    private def text_label(rich : RichText, wrap : Bool? = true) : RichLabel
-      label = RichLabel.new(rich, wrap: wrap)
+    private def text_label(rich : RichText, wrap : Bool? = true,
+                           lh : Float64? = BODY_LINE_H) : RichLabel
+      label = RichLabel.new(rich, wrap: wrap, line_height: lh)
       label.link_handler = ->open_link(String)
       label
     end
@@ -598,8 +609,8 @@ module Egui
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       fonts = ui.ctx.fonts_for(style.font_family)
       rich = RichText.new(block.text).code
-      # 14px monospace at the default 16px body (0.875 — the same
-      # ratio as inline code chips).
+      # 14px monospace at the default 16px body (0.875 — fenced blocks
+      # stay a notch smaller than the now-15px inline chips).
       rich = rich.size(style.font_size * 0.875)
       preset =
         if (tokens = Markdown.tokens_cached(block.text, block.lang))
@@ -628,10 +639,10 @@ module Egui
     # auto-layout, wrapped cells, full borders); header row bold.
     private def render_table(ui : Ui, block : Block, style : Style) : Nil
       rows = block.text.split('\n').map(&.split("\x1F"))
-      TableTextRenderer.new(rows).render(ui, style) do |text, header|
+      TableTextRenderer.new(rows).render(ui, style, BODY_LINE_H) do |text, header|
         rich = RichText.new(text)
         rich.bold if header
-        text_label(rich, true)
+        text_label(rich)
       end
     end
 

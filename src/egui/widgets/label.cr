@@ -28,27 +28,35 @@ module Egui
     getter rich : RichText
     getter wrap : Bool?
     getter? userselect : Bool
+    # Line-height multiplier for the galley (nil = Fonts::LINE_H_FACTOR).
+    # Paragraph-style labels (markdown body) pass a roomier factor so
+    # decorated runs (the inline-code chip) fit inside the line box.
+    property line_height : Float64?
     # Preset layout runs (markdown syntax highlighting: one TextRun per
     # token). When set they replace `rich.runs` verbatim — the RichText
     # only carries the plain text (selection/measure fallback).
     getter preset_runs : Array(TextRun)?
 
     def initialize(text : String, size : Float64? = nil, wrap : Bool? = nil,
-                   userselect : Bool = true, id : String? = nil)
+                   userselect : Bool = true, id : String? = nil,
+                   line_height : Float64? = nil)
       @rich = RichText.new(text)
       @rich.size(size) if size
       @wrap = wrap
       @userselect = userselect
       @id_name = id
+      @line_height = line_height
       @preset_runs = nil
     end
 
     def initialize(@rich : RichText, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil,
-                   @preset_runs : Array(TextRun)? = nil)
+                   @preset_runs : Array(TextRun)? = nil,
+                   line_height : Float64? = nil)
       @wrap = wrap
       @userselect = userselect
       @id_name = id
+      @line_height = line_height
     end
 
     # Text-decoration chainables (the `Hyperlink#underline` parity):
@@ -123,7 +131,7 @@ module Egui
       # drawing; the base runs measure through the weight-resolved
       # stack (`fonts` above — a real cut face when one matched).
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
-      galley = fonts.layout(runs, max_width, resolve)
+      galley = fonts.layout(runs, max_width, resolve, @line_height)
 
       rect = ui.allocate_at_least(
         galley.size + Vec2.new(pad.horizontal, pad.vertical))
@@ -171,6 +179,12 @@ module Egui
                                  fonts : Fonts, face_family : String?,
                                  style : Style) : Nil
       ctx = ui.ctx
+      # Run stacks for caret/selection geometry: x_at must measure
+      # each run's slice through ITS stack (code blocks draw mono
+      # preset runs) or the highlight drifts off the drawn glyphs.
+      resolve = ->(family : String?, bold : Bool, italic : Bool) {
+        ctx.fonts_for(family, bold, italic)
+      }
       anchor_id = id.child(0x5EED_u64)
       # The anchor cell has no #interact of its own — mark it used or
       # end-frame pruning drops the selection every frame.
@@ -204,19 +218,19 @@ module Egui
          (pos = ctx.input.pointer_pos)
         if response.double_clicked?
           cursor, anchor = word_range(flat,
-            cursor_at(galley, row_starts, rect, pos, fonts))
+            cursor_at(galley, row_starts, rect, pos, fonts, resolve))
         else
-          cursor = anchor = cursor_at(galley, row_starts, rect, pos, fonts)
+          cursor = anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
         end
       end
       # Drag-select: the anchor stays where the press put it, the
       # caret follows the pointer (a drag with no prior press anchors
       # here).
       if response.drag_started? && (pos = ctx.input.pointer_pos) && anchor == -1
-        anchor = cursor_at(galley, row_starts, rect, pos, fonts)
+        anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
       end
       if response.dragged? && (pos = ctx.input.pointer_pos)
-        cursor = cursor_at(galley, row_starts, rect, pos, fonts)
+        cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
       end
 
       # Ctrl+C copies the selection — only while no widget holds
@@ -234,31 +248,33 @@ module Egui
       ctx.memory.data.set_int(anchor_id, anchor)
 
       visuals = style.visuals
+      # Selection strips (index, x0, x1) — paint_galley lays them
+      # between backgrounds and glyphs (same as RichLabel).
+      sel = nil
       if anchor >= 0 && anchor != cursor && !flat.empty?
         sel_min = {cursor, anchor}.min
         sel_max = {cursor, anchor}.max
+        segs = [] of Tuple(Int32, Float64, Float64)
         galley.rows.each_with_index do |row, i|
           row_start = row_starts[i]
           lo = {sel_min, row_start}.max
           hi = {sel_max, row_start + row.text.size}.min
           if lo < hi
-            x0 = galley.x_at(i, lo - row_start, fonts)
-            x1 = galley.x_at(i, hi - row_start, fonts)
-            ui.painter.rect(Rect.from_min_size(
-              Pos2.new(rect.left + x0, rect.top + row.y + 1.0),
-              Vec2.new(x1 - x0, row.height - 2.0)),
-              0.0, visuals.selection_fill)
+            segs << {i, galley.x_at(i, lo - row_start, fonts, resolve),
+                     galley.x_at(i, hi - row_start, fonts, resolve)}
           end
         end
+        sel = segs unless segs.empty?
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) })
+        face_family, resolve, sel, visuals.selection_fill)
     end
 
     # Byte index of the pointer inside the flattened row text: the row
     # under the pointer (y), then the nearest x boundary within it.
     private def cursor_at(galley : Galley, row_starts : Array(Int32),
-                          rect : Rect, pos : Pos2, fonts : Fonts) : Int32
+                          rect : Rect, pos : Pos2, fonts : Fonts,
+                          resolve : (String?, Bool, Bool) -> Fonts) : Int32
       return 0 if galley.rows.empty?
       local_x = pos.x - rect.left
       local_y = pos.y - rect.top
@@ -273,7 +289,7 @@ module Egui
       best = text.size
       text.size.times do |i|
         best = i
-        break if galley.x_at(row_index, i, fonts) >= local_x
+        break if galley.x_at(row_index, i, fonts, resolve) >= local_x
       end
       row_starts[row_index] + best
     end

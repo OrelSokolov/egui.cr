@@ -19,6 +19,14 @@ module Egui
 
     abstract def measure(text : String, size : Float64) : Vec2
 
+    # {ascender, descender} in px at a size (descender negative) — the
+    # baseline geometry `#layout` bakes into each row. The estimate here
+    # (em = 1.3×size) matches MonospaceFonts#measure's height; real
+    # stacks override it with the face's metrics (AtlasFonts).
+    def metrics_at(size : Float64) : {Float64, Float64}
+      {size, -size * 0.3}
+    end
+
     # Memoized `measure` for STATIC text (label-like widgets — see
     # AtlasFonts#measure_cached for the cache design). The base class
     # and every non-AtlasFonts backend just measure; only the real
@@ -73,10 +81,11 @@ module Egui
       getter family : String?
       getter? bold : Bool
       getter? italic : Bool
+      getter line_height : Float64?
       getter galley : Galley
 
       def initialize(@text, @size, @max_width, @color, @underline,
-                     @family, @bold, @italic, @galley)
+                     @family, @bold, @italic, @line_height, @galley)
       end
     end
 
@@ -88,9 +97,13 @@ module Egui
     # family (inline monospace code) or a real variant face MEASURE
     # through that stack; nil measures everything through `self` (the
     # historical behavior — fine when no run carries a family/variant).
+    # `line_height` nil = the LINE_H_FACTOR default; a paragraph-style
+    # label passes a roomier factor (markdown body: 1.5) so decorated
+    # runs (the inline-code chip) fit inside the line box.
     def layout(runs : Array(TextRun),
                max_width : Float64? = nil,
-               resolve : ((String?, Bool, Bool) -> Fonts)? = nil) : Galley
+               resolve : ((String?, Bool, Bool) -> Fonts)? = nil,
+               line_height : Float64? = nil) : Galley
       if runs.size == 1
         run = runs.first
         # The style rides the key: run color and underline are baked
@@ -100,7 +113,8 @@ module Egui
           if e.size == run.size && e.max_width == max_width &&
              e.text == run.text && e.color == run.color &&
              e.underline? == run.underline? && e.family == run.family &&
-             e.bold? == run.bold? && e.italic? == run.italic?
+             e.bold? == run.bold? && e.italic? == run.italic? &&
+             e.line_height == line_height
             Egui::Bench.count("fonts.layout.hit")
             hit = e.galley
             @layout_cache.delete(e)
@@ -109,32 +123,48 @@ module Egui
           end
         end
         Egui::Bench.count("fonts.layout.miss")
-        galley = Egui::Bench.span("Fonts#layout(miss)") { build_galley(runs, max_width, resolve) }
+        galley = Egui::Bench.span("Fonts#layout(miss)") { build_galley(runs, max_width, resolve, line_height) }
         {% if env("EGUI_LAYOUT_DEBUG") %}
           STDERR.puts "layout MISS bytes=#{run.text.bytesize} size=#{run.size} mw=#{max_width}"
         {% end %}
         @layout_cache.shift if @layout_cache.size >= LAYOUT_CACHE_MAX
         @layout_cache << LayoutCacheEntry.new(
           run.text, run.size, max_width, run.color, run.underline?,
-          run.family, run.bold?, run.italic?, galley)
+          run.family, run.bold?, run.italic?, line_height, galley)
         galley
       else
-        build_galley(runs, max_width, resolve)
+        build_galley(runs, max_width, resolve, line_height)
       end
     end
 
     private def build_galley(runs : Array(TextRun),
                              max_width : Float64?,
-                             resolve : ((String?, Bool, Bool) -> Fonts)?) : Galley
-      state = WrapState.new(self, max_width, resolve)
+                             resolve : ((String?, Bool, Bool) -> Fonts)?,
+                             line_height : Float64?) : Galley
+      state = WrapState.new(self, max_width, resolve, line_height)
 
+      # Chip padding boundaries: entering a backgrounded-run streak
+      # reserves its left pad (sized by the chip run), leaving reserves
+      # the right pad (sized by the LAST chip run — the chip's size,
+      # not the following prose's). A streak running to EOF owes its
+      # right margin after the loop.
+      prev_bg = false
+      last_bg_run : TextRun? = nil
       tokenize(runs).each do |text, run, kind|
+        bg = !run.background.nil?
+        if bg != prev_bg
+          margin_run = bg ? run : last_bg_run
+          state.add_margin(margin_run.not_nil!) if margin_run
+          last_bg_run = bg ? run : nil
+          prev_bg = bg
+        end
         case kind
         when :break  then state.break_row
         when :space  then state.add_space(text, run)
         when :word   then state.add_word(text, run)
         end
       end
+      state.add_margin(last_bg_run.not_nil!) if last_bg_run
       state.flush
 
       Galley.new(state.rows)
@@ -156,12 +186,18 @@ module Egui
       property width = 0.0
       property height = 0.0
       property y = 0.0
+      # Union em-box of the tokens buffered for the row to be emitted:
+      # max ascent / deepest descent across their stacks. Empty row →
+      # {0, 0} → ascent = height/2 (the old row-center anchor).
+      property asc = 0.0
+      property desc = 0.0
       # Whether the row to be emitted sits right after a '\n' break
       # (blank lines emit empty rows so byte offsets stay mappable).
       property newline_before = false
 
       def initialize(@fonts : Fonts, @max_width : Float64?,
-                     @resolve : ((String?, Bool, Bool) -> Fonts)?)
+                     @resolve : ((String?, Bool, Bool) -> Fonts)?,
+                     @line_height : Float64?)
       end
 
       # The stack a token measures through: the run's family + variant
@@ -193,26 +229,60 @@ module Egui
       end
 
       private def emit_row : Nil
-        height = (@height > 0 ? @height : 16.0) * LINE_H_FACTOR
-        @rows << build_row(@tokens, @y, height, @newline_before)
+        height = (@height > 0 ? @height : 16.0) *
+                 (@line_height || LINE_H_FACTOR)
+        # Shared baseline of the row, from the union em-box (max ascent
+        # to deepest descent over the row's runs). Two distributions:
+        # an EXPLICIT line_height means paragraph-style layout — the
+        # extra leading splits half above / half below the em box
+        # (CSS/GitHub half-leading), so text and its decorations (the
+        # inline-code chip) sit centered in the roomy line box; the
+        # default keeps the legacy geometry (em box centered on the row
+        # center, baseline below it) so tight rows everywhere render
+        # pixel-identically to before. Either way mixed rows (inline
+        # code) align on ONE baseline instead of per-font centers.
+        em = @asc - @desc
+        ascent = @line_height ? (height - em) / 2.0 + @asc
+                              : (height + em) / 2.0
+        @rows << build_row(@tokens, @y, height, ascent, @newline_before)
         @y += height
         @tokens = [] of Token
         @width = 0.0
         @height = 0.0
+        @asc = 0.0
+        @desc = 0.0
         @newline_before = false
       end
 
       def add_space(text : String, run : TextRun) : Nil
-        w = stack_for(run.family, run.bold?, run.italic?)
-          .measure(text, run.size).x
+        stack = stack_for(run.family, run.bold?, run.italic?)
+        w = stack.measure(text, run.size).x
         @tokens << {text, run, w}
         @width += w
         @height = {@height, run.size}.max
+        asc, desc = stack.metrics_at(run.size)
+        @asc = {@asc, asc}.max
+        @desc = {@desc, desc}.min
+      end
+
+      # Reserve horizontal room for a chip's padding (a backgrounded
+      # run): an EMPTY token of pad width, so the chip — which extends
+      # run.size*0.4 beyond its glyphs on each side — never overlaps
+      # the neighbouring text's advances (CSS inline padding takes
+      # horizontal space; the empty token keeps the row text, and with
+      # it caret/selection indexes, unchanged).
+      def add_margin(run : TextRun) : Nil
+        w = run.size * 0.4
+        @tokens << {"", run, w}
+        @width += w
       end
 
       def add_word(word : String, run : TextRun) : Nil
         @height = {@height, run.size}.max
         stack = stack_for(run.family, run.bold?, run.italic?)
+        asc, desc = stack.metrics_at(run.size)
+        @asc = {@asc, asc}.max
+        @desc = {@desc, desc}.min
         w = stack.measure(word, run.size).x
         if (mw = @max_width) && !@tokens.empty? && @width + w > mw
           flush
@@ -234,10 +304,18 @@ module Egui
       end
 
       private def build_row(tokens : Array(Token), y : Float64,
-                            height : Float64, newline : Bool) : Galley::Row
+                            height : Float64, ascent : Float64,
+                            newline : Bool) : Galley::Row
         runs = [] of Galley::RowRun
         x = 0.0
         tokens.each do |text, run, width|
+          # An EMPTY token (a chip side margin — see #add_margin) is
+          # pure advance width: no run, so a following same-style run
+          # starts after the margin instead of merging back over it.
+          if text.empty?
+            x += width
+            next
+          end
           last = runs.last?
           if last && last.size == run.size && last.color == run.color &&
              last.underline? == run.underline? &&
@@ -255,7 +333,7 @@ module Egui
           end
           x += width
         end
-        Galley::Row.new(runs, x, height, y, newline)
+        Galley::Row.new(runs, x, height, y, ascent, newline)
       end
     end
 

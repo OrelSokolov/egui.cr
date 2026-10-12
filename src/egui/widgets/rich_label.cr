@@ -22,6 +22,22 @@ module Egui
     # `background`.
     INLINE_CODE_BG = Color32.rgba(0xE9, 0xED, 0xF0, 255)
 
+    # Mark monospace runs as inline-code chips (the backgrounded runs
+    # `paint_galley` draws). Shared with the measurement side of
+    # TableTextRenderer: its reserved heights must match what THIS
+    # widget lays out, backgrounds included — a chip's layout-reserved
+    # side margins change where cells wrap.
+    def self.apply_code_chips(runs : Array(TextRun)) : Array(TextRun)
+      runs.map do |r|
+        if r.family == "monospace"
+          TextRun.new(r.text, r.size, r.color, r.underline?, r.family,
+            r.bold?, r.italic?, r.strikethrough?, INLINE_CODE_BG)
+        else
+          r
+        end
+      end
+    end
+
     getter rich : RichText
     getter wrap : Bool?
     getter? userselect : Bool
@@ -30,21 +46,29 @@ module Egui
     # OS (`Hyperlink.open_url`).
     property link_handler : (String ->)?
 
+    # Line-height multiplier for the galley (nil = Fonts::LINE_H_FACTOR);
+    # markdown body text passes 1.5 (GitHub-like) so the inline-code
+    # chip fits inside the line box.
+    property line_height : Float64?
+
     def initialize(text : String, size : Float64? = nil,
                    wrap : Bool? = nil, userselect : Bool = true,
-                   id : String? = nil)
+                   id : String? = nil, line_height : Float64? = nil)
       @rich = RichText.new(text)
       @rich.size(size) if size
       @wrap = wrap
       @userselect = userselect
       @id_name = id
+      @line_height = line_height
     end
 
     def initialize(@rich : RichText, wrap : Bool? = nil,
-                   userselect : Bool = true, id : String? = nil)
+                   userselect : Bool = true, id : String? = nil,
+                   line_height : Float64? = nil)
       @wrap = wrap
       @userselect = userselect
       @id_name = id
+      @line_height = line_height
     end
 
     def style_properties : Array(StyleProp)
@@ -77,14 +101,7 @@ module Egui
       # Inline code = monospace runs in a rounded chip; without a
       # mono stack they also retint weaker (the font alone can't
       # distinguish them).
-      runs = runs.map do |r|
-        if r.family == "monospace"
-          TextRun.new(r.text, r.size, r.color, r.underline?, r.family,
-            r.bold?, r.italic?, r.strikethrough?, INLINE_CODE_BG)
-        else
-          r
-        end
-      end
+      runs = RichLabel.apply_code_chips(runs)
       runs = RichText.fade_code_runs(runs, visuals) if ui.ctx.mono_fonts.nil?
       links = @rich.link_spans
 
@@ -92,7 +109,7 @@ module Egui
       available = ui.available_width
       max_width = wrap && available > 0.0 ? available : nil
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
-      galley = fonts.layout(runs, max_width, resolve)
+      galley = fonts.layout(runs, max_width, resolve, @line_height)
 
       rect = ui.allocate_at_least(galley.size)
       response = ui.interact(rect, id,
@@ -118,6 +135,8 @@ module Egui
                       style : Style, face_family : String?) : Nil
       ctx = ui.ctx
       visuals = style.visuals
+      # Run stacks for caret/selection geometry — x_at measures each
+      # run through ITS stack (inline code is mono), matching the draw.
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ctx.fonts_for(family, bold, italic) }
       anchor_id = id.child(0x5EED_u64)
       ctx.memory.use_id(anchor_id)
@@ -134,7 +153,7 @@ module Egui
       anchor = ctx.memory.data.get_int(anchor_id, -1).clamp(-1, flat.size)
 
       over_link = response.hovered? && (pos = ctx.input.pointer_pos) &&
-                  link_at(galley, rect, pos, fonts, links)
+                  link_at(galley, rect, pos, fonts, resolve, links)
       ctx.set_cursor_icon(over_link ? CursorIcon::Pointer : CursorIcon::Text) if response.hovered?
 
       if ctx.input.pointer_pressed? && !response.hovered?
@@ -148,16 +167,16 @@ module Egui
          (pos = ctx.input.pointer_pos)
         if response.double_clicked?
           cursor, anchor = word_range(flat,
-            caret_at(galley, row_starts, rect, pos, fonts))
+            caret_at(galley, row_starts, rect, pos, fonts, resolve))
         else
-          cursor = anchor = caret_at(galley, row_starts, rect, pos, fonts)
+          cursor = anchor = caret_at(galley, row_starts, rect, pos, fonts, resolve)
         end
       end
       if response.drag_started? && (pos = ctx.input.pointer_pos) && anchor == -1
-        anchor = caret_at(galley, row_starts, rect, pos, fonts)
+        anchor = caret_at(galley, row_starts, rect, pos, fonts, resolve)
       end
       if response.dragged? && (pos = ctx.input.pointer_pos)
-        cursor = caret_at(galley, row_starts, rect, pos, fonts)
+        cursor = caret_at(galley, row_starts, rect, pos, fonts, resolve)
       end
 
       # Ctrl+C copies the selection — only while no widget holds
@@ -174,7 +193,7 @@ module Egui
       # selects text. An app-set #link_handler intercepts the raw
       # target (markdown viewers navigate themselves).
       if response.clicked? && (pos = ctx.input.pointer_pos) &&
-         (span = link_at(galley, rect, pos, fonts, links))
+         (span = link_at(galley, rect, pos, fonts, resolve, links))
         if (handler = @link_handler)
           handler.call(span.url)
         else
@@ -185,27 +204,28 @@ module Egui
       ctx.memory.data.set_int(id, cursor)
       ctx.memory.data.set_int(anchor_id, anchor)
 
-      # Selection highlights per row, behind the text.
+      # Selection strips per row (index, x0, x1) — painted by
+      # paint_galley BETWEEN the chips and the glyphs, so a selected
+      # inline-code chip shows the highlight, not the chip over it.
+      sel = nil
       if anchor >= 0 && anchor != cursor && !flat.empty?
         sel_min = {cursor, anchor}.min
         sel_max = {cursor, anchor}.max
+        segs = [] of Tuple(Int32, Float64, Float64)
         galley.rows.each_with_index do |row, i|
           row_start = row_starts[i]
           lo = {sel_min, row_start}.max
           hi = {sel_max, row_start + row.text.size}.min
           if lo < hi
-            x0 = galley.x_at(i, lo - row_start, fonts)
-            x1 = galley.x_at(i, hi - row_start, fonts)
-            ui.painter.rect(Rect.from_min_size(
-              Pos2.new(rect.left + x0, rect.top + row.y + 1.0),
-              Vec2.new(x1 - x0, row.height - 2.0)),
-              0.0, visuals.selection_fill)
+            segs << {i, galley.x_at(i, lo - row_start, fonts, resolve),
+                     galley.x_at(i, hi - row_start, fonts, resolve)}
           end
         end
+        sel = segs unless segs.empty?
       end
 
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, resolve)
+        face_family, resolve, sel, visuals.selection_fill)
     end
 
     # The link span under `pos`, if any: char index in the flattened
@@ -213,11 +233,13 @@ module Egui
     # against the spans. Wrap-broken rows keep every source char, so
     # the flattened text matches the spans' offsets.
     private def link_at(galley : Galley, rect : Rect, pos : Pos2,
-                        fonts : Fonts, links : Array(RichText::LinkSpan))
+                        fonts : Fonts,
+                        resolve : (String?, Bool, Bool) -> Fonts,
+                        links : Array(RichText::LinkSpan))
       return nil if galley.rows.empty? || links.empty?
       return nil unless pos.x >= rect.left && pos.x <= rect.right &&
                        pos.y >= rect.top && pos.y <= rect.bottom
-      index = caret_at(galley, row_char_starts(galley), rect, pos, fonts)
+      index = caret_at(galley, row_char_starts(galley), rect, pos, fonts, resolve)
       links.find { |l| index >= l.from && index < l.to }
     end
 
@@ -236,7 +258,8 @@ module Egui
     # Label's caret geometry, verbatim. Char units, matching the
     # spans (multibyte glyphs count as one).
     private def caret_at(galley : Galley, row_starts : Array(Int32),
-                         rect : Rect, pos : Pos2, fonts : Fonts) : Int32
+                         rect : Rect, pos : Pos2, fonts : Fonts,
+                         resolve : (String?, Bool, Bool) -> Fonts) : Int32
       return 0 if galley.rows.empty?
       local_x = pos.x - rect.left
       local_y = pos.y - rect.top
@@ -251,7 +274,7 @@ module Egui
       best = text.size
       text.size.times do |i|
         best = i
-        break if galley.x_at(row_index, i, fonts) >= local_x
+        break if galley.x_at(row_index, i, fonts, resolve) >= local_x
       end
       row_starts[row_index] + best
     end

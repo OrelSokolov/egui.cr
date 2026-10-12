@@ -149,11 +149,14 @@ describe "RichLabel widget" do
     texts = ctx.painter.commands.select(Egui::TextCmd)
     texts.map(&.text).should eq(["kept ", "dropped", " kept"])
     lines = ctx.painter.commands.select(Egui::LineCmd)
-    # a horizontal line roughly through the row's middle
+    # a horizontal line roughly through the row's glyphs — the strike is
+    # baseline-anchored now (baseline − 0.3×size); with the headless
+    # estimate (em = row height) that sits ~0.35×size below the em
+    # center, hence the ±6 tolerance
     run = texts[1]
     lines.any? { |l|
       l.p1.y == l.p2.y &&
-        l.p1.y > run.pos.y - 4.0 && l.p1.y < run.pos.y + 4.0
+        l.p1.y > run.pos.y - 6.0 && l.p1.y < run.pos.y + 6.0
     }.should be_true
   end
 
