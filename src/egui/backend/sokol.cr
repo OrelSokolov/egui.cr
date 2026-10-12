@@ -543,7 +543,9 @@ module Egui
       # System port Clipboard → sokol_app set/get clipboard string. The
       # get goes through the shim's mailbox on the detached path (the X
       # connection lives on the render thread) and returns a malloc'd
-      # copy that we free after building the String.
+      # copy that we free after building the String. On Android sokol
+      # has no clipboard — the sysport JNI bridge takes over
+      # (ClipboardManager, with a listener-fed native cache for reads).
       class ClipboardPort < Egui::SystemPorts::Clipboard::Implementation
         # The last text WE set: when the X read fails (a stalled
         # compositor path), fall back to it — the same owner shortcut
@@ -551,19 +553,28 @@ module Egui
         @last_set : String? = nil
 
         def set(text : String) : Nil
-          text.to_unsafe # ensure a contiguous buffer
-          @last_set = text
-          LibEguiCr.clipboard_set(text.to_unsafe)
+          {% if flag?(:android) %}
+            @last_set = text
+            Egui::SystemPorts::Android.clipboard_set(text)
+          {% else %}
+            text.to_unsafe # ensure a contiguous buffer
+            @last_set = text
+            LibEguiCr.clipboard_set(text.to_unsafe)
+          {% end %}
         end
 
         def get : String?
-          ptr = LibEguiCr.clipboard_get
-          return @last_set if ptr.null?
-          begin
-            String.new(ptr)
-          ensure
-            LibEguiCr.mem_free(ptr)
-          end
+          {% if flag?(:android) %}
+            Egui::SystemPorts::Android.clipboard_get || @last_set
+          {% else %}
+            ptr = LibEguiCr.clipboard_get
+            return @last_set if ptr.null?
+            begin
+              String.new(ptr)
+            ensure
+              LibEguiCr.mem_free(ptr)
+            end
+          {% end %}
         end
       end
 
@@ -1388,6 +1399,12 @@ module Egui
         # Advance async system ports (file dialogs) — one bounded
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
+        {% if flag?(:android) %}
+          # SAF picks / confirm answers queued by the Java UI thread —
+          # delivered here so a completion forces this frame to be full
+          # (same contract as the fiber deliveries below).
+          Egui::SystemPorts::Android.pump
+        {% end %}
         Egui::SystemPorts::AsyncDialogs.pump_pass
         # Same slot for native reader fibers (PTY sessions) — nil (a
         # no-op) unless backend/pty was required, and a no-op under the

@@ -9,6 +9,11 @@
 # config) / %LOCALAPPDATA% (local data; cache is a "cache" subfolder —
 # the Electron convention), and resolves known folders (Documents,
 # Downloads, Pictures) through `SHGetKnownFolderPath` (shell32).
+# Android maps through the sysport JNI bridge (Context.getFilesDir,
+# getCacheDir, getExternalFilesDir): config/data → the app's files dir,
+# cache → the cache dir, and the named user dirs → per-type external
+# dirs (Android/data/<pkg>/documents &c); HOME is unset in app
+# processes, so `home` falls back to the package dir.
 
 module Egui
   module SystemPorts
@@ -22,12 +27,25 @@ module Egui
         }
 
         @@known_cache = {} of String => String?
+      {% elsif flag?(:android) %}
+        # `user_dir` names → sysDir ids (system_ports/android.cr).
+        ANDROID_DIRS = {
+          "DOCUMENTS" => Android::DIR_DOCUMENTS,
+          "DOWNLOADS" => Android::DIR_DOWNLOADS,
+          "PICTURES"  => Android::DIR_PICTURES,
+          "MUSIC"     => Android::DIR_MUSIC,
+          "VIDEOS"    => Android::DIR_VIDEOS,
+        }
+
+        @@dir_cache = {} of Int32 => String?
       {% end %}
 
       # The user's home directory (fallback: the working directory).
       def self.home : String
         {% if flag?(:win32) %}
           ENV["USERPROFILE"]? || Dir.current
+        {% elsif flag?(:android) %}
+          cached_dir(Android::DIR_HOME) || Dir.current
         {% else %}
           ENV["HOME"]? || Dir.current
         {% end %}
@@ -35,12 +53,14 @@ module Egui
 
       # User-specific configuration: $XDG_CONFIG_HOME (default
       # ~/.config) on Linux/BSD; ~/Library/Application Support on macOS;
-      # %APPDATA% (roaming) on Windows.
+      # %APPDATA% (roaming) on Windows; the app's files dir on Android.
       def self.config : String
         {% if flag?(:win32) %}
           ENV["APPDATA"]? || home
         {% elsif flag?(:darwin) %}
           File.join(home, "Library/Application Support")
+        {% elsif flag?(:android) %}
+          cached_dir(Android::DIR_FILES) || home
         {% else %}
           xdg_path("XDG_CONFIG_HOME", ".config")
         {% end %}
@@ -48,12 +68,14 @@ module Egui
 
       # User-specific data: $XDG_DATA_HOME (default ~/.local/share) on
       # Linux/BSD; ~/Library/Application Support on macOS;
-      # %LOCALAPPDATA% on Windows.
+      # %LOCALAPPDATA% on Windows; the app's files dir on Android.
       def self.data : String
         {% if flag?(:win32) %}
           ENV["LOCALAPPDATA"]? || config
         {% elsif flag?(:darwin) %}
           File.join(home, "Library/Application Support")
+        {% elsif flag?(:android) %}
+          cached_dir(Android::DIR_FILES) || home
         {% else %}
           xdg_path("XDG_DATA_HOME", ".local/share")
         {% end %}
@@ -61,12 +83,14 @@ module Egui
 
       # User-specific non-essential cache: $XDG_CACHE_HOME (default
       # ~/.cache) on Linux/BSD; ~/Library/Caches on macOS;
-      # %LOCALAPPDATA%\cache on Windows.
+      # %LOCALAPPDATA%\cache on Windows; getCacheDir on Android.
       def self.cache : String
         {% if flag?(:win32) %}
           File.join(data, "cache")
         {% elsif flag?(:darwin) %}
           File.join(home, "Library/Caches")
+        {% elsif flag?(:android) %}
+          cached_dir(Android::DIR_CACHE) || File.join(home, "cache")
         {% else %}
           xdg_path("XDG_CACHE_HOME", ".cache")
         {% end %}
@@ -75,13 +99,18 @@ module Egui
       # A known/XDG user dir by its name ("DOCUMENTS", "DOWNLOADS",
       # "PICTURES", …), or nil when not available. Linux/BSD resolves
       # through `xdg-user-dir`; macOS maps to the fixed home subfolder
-      # (only when it exists); Windows through `SHGetKnownFolderPath`.
-      # Results are cached on Windows.
+      # (only when it exists); Windows through `SHGetKnownFolderPath`;
+      # Android through getExternalFilesDir (nil without external
+      # storage). Results are cached on Windows and Android.
       def self.user_dir(name : String) : String?
         {% if flag?(:win32) %}
           guid = KNOWN_FOLDERS[name]?
           return nil unless guid
           @@known_cache[name] ||= known_folder(guid)
+        {% elsif flag?(:android) %}
+          which = ANDROID_DIRS[name]?
+          return nil unless which
+          cached_dir(which)
         {% elsif flag?(:darwin) %}
           folder = {"DESKTOP"   => "Desktop",
                     "DOCUMENTS" => "Documents",
@@ -107,6 +136,13 @@ module Egui
       def self.pictures : String?
         user_dir("PICTURES")
       end
+
+      {% if flag?(:android) %}
+        # One JNI roundtrip per dir id, cached (dirs never move).
+        private def self.cached_dir(which : Int32) : String?
+          @@dir_cache[which] ||= Android.dir(which)
+        end
+      {% end %}
 
       {% if flag?(:win32) %}
         protected def self.known_folder(guid : String) : String?

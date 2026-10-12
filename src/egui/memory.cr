@@ -101,6 +101,18 @@ module Egui
     @prev_scroll_rects : Hash(Id, Tuple(Rect, LayerId))
     @active_scroll : Id?
 
+    # Canvas drag-to-scroll (upstream egui touch semantics, works with
+    # the mouse too): a press on empty space — no drag-sensing widget
+    # under the pointer — drags the top-most scroll viewport under the
+    # press instead. The owner is that viewport's scroll id (latched at
+    # press, cleared at release); the delta is this frame's pointer
+    # delta while the gesture lives. Drag-sensing widgets (sliders,
+    # text selection, paint canvases) claim the gesture through the
+    # normal widget drag machine; click-only widgets let the finger
+    # swipe scroll — the standard mobile-list behavior.
+    @canvas_drag_owner : Id?
+    @canvas_drag_delta : Vec2 = Vec2.zero
+
     # Geometry/sense/layer of the previous frame (hit-test input)…
     getter prev_widget_rects : Hash(Id, Rect)
     getter prev_widget_senses : Hash(Id, Sense)
@@ -169,9 +181,11 @@ module Egui
     @scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
     @active_scroll = nil
-      # Offset histories feeding kinetic scrolling (see history.cr) —
-      # keyed by the scroll area id, pruned with the rest.
-      @scroll_histories = {} of Id => History
+    @canvas_drag_owner = nil
+    @canvas_drag_delta = Vec2.zero
+    # Offset histories feeding kinetic scrolling (see history.cr) —
+    # keyed by the scroll area id, pruned with the rest.
+    @scroll_histories = {} of Id => History
       @duplicate_ids = [] of Id
 
       @prev_widget_rects = {} of Id => Rect
@@ -346,6 +360,22 @@ module Egui
       @pointer_down = input.pointer_down?
       @pointer_pos = input.pointer_pos
       @pointer_delta = input.pointer_delta
+
+      # Canvas drag-to-scroll gesture bookkeeping (see the field comment
+      # above): latch the owner scroll viewport at press — only when NO
+      # drag-sensing widget was under the pointer (that widget would own
+      # the gesture) and the press is inside a scroll viewport (previous
+      # frame's registration, like every hit-test here); accumulate the
+      # per-frame pointer delta while the pointer stays down.
+      @canvas_drag_delta = Vec2.zero
+      if input.pointer_pressed? && @potential_drag_id.nil? &&
+         (pos = input.pointer_pos)
+        @canvas_drag_owner = topmost_scroll_at(pos)
+      elsif !input.pointer_down?
+        @canvas_drag_owner = nil
+      elsif @canvas_drag_owner
+        @canvas_drag_delta = @pointer_delta
+      end
       # A press this frame: checked at end_frame against the focused
       # widget's rect (see #end_frame — the click-outside-clears-focus
       # rule, upstream egui behavior).
@@ -665,6 +695,40 @@ module Egui
       end
       hits.sort_by! { |_, area| -area }
       hits.map(&.[0])
+    end
+
+    # --- canvas drag-to-scroll (see the field comment above) ----------
+
+    # True while the drag-to-scroll gesture is owned by scroll area
+    # `id` (finger/mouse down on its empty canvas).
+    def canvas_drag_active?(id : Id) : Bool
+      @canvas_drag_owner == id
+    end
+
+    # This frame's pointer delta of the canvas drag owned by scroll
+    # area `id` (zero for everyone else / while still).
+    def canvas_drag_delta(id : Id) : Vec2
+      @canvas_drag_owner == id ? @canvas_drag_delta : Vec2.zero
+    end
+
+    # The top-most scroll viewport (previous frame's registration)
+    # containing `pos` — same arbitration as the wheel delta owner
+    # (highest layer z wins; on a tie the last registered, i.e. the
+    # inner-most viewport painted last).
+    private def topmost_scroll_at(pos : Pos2) : Id?
+      hit : Id? = nil
+      hit_z = 0
+      @prev_scroll_rects.each do |id, (rect, layer)|
+        next unless rect.contains?(pos)
+        if @modal_open
+          next unless layer.order.foreground?
+        end
+        if hit.nil? || layer.z >= hit_z
+          hit = id
+          hit_z = layer.z
+        end
+      end
+      hit
     end
 
     private def topmost_at(pos : Pos2?, &sense_filter : Sense -> Bool) : Id?

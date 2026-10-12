@@ -16,9 +16,21 @@
 // tmp/android/build_apk.sh).
 package com.eguicr.ime;
 
+import android.app.AlertDialog;
 import android.app.NativeActivity;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
@@ -26,6 +38,12 @@ import android.view.inputmethod.BaseInputConnection;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputConnection;
 import android.view.inputmethod.InputMethodManager;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 public class EguiCrActivity extends NativeActivity {
     static EguiCrActivity instance;
@@ -79,6 +97,268 @@ public class EguiCrActivity extends NativeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         instance = this;
+        // System-ports bridge: mirror the system clipboard into native
+        // (the only thread allowed to read it is this one). Our own sets
+        // fire the listener too — the native cache is idempotent.
+        try {
+            final ClipboardManager cm = (ClipboardManager)
+                getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.addPrimaryClipChangedListener(new ClipboardManager.OnPrimaryClipChangedListener() {
+                @Override public void onPrimaryClipChanged() {
+                    try {
+                        ClipData d = cm.getPrimaryClip();
+                        if (d == null || d.getItemCount() == 0) {
+                            nativeClipboardChanged(null);
+                            return;
+                        }
+                        CharSequence t = d.getItemAt(0).coerceToText(EguiCrActivity.this);
+                        nativeClipboardChanged(t == null ? null : t.toString());
+                    } catch (Exception e) { /* clipboard went away */ }
+                }
+            });
+        } catch (Exception e) { /* no clipboard service */ }
+    }
+
+    // ---- System ports (ANDROID_SUPPORT_PLAN.md, phase 7) ------------------
+    // Static helpers called from backend/sokol_shim.c over JNI; results
+    // that only the OS can deliver asynchronously come back through the
+    // native* methods at the bottom (UI thread → mutex ring → sokol loop
+    // thread drain).
+
+    // OpenUrl: ACTION_VIEW with the default handler. Runs synchronously —
+    // startActivity is binder IPC, valid from any attached thread.
+    public static boolean openUrl(String url) {
+        EguiCrActivity a = instance;
+        if (a == null) return false;
+        try {
+            Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            a.startActivity(i);
+            return true;
+        } catch (Exception e) {
+            android.util.Log.i("egui_cr", "openUrl failed: " + e);
+            return false;
+        }
+    }
+
+    // Notification: channel + notify; on API 33+ asks for
+    // POST_NOTIFICATIONS first — until granted the system silently drops
+    // the notification (the app keeps running either way).
+    public static void showNotification(final String title, final String body) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    NotificationManager nm = (NotificationManager)
+                        a.getSystemService(Context.NOTIFICATION_SERVICE);
+                    if (Build.VERSION.SDK_INT >= 33) {
+                        if (a.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                                != PackageManager.PERMISSION_GRANTED) {
+                            a.requestPermissions(
+                                new String[]{android.Manifest.permission.POST_NOTIFICATIONS}, 1002);
+                            return; // this one is dropped; the next shows once granted
+                        }
+                        if (!nm.areNotificationsEnabled()) return;
+                    }
+                    NotificationChannel ch = new NotificationChannel(
+                        "egui_cr", "egui-cr", NotificationManager.IMPORTANCE_DEFAULT);
+                    nm.createNotificationChannel(ch);
+                    Notification n = new Notification.Builder(a, "egui_cr")
+                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                        .setContentTitle(title)
+                        .setContentText(body)
+                        .setAutoCancel(true)
+                        .build();
+                    nm.notify(1, n);
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "notify failed: " + e);
+                }
+            }
+        });
+    }
+
+    // MessageBox: level 0 info / 1 warning / 2 error / 3 question. With
+    // confirm=1 the yes/no answer goes to nativeMsgboxResult; otherwise
+    // a plain OK box (no callback).
+    public static void showMessageBox(final int level, final String title,
+                                      final String msg, final boolean confirm) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    AlertDialog.Builder b = new AlertDialog.Builder(a);
+                    b.setTitle(title).setMessage(msg).setCancelable(true);
+                    if (confirm) {
+                        b.setPositiveButton(android.R.string.yes,
+                            new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface d, int w) {
+                                    nativeMsgboxResult(1);
+                                }
+                            });
+                        b.setNegativeButton(android.R.string.no,
+                            new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface d, int w) {
+                                    nativeMsgboxResult(0);
+                                }
+                            });
+                    } else {
+                        b.setPositiveButton(android.R.string.ok, null);
+                    }
+                    b.show();
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "msgbox failed: " + e);
+                }
+            }
+        });
+    }
+
+    // Clipboard set (get is pull + listener — see pullClipboardText and
+    // the listener in onCreate).
+    public static void setClipboardText(final String text) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    ClipboardManager cm = (ClipboardManager)
+                        a.getSystemService(Context.CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(ClipData.newPlainText("egui_cr", text));
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "setClipboard failed: " + e);
+                }
+            }
+        });
+    }
+
+    // Clipboard get, synchronous with a bounded wait: the caller (the
+    // native sokol thread) blocks at most `capMs` while this hops to the
+    // UI thread — the only one allowed to read the system clipboard.
+    // The listener in onCreate keeps the native cache fresh on stock
+    // Android, but OEM builds (Huawei EMUI &c.) don't reliably fire
+    // OnPrimaryClipChangedListener, so every get pulls fresh text and
+    // the cache is only the fallback.
+    public static String pullClipboardText() {
+        final EguiCrActivity a = instance;
+        if (a == null) return null;
+        final String[] out = new String[1];
+        final CountDownLatch done = new CountDownLatch(1);
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    ClipboardManager cm = (ClipboardManager)
+                        a.getSystemService(Context.CLIPBOARD_SERVICE);
+                    ClipData d = cm.getPrimaryClip();
+                    if (d != null && d.getItemCount() > 0) {
+                        CharSequence t = d.getItemAt(0).coerceToText(a);
+                        out[0] = t == null ? null : t.toString();
+                    }
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "pullClipboard failed: " + e);
+                } finally {
+                    done.countDown();
+                }
+            }
+        });
+        try {
+            done.await(200, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) { /* fall through: cache */ }
+        return out[0];
+    }
+
+    // UserDirs: which 0 files / 1 cache / 2 home / 3 documents /
+    // 4 downloads / 5 pictures / 6 music / 7 videos. Null when the
+    // storage is unavailable (e.g. no external volume).
+    public static String sysDir(int which) {
+        EguiCrActivity a = instance;
+        if (a == null) return null;
+        try {
+            switch (which) {
+                case 0: return a.getFilesDir().getAbsolutePath();
+                case 1: return a.getCacheDir().getAbsolutePath();
+                case 2: return a.getFilesDir().getParentFile().getAbsolutePath();
+                case 3: return extDir(a, Environment.DIRECTORY_DOCUMENTS);
+                case 4: return extDir(a, Environment.DIRECTORY_DOWNLOADS);
+                case 5: return extDir(a, Environment.DIRECTORY_PICTURES);
+                case 6: return extDir(a, Environment.DIRECTORY_MUSIC);
+                case 7: return extDir(a, Environment.DIRECTORY_MOVIES);
+            }
+        } catch (Exception e) { return null; }
+        return null;
+    }
+
+    private static String extDir(EguiCrActivity a, String type) {
+        File f = a.getExternalFilesDir(type);
+        return f == null ? null : f.getAbsolutePath();
+    }
+
+    // SAF pickers (the file dialogs): kind 1 ACTION_OPEN_DOCUMENT /
+    // 2 ACTION_CREATE_DOCUMENT / 3 ACTION_OPEN_DOCUMENT_TREE. The result
+    // (or cancel) arrives in onActivityResult → nativeSafResult, keyed
+    // by requestCode = 1000 + seq. `defaultName` pre-fills the save
+    // dialog's suggested name (EXTRA_TITLE).
+    public static void safStart(final int seq, final int kind, final String title,
+                                final String mime, final String defaultName) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    Intent i;
+                    if (kind == 2)       i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    else if (kind == 3)  i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    else                 i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    if (kind != 3) i.addCategory(Intent.CATEGORY_OPENABLE);
+                    // MIME only for the document pickers — OEM
+                    // DocumentsUI builds (Huawei &c.) reject a typed
+                    // tree request with an empty picker or nothing at
+                    // all; tree mode ignores MIME anyway.
+                    if (kind != 3)
+                        i.setType(mime == null || mime.length() == 0 ? "*/*" : mime);
+                    if (kind == 2 && defaultName != null && defaultName.length() > 0)
+                        i.putExtra(Intent.EXTRA_TITLE, defaultName);
+                    a.startActivityForResult(i, 1000 + seq);
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "safStart failed: " + e);
+                    nativeSafResult(seq, 0, null);
+                }
+            }
+        });
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        int seq = requestCode - 1000;
+        if (seq < 0 || seq > 1000000) return; // not ours
+        String uri = null;
+        if (resultCode == RESULT_OK && data != null && data.getData() != null)
+            uri = data.getData().toString();
+        nativeSafResult(seq, uri != null ? 1 : 0, uri);
+    }
+
+    // Read up to 64 KB of a content:// document as UTF-8 text — the demo's
+    // "open file" preview. Null when the resolver refuses.
+    public static String readUriText(String uri) {
+        EguiCrActivity a = instance;
+        if (a == null) return null;
+        try {
+            InputStream in = a.getContentResolver().openInputStream(Uri.parse(uri));
+            if (in == null) return null;
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int total = 0, n;
+            while (total < 65536 && (n = in.read(buf)) > 0) {
+                bo.write(buf, 0, n);
+                total += n;
+            }
+            in.close();
+            return new String(bo.toByteArray(), 0, total, StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            android.util.Log.i("egui_cr", "readUriText failed: " + e);
+            return null;
+        }
     }
 
     // Called from the native shim (sokol loop thread) via JNI.
@@ -320,4 +600,9 @@ public class EguiCrActivity extends NativeActivity {
     native static void nativeCommitText(String text);
     native static void nativeDeleteText(int count);
     native static void nativeEditorAction(int actionCode);
+
+    // System-port results (same queue discipline as the IME methods).
+    native static void nativeSafResult(int seq, int ok, String uri);
+    native static void nativeMsgboxResult(int value);
+    native static void nativeClipboardChanged(String text);
 }

@@ -292,6 +292,79 @@ Bootstrap-трюк: `__crystal_main(argc, argv)` объявляется чере
       _sapp_android_shutdown() + _exit(0) (жёсткий выход обязателен:
       фоновые потоки Crystal-рантайма гонятся с деструкторами при
       выходе → FORTIFY SIGABRT на каждый quit).
+- [ ] **Фаза 7 — system ports (кроме IME/quit/screen/fonts, готовых
+      раньше)**. Всё через тот же JNI-мост, что и IME: Crystal (поток
+      sokol) зовёт статические хелперы EguiCrActivity; асинхронные
+      результаты ОС (SAF onActivityResult, кнопки AlertDialog, смена
+      системного клипборда) падают в mutex-кольцо sys-записей, которое
+      Sokol#on_frame дренажит ПЕРЕД idle-check (SystemPorts::Android.pump
+      → завершение detached-запросов AsyncDialogs / confirm-callback'ов —
+      контракт «между кадрами» сохранён).
+  - **clipboard**: sokol на Android клипборд не умеет — ClipboardPort
+    (sokol.cr) ветвится в мост: set → ClipboardManager (UI-поток) +
+    нативный кэш; get — из кэша, который держит актуальным Java-side
+    OnPrimaryClipChangedListener (читать системный клипборд можно
+    только с UI-потока).
+  - **dialog (SAF)**: ACTION_OPEN_DOCUMENT / ACTION_CREATE_DOCUMENT /
+    ACTION_OPEN_DOCUMENT_TREE; результат — content:// URI; чтение —
+    Android.read_uri_text (ContentResolver, ≤64 КБ). AsyncDialogs
+    расширен: start_detached/complete — бэкенд-дренаж вместо волокна.
+    Глоб-фильтры мапятся в MIME (mime_for), смешанные/неизвестные → */*;
+    `directory` игнорируется (EXTRA_INITIAL_URI требует tree-grant).
+  - **notification**: NotificationChannel + notify через мост;
+    на API 33+ первый вызов триггерит запрос POST_NOTIFICATIONS
+    (в манифесте); до выдачи система молча дропает — приложение не
+    падает.
+  - **message_box**: AlertDialog через UI-поток; info/warning/error —
+    fire-and-forget; confirm — НОВЫЙ перегруз с колбеком
+    (`MessageBox.confirm(msg, title) { |ok| … }`): блокирующий
+    вариант на Android невозможен без ANR (диалог живёт на UI-потоке
+    ОС, стоп кадра = стоп диспетчеризации ввода). Синхронный confirm
+    на Android показывает диалог и возвращает false (документировано).
+  - **shell**: OpenUrl — Intent ACTION_VIEW напрямую из JNI-потока
+    (startActivity — binder IPC, работает с любого attached-потока);
+    FileOpen/RevealInFolder — false: file:// запрещён (API 24+),
+    FileProvider требует res/xml + провайдера в манифесте — будущая
+    фаза.
+  - **user_dirs**: config/data → Context.getFilesDir, cache →
+    getCacheDir, home → пакет-директория (HOME в app-процессах не
+    задан — раньше home() падал в Dir.current), DOCUMENTS/DOWNLOADS/
+    PICTURES/MUSIC/VIDEOS → getExternalFilesDir(type). Один JNI-вызов
+    на директорию, кэшируется (UserDirs). AppConfig поехал поверх
+    без изменений.
+  - **демка**: examples/android_demo.cr (переименованный ime_test) —
+    скроллящийся лист со всеми портами: 3 текст-поля (IME), clipboard
+    copy/paste, Info/Warning/Error/Confirm, уведомление, open url,
+    SAF open/save/pick-folder + превью текста, user dirs. На хосте
+    тоже собирается (порты падают в десктоп-реализации).
+  - Сборка: шим для Android теперь с `-fPIC` (aarch64 relocation
+    против глобальных символов sokol), флаги не влияют на флейки.
+  - Известные ограничения эмулятора (не блокеры): (а) холодный/перезапущенный эмулятор
+    с libndk_translation периодически (≈ каждый 2–3-й запуск) даёт
+    `sg_gl_create_image: assertion "img->gl.tex[slot]"` (glGenTextures
+    → 0, software GL) — лечится перезапуском activity; (б) первый кадр
+    debug-сборки под транслятором — до ~4–5 минут (release заметно
+    быстрее); проверять на реальном устройстве.
+  - ✅ Проверено на реальном устройстве (Huawei): IME, текст, уведомления,
+    message box, open url, SAF open/save — работают; чинились по
+    результатам проверки:
+    - **pick folder не работал** — `setType` на ACTION_OPEN_DOCUMENT_TREE
+      OEM-DocumentsUI (Huawei) молча отбивает; MIME больше не ставится
+      для tree-режима (он там игнорируется по смыслу);
+    - **clipboard не работал** — pull синхронный через UI-поток с
+      bounded-wait (200 мс, CountDownLatch) при каждом get:
+      OnPrimaryClipChangedListener на EMUI не стреляет, так что
+      listener-кэш недостовернен; кэш остаётся фолбэком. Ошибки set/pull
+      логируются в logcat (egui_cr);
+    - **нет прокрутки пальцем по пустому месту** — добавлен canvas
+      drag-scroll в САМ фреймворк (не android-специфика): press на
+      пустом месте (нет drag-sensing виджета под пальцем) тащит
+      верхний scroll-viewport (Memory#canvas_drag_*: владелец
+      защёлкивается на press, дельты кормят KineticScroller — контент
+      следует за пальцем, на отпускании флинг; семантика upstream egui —
+      слайдеры/выделение текста/холсты рисования перехватывают жест,
+      кнопки и лейблы прокручивают, как в мобильных списках). Работает и
+      мышью (тест на десктопе). Спек: spec/scroll_drag_spec.cr.
 
 ## Приёмка
 

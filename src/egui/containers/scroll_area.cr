@@ -1,6 +1,7 @@
 # Port of egui_upstream/crates/egui/src/containers/scroll_area.rs
-# (vertical-first stage: wheel scrolling, offset state, clipping,
-# scrollbar painting + thumb dragging; kinetic scrolling follows later).
+# (wheel scrolling, canvas drag scrolling, offset state, clipping,
+# scrollbar painting + thumb dragging; kinetic scrolling for wheel
+# release and touch fling).
 #
 # State (upstream ScrollState): scroll offset + content size, stored
 # per-id in IdTypeMap. The viewport registers itself with Memory as a
@@ -95,9 +96,21 @@ module Egui
       # delta is in wheel notches (±1.0 per click from the backend);
       # `style.scroll_speed` scales it to pixels. Shift+wheel goes to
       # the horizontal axis when one exists (upstream convention).
+      #
+      # Canvas drag-to-scroll (touch finger / mouse drag on empty
+      # space): Memory's gesture (latched at press — see
+      # Memory#canvas_drag_delta) feeds the pointer delta through the
+      # kinetic scroller: the content follows the finger, flat samples
+      # while holding still bleed the velocity off, and the release
+      # carries the estimate into the glide (fling). Drag-SENSING
+      # widgets under the press (sliders, text selection, paint
+      # canvases) claim the gesture in Memory and never get here.
       active = memory.active_scroll_area? == id
+      canvas_drag = memory.canvas_drag_active?(id)
       to_h = @hbar && input.modifiers.shift && !input.scroll.y.zero?
-      if active && !input.scroll.y.zero? && !to_h
+      if canvas_drag
+        v_kin.input(-memory.canvas_drag_delta(id).y, input.time, max_v_prev)
+      elsif active && !input.scroll.y.zero? && !to_h
         v_kin.input(input.scroll.y * style.scroll_speed,
           input.time, max_v_prev)
       else
@@ -106,7 +119,9 @@ module Egui
       if (hk = h_kin)
         dx = input.scroll.x
         dx = input.scroll.y if dx.zero? && to_h
-        if active && !dx.zero?
+        if canvas_drag && @hbar
+          hk.input(-memory.canvas_drag_delta(id).x, input.time, max_h_prev)
+        elsif active && !dx.zero?
           hk.input(dx * style.scroll_speed, input.time, max_h_prev)
         else
           hk.glide(input.dt, max_h_prev, ui.ctx)
