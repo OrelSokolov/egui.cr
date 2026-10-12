@@ -10922,6 +10922,25 @@ _SOKOL_PRIVATE void _sapp_android_frame(double external_now) {
     _sapp_android_update_dimensions(_sapp.android.current.window, false);
     _sapp_frame();
     eglSwapBuffers(_sapp.android.display, _sapp.android.surface);
+    /* egui-cr patch (Android quit): sapp_quit() only raises quit_ordered,
+       and unlike the win32/x11/macos/emscriptem loops the Android frame
+       path never checks it — SystemPorts::Quit.quit! was a silent no-op.
+       Run the same shutdown path as the BACK key, AFTER the swap: the
+       next choreographer callback sees surface == EGL_NO_SURFACE
+       (cleanup_egl ran) and stops posting frames. */
+    if (_sapp.quit_ordered) {
+        _sapp_android_shutdown();
+        /* egui-cr patch continued: ANativeActivity_finish only ASKS the
+           system to destroy the activity — the process would linger as
+           a cached empty process while the Crystal runtime's background
+           threads (scheduler workers, Boehm markers, the stdio→logcat
+           pump) are still live, and they race the exit-time destructor
+           pass (bionic FORTIFY: "pthread_mutex_lock called on a
+           destroyed mutex" → SIGABRT on every quit). cleanup_cb already
+           ran and nothing installs at_exit handlers on this platform,
+           so exit hard: no destructors, no race, no lingering threads. */
+        _exit(0);
+    }
 }
 
 _SOKOL_PRIVATE bool _sapp_android_touch_event(const AInputEvent* e) {
@@ -10988,6 +11007,10 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
            generally missing in sokol_app.h
         */
         _sapp_android_shutdown();
+        /* egui-cr patch: same rationale as the quit_ordered branch in
+           _sapp_android_frame — exit hard so the runtime's background
+           threads can't race the exit destructor pass. */
+        _exit(0);
         return true;
     }
     return false;
