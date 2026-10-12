@@ -49,6 +49,13 @@
 
 module Egui
   module Ecss
+    # The .ecss format version this build speaks. Files carry the
+    # version in the `@ecss vN;` directive (first line, written by
+    # `Doc#to_s`); a file claiming a NEWER version parses with a loud
+    # warning — unknown syntax of future versions is skipped leniently,
+    # not a crash (files are live-edited in text editors).
+    ECSS_VERSION = 1
+
     # One element-override entry of the document: a widget with an
     # EXPLICIT id (serialized as `#save`) holding a base bag plus
     # per-state overlays, the same shape `StyleClass` gives class
@@ -86,11 +93,21 @@ module Egui
         # One bucket per DISTINCT media condition, declaration order —
         # same {path → StyleClass} shape as the unconditional rules.
         @media = [] of {MediaCond, Hash(String, StyleClass)}
+        # The version this document was parsed from / will be written
+        # as (`@ecss vN;`). Files without the directive parse as the
+        # current version (v1 predates the directive).
+        @version = ECSS_VERSION
       end
 
       getter classes : Hash(String, StyleClass)
       getter elements : Hash(UInt64, ElementEntry)
       getter media : Array({MediaCond, Hash(String, StyleClass)})
+      # Written by .parse_version (the `@ecss vN;` directive) — outside
+      # code reads it, only the parser sets it.
+      getter version : Int32
+      protected def version=(version : Int32)
+        @version = version
+      end
 
       def empty? : Bool
         @classes.all? { |_p, c| c.vars.empty? && c.states.all? { |_s, b| b.empty? } } &&
@@ -202,7 +219,8 @@ module Egui
       # --- serialization -------------------------------------------------
 
       def to_s(io : IO) : Nil
-        io << "/* ecss v1 — egui.cr style diff (written by the inspector's save button) */\n"
+        io << "@ecss v#{@version};\n"
+        io << "/* egui.cr style diff (written by the inspector's save button) */\n"
         @classes.keys.sort.each do |path|
           cls = @classes[path]
           write_rule(io, path, cls.vars)
@@ -274,6 +292,15 @@ module Egui
             media = nil if media # the @media block's closing brace
             next
           end
+          # `@ecss v1;` — the version directive, one line, no block.
+          # Read to end-of-line before the '{' hunt (the directive
+          # carries no brace of its own).
+          if text[pos, 5].downcase == "@ecss"
+            eol = text.index('\n', pos) || size
+            parse_version(doc, text[pos...eol].strip)
+            pos = eol
+            next
+          end
           brace = text.index('{', pos)
           if brace.nil?
             warn "trailing text with no '{' — ignored"
@@ -307,6 +334,22 @@ block ignored"
           pos = close + 1
         end
         doc
+      end
+
+      # `@ecss v1;` / `@ecss 2` — stamp the document version; a version
+      # newer than this build warns (the lenient parse continues —
+      # unknown future syntax is skipped, files are live-edited).
+      private def self.parse_version(doc : Doc, directive : String) : Nil
+        body = directive[5..].strip.rstrip(';').lstrip('v').strip
+        if (v = body.to_i32?) && v > 0
+          doc.version = v
+          if v > ECSS_VERSION
+            warn "@ecss v#{v} file, this build speaks v#{ECSS_VERSION} \
+— unknown syntax may be skipped"
+          end
+        else
+          warn "#{directive.inspect} is not an @ecss version — ignored"
+        end
       end
 
       private def self.parse_rule(doc : Doc, selector : String,

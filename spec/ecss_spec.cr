@@ -76,6 +76,48 @@ describe "ecss" do
     base.color?("stroke").should eq Egui::Color32.rgb(0, 255, 0)
   end
 
+  it "parses the @ecss version directive" do
+    doc = Egui::Ecss::Doc.parse("@ecss v1;\nbutton { padding.top: 4.0; }")
+    doc.version.should eq 1
+
+    # `v` prefix and trailing semicolon are optional
+    Egui::Ecss::Doc.parse("@ecss 2\nbutton {}").version.should eq 2
+    Egui::Ecss::Doc.parse("@ecss v3;").version.should eq 3
+
+    # No directive — the current version is assumed
+    Egui::Ecss::Doc.parse("button {}").version
+      .should eq Egui::Ecss::ECSS_VERSION
+
+    # A newer version parses leniently (with a warning)
+    Egui::Ecss::Doc.parse("@ecss v99;\nbutton {}").version.should eq 99
+
+    # Garbage after @ecss keeps the default version
+    Egui::Ecss::Doc.parse("@ecss nonsense;\nbutton {}").version
+      .should eq Egui::Ecss::ECSS_VERSION
+
+    # Round-trip: the directive is the first line of the output
+    doc.to_s.should start_with("@ecss v1;")
+  end
+
+  it "skips // and /* */ comments at the top level and in rule bodies" do
+    doc = Egui::Ecss::Doc.parse(<<-ECSS)
+      // file-level line comment
+      /* file-level block comment */
+      button {
+        // body line comment
+        padding.top: 4; /* trailing block */
+        /* standalone block */
+        text_color: #fff;
+      }
+      /* between rules */ label { stroke: #00ff00ff; }
+    ECSS
+    base = doc.class_vars("button", nil).not_nil!
+    base.f64?("padding.top").should eq 4.0
+    base.color?("text_color").should eq Egui::Color32.rgb(255, 255, 255)
+    doc.class_vars("label", nil).not_nil!
+      .color?("stroke").should eq Egui::Color32.rgb(0, 255, 0)
+  end
+
   it "Session applies a loaded file to the context" do
     path = ecss_tmp_path
     Dir.mkdir_p(File.dirname(path))
