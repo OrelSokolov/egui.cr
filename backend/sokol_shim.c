@@ -76,6 +76,287 @@ static void sh_android_init_ppp(void) {
     // and friends are ≤0 sentinels — keep the 1.0 fallback for those.
     if (dpi >= 120 && dpi <= 640) g_android_ppp = (float)dpi / 160.0f;
 }
+
+// ---- IME bridge (phase 5, ANDROID_SUPPORT_PLAN.md) ----------------------
+// The system keyboard talks to com.eguicr.ime.EguiCrActivity's
+// InputConnection (tmp/android/java/…, built to classes.dex). Its
+// native* methods run on the Java UI thread and must NOT touch Crystal —
+// the runtime lives on sokol's loop thread. They push records into this
+// mutex-guarded ring; Sokol#on_frame drains it through
+// egui_cr_android_ime_pop and translates to Egui::Events. Showing /
+// hiding goes the other way: egui_cr_android_ime_set_state (sokol thread,
+// JNI attach-once) calls the activity's static helpers, which hop to the
+// UI thread themselves.
+#include <jni.h>
+#include <pthread.h>
+#include <string.h>
+#include <android/log.h>
+
+enum {
+    EGUI_IME_COMMIT = 1, // text[]: committed/composing utf8 text
+    EGUI_IME_DELETE = 2, // count: backspaces (IME deleteSurroundingText)
+    EGUI_IME_ACTION = 3, // action: IME editor action (Enter / Done / …)
+};
+typedef struct {
+    int type;
+    int count;
+    int action;
+    char text[96];
+} egui_ime_rec_t;
+
+#define EGUI_IME_RING 64
+static egui_ime_rec_t g_ime_ring[EGUI_IME_RING];
+static volatile int g_ime_head, g_ime_tail;
+static pthread_mutex_t g_ime_mu = PTHREAD_MUTEX_INITIALIZER;
+static JavaVM* g_ime_jvm;
+static ANativeActivity* g_ime_act;
+static int g_ime_attached;          // sokol loop thread attached once
+static volatile int g_ime_shown;    // BACK-key arbitration (sokol_app.h)
+
+static void sh_ime_push(const egui_ime_rec_t* rec) {
+    pthread_mutex_lock(&g_ime_mu);
+    int next = (g_ime_head + 1) % EGUI_IME_RING;
+    if (next != g_ime_tail) { // full → drop (a 60fps drain never hits this)
+        g_ime_ring[g_ime_head] = *rec;
+        g_ime_head = next;
+    }
+    pthread_mutex_unlock(&g_ime_mu);
+}
+
+// Sokol-loop-thread drain (Sokol#on_frame → Egui::Event translation).
+int egui_cr_android_ime_pop(egui_ime_rec_t* out, int cap) {
+    int n = 0;
+    pthread_mutex_lock(&g_ime_mu);
+    while (n < cap && g_ime_tail != g_ime_head) {
+        out[n++] = g_ime_ring[g_ime_tail];
+        g_ime_tail = (g_ime_tail + 1) % EGUI_IME_RING;
+    }
+    pthread_mutex_unlock(&g_ime_mu);
+    return n;
+}
+
+// --- Editor-state mirror (native editor fidelity) ------------------------
+// Native editors continuously tell the IME the cursor/selection
+// (InputMethodManager.updateSelection) and serve getSelectedText /
+// getTextBeforeCursor / getTextAfterCursor from the real buffer. Gboard
+// needs both for hold-to-delete: without cursor updates its repeat
+// state machine stalls after the first deletion, and word-accelerated
+// delete needs the surrounding text. egui.cr pushes the focused field's
+// state each (changed) frame via egui_cr_android_ime_set_editor; the
+// Java side caches it and the InputConnection getters serve from it.
+#define EGUI_IME_ED_MAX 8192
+static JNIEnv* sh_ime_env(void) {
+    JNIEnv* env = NULL;
+    if ((*g_ime_jvm)->GetEnv(g_ime_jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_ime_jvm)->AttachCurrentThread(g_ime_jvm, &env, NULL) != JNI_OK)
+            return NULL;
+        g_ime_attached = 1;
+    }
+    return env;
+}
+
+void egui_cr_android_ime_set_editor(const char* utf8, int cursor_cp,
+                                    int anchor_cp) {
+    if (!g_ime_jvm) return; // keyboard never shown — nothing mirrors yet
+    JNIEnv* env = sh_ime_env();
+    if (!env) return;
+    // utf8 → UTF-16 jstring; cursor/anchor are CODEPOINT indexes, convert
+    // to UTF-16 offsets on the way (supplementary codepoints take 2).
+    unsigned short buf[EGUI_IME_ED_MAX];
+    int len = 0, cp = 0;
+    int sel_start = -1, sel_end = -1;
+    const unsigned char* p = (const unsigned char*)utf8;
+    while (*p && len < EGUI_IME_ED_MAX - 2) {
+        if (cp == cursor_cp) sel_start = len;
+        if (cp == anchor_cp) sel_end = len;
+        unsigned c;
+        if (p[0] < 0x80) {
+            c = p[0]; p += 1;
+        } else if ((p[0] & 0xE0) == 0xC0) {
+            c = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2;
+        } else if ((p[0] & 0xF0) == 0xE0) {
+            c = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+            p += 3;
+        } else {
+            c = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) |
+                ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+            p += 4;
+        }
+        if (c < 0x10000) {
+            buf[len++] = (unsigned short)c;
+        } else {
+            c -= 0x10000;
+            buf[len++] = (unsigned short)(0xD800 + (c >> 10));
+            buf[len++] = (unsigned short)(0xDC00 + (c & 0x3FF));
+        }
+        cp++;
+    }
+    if (cp == cursor_cp) sel_start = len;
+    if (cp == anchor_cp) sel_end = len;
+    if (sel_start < 0) sel_start = len;
+    if (sel_end < 0) sel_end = len;
+    // Selection span (anchor != cursor) or plain caret.
+    if (anchor_cp >= 0 && anchor_cp != cursor_cp) {
+        int a = sel_start, b = sel_end;
+        sel_start = a < b ? a : b;
+        sel_end = a < b ? b : a;
+    } else {
+        sel_start = sel_end = sel_start;
+    }
+    jstring js = (*env)->NewString(env, (const jchar*)buf, len);
+    if (!js) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    jclass cls = (*env)->GetObjectClass(env, g_ime_act->clazz);
+    jmethodID m = (*env)->GetStaticMethodID(env, cls,
+        "editorStateChanged", "(Ljava/lang/String;II)V");
+    if (m) {
+        (*env)->CallStaticVoidMethod(env, cls, m, js, (jint)sel_start,
+                                     (jint)sel_end);
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// --- Java UI thread (InputConnection natives): queue only ---
+// JNI strings use MODIFIED UTF-8: supplementary code points (emoji,
+// U+10000+) arrive as CESU-8 surrogate pairs — invalid UTF-8 for
+// Crystal. Decode from UTF-16 instead, combining surrogate pairs.
+static void sh_ime_jstr_utf8(JNIEnv* env, jstring s, char* out, size_t cap) {
+    const jchar* u16 = (*env)->GetStringChars(env, s, NULL);
+    if (!u16) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    const jsize n = (*env)->GetStringLength(env, s);
+    size_t o = 0;
+    for (jsize i = 0; i < n && o + 4 < cap; i++) {
+        unsigned c = (unsigned)u16[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n &&
+            u16[i + 1] >= 0xDC00 && u16[i + 1] <= 0xDFFF) {
+            // surrogate pair → code point
+            c = 0x10000 + ((c - 0xD800) << 10) + ((unsigned)u16[++i] - 0xDC00);
+        } else if (c >= 0xD800 && c <= 0xDFFF) {
+            continue; // lone surrogate: drop
+        }
+        if (c < 0x80) {
+            out[o++] = (char)c;
+        } else if (c < 0x800) {
+            out[o++] = (char)(0xC0 | (c >> 6));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            out[o++] = (char)(0xE0 | (c >> 12));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            out[o++] = (char)(0xF0 | (c >> 18));
+            out[o++] = (char)(0x80 | ((c >> 12) & 0x3F));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    out[o] = 0;
+    (*env)->ReleaseStringChars(env, s, u16);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeCommitText(JNIEnv* env, jclass cls,
+                                                     jstring s) {
+    (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_COMMIT;
+    sh_ime_jstr_utf8(env, s, rec.text, sizeof(rec.text));
+    __android_log_print(4, "egui_cr", "ime: commit '%s'", rec.text);
+    sh_ime_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeDeleteText(JNIEnv* env, jclass cls,
+                                                     jint count) {
+    (void)env; (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_DELETE;
+    rec.count = (int)count;
+    __android_log_print(4, "egui_cr", "ime: delete %d", rec.count);
+    sh_ime_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeEditorAction(JNIEnv* env, jclass cls,
+                                                       jint action) {
+    (void)env; (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_ACTION;
+    rec.action = (int)action;
+    sh_ime_push(&rec);
+}
+
+// --- Sokol-loop-thread side: focus → show/hide the system keyboard ---
+static void sh_ime_call_java(int show, int kind, int action) {
+    if (!g_ime_jvm) {
+        // NativeActivity dlopens us directly (no System.loadLibrary), so
+        // JNI_OnLoad never runs — take the VM from the activity.
+        ANativeActivity* act =
+            (ANativeActivity*)sapp_android_get_native_activity();
+        if (!act || !act->vm) {
+            __android_log_print(4, "egui_cr", "ime: no activity/vm");
+            return;
+        }
+        g_ime_jvm = act->vm;
+        g_ime_act = act;
+    }
+    JNIEnv* env = NULL;
+    if ((*g_ime_jvm)->GetEnv(g_ime_jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_ime_jvm)->AttachCurrentThread(g_ime_jvm, &env, NULL) != JNI_OK) {
+            __android_log_print(4, "egui_cr", "ime: attach failed");
+            return;
+        }
+        g_ime_attached = 1;
+    }
+    // FindClass on a manually-attached thread resolves through the SYSTEM
+    // classloader — classes.dex app classes are invisible there. The
+    // activity object (ANativeActivity->clazz) is a global ref valid from
+    // any thread; GetObjectClass yields com.egui_cr.ime.EguiCrActivity.
+    jclass cls = (*env)->GetObjectClass(env, g_ime_act->clazz);
+    if (!cls) {
+        __android_log_print(4, "egui_cr", "ime: GetObjectClass failed");
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    if (show) {
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "showKeyboard", "(II)V");
+        if (m) {
+            (*env)->CallStaticVoidMethod(env, cls, m, (jint)kind, (jint)action);
+            __android_log_print(4, "egui_cr", "ime: show kind=%d action=%d", kind, action);
+        } else {
+            __android_log_print(4, "egui_cr", "ime: showKeyboard not found");
+        }
+    } else {
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "hideKeyboard", "()V");
+        if (m) {
+            (*env)->CallStaticVoidMethod(env, cls, m);
+            __android_log_print(4, "egui_cr", "ime: hide");
+        } else {
+            __android_log_print(4, "egui_cr", "ime: hideKeyboard not found");
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        __android_log_print(4, "egui_cr", "ime: java exception cleared");
+        (*env)->ExceptionClear(env);
+    }
+}
+
+void egui_cr_android_ime_set_state(int show, int kind, int action) {
+    // Flag first: a BACK press right after show must already see it.
+    g_ime_shown = show ? 1 : 0;
+    sh_ime_call_java(show, kind, action);
+}
+
+int egui_cr_android_ime_shown(void) { return g_ime_shown; }
+void egui_cr_android_ime_hide(void) { egui_cr_android_ime_set_state(0, 0, 0); }
 #endif
 
 static cr_init_cb   g_init;

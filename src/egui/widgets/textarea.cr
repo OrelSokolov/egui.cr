@@ -517,6 +517,12 @@ module Egui
 
       response.widget_text = new_text
       response.mark_changed if changed
+      # Soft-keyboard profile + editor mirror: multiline mode, Enter =
+      # newline; the focused field's text/cursor feed the IME's editor
+      # queries (registered AFTER the keyboard pass so this frame's
+      # edits are already reflected).
+      memory.register_text_input(id, TextInputKind::Multiline,
+        TextInputAction::None, new_text, cursor, anchor)
       response
     end
 
@@ -704,38 +710,53 @@ module Egui
         return {new_text, new_cursor, new_anchor, changed}
       end
 
-      # Selection-aware edits (UTF-8-char stepping).
-      if input.consume_key(KeyCode::Backspace)
+      # Selection-aware edits (UTF-8-char stepping). SEQUENTIAL, not
+      # elsif: a frame can carry a delete AND an insert — the Android IME
+      # rewrites a composing span as "backspace the old span, commit the
+      # new text" and both land in one frame (upstream egui applies
+      # events in order the same way). Each step reads the buffer/cursor
+      # the previous one left; backspaces arrive with a COUNT (several
+      # presses in one frame).
+      if (bs = input.consume_key_count(KeyCode::Backspace)) > 0
+        bs.times do
+          if new_anchor >= 0 && new_anchor != new_cursor
+            a = {new_cursor, new_anchor}.min
+            b = {new_cursor, new_anchor}.max
+            new_text = new_text[0...a] + new_text[b..]
+            new_cursor = new_anchor = a
+          elsif new_cursor > 0
+            from = step_back(new_text, new_cursor)
+            new_text = new_text[0...from] + new_text[new_cursor..]
+            new_cursor = new_anchor = from
+          end
+        end
+        changed = new_text != text
+      end
+      if input.consume_key(KeyCode::Delete)
         if has_sel
           new_text = text[0...sel_min] + text[sel_max..]
           new_cursor = new_anchor = sel_min
-        elsif cursor > 0
-          from = step_back(text, cursor)
-          new_text = text[0...from] + text[cursor..]
-          new_cursor = new_anchor = from
+        elsif new_cursor < new_text.size
+          to = step_fwd(new_text, new_cursor)
+          new_text = new_text[0...new_cursor] + new_text[to..]
+          new_anchor = new_cursor
         end
         changed = new_text != text
-      elsif input.consume_key(KeyCode::Delete)
-        if has_sel
-          new_text = text[0...sel_min] + text[sel_max..]
-          new_cursor = new_anchor = sel_min
-        elsif cursor < text.size
-          to = step_fwd(text, cursor)
-          new_text = text[0...cursor] + text[to..]
-          new_anchor = cursor
-        end
-        changed = new_text != text
-      elsif input.consume_key(KeyCode::Enter)
-        insert_at = has_sel ? sel_min : cursor
-        tail = has_sel ? text[sel_max..] : text[cursor..]
-        new_text = text[0...insert_at] + "\n" + tail
+      end
+      if input.consume_key(KeyCode::Enter)
+        sel = new_anchor >= 0 && new_anchor != new_cursor
+        insert_at = sel ? {new_cursor, new_anchor}.min : new_cursor
+        tail = sel ? new_text[{new_cursor, new_anchor}.max..] : new_text[new_cursor..]
+        new_text = new_text[0...insert_at] + "\n" + tail
         new_cursor = new_anchor = insert_at + 1
         changed = true
-      elsif !input.text.empty? && !input.shortcut_modifiers_down?
+      end
+      if !input.text.empty? && !input.shortcut_modifiers_down?
         insert = input.text.gsub(/\r\n|\r/, "\n")
-        insert_at = has_sel ? sel_min : cursor
-        tail = has_sel ? text[sel_max..] : text[cursor..]
-        new_text = text[0...insert_at] + insert + tail
+        sel = new_anchor >= 0 && new_anchor != new_cursor
+        insert_at = sel ? {new_cursor, new_anchor}.min : new_cursor
+        tail = sel ? new_text[{new_cursor, new_anchor}.max..] : new_text[new_cursor..]
+        new_text = new_text[0...insert_at] + insert + tail
         new_cursor = new_anchor = insert_at + insert.size
         changed = true
       end

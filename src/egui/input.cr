@@ -215,6 +215,11 @@ module Egui
     getter keys_pressed : Set(KeyCode)
     getter keys_released : Set(KeyCode)
     getter consumed_keys : Set(KeyCode)
+    # Press multiplicity per frame: the Android IME bridge can deliver
+    # several backspaces in ONE frame (a composing-span rewrite is
+    # "delete N, commit new text"); the Set above collapses those to a
+    # single press. Consumers that need the count use consume_key_count.
+    getter key_press_counts : Hash(KeyCode, Int32)
     getter text : String
     getter modifiers : Modifiers
     # Files dropped onto the window this frame (empty on every other).
@@ -228,6 +233,7 @@ module Egui
                    @keys_down : Set(KeyCode) = Set(KeyCode).new,
                    @keys_pressed : Set(KeyCode) = Set(KeyCode).new,
                    @keys_released : Set(KeyCode) = Set(KeyCode).new,
+                   @key_press_counts : Hash(KeyCode, Int32) = Hash(KeyCode, Int32).new,
                    @text : String = "",
                    @modifiers : Modifiers = Modifiers.new,
                    @secondary_pressed : Bool = false,
@@ -256,6 +262,16 @@ module Egui
       return false unless key_pressed?(key)
       @consumed_keys.add(key)
       true
+    end
+
+    # Like #consume_key but returns HOW MANY times the key was pressed
+    # this frame (0 = not pressed). The Android IME bridge collapses a
+    # composing-span rewrite into "N backspaces + new text" within a
+    # single frame — the plain Set can't tell N presses from one.
+    def consume_key_count(key : KeyCode) : Int32
+      return 0 unless key_pressed?(key)
+      @consumed_keys.add(key)
+      @key_press_counts[key]? || 1
     end
 
     def any_modifier_down? : Bool
@@ -292,6 +308,7 @@ module Egui
       keys_down = keys_down.dup
       keys_pressed = Set(KeyCode).new
       keys_released = Set(KeyCode).new
+      key_press_counts = Hash(KeyCode, Int32).new
       text = ""
       modifiers = prev.try(&.modifiers) || Modifiers.new
       secondary_pressed = false
@@ -330,6 +347,7 @@ module Egui
         in .key_pressed?
           modifiers = e.modifiers
           keys_pressed.add(e.key)
+          key_press_counts[e.key] = (key_press_counts[e.key]? || 0) + 1
           keys_down.add(e.key)
         in .key_released?
           modifiers = e.modifiers
@@ -354,7 +372,8 @@ module Egui
       end
 
       new(raw.screen_rect, pos, down, pressed, released, scroll, raw.time, dt,
-        delta, velocity, keys_down, keys_pressed, keys_released, text, modifiers,
+        delta, velocity, keys_down, keys_pressed, keys_released,
+        key_press_counts, text, modifiers,
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
         dropped_files)
     end

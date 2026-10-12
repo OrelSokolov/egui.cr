@@ -11006,6 +11006,16 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
            so the app can ask the user for confirmation, this is currently
            generally missing in sokol_app.h
         */
+        /* egui-cr patch (IME): with the soft keyboard up, native apps
+           dismiss it on BACK and stay alive — quit only on the second
+           press. egui_cr_android_ime_shown/hide live in the shim; the
+           IME bridge owns the shown flag. */
+        extern int egui_cr_android_ime_shown(void);
+        extern void egui_cr_android_ime_hide(void);
+        if (egui_cr_android_ime_shown()) {
+            egui_cr_android_ime_hide();
+            return true;
+        }
         _sapp_android_shutdown();
         /* egui-cr patch: same rationale as the quit_ordered branch in
            _sapp_android_frame — exit hard so the runtime's background
@@ -11013,7 +11023,39 @@ _SOKOL_PRIVATE bool _sapp_android_key_event(const AInputEvent* e) {
         _exit(0);
         return true;
     }
-    return false;
+    /* egui-cr patch (IME): soft keyboards ALSO deliver some keys as raw
+       key events through the input queue — notably Enter in multiline
+       mode (Gboard) and arrow keys — and hardware USB/BT keyboards use
+       this path exclusively. Map the handful text editing needs into
+       sokol KEY_DOWN/KEY_UP; character input itself keeps flowing
+       through the InputConnection bridge (autocorrect, any layout).
+       Sokol and egui.cr keycode numbering matches (ENTER=257 etc.). */
+    sapp_keycode key = SAPP_KEYCODE_INVALID;
+    switch (AKeyEvent_getKeyCode(e)) {
+        case AKEYCODE_ENTER:       key = SAPP_KEYCODE_ENTER; break;
+        case AKEYCODE_DEL:         key = SAPP_KEYCODE_BACKSPACE; break;
+        case AKEYCODE_FORWARD_DEL: key = SAPP_KEYCODE_DELETE; break;
+        case AKEYCODE_DPAD_LEFT:   key = SAPP_KEYCODE_LEFT; break;
+        case AKEYCODE_DPAD_RIGHT:  key = SAPP_KEYCODE_RIGHT; break;
+        case AKEYCODE_DPAD_UP:     key = SAPP_KEYCODE_UP; break;
+        case AKEYCODE_DPAD_DOWN:   key = SAPP_KEYCODE_DOWN; break;
+        case AKEYCODE_MOVE_HOME:   key = SAPP_KEYCODE_HOME; break;
+        case AKEYCODE_MOVE_END:    key = SAPP_KEYCODE_END; break;
+        default: break;
+    }
+    if (key == SAPP_KEYCODE_INVALID) {
+        return false;
+    }
+    const int32_t action = AKeyEvent_getAction(e);
+    if (action != AKEY_EVENT_ACTION_DOWN && action != AKEY_EVENT_ACTION_UP) {
+        return false; /* ACTION_MULTIPLE etc. */
+    }
+    _sapp_init_event(action == AKEY_EVENT_ACTION_DOWN
+        ? SAPP_EVENTTYPE_KEY_DOWN : SAPP_EVENTTYPE_KEY_UP);
+    _sapp.event.key_code = key;
+    _sapp.event.key_repeat = AKeyEvent_getRepeatCount(e) > 0;
+    _sapp_call_event(&_sapp.event);
+    return true;
 }
 
 _SOKOL_PRIVATE int _sapp_android_input_cb(int fd, int events, void* data) {
@@ -11079,10 +11121,18 @@ _SOKOL_PRIVATE int _sapp_android_main_cb(int fd, int events, void* data) {
         case _SOKOL_ANDROID_MSG_FOCUS:
             _SAPP_INFO(ANDROID_MSG_FOCUS);
             _sapp.android.has_focus = true;
+            /* egui-cr patch (IME): surface focus changes as events — the
+               IME bridge resets its shown/debounce state on UNFOCUSED
+               (the system hides the keyboard when the window loses
+               focus; without the event the backend still thinks it is
+               shown and a tap into the previously focused field never
+               re-opens it). */
+            _sapp_android_app_event(SAPP_EVENTTYPE_FOCUSED);
             break;
         case _SOKOL_ANDROID_MSG_NO_FOCUS:
             _SAPP_INFO(ANDROID_MSG_NO_FOCUS);
             _sapp.android.has_focus = false;
+            _sapp_android_app_event(SAPP_EVENTTYPE_UNFOCUSED);
             break;
         case _SOKOL_ANDROID_MSG_SET_NATIVE_WINDOW:
             _SAPP_INFO(ANDROID_MSG_SET_NATIVE_WINDOW);

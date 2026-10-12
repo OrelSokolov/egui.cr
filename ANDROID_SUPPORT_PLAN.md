@@ -208,7 +208,82 @@ Bootstrap-трюк: `__crystal_main(argc, argv)` объявляется чере
       /system/fonts (SystemPorts::Fonts android-ветка).
 - [ ] **Фаза 5 — инпут**: тач → pointer, pinch → zoom, drag-scroll,
       экранная клавиатура + text events, ppp по плотности экрана.
-      ЕЩЁ НЕ ГОТОВО: тачи не замаплены — UI не реагирует на касания.
+      Тачи замаплены в шиме (`sh_handle_touch`, см. комментарий в
+      backend/sokol_shim.c ~391); ppp — через AConfiguration
+      (`egui_cr_dpi_scale`).
+      ✅ 2026-10-12 (позже): **экранная клавиатура (IME) — готова**,
+      нативное поведение через Java InputConnection-мост (подход SDL):
+      - `tmp/android/java/com/eguicr/ime/EguiCrActivity.java` —
+        NativeActivity-сабкласс (в APK появляется classes.dex ~5.5 КБ,
+        собран javac+d8 в build_apk.sh). Нулеразмерный DummyEdit-view
+        + BaseInputConnection: commitText / setComposingText /
+        deleteSurroundingText / performEditorAction → JNI-нативы.
+        ВАЖНО: (а) static { System.loadLibrary("egui_cr_android"); } —
+        иначе VM не резолвит Java_-символы (NativeActivity dlopen'ит
+        .so мимо VM); (б) в имени пакета НЕ должно быть подчёркиваний
+        (JNI-менглинг кодирует их как _1).
+      - `backend/sokol_shim.c` (android-секция): JNI-колбеки кладут
+        записи в mutex-кольцо (UI-поток!), `egui_cr_android_ime_pop`
+        дренажится в Sokol#on_frame → Egui::Event; show/hide —
+        `egui_cr_android_ime_set_state` через JNI (GetObjectClass от
+        activity — FindClass с attach'нутого потока не видит классы
+        приложения). Строки конвертируются UTF-16→UTF-8 вручную
+        (GetStringUTFChars даёт modified UTF-8: эмодзи ≥U+10000 —
+        CESU-8 суррогаты, битые для Crystal).
+      - egui.cr: `Memory#register_text_input` (kind: plain/password/
+        multiline/number + action + editor mirror: text/cursor/anchor)
+        — text_edit/textarea регистрируются каждый кадр ПОСЛЕ обработки
+        клавиатуры (зеркало отражает правки этого кадра);
+        `Context#wants_text_input?`; Sokol#on_frame после кадра зовёт
+        set_state (показ/скрытие/тип клавиатуры по фокусу, с дебаунсом)
+        и пушит editor-state при изменениях. Editor mirror критичен для
+        hold-to-delete: нативные редакторы постоянно отдают IME текст
+        (getTextBeforeCursor/getSelectedText) и курсор
+        (imm.updateSelection) — без этого Gboard при зажатом backspace
+        останавливается после первого символа и не умеет word-delete.
+        Composing-переписывание IME («удали N, вставь новое»)
+        потребовало двух правок в общих виджетах: (а) последовательное
+        применение Backspace+вставки в одном кадре (было elsif —
+        вставка глоталась); (б) кратность нажатий
+        (`InputState#consume_key_count` — Set схлопывал N backspace'ов
+        кадра в один).
+      - vendor/sokol патчи: BACK при показанной клавиатуре только
+        скрывает её (quit — на повторное нажатие); raw key events
+        (Enter/Backspace/стрелки/Home/End — multiline-Gboard Enter и
+        USB/BT-клавиатуры) мапятся в KEY_DOWN/UP; MSG_FOCUS/NO_FOCUS
+        теперь эмитят FOCUSED/UNFOCUSED-события (раньше sokol на
+        Android их не слал вовсе).
+      - Возврат фокуса окном (HOME/другое приложение → назад, тап в то
+        же поле): sokol.cr на UNFOCUSED сбрасывает IME-состояние
+        (дебаунс show/hide, g_ime_shown в шиме, egui-фокус виджета —
+        как в нативных приложениях, после возврата нужен новый тап).
+        Без этого дебаунс считал клавиатуру «уже показанной» и show не
+        вызывался. В Java: showSoftInput после возврата молча падает
+        (PHASE_CLIENT_VIEW_SERVED), а requestFocus у DummyEdit может
+        навсегда вернуть false при живых всех canTakeFocus-условиях —
+        лечится ретраями (250 мс, до 8) и пересозданием DummyEdit на
+        втором неудачном ретрае + перепоказом в
+        onWindowFocusChanged(true). d8 для dex — из build-tools 35
+        (34-й R8 8.2.2-dev падает внутренним NPE на анонимных классах).
+      - Memory#end_frame: клик/тап мимо focused-виджета снимает фокус
+        (upstream-поведение; без этого клавиатуру не убрать тапом).
+      - Манифест: `windowSoftInputMode="adjustResize"` (resize
+        подхватывается sokol'ом сам — _sapp_android_frame каждый кадр
+        перечитывает размеры), activity = com.eguicr.ime.EguiCrActivity.
+      - Проверено на эмуляторе (tmp/android/ime_test.cr): show/hide по
+        фокусу, ввод с composing-переписыванием (e→ee→eee→backspace→ee),
+        парольное поле (kind=1, маска ●●), multiline (Enter → \n),
+        BACK-двухступенчатый, adjustResize, эмодзи (codepoint доходит
+        целый; рендерится тофу — шрифтовая цепочка без NotoColorEmoji).
+      - Ограничения/TODO: русская раскладка не проверена на устройстве
+        (путь кодировко-независимый, кириллица в BMP — должна работать);
+        эмодзи-глифы (NotoColorEmoji в цепочку шрифтов);
+        scroll-into-view сфокусированного виджета в scroll_area;
+        аппаратные USB/BT-клавиатуры — сырые key events идут по маппингу
+        выше, но полный текстовый ввод (латиница через keycode+meta,
+        KeyCharacterMap) — отдельная фаза. Editor mirror (текст/курсор →
+        IME, updateSelection) — сделан; hold-to-delete и word-delete
+        работают, проверено на эмуляторе.
 - [ ] **Фаза 6 — полировка**: lifecycle/pause, low-memory→GC,
       иконка приложения, README-раздел. Quit-порт сделан (см. ниже).
       ✅ 2026-10-12: quit-кнопка (SystemPorts::Quit) и BACK работают:
