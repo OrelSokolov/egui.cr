@@ -168,10 +168,18 @@
   `sapp_quit()` — no-op. `egui_cr_request_quit` под `SH_IOS` делает
   `exit(0)` (программный выход запрещён App Store, но для dev-билда —
   ожидаемое поведение).
-- **Файловые диалоги (добавлено)**: на iOS нет osascript/zenity и нет
-  spawn'а подпроцессов; `Dialogs.open/save/pick_folder` под
-  `flag?(:ios)` сразу возвращают nil (отмена) — fail-fast вместо
-  зависшего «opening…» (коллбэк доставляется на следующем кадре).
+- **Файловые диалоги (открытие работает)**: OpenFileDialog на iOS идёт
+  через `UIDocumentPickerViewController` (системный браузер «Файлы»):
+  шим `egui_cr_docpick_start/done/take/free`, модалка над
+  view-контроллером sokol, `asCopy:YES` — система копирует выбранный
+  файл в песочницу (путь читаем навсегда, security-scope не нужен,
+  записей в Info.plist не требуется; селектор —
+  `initForOpeningContentTypes:asCopy:`, iOS 14+, фреймворк
+  UniformTypeIdentifiers в линковке). Crystal-сторона — native runner
+  из `Dialogs.use_native_dialogs` (как win32), worker-файбер
+  sleep-poll'ит `docpick_done` — блокируется только файбер, кадры
+  рендерятся. Save/pick_folder на iOS пока fail-fast nil (нужен export-
+  picker + security-scope запись).
 
 ## Phase 5 — устройство и полировка (не начата)
 

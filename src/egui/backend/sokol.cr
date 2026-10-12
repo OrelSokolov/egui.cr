@@ -162,6 +162,15 @@ lib LibEguiCr
   fun file_dialog_result = egui_cr_file_dialog_result(handle : Void*) : UInt16*
   fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
 
+  {% if flag?(:ios) %}
+    # UIDocumentPickerViewController (shim): the system Files browser.
+    # Same polled-from-a-fiber protocol as the Win32 dialogs above.
+    fun docpick_start = egui_cr_docpick_start(comma_exts : UInt8*) : Int32
+    fun docpick_done = egui_cr_docpick_done : Int32
+    fun docpick_take = egui_cr_docpick_take : UInt8*
+    fun docpick_free = egui_cr_docpick_free(path : UInt8*)
+  {% end %}
+
   # sokol_gl (shim wrappers: on the detached path these become packet
   # ops replayed on the render thread; pass-throughs otherwise)
   fun sgl_viewport = egui_cr_sgl_viewport(x : Int32, y : Int32, w : Int32, h : Int32, origin_top_left : Bool)
@@ -638,6 +647,12 @@ module Egui
           Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
             native_file_dialog(save, title, filters, dir, name)
           end
+        {% elsif flag?(:ios) %}
+          # UIDocumentPickerViewController: open only for now — the save
+          # flow needs the export picker + security-scope writes.
+          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
+            save ? nil : ios_document_picker(filters)
+          end
         {% end %}
 
         # Backdrop from the first tick: push the initial theme's panel
@@ -968,6 +983,30 @@ module Egui
           LibEguiCr.file_dialog_free(handle)
         end
       end
+
+      {% if flag?(:ios) %}
+        # UIDocumentPickerViewController through the shim: present the
+        # system Files browser (asCopy — the pick lands in the sandbox,
+        # no security scope needed), then sleep-poll THIS fiber; Crystal
+        # sleep yields the fiber only, and on_frame's pump_pass keeps
+        # advancing it between frames, so the frame loop keeps rendering
+        # while the picker is up. Called from the AsyncDialogs worker
+        # fiber — blocking it alone is the contract.
+        private def self.ios_document_picker(filters : Array(String)) : String?
+          exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact.join(",")
+          return nil if LibEguiCr.docpick_start(exts.to_unsafe) != 0
+          until LibEguiCr.docpick_done != 0
+            sleep 20.milliseconds
+          end
+          ptr = LibEguiCr.docpick_take
+          return nil if ptr.null?
+          begin
+            String.new(ptr)
+          ensure
+            LibEguiCr.docpick_free(ptr)
+          end
+        end
+      {% end %}
 
       protected def self.on_init(skip_gl : Bool = false) : Nil
         # sg_setup + sgl_setup + the text pipelines are GL work: on the

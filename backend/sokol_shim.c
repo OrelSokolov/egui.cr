@@ -4238,4 +4238,85 @@ void egui_cr_request_quit(void) {
     sapp_quit();
 #endif
 }
+
+#if defined(SH_IOS)
+// ---------------------------------------------------------------------------
+// UIDocumentPickerViewController — the system Files browser behind the
+// OpenFileDialog port. Presented modally over sokol's view controller;
+// asCopy:YES makes the system copy the pick into the app sandbox, so the
+// returned path stays readable with no security-scope bookkeeping. No
+// Info.plist permission entries needed — the pick itself is the grant.
+// The app is single-threaded; delegate callbacks land between frames on
+// UIKit's run loop, while the Crystal worker fiber sleep-polls
+// egui_cr_docpick_done (the frame loop keeps rendering meanwhile).
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+
+@interface sh_docpick_delegate : NSObject <UIDocumentPickerDelegate>
+@end
+
+static sh_docpick_delegate* sh_docpick_dlg = nil;
+static char* sh_docpick_path = NULL; // strdup'd pick; NULL on cancel
+static int sh_docpick_state = 0;     // 0 idle, 1 picking, 2 done
+
+@implementation sh_docpick_delegate
+- (void)documentPicker:(UIDocumentPickerViewController*)picker
+didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
+    (void)picker;
+    sh_docpick_path = NULL;
+    if (urls.count > 0) {
+        const char* p = urls[0].fileSystemRepresentation;
+        if (p && p[0]) sh_docpick_path = strdup(p);
+    }
+    sh_docpick_state = 2;
+}
+- (void)documentPickerWasCancelled:(UIDocumentPickerViewController*)picker {
+    (void)picker;
+    sh_docpick_path = NULL;
+    sh_docpick_state = 2;
+}
+@end
+
+// Present the Files picker; comma_exts is a comma-separated extension
+// list ("png,jpg") or NULL/"" for any file. 0 = presented, -1 = busy or
+// no view controller yet (too early in app lifecycle).
+int egui_cr_docpick_start(const char* comma_exts) {
+    if (sh_docpick_state == 1) return -1;
+    if (nil == _sapp.ios.view_ctrl) return -1;
+    if (nil == sh_docpick_dlg) sh_docpick_dlg = [[sh_docpick_delegate alloc] init];
+    free(sh_docpick_path);
+    sh_docpick_path = NULL;
+    sh_docpick_state = 1;
+    NSMutableArray<UTType*>* types = [NSMutableArray array];
+    if (comma_exts && comma_exts[0]) {
+        char* dup = strdup(comma_exts);
+        for (char* tok = strtok(dup, ","); tok; tok = strtok(NULL, ",")) {
+            UTType* t = [UTType typeWithFilenameExtension:
+                                [NSString stringWithUTF8String:tok]];
+            if (t) [types addObject:t];
+        }
+        free(dup);
+    }
+    if (types.count == 0) [types addObject:[UTType data]]; // any file
+    UIDocumentPickerViewController* picker =
+        [[UIDocumentPickerViewController alloc] initForOpeningContentTypes:types asCopy:YES];
+    picker.delegate = sh_docpick_dlg;
+    [_sapp.ios.view_ctrl presentViewController:picker animated:YES completion:nil];
+    return 0;
+}
+
+int egui_cr_docpick_done(void) { return sh_docpick_state == 2; }
+
+// The picked path (caller owns; free with egui_cr_docpick_free) or NULL
+// on cancel. Only meaningful once egui_cr_docpick_done != 0; resets the
+// picker state.
+char* egui_cr_docpick_take(void) {
+    if (sh_docpick_state != 2) return NULL;
+    char* r = sh_docpick_path;
+    sh_docpick_path = NULL;
+    sh_docpick_state = 0;
+    return r;
+}
+
+void egui_cr_docpick_free(char* s) { free(s); }
+#endif // SH_IOS
 #endif

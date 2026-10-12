@@ -6,9 +6,11 @@
 # runs the WinForms picker through PowerShell (`System.Windows.Forms` —
 # part of the OS, no extra dependency); the script travels base64-
 # encoded (`-EncodedCommand`) so titles, filters and paths need no
-# quoting gymnastics. iOS has no dialog tool (and no subprocess spawn):
-# the request completes with nil on the next frame — fail-fast, the
-# same contract as "tool unavailable" on other platforms.
+# quoting gymnastics. iOS opens through UIDocumentPickerViewController
+# (the system Files browser; the pick is copied into the sandbox — no
+# permission entries needed). Save/pick-folder on iOS complete with nil
+# on the next frame — fail-fast, the same contract as "tool
+# unavailable" on other platforms.
 #
 # The call is NEVER blocking: `show` only starts a request and returns
 # immediately. The dialog itself runs in its own fiber (`AsyncDialogs`)
@@ -147,11 +149,14 @@ module Egui
       @@tool : String?
 
       # Native file-dialog runner installed by the backend when it has
-      # a platform picker (Win32 IFileDialog via the sokol shim thread
-      # — instant, Explorer-native, no PowerShell/.NET startup cost).
+      # a platform picker (Win32 IFileDialog via the sokol shim thread —
+      # instant, Explorer-native, no PowerShell/.NET startup cost;
+      # UIDocumentPickerViewController on iOS — the system Files
+      # browser, open only: the save flow needs the export picker +
+      # security-scope writes, so save stays nil there).
       # Called inside the AsyncDialogs worker fiber: it may block that
-      # fiber alone. Installed only on win32; nil = headless build →
-      # the PowerShell fallback takes over.
+      # fiber alone. Installed only on win32 and iOS; nil = headless
+      # build → the fail-fast/PowerShell fallbacks take over.
       @@native : ((Bool, String, Array(String), String?, String?) -> String?)?
 
       def self.use_native_dialogs(&runner : Bool, String, Array(String),
@@ -220,10 +225,15 @@ module Egui
       protected def self.open(title : String, filters : Array(String),
                               directory : String?) : String?
         {% if flag?(:ios) %}
-          # iOS: no osascript/zenity and no useful subprocess spawn —
-          # complete with nil (cancel) right away instead of hanging the
-          # worker fiber on a Process.run that can never succeed.
-          nil
+          # iOS: UIDocumentPickerViewController via the backend's native
+          # runner (the system Files browser; the pick is copied into the
+          # sandbox, so the returned path needs no extra permissions).
+          # Headless builds (no runner installed) fail fast with nil.
+          if (runner = @@native)
+            runner.call(false, title, filters, directory, nil)
+          else
+            nil
+          end
         {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
