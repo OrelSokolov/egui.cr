@@ -16,6 +16,25 @@
 # from pointer + previous-frame geometry (the flicker lesson).
 
 module Egui
+  # Which system (soft) keyboard to show for a focused text widget —
+  # mirrored by com.egui_cr.ime.EguiCrActivity on Android (kind/action
+  # ints travel through egui_cr_android_ime_set_state).
+  enum TextInputKind
+    Plain     = 0
+    Password  = 1
+    Multiline = 2
+    Number    = 3
+  end
+
+  enum TextInputAction
+    None   = 0
+    Done   = 1
+    Go     = 2
+    Search = 3
+    Send   = 4
+    Next   = 5
+  end
+
   struct InteractionVerdict
     getter? hovered : Bool
     getter? clicked : Bool
@@ -163,6 +182,13 @@ module Egui
       @widget_senses = {} of Id => Sense
       @widget_layers = {} of Id => LayerId
       @widget_clips = {} of Id => Rect
+      # Text-input widgets created this frame (id → soft-keyboard profile
+      # + editor mirror). Registered every frame by the widget (like
+      # senses); the backend reads the FOCUSED entry after the frame to
+      # show/hide the Android IME and feed it editor state (see
+      # Context#wants_text_input? / Sokol#sync_android_ime).
+      @text_inputs = {} of Id => NamedTuple(kind: TextInputKind, action: TextInputAction,
+                                            text: String, cursor: Int32, anchor: Int32)
       @used_ids = Set(Id).new
       @seen_ids = Set(Id).new
 
@@ -184,6 +210,7 @@ module Egui
       @pointer_pos = nil
       @pointer_down = false
       @pointer_delta = Vec2.zero
+      @focus_press_pos = nil
       @hover_top_z = nil
       @modal_open = false
       @modal_next = false
@@ -220,6 +247,7 @@ module Egui
       @widget_senses = {} of Id => Sense
       @widget_layers = {} of Id => LayerId
       @widget_clips = {} of Id => Rect
+      @text_inputs.clear
       @used_ids.clear
       @seen_ids.clear
       @duplicate_ids.clear
@@ -318,6 +346,10 @@ module Egui
       @pointer_down = input.pointer_down?
       @pointer_pos = input.pointer_pos
       @pointer_delta = input.pointer_delta
+      # A press this frame: checked at end_frame against the focused
+      # widget's rect (see #end_frame — the click-outside-clears-focus
+      # rule, upstream egui behavior).
+      @focus_press_pos = input.pointer_pos if input.pointer_pressed?
 
       navigate_focus(input)
     end
@@ -328,6 +360,16 @@ module Egui
       @data.keep_only(@used_ids)
       @scroll_histories.select! { |id, _| @used_ids.includes?(id) }
       close_popups_if_clicked_elsewhere
+      # egui: a pointer press that didn't land on the focused widget
+      # drops keyboard focus — click/tap outside a text field and the
+      # focus (and with it the mobile soft keyboard) goes away. A press
+      # on ANOTHER focusable already re-requested focus during update
+      # and its rect contains the press, so it survives.
+      if (pos = @focus_press_pos) && (fid = @focus.id)
+        rect = @widget_rects[fid]?
+        @focus.clear if rect.nil? || !rect.contains?(pos)
+      end
+      @focus_press_pos = nil
     end
 
     def modal_open? : Bool
@@ -440,7 +482,22 @@ module Egui
       dragged = sense.drag? && @dragging_id == id
       drag_started = dragged && @drag_started_id == id
       drag_stopped = sense.drag? && @drag_stopped_id == id
-      drag_delta = dragged ? @pointer_delta : Vec2.zero
+      # Drag engages only after the CLICK_MAX_DIST click-vs-drag
+      # threshold; @pointer_delta on that engagement frame covers just
+      # the last frame's motion, silently dropping the sub-threshold
+      # distance. On a mouse that's imperceptible; on touch it reads as
+      # "the window doesn't grab / lags" — a dead zone on every grab.
+      # Backfill on the engagement frame: delta = press → current.
+      drag_delta = if dragged
+                     if drag_started && (origin = @press_pos) &&
+                        (p = @pointer_pos)
+                       p - origin
+                     else
+                       @pointer_delta
+                     end
+                   else
+                     Vec2.zero
+                   end
       active = pressed || dragged
 
       InteractionVerdict.new(hovered, clicked, click_count, pressed,
@@ -493,6 +550,26 @@ module Egui
     # geometrically to the nearest focusable in that direction, unless
     # the focused widget locked them (slider/drag value). Runs against
     # the previous frame's geometry, before any widget renders.
+    # --- soft keyboard (Android IME) -------------------------------------
+    # Widgets call #register_text_input while drawing (every frame, like
+    # sense registration); the backend asks #focused_text_input after the
+    # frame — non-nil means the system keyboard should be up. The editor
+    # mirror (text/cursor/anchor) feeds the IME's editor queries and
+    # selection updates — native-editor behavior Gboard's hold-to-delete
+    # and autocorrect rely on.
+
+    def register_text_input(id : Id, kind : TextInputKind,
+                            action : TextInputAction, text : String,
+                            cursor : Int32, anchor : Int32) : Nil
+      @text_inputs[id] = {kind: kind, action: action, text: text,
+                          cursor: cursor, anchor: anchor}
+    end
+
+    def focused_text_input : NamedTuple(kind: TextInputKind, action: TextInputAction,
+                                        text: String, cursor: Int32, anchor: Int32)?
+      @focus.id.try { |fid| @text_inputs[fid]? }
+    end
+
     private def navigate_focus(input : InputState) : Nil
       # The focused widget claimed the whole keyboard (a terminal
       # passing Tab/arrows to its child): no focus navigation at all.

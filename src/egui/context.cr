@@ -540,6 +540,13 @@ module Egui
       @repaint_outstanding > 0
     end
 
+    # The keyboard focus sits on a text-input widget (Memory registers
+    # text widgets every frame). Backends with a soft keyboard (Android)
+    # show/hide the system IME based on this.
+    def wants_text_input? : Bool
+      !@memory.focused_text_input.nil?
+    end
+
     # True while the frame is being built (begin_frame…end_frame). The
     # reactive layer uses it to skip pointless repaint requests for
     # signal writes made during update.

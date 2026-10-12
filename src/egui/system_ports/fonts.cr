@@ -27,6 +27,13 @@ module Egui
             "/System/Library/Fonts/Supplemental/Arial.ttf",
             "/Library/Fonts/Arial.ttf",
           ]
+        {% elsif flag?(:android) %}
+          # Android's single system font root (bionic, read-only): Roboto
+          # is guaranteed; NotoSans covers CJK/fallback.
+          [
+            "/system/fonts/Roboto-Regular.ttf",
+            "/system/fonts/NotoSans-Regular.ttf",
+          ]
         {% else %}
           [
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -44,6 +51,8 @@ module Egui
           ["C:\\Windows\\Fonts"]
         {% elsif flag?(:darwin) %}
           ["/System/Library/Fonts", "/Library/Fonts", "#{home}/Library/Fonts"]
+        {% elsif flag?(:android) %}
+          ["/system/fonts", "#{home}/fonts"]
         {% else %}
           ["/usr/share/fonts", "/usr/local/share/fonts",
            "#{home}/.local/share/fonts", "#{home}/.fonts"]

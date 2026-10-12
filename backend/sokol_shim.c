@@ -11,10 +11,15 @@
 #define _GNU_SOURCE
 #endif
 
-// iOS (simulator + device): sokol_app's UIKit backend with OpenGLES 3
-// (GLKit/EAGL). Everything window-manager-ish (AppKit NSWindow/NSCursor)
-// is macOS-only; the SH_IOS branches below fall back to the same no-op
-// stubs the "other backends" path already provides.
+// Platform backends:
+// - Apple: iOS (simulator + device) uses sokol_app's UIKit backend with
+//   OpenGLES 3 (GLKit/EAGL); everything window-manager-ish (AppKit
+//   NSWindow/NSCursor) is macOS-only, the SH_IOS branches below fall
+//   back to the same no-op stubs the "other backends" path provides.
+// - Android: sokol_app owns ANativeActivity_onCreate and calls sokol_main()
+//   synchronously on the activity thread; SOKOL_NO_ENTRY/sapp_run are not
+//   supported there (sokol_app.h:1158). The desc registered by Crystal's
+//   egui_cr_sapp_run is handed over from our sokol_main below.
 #if defined(__APPLE__)
 #include <TargetConditionals.h>
 #if TARGET_OS_IPHONE
@@ -23,13 +28,15 @@
 #else
 #define SOKOL_GLCORE
 #endif
+#elif defined(__ANDROID__)
+#define SOKOL_GLES3
 #else
 #define SOKOL_GLCORE
 #endif
 
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
 #define SOKOL_IMPL
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(_WIN32) && !defined(__ANDROID__)
 #include <X11/Xlib.h>
 #include <X11/Xcursor/Xcursor.h>
 #endif
@@ -55,6 +62,317 @@ typedef void (*cr_event_cb)(int type, float mx, float my, float sx, float sy,
                             unsigned mods, unsigned mouse_button,
                             unsigned key_code, unsigned char_code);
 
+#if defined(__ANDROID__)
+// Implemented in Crystal (src/egui/backend/android_boot.cr); called from
+// sh_init_cb — the first code sokol runs on its event-loop thread.
+extern void egui_cr_android_boot(void);
+
+#include <android/configuration.h>
+#include <android/native_activity.h>
+
+// Phase 5 (ANDROID_SUPPORT_PLAN.md): sokol's sapp_dpi_scale() is fixed
+// at 1.0 on Android, so the UI would render at mdpi size on a 400+dpi
+// panel. Probe the real density once at init (AConfiguration from the
+// activity's asset manager): pixels_per_point = density_dpi / 160,
+// like upstream egui. Exposed to Crystal via egui_cr_dpi_scale().
+static float g_android_ppp = 1.0f;
+
+static void sh_android_init_ppp(void) {
+    ANativeActivity* act =
+        (ANativeActivity*)sapp_android_get_native_activity();
+    if (!act || !act->assetManager) return;
+    AConfiguration* cfg = AConfiguration_new();
+    if (!cfg) return;
+    AConfiguration_fromAssetManager(cfg, act->assetManager);
+    int32_t dpi = AConfiguration_getDensity(cfg);
+    AConfiguration_delete(cfg);
+    // 120..640 spans ldpi..xxxhdpi; ACONFIGURATION_DENSITY_NONE/ANY
+    // and friends are ≤0 sentinels — keep the 1.0 fallback for those.
+    if (dpi >= 120 && dpi <= 640) g_android_ppp = (float)dpi / 160.0f;
+}
+
+// ---- IME bridge (phase 5, ANDROID_SUPPORT_PLAN.md) ----------------------
+// The system keyboard talks to com.eguicr.ime.EguiCrActivity's
+// InputConnection (tmp/android/java/…, built to classes.dex). Its
+// native* methods run on the Java UI thread and must NOT touch Crystal —
+// the runtime lives on sokol's loop thread. They push records into this
+// mutex-guarded ring; Sokol#on_frame drains it through
+// egui_cr_android_ime_pop and translates to Egui::Events. Showing /
+// hiding goes the other way: egui_cr_android_ime_set_state (sokol thread,
+// JNI attach-once) calls the activity's static helpers, which hop to the
+// UI thread themselves.
+#include <jni.h>
+#include <pthread.h>
+#include <string.h>
+#include <android/log.h>
+
+enum {
+    EGUI_IME_COMMIT = 1, // text[]: committed/composing utf8 text
+    EGUI_IME_DELETE = 2, // count: backspaces (IME deleteSurroundingText)
+    EGUI_IME_ACTION = 3, // action: IME editor action (Enter / Done / …)
+};
+typedef struct {
+    int type;
+    int count;
+    int action;
+    char text[96];
+} egui_ime_rec_t;
+
+#define EGUI_IME_RING 64
+static egui_ime_rec_t g_ime_ring[EGUI_IME_RING];
+static volatile int g_ime_head, g_ime_tail;
+static pthread_mutex_t g_ime_mu = PTHREAD_MUTEX_INITIALIZER;
+static JavaVM* g_ime_jvm;
+static ANativeActivity* g_ime_act;
+static int g_ime_attached;          // sokol loop thread attached once
+static volatile int g_ime_shown;    // BACK-key arbitration (sokol_app.h)
+
+static void sh_ime_push(const egui_ime_rec_t* rec) {
+    pthread_mutex_lock(&g_ime_mu);
+    int next = (g_ime_head + 1) % EGUI_IME_RING;
+    if (next != g_ime_tail) { // full → drop (a 60fps drain never hits this)
+        g_ime_ring[g_ime_head] = *rec;
+        g_ime_head = next;
+    }
+    pthread_mutex_unlock(&g_ime_mu);
+}
+
+// Sokol-loop-thread drain (Sokol#on_frame → Egui::Event translation).
+int egui_cr_android_ime_pop(egui_ime_rec_t* out, int cap) {
+    int n = 0;
+    pthread_mutex_lock(&g_ime_mu);
+    while (n < cap && g_ime_tail != g_ime_head) {
+        out[n++] = g_ime_ring[g_ime_tail];
+        g_ime_tail = (g_ime_tail + 1) % EGUI_IME_RING;
+    }
+    pthread_mutex_unlock(&g_ime_mu);
+    return n;
+}
+
+// --- Editor-state mirror (native editor fidelity) ------------------------
+// Native editors continuously tell the IME the cursor/selection
+// (InputMethodManager.updateSelection) and serve getSelectedText /
+// getTextBeforeCursor / getTextAfterCursor from the real buffer. Gboard
+// needs both for hold-to-delete: without cursor updates its repeat
+// state machine stalls after the first deletion, and word-accelerated
+// delete needs the surrounding text. egui.cr pushes the focused field's
+// state each (changed) frame via egui_cr_android_ime_set_editor; the
+// Java side caches it and the InputConnection getters serve from it.
+#define EGUI_IME_ED_MAX 8192
+static JNIEnv* sh_ime_env(void) {
+    JNIEnv* env = NULL;
+    if ((*g_ime_jvm)->GetEnv(g_ime_jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_ime_jvm)->AttachCurrentThread(g_ime_jvm, &env, NULL) != JNI_OK)
+            return NULL;
+        g_ime_attached = 1;
+    }
+    return env;
+}
+
+void egui_cr_android_ime_set_editor(const char* utf8, int cursor_cp,
+                                    int anchor_cp) {
+    if (!g_ime_jvm) return; // keyboard never shown — nothing mirrors yet
+    JNIEnv* env = sh_ime_env();
+    if (!env) return;
+    // utf8 → UTF-16 jstring; cursor/anchor are CODEPOINT indexes, convert
+    // to UTF-16 offsets on the way (supplementary codepoints take 2).
+    unsigned short buf[EGUI_IME_ED_MAX];
+    int len = 0, cp = 0;
+    int sel_start = -1, sel_end = -1;
+    const unsigned char* p = (const unsigned char*)utf8;
+    while (*p && len < EGUI_IME_ED_MAX - 2) {
+        if (cp == cursor_cp) sel_start = len;
+        if (cp == anchor_cp) sel_end = len;
+        unsigned c;
+        if (p[0] < 0x80) {
+            c = p[0]; p += 1;
+        } else if ((p[0] & 0xE0) == 0xC0) {
+            c = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F); p += 2;
+        } else if ((p[0] & 0xF0) == 0xE0) {
+            c = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+            p += 3;
+        } else {
+            c = ((p[0] & 0x07) << 18) | ((p[1] & 0x3F) << 12) |
+                ((p[2] & 0x3F) << 6) | (p[3] & 0x3F);
+            p += 4;
+        }
+        if (c < 0x10000) {
+            buf[len++] = (unsigned short)c;
+        } else {
+            c -= 0x10000;
+            buf[len++] = (unsigned short)(0xD800 + (c >> 10));
+            buf[len++] = (unsigned short)(0xDC00 + (c & 0x3FF));
+        }
+        cp++;
+    }
+    if (cp == cursor_cp) sel_start = len;
+    if (cp == anchor_cp) sel_end = len;
+    if (sel_start < 0) sel_start = len;
+    if (sel_end < 0) sel_end = len;
+    // Selection span (anchor != cursor) or plain caret.
+    if (anchor_cp >= 0 && anchor_cp != cursor_cp) {
+        int a = sel_start, b = sel_end;
+        sel_start = a < b ? a : b;
+        sel_end = a < b ? b : a;
+    } else {
+        sel_start = sel_end = sel_start;
+    }
+    jstring js = (*env)->NewString(env, (const jchar*)buf, len);
+    if (!js) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    jclass cls = (*env)->GetObjectClass(env, g_ime_act->clazz);
+    jmethodID m = (*env)->GetStaticMethodID(env, cls,
+        "editorStateChanged", "(Ljava/lang/String;II)V");
+    if (m) {
+        (*env)->CallStaticVoidMethod(env, cls, m, js, (jint)sel_start,
+                                     (jint)sel_end);
+    }
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// --- Java UI thread (InputConnection natives): queue only ---
+// JNI strings use MODIFIED UTF-8: supplementary code points (emoji,
+// U+10000+) arrive as CESU-8 surrogate pairs — invalid UTF-8 for
+// Crystal. Decode from UTF-16 instead, combining surrogate pairs.
+static void sh_ime_jstr_utf8(JNIEnv* env, jstring s, char* out, size_t cap) {
+    const jchar* u16 = (*env)->GetStringChars(env, s, NULL);
+    if (!u16) {
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    const jsize n = (*env)->GetStringLength(env, s);
+    size_t o = 0;
+    for (jsize i = 0; i < n && o + 4 < cap; i++) {
+        unsigned c = (unsigned)u16[i];
+        if (c >= 0xD800 && c <= 0xDBFF && i + 1 < n &&
+            u16[i + 1] >= 0xDC00 && u16[i + 1] <= 0xDFFF) {
+            // surrogate pair → code point
+            c = 0x10000 + ((c - 0xD800) << 10) + ((unsigned)u16[++i] - 0xDC00);
+        } else if (c >= 0xD800 && c <= 0xDFFF) {
+            continue; // lone surrogate: drop
+        }
+        if (c < 0x80) {
+            out[o++] = (char)c;
+        } else if (c < 0x800) {
+            out[o++] = (char)(0xC0 | (c >> 6));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            out[o++] = (char)(0xE0 | (c >> 12));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        } else {
+            out[o++] = (char)(0xF0 | (c >> 18));
+            out[o++] = (char)(0x80 | ((c >> 12) & 0x3F));
+            out[o++] = (char)(0x80 | ((c >> 6) & 0x3F));
+            out[o++] = (char)(0x80 | (c & 0x3F));
+        }
+    }
+    out[o] = 0;
+    (*env)->ReleaseStringChars(env, s, u16);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeCommitText(JNIEnv* env, jclass cls,
+                                                     jstring s) {
+    (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_COMMIT;
+    sh_ime_jstr_utf8(env, s, rec.text, sizeof(rec.text));
+    __android_log_print(4, "egui_cr", "ime: commit '%s'", rec.text);
+    sh_ime_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeDeleteText(JNIEnv* env, jclass cls,
+                                                     jint count) {
+    (void)env; (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_DELETE;
+    rec.count = (int)count;
+    __android_log_print(4, "egui_cr", "ime: delete %d", rec.count);
+    sh_ime_push(&rec);
+}
+
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeEditorAction(JNIEnv* env, jclass cls,
+                                                       jint action) {
+    (void)env; (void)cls;
+    egui_ime_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_IME_ACTION;
+    rec.action = (int)action;
+    sh_ime_push(&rec);
+}
+
+// --- Sokol-loop-thread side: focus → show/hide the system keyboard ---
+static void sh_ime_call_java(int show, int kind, int action) {
+    if (!g_ime_jvm) {
+        // NativeActivity dlopens us directly (no System.loadLibrary), so
+        // JNI_OnLoad never runs — take the VM from the activity.
+        ANativeActivity* act =
+            (ANativeActivity*)sapp_android_get_native_activity();
+        if (!act || !act->vm) {
+            __android_log_print(4, "egui_cr", "ime: no activity/vm");
+            return;
+        }
+        g_ime_jvm = act->vm;
+        g_ime_act = act;
+    }
+    JNIEnv* env = NULL;
+    if ((*g_ime_jvm)->GetEnv(g_ime_jvm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*g_ime_jvm)->AttachCurrentThread(g_ime_jvm, &env, NULL) != JNI_OK) {
+            __android_log_print(4, "egui_cr", "ime: attach failed");
+            return;
+        }
+        g_ime_attached = 1;
+    }
+    // FindClass on a manually-attached thread resolves through the SYSTEM
+    // classloader — classes.dex app classes are invisible there. The
+    // activity object (ANativeActivity->clazz) is a global ref valid from
+    // any thread; GetObjectClass yields com.egui_cr.ime.EguiCrActivity.
+    jclass cls = (*env)->GetObjectClass(env, g_ime_act->clazz);
+    if (!cls) {
+        __android_log_print(4, "egui_cr", "ime: GetObjectClass failed");
+        (*env)->ExceptionClear(env);
+        return;
+    }
+    if (show) {
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "showKeyboard", "(II)V");
+        if (m) {
+            (*env)->CallStaticVoidMethod(env, cls, m, (jint)kind, (jint)action);
+            __android_log_print(4, "egui_cr", "ime: show kind=%d action=%d", kind, action);
+        } else {
+            __android_log_print(4, "egui_cr", "ime: showKeyboard not found");
+        }
+    } else {
+        jmethodID m = (*env)->GetStaticMethodID(env, cls, "hideKeyboard", "()V");
+        if (m) {
+            (*env)->CallStaticVoidMethod(env, cls, m);
+            __android_log_print(4, "egui_cr", "ime: hide");
+        } else {
+            __android_log_print(4, "egui_cr", "ime: hideKeyboard not found");
+        }
+    }
+    if ((*env)->ExceptionCheck(env)) {
+        __android_log_print(4, "egui_cr", "ime: java exception cleared");
+        (*env)->ExceptionClear(env);
+    }
+}
+
+void egui_cr_android_ime_set_state(int show, int kind, int action) {
+    // Flag first: a BACK press right after show must already see it.
+    g_ime_shown = show ? 1 : 0;
+    sh_ime_call_java(show, kind, action);
+}
+
+int egui_cr_android_ime_shown(void) { return g_ime_shown; }
+void egui_cr_android_ime_hide(void) { egui_cr_android_ime_set_state(0, 0, 0); }
+#endif
+
 static cr_init_cb   g_init;
 static cr_frame_cb  g_frame;
 static cr_cleanup_cb g_cleanup;
@@ -63,7 +381,6 @@ static cr_event_cb  g_event;
 // from egui_cr_sapp_run: strip the system window chrome in init_cb,
 // before the first frame paints (custom title bar apps draw their own).
 static int g_borderless;
-
 // from egui_cr_sapp_run: make the window per-pixel transparent (the
 // swapchain alpha becomes the window alpha — splash screens, custom
 // chrome).
@@ -187,7 +504,65 @@ static void sh_x11_sync_request_init(void);
 static void sh_x11_sync_request_confirm(void);
 #endif
 
+#if defined(__ANDROID__)
+// Forward the process stdout/stderr into logcat (tag egui_cr_io).
+// Android apps have both fds pointing at /dev/null, so Crystal's crash
+// handler (Exception::CallStack.setup_crash_handler → stderr) and any
+// STDERR.puts diagnostics silently vanish — the single biggest blind
+// spot when debugging on real devices.
+#include <unistd.h>
+#include <pthread.h>
+static int sh_logcat_read_fd = -1;
+static void* sh_logcat_thread(void* unused) {
+    (void)unused;
+    char buf[4096];
+    char line[4096];
+    size_t line_len = 0;
+    ssize_t n;
+    while ((n = read(sh_logcat_read_fd, buf, sizeof(buf))) > 0) {
+        for (ssize_t i = 0; i < n; i++) {
+            char c = buf[i];
+            if (c == '\n') {
+                line[line_len] = 0;
+                if (line_len) __android_log_print(ANDROID_LOG_INFO, "egui_cr_io", "%s", line);
+                line_len = 0;
+            } else if (line_len + 1 < sizeof(line)) {
+                line[line_len++] = c;
+            }
+        }
+    }
+    return NULL;
+}
+static void sh_redirect_stdio_to_logcat(void) {
+    int fds[2];
+    if (pipe(fds) != 0) return;
+    dup2(fds[1], STDOUT_FILENO);
+    dup2(fds[1], STDERR_FILENO);
+    close(fds[1]);
+    sh_logcat_read_fd = fds[0];
+    pthread_t t;
+    if (pthread_create(&t, NULL, sh_logcat_thread, NULL) == 0)
+        pthread_detach(t);
+    else
+        close(fds[0]);
+}
+#endif
+
 static void sh_init_cb(void) {
+#if defined(__ANDROID__)
+    // First code sokol runs on its event-loop thread: make stdout/stderr
+    // visible (logcat), then boot the Crystal program NOW (user
+    // top-level → Sokol.run → registers g_init and friends below), so
+    // the runtime's per-thread state (fiber TLS, GC registration) binds
+    // to the thread every callback runs on.
+    sh_redirect_stdio_to_logcat();
+    // Symbolized exception backtraces (Exception::CallStack reads this
+    // at startup): the .so ships with debug info, but on Android dladdr
+    // alone yields '??' frames without it.
+    setenv("CRYSTAL_LOAD_DEBUG_INFO", "1", 1);
+    sh_android_init_ppp();
+    egui_cr_android_boot();
+#endif
     // X11 borderless is applied before the window is mapped (the
     // egui_cr_x11_pre_map_hook sokol patch); other platforms undecorate
     // here, once the window exists.
@@ -308,6 +683,106 @@ static void sh_frame_cb(void) {
 }
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
+#if defined(__ANDROID__)
+// ---- Touch → pointer/scroll mapping (phase 5, ANDROID_SUPPORT_PLAN.md) --
+// sokol delivers TOUCHES_* with positions in framebuffer pixels and no
+// synthesized mouse events. We re-emit them through the same flattened
+// callback the desktop mouse path uses, so egui.cr sees plain pointer
+// events and full click/drag interaction works unmodified:
+//   1 finger  → pointer down/move/up (click + drag)
+//   2 fingers → pan: centroid delta re-emitted as MOUSE_SCROLL, in
+//               points (fb px / ppp, like desktop wheel ticks). A second
+//               finger landing mid-drag releases the pointer first
+//               (same behaviour as upstream egui mobile); when the pan
+//               finger lifts, the remaining finger re-presses on its
+//               next move.
+static float     g_tch_x, g_tch_y;        // last first-finger pos (fb px)
+static uintptr_t g_tch_id = (uintptr_t)-1;
+static bool      g_tch_down = false;
+static bool      g_tch_pan = false;
+static float     g_tch_pan_x, g_tch_pan_y; // last 2-finger centroid (fb px)
+
+static void sh_tch_pointer(int type, float x, float y) {
+    g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
+}
+static void sh_tch_scroll(float dx_px, float dy_px) {
+    g_event(SAPP_EVENTTYPE_MOUSE_SCROLL, 0.0f, 0.0f,
+            dx_px / g_android_ppp, dy_px / g_android_ppp, 0, 0, 0, 0);
+}
+
+static void sh_handle_touch(const sapp_event* ev) {
+    const int n = ev->num_touches;
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_TOUCHES_BEGAN:
+        if (n == 1) {
+            g_tch_id = ev->touches[0].identifier;
+            g_tch_x = ev->touches[0].pos_x;
+            g_tch_y = ev->touches[0].pos_y;
+            g_tch_down = true;
+            sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_DOWN, g_tch_x, g_tch_y);
+        } else {
+            // second finger: release the pointer, pan takes over
+            if (g_tch_down) {
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_tch_x, g_tch_y);
+                g_tch_down = false;
+                g_tch_id = (uintptr_t)-1;
+            }
+            if (n >= 2) {
+                g_tch_pan = true;
+                g_tch_pan_x = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
+                g_tch_pan_y = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+            }
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_MOVED:
+        if (n >= 2) {
+            if (g_tch_pan) {
+                float cx = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
+                float cy = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+                // scroll convention: positive = content moves down/left
+                sh_tch_scroll(g_tch_pan_x - cx, g_tch_pan_y - cy);
+                g_tch_pan_x = cx; g_tch_pan_y = cy;
+            }
+        } else if (n == 1) {
+            // continue the drag, or restart one after the pan finger
+            // lifted while a finger is still on screen
+            if (!g_tch_down && !g_tch_pan) {
+                g_tch_id = ev->touches[0].identifier;
+                g_tch_down = true;
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_DOWN,
+                               ev->touches[0].pos_x, ev->touches[0].pos_y);
+            }
+            if (g_tch_down && ev->touches[0].identifier == g_tch_id) {
+                g_tch_x = ev->touches[0].pos_x;
+                g_tch_y = ev->touches[0].pos_y;
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_MOVE, g_tch_x, g_tch_y);
+            }
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_ENDED:
+    case SAPP_EVENTTYPE_TOUCHES_CANCELLED: {
+        // touches[] still includes the lifting finger(s)
+        int remain = (ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED)
+                         ? 0 : n - 1;
+        if (remain <= 0) {
+            if (g_tch_down) {
+                sh_tch_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_tch_x, g_tch_y);
+                g_tch_down = false;
+            }
+            g_tch_id = (uintptr_t)-1;
+            g_tch_pan = false;
+        } else {
+            // pinch/pan over; a fresh single-finger move re-presses
+            g_tch_pan = false;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+#endif
+
 static void sh_event_cb(const sapp_event* ev) {
 #if defined(SH_IOS)
     // iOS reports touches as TOUCHES_* only (sokol_app's UIKit backend does
@@ -353,10 +828,50 @@ static void sh_event_cb(const sapp_event* ev) {
         return;
     }
 #endif
+#if defined(__ANDROID__)
+    if (ev->type >= SAPP_EVENTTYPE_TOUCHES_BEGAN &&
+        ev->type <= SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+        sh_handle_touch(ev);
+        return;
+    }
+#endif
     g_event((int)ev->type, ev->mouse_x, ev->mouse_y, ev->scroll_x, ev->scroll_y,
             ev->modifiers, (unsigned)ev->mouse_button,
             (unsigned)ev->key_code, ev->char_code);
 }
+
+// The desc built by egui_cr_sapp_run on desktop. Android never uses it:
+// there sokol_main returns a static desc before the Crystal program has
+// even run (see below).
+static sapp_desc g_main_desc;
+
+#if defined(__ANDROID__)
+// sokol_app entry point on Android: called synchronously from its own
+// ANativeActivity_onCreate. The Crystal runtime CANNOT boot here: it
+// would land on the activity's main thread, while every callback
+// (init/frame/event/cleanup) runs on sokol's event-loop thread — the
+// scheduler's fiber TLS and the GC thread registration would be bound
+// to the wrong thread. So sokol_main returns a static desc and the
+// actual boot happens in sh_init_cb, the first code sokol runs on its
+// own thread (same pattern as android-ndk.cr's android_main).
+sapp_desc sokol_main(int argc, char* argv[]) {
+    (void)argc; (void)argv;
+    return (sapp_desc){
+        .init_cb = sh_init_cb,
+        .frame_cb = sh_frame_cb,
+        .event_cb = sh_event_cb,
+        .cleanup_cb = sh_cleanup_cb,
+        .high_dpi = true,
+        // MSAA off: eglChooseConfig with ES3 + samples>0 returns no
+        // config on many devices/emulators, and _sapp_android_init_egl
+        // asserts on that. GLES 3.0 exactly — sokol's Android default
+        // asks for 3.1, which older translators reject.
+        .sample_count = 1,
+        .gl = { .major_version = 3, .minor_version = 0 },
+        .logger.func = slog_func,
+    };
+}
+#endif
 
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
@@ -388,7 +903,13 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         setenv("LIBGL_DRI3_DISABLE", "1", 1);
     }
 #endif
-    sapp_desc desc = {
+#if defined(__ANDROID__)
+    // Android: registration only. The event loop already runs (sokol
+    // called sh_init_cb on its thread, which booted the Crystal program
+    // that got us here); the static desc from sokol_main drives it.
+    (void)title; (void)width; (void)height; (void)swap_interval;
+#else
+    g_main_desc = (sapp_desc){
         .init_cb = sh_init_cb,
         .frame_cb = sh_frame_cb,
         .event_cb = sh_event_cb,
@@ -418,7 +939,8 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .max_dropped_file_path_length = 8192,
         .logger.func = slog_func,
     };
-    sapp_run(&desc);
+    sapp_run(&g_main_desc);
+#endif
 }
 
 void egui_cr_gfx_init(void) {
@@ -703,6 +1225,17 @@ static void sh_gl_rebind(void) {
 static void sh_gl_rebind(void) { }
 #endif
 
+// The backend's pixels_per_point source. Desktop: sokol's own dpi
+// scale. Android: sapp_dpi_scale() is hardcoded to 1.0 there, so the
+// AConfiguration density probe (sh_android_init_ppp) owns the value.
+float egui_cr_dpi_scale(void) {
+#if defined(__ANDROID__)
+    return g_android_ppp;
+#else
+    return sapp_dpi_scale();
+#endif
+}
+
 void egui_cr_begin_pass(int w, int h) {
     g_fb_w = w;
     g_fb_h = h;
@@ -713,7 +1246,7 @@ void egui_cr_begin_pass(int w, int h) {
     // restore divides by it — a stale 0 turns the restored ortho into
     // NaN and silently drops every 2D draw after the first 3D mesh.
     // Refresh from the live dpi scale every frame.
-    float d = sapp_dpi_scale();
+    float d = egui_cr_dpi_scale();
     if (d > 0.0f) g_pkt_ppp = d;
 #if defined(SH_IOS)
     // sgl_draw() leaves GL_SCISSOR_TEST enabled with the frame's last
@@ -840,6 +1373,13 @@ void egui_cr_set_transparent(void) {
 // X11: handled by the visual choice alone (see above).
 void egui_cr_set_transparent(void) {}
 
+#endif
+
+#if defined(__ANDROID__)
+// Android runs the legacy direct loop only (no detached render thread),
+// and drag&drop does not exist there — but Crystal binds the payload
+// free unconditionally, so the symbol must exist.
+void egui_cr_drop_payload_free(void* payload) { (void)payload; }
 #endif
 
 // Present the backdrop color once, right after gfx init and BEFORE the

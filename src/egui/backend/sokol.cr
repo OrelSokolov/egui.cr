@@ -22,6 +22,23 @@ require "./crystalfonts"
 {% if flag?(:win32) %}
   require "socket"
 {% end %}
+{% if flag?(:android) %}
+  # TEMP DIAGNOSTIC (phase 3): logcat breadcrumbs through the boot path.
+  @[Link("log")]
+  lib LibEguiCrDbg
+    fun __android_log_print(prio : Int32, tag : UInt8*, text : UInt8*) : Int32
+  end
+
+  def egui_android_log(msg)
+    LibEguiCrDbg.__android_log_print(4, "egui_cr", msg)
+  end
+{% end %}
+
+# Android: exported bootstrap the C shim's sokol_main calls (see
+# backend/sokol_shim.c and ANDROID_SUPPORT_PLAN.md).
+{% if flag?(:android) %}
+  require "./android_boot"
+{% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
 # bounds checks on every array access), while the C code is cc -O2
@@ -122,6 +139,29 @@ lib LibEguiCr
   fun sapp_width : Int32
   fun sapp_height : Int32
   fun sapp_dpi_scale : Float32
+  # Android-only: sapp_dpi_scale() is hardcoded to 1.0 on Android, so
+  # the shim's egui_cr_dpi_scale exposes the AConfiguration density
+  # probe instead. Only referenced under flag?(:android) — desktop
+  # binaries link the prebuilt libegui_cr_sokol.a, which may predate
+  # the symbol (see #dpi_scale below).
+  fun android_dpi_scale = egui_cr_dpi_scale : Float32
+  {% if flag?(:android) %}
+    # IME bridge (backend/sokol_shim.c): records queued by the Java
+    # InputConnection on the UI thread, drained here on sokol's loop
+    # thread; focus → show/hide goes back through set_state.
+    struct ImeRec
+      type : Int32
+      count : Int32
+      action : Int32
+      text : UInt8[96]
+    end
+
+    fun android_ime_pop = egui_cr_android_ime_pop(out : ImeRec*, cap : Int32) : Int32
+    fun android_ime_set_state = egui_cr_android_ime_set_state(show : Int32, kind : Int32, action : Int32) : Void
+    # Editor-state mirror: focused field's utf8 text + cursor/anchor
+    # (codepoint indexes) → Java cache + imm.updateSelection.
+    fun android_ime_set_editor = egui_cr_android_ime_set_editor(text : UInt8*, cursor : Int32, anchor : Int32) : Void
+  {% end %}
   fun request_quit = egui_cr_request_quit
   fun show_keyboard = egui_cr_show_keyboard(shown : Int32)
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
@@ -236,7 +276,6 @@ module Egui
     # The sokol_gfx rendering backend (eframe/glow_integration role).
     module Sokol
       class_getter app : Egui::App?
-
       @@events = [] of Egui::Event
       # On-screen keyboard state (iOS): text focus → show/hide, edge-
       # triggered so sapp_show_keyboard is only called on transitions.
@@ -510,7 +549,7 @@ module Egui
         end
 
         def dpi_scale : Float64
-          LibEguiCr.sapp_dpi_scale.to_f64
+          Sokol.dpi_scale.to_f64
         end
       end
 
@@ -550,6 +589,8 @@ module Egui
       MOUSE_SCROLL  =  6
       MOUSE_MOVE    =  7
       RESIZED       = 14
+      FOCUSED       = 17
+      UNFOCUSED     = 18
       FILES_DROPPED = 23
 
       # eframe::run_native — blocks until the window closes.
@@ -608,6 +649,8 @@ module Egui
                    chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
                    inspector : Symbol = :off,
                    vsync : Bool = true) : Nil
+        # Android stage log: breadcrumbs for `adb logcat -s egui_cr`.
+        {% if flag?(:android) %} egui_android_log("run: entered") {% end %}
         @@app = app
         @@icon = icon
         @@transparent = transparent
@@ -688,8 +731,12 @@ module Egui
         # Disable with EGUI_RENDER_THREAD=0 (bisecting / regression
         # hunting). macOS stays on the legacy loop: AppKit requires the
         # process main thread, which is where the Crystal scheduler
-        # lives (see loop_redesign.md §8).
-        {% if flag?(:linux) || flag?(:win32) %}
+        # lives (see loop_redesign.md §8). Android also stays on the
+        # legacy path — sokol owns the event loop and called our
+        # sokol_main up the stack; note flag?(:linux) is true on the
+        # aarch64-linux-android target (the triple's vendor), so it must
+        # be excluded explicitly.
+        {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
             run_detached(title, width, height, decorations, transparent,
               vsync)
@@ -697,6 +744,7 @@ module Egui
           end
         {% end %}
 
+        {% if flag?(:android) %} egui_android_log("run: before sapp_run") {% end %}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
           vsync ? 1 : 0)
@@ -913,7 +961,7 @@ module Egui
           dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves}")
           frame_t0 = Time.instant if @@frame_debug
 
-          ppp = LibEguiCr.sapp_dpi_scale.to_f64
+          ppp = dpi_scale.to_f64
           @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
           LibEguiCr.set_ppp(@@pixels_per_point.to_f32)
           set_stack_scales
@@ -1013,6 +1061,7 @@ module Egui
       {% end %}
 
       protected def self.on_init(skip_gl : Bool = false) : Nil
+        {% if flag?(:android) %} egui_android_log("on_init: start") {% end %}
         # sg_setup + sgl_setup + the text pipelines are GL work: on the
         # detached path they belong to the render thread's init callback
         # (already run by the time we get here).
@@ -1258,6 +1307,20 @@ module Egui
       # (#on_event) and the detached loop's ring drain (#drain_events).
       # `payload` carries the dropped-files path list on the detached
       # path; nil on legacy (the paths are queried through sapp then).
+      # The backend's pixels_per_point source: sokol's dpi scale on
+      # desktop, the shim's density probe on Android (sokol returns 1.0
+      # there, which would render the UI at mdpi size on 400+dpi panels).
+      # Flag-conditional so desktop binaries keep referencing only
+      # sapp_dpi_scale — the prebuilt libegui_cr_sokol.a may not contain
+      # the newer egui_cr_dpi_scale symbol.
+      protected def self.dpi_scale : Float32
+        {% if flag?(:android) %}
+          LibEguiCr.android_dpi_scale
+        {% else %}
+          LibEguiCr.sapp_dpi_scale
+        {% end %}
+      end
+
       protected def self.translate_event(type : Int32, mx : Float32,
                                          my : Float32, sx : Float32,
                                          sy : Float32, mods : UInt32,
@@ -1267,7 +1330,7 @@ module Egui
         # sokol reports pointer positions in framebuffer pixels (macOS
         # multiplies by the backing scale); the UI works in points
         # (sapp_width), like upstream egui's pixels_per_point conversion.
-        if (scale = LibEguiCr.sapp_dpi_scale) > 1.0f32
+        if (scale = dpi_scale) > 1.0f32
           mx /= scale
           my /= scale
         end
@@ -1352,6 +1415,22 @@ module Egui
           # screen_rect is rebuilt from sapp_width/height each active
           # frame; the event just marks the frame non-idle.
           @@events << Egui::Event.new(:window_resized)
+        when FOCUSED
+          # no-op — the IME state was reset on the matching UNFOCUSED
+        when UNFOCUSED
+          {% if flag?(:android) %}
+            # The system hides the soft keyboard when the window loses
+            # focus (app switch, home, a dialog on top) — reset the IME
+            # bridge so it matches reality: drop the show/hide debounce
+            # (otherwise a tap into the SAME field never re-fires show),
+            # clear the shim's shown flag (BACK arbitration) and drop
+            # the widget's keyboard focus — native apps also require a
+            # fresh tap on the field after coming back.
+            @@ime_last = {false, TextInputKind::Plain, TextInputAction::Done}
+            @@ime_ed_last = {"", 0, -1}
+            LibEguiCr.android_ime_set_state(0, 0, 0)
+            @@app.try &.ctx.memory.focus.clear
+          {% end %}
         end
       end
 
@@ -1380,7 +1459,7 @@ module Egui
           @@dbg_last_entry = now
         end
 
-        ppp = LibEguiCr.sapp_dpi_scale.to_f64
+        ppp = dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
         set_stack_scales
         fb_w = LibEguiCr.sapp_width
@@ -1398,6 +1477,12 @@ module Egui
         # paint commands — the visuals are identical, the CPU cost is
         # not. Any input, resize or dialog callback switches right back
         # to a full frame.
+        # IME records queued by the Java InputConnection (UI thread) —
+        # must land in @@events BEFORE the idle check so typing always
+        # forces a full frame.
+        {% if flag?(:android) %}
+          drain_android_ime
+        {% end %}
         if (cache = @@last_commands) &&
            delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
            !app.ctx.textures.pending_destroys? &&
@@ -1451,6 +1536,13 @@ module Egui
 
         paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
 
+        # Focus sits on / left a text widget → show/hide the Android soft
+        # keyboard (debounced against the last request). After the frame:
+        # Memory's text-input registry is complete for this frame.
+        {% if flag?(:android) %}
+          sync_android_ime(app.ctx)
+        {% end %}
+
         if (t0 = frame_t0) &&
            (ms = (Time.instant - t0).total_milliseconds) > 100.0
           # The whole slow frame, phase by phase. On the legacy path the
@@ -1460,6 +1552,78 @@ module Egui
           STDERR.puts "[frame] %8.3f SLOW full frame: %.0fms" % {dbg_now, ms}
         end
       end
+
+      {% if flag?(:android) %}
+        # Last IME request sent to the shim: {shown, kind, action} —
+        # egui_cr_android_ime_set_state hops to the UI thread, so debounce.
+        @@ime_last = {false, TextInputKind::Plain, TextInputAction::Done}
+        # Last editor mirror pushed ({text, cursor, anchor}).
+        @@ime_ed_last = {"" , 0, -1}
+
+        # Translate queued IME records (commit / delete / editor action)
+        # from the shim ring into plain egui events. Composing text
+        # arrives as repeated commits — the Java side already deletes the
+        # previous span (SDL-style bookkeeping), so the widget just sees
+        # plain edits.
+        private def self.drain_android_ime : Nil
+          recs = Pointer(LibEguiCr::ImeRec).malloc(16)
+          while (n = LibEguiCr.android_ime_pop(recs, 16)) > 0
+            n.times do |i|
+              r = recs[i]
+              egui_android_log("ime drain type=#{r.type} count=#{r.count} text='#{String.new(r.text.to_unsafe)}'")
+              case r.type
+              when 1 # commit text
+                text = String.new(r.text.to_unsafe)
+                if text == "\n"
+                  # Multiline keyboards report Enter as committed text;
+                  # the egui pipeline expects the key.
+                  press_and_release(Egui::KeyCode::Enter)
+                else
+                  @@events << Egui::Event.text_input(text)
+                end
+              when 2 # deleteSurroundingText → backspaces
+                r.count.times { press_and_release(Egui::KeyCode::Backspace) }
+              when 3 # performEditorAction → Enter / Done / …
+                press_and_release(Egui::KeyCode::Enter)
+              end
+            end
+          end
+        end
+
+        private def self.press_and_release(key : Egui::KeyCode) : Nil
+          # Soft keyboards have no hold semantics; press+release in the
+          # same frame keeps InputState#keys_down clean (nothing ever
+          # releases them otherwise).
+          @@events << Egui::Event.key_pressed(key)
+          @@events << Egui::Event.key_released(key)
+        end
+
+        private def self.sync_android_ime(ctx : Egui::Context) : Nil
+          if (ti = ctx.memory.focused_text_input)
+            state = {true, ti[:kind], ti[:action]}
+          else
+            state = {false, TextInputKind::Plain, TextInputAction::Done}
+          end
+          if state != @@ime_last
+            @@ime_last = state
+            LibEguiCr.android_ime_set_state(
+              state[0] ? 1 : 0, state[1].value, state[2].value)
+          end
+          # Editor mirror: text/cursor/anchor of the focused field → the
+          # IME's editor queries + updateSelection (native editors do
+          # this continuously; Gboard's hold-to-delete stalls without
+          # it). Debounced — pushes only on actual changes.
+          if (ti = ctx.memory.focused_text_input)
+            ed = {ti[:text], ti[:cursor], ti[:anchor]}
+            if ed != @@ime_ed_last
+              @@ime_ed_last = ed
+              ti[:text].to_unsafe # ensure a contiguous buffer
+              LibEguiCr.android_ime_set_editor(ti[:text].to_unsafe,
+                ti[:cursor], ti[:anchor])
+            end
+          end
+        end
+      {% end %}
 
       # measure() must see the draw-path ppem (see AtlasFonts#scale) —
       # set it before begin_frame so this frame's layout agrees with
