@@ -272,6 +272,14 @@ callback'и UIKit приходят между кадрами).
 `tmp/ios/phase4/build_demo.sh` (бандл `cr.egui.iosdemo`; Info.plist
 копировать из Info_demo.plist, не тащить исходное имя).
 
+Иконка на домашнем экране: в ручном бандле нет asset-catalog —
+белый плейсхолдер. Схема: `CFBundleIcons → CFBundlePrimaryIcon →
+CFBundleIconFiles` в Info.plist + PNG в корне бандла (AppIcon60x60@2x/
+@3x, 120/180 px, генерятся sips из assets/icon.png при сборке).
+Проверено пиксельно: 4×4-отпечаток цвета иконки находится на
+домашнем экране после установки (позиция свежеустановленного
+приложения).
+
 Верификация без тапов (simctl не умеет инъекцию тачей, accessibility
 закрыт): `tmp/ios/phase4/demo_auto.cr` — ENV["EGUI_AUTO"] дёргает порт
 на первом кадре; булевы режимы красят панель в зелёный/красный,
