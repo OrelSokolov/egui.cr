@@ -53,12 +53,15 @@ describe Egui::ContextMenu do
       .item("Only", icon: :plus) { fired << "only" }
 
     ctx = Egui::Context.new
+    second_rect = [Egui::Rect.zero]
     draw = ->(events : Array(Egui::Event), time : Float64) do
       raw = Egui::RawInput.new(MENU_SCREEN, events, time)
       ctx.begin_frame(raw)
       ctx.central_panel do |ui|
         ui.button("one").context_menu(menu)
-        ui.button("two").context_menu(menu)
+        r2 = ui.button("two")
+        second_rect[0] = r2.rect
+        r2.context_menu(menu)
       end
       ctx.end_frame
     end
@@ -66,8 +69,11 @@ describe Egui::ContextMenu do
     draw.call([] of Egui::Event, 0.016)
 
     # Open on the second button; only one popup is live even though
-    # the menu instance drives both attachments.
-    second = Egui::Pos2.new(30.0, 60.0)
+    # the menu instance drives both attachments. The press lands at
+    # the button's center — the actual rect, not a hardcoded y (mobile
+    # media rules resize buttons at this 400pt screen width).
+    rect = second_rect[0]
+    second = Egui::Pos2.new(rect.min.x + 10.0, (rect.min.y + rect.max.y) / 2.0)
     draw.call([Egui::Event.pointer_pressed(second, :secondary)], 0.032)
     draw.call([] of Egui::Event, 0.048)
 

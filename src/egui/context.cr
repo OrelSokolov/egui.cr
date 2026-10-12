@@ -333,6 +333,9 @@ module Egui
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
       @available_rect = raw.screen_rect
+      # Media conditions match against the viewport width (see
+      # StyleSheet#viewport_width=).
+      @theme.sheet.viewport_width = raw.screen_rect.width
       @cursor_icon = CursorIcon::Default
       @cursor_image = nil
 

@@ -23,6 +23,14 @@
 # nothing is rebuilt per frame; defining or tweaking a rule drops the
 # cache.
 #
+# Media conditions (CSS `@media (min-width: 600px)`): rules declared
+# with a `media:` condition live in a parallel list evaluated against
+# the viewport width (`#viewport_width=`, set from `screen_rect` by
+# `Context#begin_frame`). Matching media rules merge BETWEEN the class
+# and state layers — a media rule beats the class defaults, but a
+# pseudo-class rule still beats a media class rule (CSS: media queries
+# gate rules, they don't add specificity). `px` = logical point.
+#
 # Style scopes (`Ui#with_style_scope`) chain a widget's base class with
 # a scoped path — a Button inside scope "sidebar" reads BOTH "button"
 # and "sidebar.button" through `#resolve_chain` (class layers first,
@@ -265,6 +273,73 @@ module Egui
     end
   end
 
+  # A CSS media condition on width: `min-width` and/or `max-width` in
+  # logical points (CSS `px`), the analog of
+  # `@media (min-width: 600px) and (max-width: 899px)`. Media types
+  # (`screen`, `all`) are accepted and ignored. Both bounds are
+  # inclusive, like CSS.
+  struct MediaCond
+    getter min_width : Float64?
+    getter max_width : Float64?
+
+    def initialize(@min_width : Float64? = nil, @max_width : Float64? = nil)
+    end
+
+    # Parse "(min-width: 600px)", "screen and (max-width: 899px)", … —
+    # nil when nothing width-like (or something unsupported) is there;
+    # the caller decides whether to warn and drop the rule.
+    def self.parse(text : String) : MediaCond?
+      min_width = nil
+      max_width = nil
+      text.strip.split(/\s+and\s+/i).each do |part|
+        p = part.strip.downcase
+        next if p.empty? || p == "screen" || p == "all" || p == "only screen"
+        p = p[1...-1] if p.starts_with?('(') && p.ends_with?(')')
+        key, _, val = p.partition(':')
+        num = val.strip.gsub("px", "").to_f64?
+        case key.strip
+        when "min-width"
+          min_width = num if num
+        when "max-width"
+          max_width = num if num
+        else
+          return nil # orientation/print/… — not a width condition
+        end
+        return nil if num.nil?
+      end
+      (min_width || max_width) ? new(min_width, max_width) : nil
+    end
+
+    def matches?(width : Float64?) : Bool
+      return false if width.nil?
+      ok = true
+      if (mn = @min_width)
+        ok &= width >= mn
+      end
+      if (mx = @max_width)
+        ok &= width <= mx
+      end
+      ok
+    end
+
+    def to_s(io : IO) : Nil
+      parts = [] of String
+      if (mn = @min_width)
+        parts << "(min-width: #{fmt(mn)}px)"
+      end
+      if (mx = @max_width)
+        parts << "(max-width: #{fmt(mx)}px)"
+      end
+      io << parts.join(" and ")
+    end
+
+    # Whole numbers print without the trailing ".0" — the same spelling
+    # files are hand-written with ("600px", not "600.0px").
+    private def fmt(w : Float64) : String
+      w % 1 == 0 ? w.to_i64.to_s : w.to_s
+    end
+  end
+
   # One class in the tree: base-state vars plus per-state overlays.
   class StyleClass
     getter path : String
@@ -290,9 +365,31 @@ module Egui
   end
 
   class StyleSheet
+    # One media-gated rule entry: the condition plus the selector it
+    # was declared with (path + optional state) and its vars. Kept in
+    # declaration order — CSS source order decides between two active
+    # media rules touching the same key.
+    struct MediaRuleEntry
+      getter cond : MediaCond
+      getter path : String
+      getter state : String?
+      getter vars : StyleVars
+
+      def initialize(@cond, @path, @state, @vars)
+      end
+    end
+
     def initialize
       @classes = {} of String => StyleClass
       @resolved = {} of {String, String?} => StyleVars
+      @media_rules = [] of MediaRuleEntry
+      # The viewport width the media conditions match against, in
+      # logical points — set by `Context#begin_frame` from
+      # `screen_rect.width` (headless tests set it directly).
+      @viewport_width = nil
+      # The per-rule match bits at the last width update — a flip (the
+      # width crossed a condition boundary) drops the resolve cache.
+      @media_bits = [] of Bool
     end
 
     # The class for `path`, created on first touch (defining a child
@@ -308,12 +405,25 @@ module Egui
     # Define/extend a rule CSS-style: `rule("sidebar.tab:selected", …)`
     # splits into class "sidebar.tab" + state "selected". Merges into
     # whatever the selector already holds (per-key override) and drops
-    # the resolve cache.
+    # the resolve cache. With `media` ("(min-width: 600px)") the rule
+    # lands in the media-gated list instead — applied only while the
+    # viewport matches (see `#viewport_width=`).
     def rule(selector : String,
-             vars : Hash(String, StyleValue)) : self
+             vars : Hash(String, StyleValue), media : String? = nil) : self
       path, state = split_selector(selector)
-      cls = self[path]
-      state ? cls.set(state, vars) : cls.set(vars)
+      if media
+        if (cond = MediaCond.parse(media))
+          @media_rules << MediaRuleEntry.new(cond, path, state,
+            StyleVars.new.merge!(vars))
+          refresh_media_matches
+        else
+          STDERR.puts "stylesheet: unsupported media condition " \
+                      "#{media.inspect} — rule #{selector.inspect} ignored"
+        end
+      else
+        cls = self[path]
+        state ? cls.set(state, vars) : cls.set(vars)
+      end
       @resolved.clear
       self
     end
@@ -324,10 +434,13 @@ module Egui
     #
     #   1. class layer (defaults): ancestor vars root→leaf — the more
     #      specific class wins per key;
-    #   2. state layer: every matching state overlay root→leaf, merged
+    #   2. media class layer: every matching media condition's class
+    #      rules, declaration order (see `#viewport_width=`);
+    #   3. state layer: every matching state overlay root→leaf, merged
     #      on top — states ALWAYS override class defaults, and the leaf
     #      state wins among states (CSS: classes are defaults,
-    #      pseudo-class rules beat them).
+    #      pseudo-class rules beat them — even media-gated ones);
+    #   4. media state layer: matching media conditions' state rules.
     def resolve(path : String, state : String? = nil) : StyleVars
       key = {path, state}
       if (cached = @resolved[key]?)
@@ -341,12 +454,14 @@ module Egui
       chain.each do |ancestor|
         bag.merge!(@classes[ancestor].vars) if (cls = @classes[ancestor]?)
       end
+      merge_media_class(bag, path)
       if state
         chain.each do |ancestor|
           if (cls = @classes[ancestor]?) && (overlay = cls.states[state]?)
             bag.merge!(overlay)
           end
         end
+        merge_media_state(bag, path, state)
       end
       @resolved[key] = bag
       bag
@@ -381,7 +496,8 @@ module Egui
     # The state layer of #resolve alone: every matching ancestor's
     # `state` overlay merged root→leaf, with NO class values — what
     # resolve_chain needs to keep a pseudo-class rule above the class
-    # layer of a more specific chain path.
+    # layer of a more specific chain path. Includes the media state
+    # entries on top (media gating never trumps pseudo-class rules).
     def resolve_state_layer(path : String, state : String) : StyleVars
       bag = StyleVars.new
       ancestors(path).each do |ancestor|
@@ -389,6 +505,7 @@ module Egui
           bag.merge!(overlay)
         end
       end
+      merge_media_state(bag, path, state)
       bag
     end
 
@@ -401,17 +518,28 @@ module Egui
 
     # Remove one key from a class/state rule (the inspector's "reset"):
     # the slot goes back to inheriting the theme. Unset keys and
-    # unknown selectors are no-ops.
-    def unset(selector : String, key : String) : self
+    # unknown selectors are no-ops. With `media` the key is removed
+    # from that media rule instead (same spelling as `#rule`).
+    def unset(selector : String, key : String, media : String? = nil) : self
       path, state = split_selector(selector)
-      if (cls = @classes[path]?)
+      if media
+        if (cond = MediaCond.parse(media))
+          @media_rules.each do |entry|
+            next unless entry.cond == cond && entry.path == path &&
+                        entry.state == state
+            entry.vars.delete(key)
+          end
+          @media_rules.reject! { |entry| entry.vars.empty? }
+          refresh_media_matches
+        end
+      elsif (cls = @classes[path]?)
         if state
           cls.states[state]?.try &.delete(key)
         else
           cls.vars.delete(key)
         end
-        @resolved.clear
       end
+      @resolved.clear
       self
     end
 
@@ -420,6 +548,58 @@ module Egui
     def touch : self
       @resolved.clear
       self
+    end
+
+    # The viewport width the media conditions match against, in
+    # logical points — set by `Context#begin_frame` from
+    # `screen_rect.width` (headless tests set it directly). A width
+    # change only drops the resolve cache when it flips some
+    # condition's match state; mere resizes inside a breakpoint band
+    # keep the cache.
+    def viewport_width=(width : Float64?) : Nil
+      return if width == @viewport_width
+      @viewport_width = width
+      refresh_media_matches
+    end
+
+    def viewport_width : Float64?
+      @viewport_width
+    end
+
+    # Recompute the per-rule match bits; a flip (a condition crossed)
+    # invalidates every cached merge.
+    private def refresh_media_matches : Nil
+      bits = @media_rules.map &.cond.matches?(@viewport_width)
+      @resolved.clear if bits != @media_bits
+      @media_bits = bits
+    end
+
+    # Media class rules for `path` (entry.path ∈ ancestors-or-self),
+    # matching conditions only, declaration order.
+    private def merge_media_class(bag : StyleVars, path : String) : Nil
+      return unless (width = @viewport_width)
+      @media_rules.each do |entry|
+        next if entry.state
+        next unless entry.cond.matches?(width)
+        bag.merge!(entry.vars) if applies_to?(entry.path, path)
+      end
+    end
+
+    # Media state rules on top of the state layer.
+    private def merge_media_state(bag : StyleVars, path : String,
+                                  state : String) : Nil
+      return unless (width = @viewport_width)
+      @media_rules.each do |entry|
+        next unless entry.state == state
+        next unless entry.cond.matches?(width)
+        bag.merge!(entry.vars) if applies_to?(entry.path, path)
+      end
+    end
+
+    # "button" applies to "button" and "sidebar.button"; the reverse
+    # does not hold.
+    private def applies_to?(entry_path : String, path : String) : Bool
+      path == entry_path || path.starts_with?("#{entry_path}.")
     end
 
     # Introspection: every defined class path, tree order.

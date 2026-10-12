@@ -76,20 +76,28 @@ module Egui
     end
 
     # The parsed document: class rules (dotted paths → `StyleClass`)
-    # plus element overrides (`Id` → `ElementEntry`). Built by
-    # `#record_*` edits or `.parse`; written by `#to_s`.
+    # plus element overrides (`Id` → `ElementEntry`) and media-gated
+    # class rule blocks (`@media (…) { … }`). Built by `#record_*`
+    # edits or `.parse`; written by `#to_s`.
     class Doc
       def initialize
         @classes = {} of String => StyleClass
         @elements = {} of UInt64 => ElementEntry
+        # One bucket per DISTINCT media condition, declaration order —
+        # same {path → StyleClass} shape as the unconditional rules.
+        @media = [] of {MediaCond, Hash(String, StyleClass)}
       end
 
       getter classes : Hash(String, StyleClass)
       getter elements : Hash(UInt64, ElementEntry)
+      getter media : Array({MediaCond, Hash(String, StyleClass)})
 
       def empty? : Bool
         @classes.all? { |_p, c| c.vars.empty? && c.states.all? { |_s, b| b.empty? } } &&
-          @elements.all? { |_i, e| e.empty? }
+          @elements.all? { |_i, e| e.empty? } &&
+          @media.all? do |_cond, classes|
+            classes.all? { |_p, c| c.vars.empty? && c.states.all? { |_s, b| b.empty? } }
+          end
       end
 
       # "button:hover" → {"button", "hover"}; "button" → {"button", nil}.
@@ -102,18 +110,33 @@ module Egui
       end
 
       # Merge one key into a class rule (creating the class on first
-      # touch, like `StyleSheet#rule`).
+      # touch, like `StyleSheet#rule`). With `media` the rule lands in
+      # that condition's bucket instead (created on first touch).
       def set_class(path : String, state : String?, key : String,
-                    value : StyleValue) : Nil
-        cls = (@classes[path] ||= StyleClass.new(path))
-        state ? cls.set(state, StyleVars{key => value}) : cls.set(StyleVars{key => value})
+                    value : StyleValue, media : String? = nil) : Nil
+        if media && (cond = MediaCond.parse(media))
+          classes = (@media.find { |c, _| c == cond } || begin
+            bucket = {cond, {} of String => StyleClass}
+            @media << bucket
+            bucket
+          end)[1]
+          cls = (classes[path] ||= StyleClass.new(path))
+          state ? cls.set(state, StyleVars{key => value}) : cls.set(StyleVars{key => value})
+        else
+          cls = (@classes[path] ||= StyleClass.new(path))
+          state ? cls.set(state, StyleVars{key => value}) : cls.set(StyleVars{key => value})
+        end
       end
 
       # Remove one key; true when the document changed. Drops the rule
       # entirely once every bag is empty, so the file never accumulates
-      # `button { }` husks.
-      def unset_class(path : String, state : String?, key : String) : Bool
-        return false unless (cls = @classes[path]?)
+      # `button { }` husks. With `media` only that condition's bucket
+      # is touched.
+      def unset_class(path : String, state : String?, key : String,
+                      media : String? = nil) : Bool
+        cond = media ? MediaCond.parse(media) : nil
+        classes = cond ? @media.find { |c, _| c == cond }.try &.[1] : @classes
+        return false unless classes && (cls = classes[path]?)
         if state
           cls.states[state]?.try &.delete(key)
           cls.states.delete(state) if cls.states[state]?.try &.empty?
@@ -121,7 +144,10 @@ module Egui
           cls.vars.delete(key)
         end
         if cls.vars.empty? && cls.states.all? { |_st, bag| bag.empty? }
-          @classes.delete(path)
+          classes.delete(path)
+        end
+        if cond && classes.empty?
+          @media.reject! { |c, _| c == cond }
         end
         true
       end
@@ -184,6 +210,17 @@ module Egui
             write_rule(io, "#{path}:#{state}", cls.states[state])
           end
         end
+        @media.each do |cond, classes|
+          io << '\n' << "@media " << cond << " {\n"
+          classes.keys.sort.each do |path|
+            cls = classes[path]
+            write_rule(io, path, cls.vars, "  ")
+            cls.states.keys.sort.each do |state|
+              write_rule(io, "#{path}:#{state}", cls.states[state], "  ")
+            end
+          end
+          io << "}\n"
+        end
         @elements.values.sort_by(&.target).each do |entry|
           write_rule(io, "##{entry.target}", entry.vars) unless entry.vars.empty?
           entry.states.keys.sort.each do |state|
@@ -192,13 +229,14 @@ module Egui
         end
       end
 
-      private def write_rule(io : IO, selector : String, vars : StyleVars) : Nil
+      private def write_rule(io : IO, selector : String, vars : StyleVars,
+                             indent : String = "") : Nil
         return if vars.empty?
-        io << '\n' << selector << " {\n"
+        io << '\n' << indent << selector << " {\n"
         vars.keys.sort.each do |key|
-          io << "  " << key << ": " << Doc.format_value(vars[key]) << ";\n"
+          io << indent << "  " << key << ": " << Doc.format_value(vars[key]) << ";\n"
         end
-        io << "}\n"
+        io << indent << "}\n"
       end
 
       # The value spelling: colors as `#rrggbbaa` (the same lowercase
@@ -221,15 +259,19 @@ module Egui
       # Lenient parse: whatever fully parses becomes a rule; everything
       # else is a one-line STDERR warning (the file is live-edited in
       # text editors — a half-typed declaration must not kill the app).
+      # `@media (cond) { …rules… }` blocks gate every rule inside them;
+      # nesting @media inside @media is a warning-and-ignore.
       def self.parse(text : String) : Doc
         doc = Doc.new
         pos = 0
+        media : String? = nil # inside an @media block
         size = text.size
         loop do
           pos = skip_blank(text, pos)
           break if pos >= size
           if text[pos] == '}'
             pos += 1
+            media = nil if media # the @media block's closing brace
             next
           end
           brace = text.index('{', pos)
@@ -243,7 +285,24 @@ module Egui
             warn "missing '}' — the rest of the file is ignored"
             close = size
           end
-          parse_rule(doc, selector, text[(brace + 1)...close])
+          if selector.downcase.starts_with?("@media")
+            cond = selector[6..].strip
+            if (parsed = MediaCond.parse(cond))
+              media = parsed.to_s
+            else
+              warn "@media #{cond.inspect} is not a width condition — \
+block ignored"
+              media = "@ignored" # swallow until the closing brace
+            end
+            # Step INSIDE the block: the inner rules parse as normal
+            # top-level rules with the media context riding along, and
+            # the block's own closing '}' (the standalone one) clears
+            # it above.
+            pos = brace + 1
+            next
+          elsif media != "@ignored"
+            parse_rule(doc, selector, text[(brace + 1)...close], media)
+          end
           break if close >= size
           pos = close + 1
         end
@@ -251,7 +310,7 @@ module Egui
       end
 
       private def self.parse_rule(doc : Doc, selector : String,
-                                  body : String) : Nil
+                                  body : String, media : String? = nil) : Nil
         target, state = split_selector(selector)
         if target.empty?
           warn "empty selector — rule ignored"
@@ -277,7 +336,9 @@ explicit id to persist element overrides"
           end
         else
           each_decl(body) do |key, value|
-            doc.set_class(target, state, key, value)
+            # Element (#id) overrides take no media condition in v1 —
+            # they apply unconditionally even inside an @media block.
+            doc.set_class(target, state, key, value, media)
           end
         end
       end
@@ -436,7 +497,7 @@ explicit id to persist element overrides"
       # fall back to the theme (or app) value, not into the void: ecss
       # rules merge into the SAME class bags the theme uses, so a bare
       # key-delete would take the theme's own value down with it.
-      @applied_class : Array({String, String?, String, StyleValue?})
+      @applied_class : Array({String, String?, String, String?, StyleValue?})
       @applied_element : Array({Id, String?, String})
 
       def self.enable(ctx : Context, app_id : String) : Session
@@ -455,7 +516,7 @@ explicit id to persist element overrides"
         @dirty = false
         @last_mtime = nil
         @last_size = -1_i64
-        @applied_class = [] of {String, String?, String, StyleValue?}
+        @applied_class = [] of {String, String?, String, String?, StyleValue?}
         @applied_element = [] of {Id, String?, String}
         return unless File.exists?(@path)
         begin
@@ -472,25 +533,27 @@ explicit id to persist element overrides"
       # One class-rule edit (selector "button" / "button:hover"):
       # applied to the stylesheet, recorded into the document, file
       # marked dirty — flushed to disk at the end of the frame.
+      # `media` ("(min-width: 600px)") targets that media rule.
       def record_class(selector : String, key : String,
-                       value : StyleValue) : Nil
+                       value : StyleValue, media : String? = nil) : Nil
         path, state = Doc.split_selector(selector)
-        @doc.set_class(path, state, key, value)
-        journal_class(path, state, key)
-        @ctx.stylesheet.rule(selector, StyleVars{key => value})
+        @doc.set_class(path, state, key, value, media)
+        journal_class(path, state, key, media)
+        @ctx.stylesheet.rule(selector, StyleVars{key => value}, media)
         @dirty = true
       end
 
       # One class-rule key removal; a no-op on the file when the key
       # was never part of the diff (un-setting an app-defined rule).
-      def unset_class(selector : String, key : String) : Nil
+      def unset_class(selector : String, key : String,
+                      media : String? = nil) : Nil
         path, state = Doc.split_selector(selector)
-        if (i = journal_class_index(path, state, key))
+        if (i = journal_class_index(path, state, key, media))
           restore_class(@applied_class.delete_at(i))
         else
-          @ctx.stylesheet.unset(selector, key)
+          @ctx.stylesheet.unset(selector, key, media)
         end
-        @dirty = true if @doc.unset_class(path, state, key)
+        @dirty = true if @doc.unset_class(path, state, key, media)
       end
 
       def record_element(id : Id, name : String?, key : String,
@@ -577,6 +640,14 @@ explicit id to persist element overrides"
             apply_class(path, state, vars)
           end
         end
+        @doc.media.each do |cond, classes|
+          classes.each do |path, cls|
+            apply_class(path, nil, cls.vars, cond.to_s)
+            cls.states.each do |state, vars|
+              apply_class(path, state, vars, cond.to_s)
+            end
+          end
+        end
         @doc.elements.each_value do |entry|
           apply_element(entry.id, nil, entry.vars)
           entry.states.each do |state, vars|
@@ -586,12 +657,12 @@ explicit id to persist element overrides"
       end
 
       private def apply_class(path : String, state : String?,
-                              vars : StyleVars) : Nil
+                              vars : StyleVars, media : String? = nil) : Nil
         return if vars.empty?
         selector = state ? "#{path}:#{state}" : path
         vars.each do |key, value|
-          journal_class(path, state, key)
-          @ctx.stylesheet.rule(selector, StyleVars{key => value})
+          journal_class(path, state, key, media)
+          @ctx.stylesheet.rule(selector, StyleVars{key => value}, media)
         end
       end
 
@@ -608,29 +679,33 @@ explicit id to persist element overrides"
       # Remember `key` at this scope, capturing the value the cascade
       # had BEFORE the session's first write of it (kept as-is on
       # re-writes — the original value is what an un-apply restores).
+      # Media entries never capture a prev: the media layer did not
+      # exist before this session, so un-apply is always an unset.
       private def journal_class(path : String, state : String?,
-                                key : String) : Nil
-        return if journal_class_index(path, state, key)
-        prev = @ctx.stylesheet.resolve(path, state)[key]?
-        @applied_class << {path, state, key, prev}
+                                key : String, media : String? = nil) : Nil
+        return if journal_class_index(path, state, key, media)
+        prev = media ? nil : @ctx.stylesheet.resolve(path, state)[key]?
+        @applied_class << {path, state, key, media, prev}
       end
 
       private def journal_class_index(path : String, state : String?,
-                                      key : String) : Int32?
+                                      key : String,
+                                      media : String? = nil) : Int32?
         @applied_class.index do |t|
-          t[0] == path && t[1] == state && t[2] == key
+          t[0] == path && t[1] == state && t[2] == key && t[3] == media
         end
       end
 
       # Put one journaled key back: the captured pre-session value when
       # there was one (a theme/app rule), a plain unset otherwise.
-      private def restore_class(entry : {String, String?, String, StyleValue?}) : Nil
-        path, state, key, prev = entry
+      private def restore_class(
+          entry : {String, String?, String, String?, StyleValue?}) : Nil
+        path, state, key, media, prev = entry
         selector = state ? "#{path}:#{state}" : path
         if prev
           @ctx.stylesheet.rule(selector, StyleVars{key => prev})
         else
-          @ctx.stylesheet.unset(selector, key)
+          @ctx.stylesheet.unset(selector, key, media)
         end
       end
 

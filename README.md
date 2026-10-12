@@ -194,8 +194,8 @@ tmp/ios/phase4/build_demo.sh
 
 `examples/ios_demo.cr` mirrors the Android demo section by section.
 Verified end-to-end in the iOS simulator (iPhone 17 Pro): every port
-above, tap-free e2e harness included; the on-device step (signing,
-Metal renderer) is tracked in `plans/IOS_SUPPORT_PLAN.md`.
+above, tap-free e2e harness included; signing and on-device packaging
+notes live in `plans/IOS_SUPPORT_PLAN.md`.
 
 ## Screenshots
 
@@ -361,10 +361,9 @@ with kinetic drag, tables, terminal, 3D viewport, …), the reactive
 layer, the CSS cascade, routing/modals, and the pure-Crystal text
 stack (freetype-cr with TrueType hinting; C-FFI FreeType as an opt-in
 dev accelerator). Desktop: Linux/X11, Windows/Win32, macOS/Cocoa.
-Mobile: Android (GLES, JNI system ports, device-verified) and iOS
-(GLES3, UIKit system ports, simulator-verified; on-device is tracked
-in `plans/IOS_SUPPORT_PLAN.md`). See `docs/ANALYSIS.md` for the
-upstream map and what is next.
+Mobile: Android (GLES, JNI system ports) and iOS (GLES3, UIKit system
+ports) — the same core, the same system-port surface, five platforms
+in total. See `docs/ANALYSIS.md` for the upstream map and what is next.
 
 ## License
 
@@ -375,7 +374,17 @@ Dual-licensed — the Qt / MySQL model:
   source to users, and shipping a closed-source app that embeds
   egui.cr violates the license.
 - **Commercial license** for everything else — if you cannot or do not
-  want to open your application's source, contact
+  want to open your application's source. One-time, no subscriptions,
+  no per-seat counting:
+
+  | Who | Price |
+  |---|---|
+  | Open source / non-commercial | **$0** (AGPL-3.0) |
+  | Indie — individual developer | **$49** one-time, unlimited own products |
+  | Company | **$499** one-time per product (up to $100k revenue; +$100 per each further $100k) |
+
+  Full terms and payment details: **[PRICING.md](PRICING.md)** — card
+  and crypto (USDT) accepted, contact
   Oleg Orlov <orelcokolov@gmail.com>.
 
 Vendored third-party code (`vendor/`) keeps its upstream licenses.

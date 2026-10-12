@@ -23,6 +23,11 @@
 
 module Egui
   module DefaultTheme
+    # Mobile breakpoint (CSS media query, logical points): phones are
+    # <= 600 wide — the number Bootstrap popularized. Used by the
+    # element rules below for touch-sized controls (~44pt hit targets
+    # per Apple HIG).
+    MOBILE_MAX = "(max-width: 600px)"
     def self.dark : Theme
       build("dark", dark: true)
     end
@@ -186,6 +191,18 @@ module Egui
       })
       sheet.rule("button:hover", StyleVars{"background" => v.button_hovered})
       sheet.rule("button:active", StyleVars{"background" => v.button_active})
+
+      # Mobile: touch-sized controls (see DefaultTheme::MOBILE_MAX —
+      # taller padding + larger font give the ~44pt hit target).
+      sheet.rule("button", StyleVars{
+        "padding.top"    => 14.0,
+        "padding.right"  => 16.0,
+        "padding.bottom" => 14.0,
+        "padding.left"   => 16.0,
+        "font_size"      => 15.0,
+        "rounding"       => 8.0,
+      }, media: MOBILE_MAX)
+      sheet.rule("link", StyleVars{"font_size" => 15.0}, media: MOBILE_MAX)
 
       # link — `ui.hyperlink` / `ui.hyperlink_to` (HTML <a>: colored,
       # underlined text by default). The `:hover`/`:active` overlays
