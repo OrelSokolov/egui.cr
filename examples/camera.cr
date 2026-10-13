@@ -22,6 +22,7 @@ class CameraApp < Egui::App
   @listed = false
   @perm_requested = false
   @rotation = 0
+  @video_mode = false
 
   def initialize
     super()
@@ -43,6 +44,7 @@ class CameraApp < Egui::App
     session = Egui::Camera.open(device.try &.id, 1280, 720)
     if session
       session.rotation = @rotation
+      session.video_mode = @video_mode
       @session = session
       @status = "Starting…"
     else
@@ -93,7 +95,11 @@ class CameraApp < Egui::App
       ctx.request_repaint # camera = continuous stream, never idle-skip
     end
 
-    ctx.bottom_panel do |ui|
+    # Explicit height: a top/bottom panel without one is a ONE-LINE
+    # strip (default_strip_height) — everything past the first row
+    # clipped to zero height, which is why the Mode button never
+    # rendered. Three lines of controls need ~120 logical px.
+    ctx.bottom_panel(height: 120) do |ui|
       ui.horizontal do |row|
         unless Egui::Camera.available?
           row.label(Egui::Camera.unavailable_reason || "Camera unavailable")
@@ -136,6 +142,16 @@ class CameraApp < Egui::App
           end
         end
       end
+      {% if flag?(:android) %}
+        # camera2 capture template switch: Video = RECORD + the
+        # highest fixed fps range + EIS/OIS (the system camera's
+        # video mode), Photo = the conservative PREVIEW default.
+        # Its own row — four buttons don't fit a phone-wide panel.
+        if ui.button(@video_mode ? "Mode: Video" : "Mode: Photo").clicked?
+          @video_mode = !@video_mode
+          @session.try &.video_mode = @video_mode
+        end
+      {% end %}
       ui.label(@status)
     end
 

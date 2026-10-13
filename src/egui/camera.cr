@@ -54,6 +54,15 @@ module Egui
         Camera.implementation.set_rotation(self, degrees)
       end
 
+      # Photo/Video capture mode (Android camera2 concept). Video re-arms
+      # the live session with the RECORD template: the highest FIXED fps
+      # range the HAL offers (60 where supported) plus EIS/OIS
+      # stabilization; Photo returns to the conservative PREVIEW default.
+      # A no-op where the platform has no such switch (webcams).
+      def video_mode=(video : Bool) : Nil
+        Camera.implementation.set_video_mode(self, video)
+      end
+
       def close : Nil
         Camera.implementation.close(self)
         @handle = 0_u64
@@ -147,6 +156,9 @@ module Egui
       end
 
       def set_rotation(session : Session, degrees : Int32) : Nil
+      end
+
+      def set_video_mode(session : Session, video : Bool) : Nil
       end
 
       def last_error : String?

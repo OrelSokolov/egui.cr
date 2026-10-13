@@ -43,7 +43,11 @@ module Egui
     # length through `measure_cached`, so a squeezed widget pays
     # O(log n) measures.
     def fit(text : String, size : Float64, max_width : Float64) : String
-      return text if measure_cached(text, size).x <= max_width
+      # Sub-pixel tolerance: anchored/centered rects carry float dust
+      # (a 0.5 anchoring factor makes a 92.8-wide cell 92.79999999999998)
+      # — a fraction of a pixel of overflow must not cost the whole
+      # last word to the ellipsis.
+      return text if measure_cached(text, size).x <= max_width + 0.5
       ell = "…"
       return "" if measure_cached(ell, size).x > max_width
       chars = text.chars

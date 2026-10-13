@@ -801,6 +801,11 @@ module Egui
               unless (s = display_string(prop, vars)).empty?
                 setter.call(prop.key, s)
               end
+            when :enum
+              # Same as :string — an empty value stays inherited.
+              unless (s = display_string(prop, vars)).empty?
+                setter.call(prop.key, s)
+              end
             when :box
               b = display_box(prop, vars)
               setter.call("#{prop.key}.top", b.top)
@@ -912,6 +917,24 @@ module Egui
             value = display_string(prop, vars)
             row.text_edit_singleline(value) do |text|
               setter.call(prop.key, text)
+            end
+          end
+        when :enum
+          # A SelectBox over the declaration's fixed option list (the
+          # `anchor` positions, …) — free text can't produce a valid
+          # pick. The zero option «(наследуется)» UNSETS the key; a
+          # value not in the list (set from code) still displays,
+          # prepended like font_family does.
+          value = display_string(prop, vars)
+          options = prop.options || [] of String
+          options = [value] + options unless value.empty? ||
+                                             options.includes?(value)
+          row.select_box("insp_enum_#{prop.key}", value, options, 150.0,
+            label: "(наследуется)") do |opt|
+            if opt.empty?
+              unset_prop(prop, unsetter)
+            else
+              setter.call(prop.key, opt)
             end
           end
         end

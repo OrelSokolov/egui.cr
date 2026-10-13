@@ -229,7 +229,18 @@ lib LibEguiCr
     # Local notification (UNUserNotificationCenter; the iOS counterpart
     # of notify-send / osascript).
     fun notify = egui_cr_notify(title : UInt8*, body : UInt8*) : Int32
+
+    # Badge: the home-screen icon number (system_ports/badge.cr).
+    fun ios_badge_set = egui_cr_ios_badge_set(count : Int32)
   {% end %}
+
+  # Desktop system ports (shim, per-platform sections at the bottom of
+  # sokol_shim.c): display wake lock + dock badge. On Linux both are
+  # stubs returning 0 — the WakeLock port falls back to D-Bus there.
+  fun wakelock_acquire = egui_cr_wakelock_acquire(reason : UInt8*) : Int32
+  fun wakelock_release = egui_cr_wakelock_release
+  fun badge_set = egui_cr_badge_set(count : Int32)
+  fun badge_supported = egui_cr_badge_supported : Int32
 
   # sokol_gl (shim wrappers: on the detached path these become packet
   # ops replayed on the render thread; pass-throughs otherwise)
@@ -738,6 +749,20 @@ module Egui
           # the core default "not implemented" implementation.
           Egui::Camera.use(Backend::NativeCam.new)
         {% end %}
+        {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:win32) %}
+          # Desktop native WakeLock/Badge (IOPMAssertion +
+          # SetThreadExecutionState / dockTile; the shim's desktop
+          # system-ports section). Linux keeps the port's D-Bus
+          # fallback — its shim stubs report unsupported.
+          Egui::SystemPorts::WakeLock.use_runner(
+            ->(reason : String) {
+              LibEguiCr.wakelock_acquire(reason.to_unsafe) == 1
+            },
+            -> { LibEguiCr.wakelock_release })
+          Egui::SystemPorts::Badge.use_runner do |count|
+            LibEguiCr.badge_set(count)
+          end
+        {% end %}
         {% if flag?(:win32) %}
           Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
             native_file_dialog(save, title, filters, dir, name)
@@ -752,6 +777,10 @@ module Egui
           # tool path obviously does not exist on iOS).
           Egui::SystemPorts::Notification.use_native do |summary, body|
             LibEguiCr.notify(summary.to_unsafe, body.to_unsafe) == 1
+          end
+          # Home-screen icon badge (UIApplication).
+          Egui::SystemPorts::Badge.use_runner do |count|
+            LibEguiCr.ios_badge_set(count)
           end
         {% end %}
 

@@ -529,6 +529,71 @@ void egui_cr_android_notify(const char* title, const char* body) {
     if (jb) (*env)->DeleteLocalRef(env, jb);
 }
 
+// Haptics (SystemPorts::Haptics): style 0 light / 1 medium / 2 heavy /
+// 3 selection, ms > 0 for a plain timed buzz. Fire-and-forget.
+void egui_cr_android_vibrate(int style, int ms) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "vibrate",
+                                                  "(II)V") : NULL;
+    if (m) (*env)->CallStaticVoidMethod(env, cls, m, (jint)style, (jint)ms);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// Share (SystemPorts::Share): ACTION_SEND text/plain chooser. Returns
+// 1 when the intent was dispatched.
+int egui_cr_android_share(const char* subject, const char* text) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return 0;
+    jclass cls = sh_act_class(env);
+    jstring js = sh_utf8_to_jstr(env, subject);
+    jstring jt = sh_utf8_to_jstr(env, text);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "shareText",
+        "(Ljava/lang/String;Ljava/lang/String;)Z") : NULL;
+    int ok = 0;
+    if (m && jt) ok = (*env)->CallStaticBooleanMethod(env, cls, m, js, jt) ? 1 : 0;
+    if ((*env)->ExceptionCheck(env)) { ok = 0; (*env)->ExceptionClear(env); }
+    if (js) (*env)->DeleteLocalRef(env, js);
+    if (jt) (*env)->DeleteLocalRef(env, jt);
+    return ok;
+}
+
+// WakeLock (SystemPorts::WakeLock): FLAG_KEEP_SCREEN_ON on/off — no
+// permission needed, unlike the full-screen wake lock.
+void egui_cr_android_keep_screen_on(int on) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "keepScreenOn",
+                                                  "(Z)V") : NULL;
+    if (m) (*env)->CallStaticVoidMethod(env, cls, m,
+                                        on ? JNI_TRUE : JNI_FALSE);
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+}
+
+// Audio route diagnostics (SystemPorts::Audio): media stream volume +
+// ringer mode as a malloc'd utf8 string (free with egui_cr_mem_free),
+// or NULL when the service refuses — the "play() true but silent" case.
+char* egui_cr_android_audio_diag(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return NULL;
+    jclass cls = sh_act_class(env);
+    jmethodID m = cls ? (*env)->GetStaticMethodID(env, cls, "audioDiag",
+        "()Ljava/lang/String;") : NULL;
+    if (!m) { if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env); return NULL; }
+    jstring s = (jstring)(*env)->CallStaticObjectMethod(env, cls, m);
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return NULL; }
+    char* out = NULL;
+    if (s) {
+        const char* utf = (*env)->GetStringUTFChars(env, s, NULL);
+        if (utf) { out = strdup(utf); (*env)->ReleaseStringUTFChars(env, s, utf); }
+        (*env)->DeleteLocalRef(env, s);
+    }
+    return out;
+}
+
+
 // level: 0 info / 1 warning / 2 error / 3 question; confirm=1 → yes/no
 // buttons whose answer arrives via nativeMsgboxResult.
 void egui_cr_android_msgbox(int level, const char* title, const char* msg,
@@ -5489,6 +5554,55 @@ int egui_cr_notify(const char* title, const char* body) {
     sh_fire_note(center, title, body);
     return 1;
 }
+
+// Haptics (SystemPorts::Haptics): style 0 light / 1 medium / 2 heavy /
+// 3 selection → UIFeedbackGenerator presets.
+void egui_cr_ios_haptic(int style) {
+    if (style == 3) {
+        UISelectionFeedbackGenerator* g =
+            [[UISelectionFeedbackGenerator alloc] init];
+        [g prepare];
+        [g selectionChanged];
+        return;
+    }
+    UIImpactFeedbackStyle st = UIImpactFeedbackStyleLight;
+    if (style == 1) st = UIImpactFeedbackStyleMedium;
+    if (style == 2) st = UIImpactFeedbackStyleHeavy;
+    UIImpactFeedbackGenerator* g = [[UIImpactFeedbackGenerator alloc]
+        initWithStyle:st];
+    [g prepare];
+    [g impactOccurred];
+}
+
+// Share (SystemPorts::Share): UIActivityViewController over sokol's
+// view controller. Runs on the next run-loop tick — presenting during
+// a frame would race UIKit's layout pass.
+int egui_cr_ios_share(const char* subject, const char* text) {
+    if (nil == _sapp.ios.view_ctrl) return 0;
+    NSMutableString* mtext = [NSMutableString string];
+    if (subject && subject[0]) {
+        [mtext appendString:[NSString stringWithUTF8String:subject]];
+        [mtext appendString:@"\n\n"];
+    }
+    [mtext appendString:[NSString stringWithUTF8String:text ? text : ""]];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIActivityViewController* av = [[UIActivityViewController alloc]
+            initWithActivityItems:@[mtext] applicationActivities:nil];
+        [_sapp.ios.view_ctrl presentViewController:av animated:YES
+                                       completion:nil];
+    });
+    return 1;
+}
+
+// WakeLock (SystemPorts::WakeLock): kill the auto-lock while on.
+void egui_cr_ios_idle_timer(int on) {
+    [UIApplication sharedApplication].idleTimerDisabled = on ? YES : NO;
+}
+
+// Badge (SystemPorts::Badge): the home-screen icon's number.
+void egui_cr_ios_badge_set(int count) {
+    [UIApplication sharedApplication].applicationIconBadgeNumber = count;
+}
 #endif // SH_IOS
 
 void egui_cr_request_quit(void) {
@@ -5929,6 +6043,13 @@ void egui_cr_cam_set_rotation(void* sp, int deg) {
     s->urot = d;
 }
 
+// Photo/Video mode is an Android camera2 concept (capture template +
+// FPS range + EIS); webcams have no such switch — a no-op here so the
+// uniform C API links.
+void egui_cr_cam_set_mode(void* sp, int video) {
+    (void)sp; (void)video;
+}
+
 void egui_cr_cam_close(void* sp) {
     sh_cam_s* s = (sh_cam_s*)sp;
     if (!s) return;
@@ -6048,6 +6169,8 @@ typedef struct {
     int urot;
     int mirror;
     int frames; // frame counter for the periodic logcat heartbeat
+    char devid[64]; // for re-querying characteristics on mode switches
+    int video_mode; // 0 photo (PREVIEW) / 1 video (RECORD + 60fps + EIS)
 } sh_cam_s;
 
 static void sh_cam_on_disconnect(void* ctx, ACameraDevice* dev) {
@@ -6097,6 +6220,7 @@ void* egui_cr_cam_open(const char* devid, int w, int h) {
             s->mirror = (e.data.u8[0] == ACAMERA_LENS_FACING_FRONT);
         ACameraMetadata_free(chars);
     }
+    strncpy(s->devid, id, 63);
     ACameraDevice_StateCallbacks dev_cbs;
     memset(&dev_cbs, 0, sizeof dev_cbs);
     dev_cbs.context = s;
@@ -6224,6 +6348,87 @@ void egui_cr_cam_set_rotation(void* sp, int deg) {
                         "camera: set_rotation=%d (sensor %d)", d, s->rot);
 }
 
+// Photo/Video mode: the same live session re-armed with the other
+// capture template. Photo = TEMPLATE_PREVIEW (the camera's conservative
+// default: ~30fps, stabilization off). Video = TEMPLATE_RECORD plus a
+// fixed high FPS range and EIS/OIS — what the system camera app runs in
+// its video mode (60fps where the HAL supports it, else the best fixed
+// range; a fixed range keeps the AE from bouncing between frame rates).
+void egui_cr_cam_set_mode(void* sp, int video) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s || !s->dev || !s->session) return;
+    video = video ? 1 : 0;
+    if (video == s->video_mode) return;
+
+    ACaptureRequest* req = NULL;
+    camera_status_t st = ACameraDevice_createCaptureRequest(
+        s->dev, video ? TEMPLATE_RECORD : TEMPLATE_PREVIEW, &req);
+    if (st != ACAMERA_OK || !req) {
+        __android_log_print(ANDROID_LOG_INFO, "egui_cr",
+                            "camera: set_mode template = %d", (int)st);
+        return;
+    }
+    ACaptureRequest_addTarget(req, s->target);
+
+    int fps_min = 0, fps_max = 0, eis = 0, ois = 0;
+    ACameraMetadata* chars = NULL;
+    if (video && ACameraManager_getCameraCharacteristics(sh_cam_mgr, s->devid, &chars) == ACAMERA_OK && chars) {
+        ACameraMetadata_const_entry e;
+        // Best FIXED fps range: prefer [60,60], else the fixed range with
+        // the highest max, else the highest-max range at all.
+        if (ACameraMetadata_getConstEntry(chars, ACAMERA_CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES, &e) == ACAMERA_OK) {
+            int best_fixed_max = 0, best_any_max = 0;
+            for (int i = 0; i + 1 < e.count; i += 2) {
+                int lo = e.data.i32[i], hi = e.data.i32[i + 1];
+                if (lo == hi && hi > best_fixed_max) { best_fixed_max = hi; fps_min = fps_max = hi; }
+                if (hi > best_any_max) best_any_max = hi;
+            }
+            if (!fps_max && best_any_max > 0) {
+                // no fixed range: take the widest range reaching the max
+                for (int i = 0; i + 1 < e.count; i += 2)
+                    if (e.data.i32[i + 1] == best_any_max) { fps_min = e.data.i32[i]; fps_max = best_any_max; break; }
+            }
+        }
+        if (fps_max) {
+            int32_t range[2] = { fps_min, fps_max };
+            ACaptureRequest_setEntry_i32(req, ACAMERA_CONTROL_AE_TARGET_FPS_RANGE, 2, range);
+        }
+        // EIS first (the handheld-judder fixer); OIS only when the device
+        // has no EIS — on some HALs the two are mutually exclusive.
+        if (ACameraMetadata_getConstEntry(chars, ACAMERA_CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES, &e) == ACAMERA_OK) {
+            for (int i = 0; i < e.count; i++)
+                if (e.data.u8[i] == ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE_ON) { eis = 1; break; }
+        }
+        if (!eis && ACameraMetadata_getConstEntry(chars, ACAMERA_LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION, &e) == ACAMERA_OK) {
+            for (int i = 0; i < e.count; i++)
+                if (e.data.u8[i] == ACAMERA_LENS_OPTICAL_STABILIZATION_MODE_ON) { ois = 1; break; }
+        }
+        if (eis) {
+            uint8_t on = ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE_ON;
+            ACaptureRequest_setEntry_u8(req, ACAMERA_CONTROL_VIDEO_STABILIZATION_MODE, 1, &on);
+        } else if (ois) {
+            uint8_t on = ACAMERA_LENS_OPTICAL_STABILIZATION_MODE_ON;
+            ACaptureRequest_setEntry_u8(req, ACAMERA_LENS_OPTICAL_STABILIZATION_MODE, 1, &on);
+        }
+        ACameraMetadata_free(chars);
+    }
+
+    ACameraCaptureSession_stopRepeating(s->session);
+    st = ACameraCaptureSession_setRepeatingRequest(s->session, NULL, 1, &req, NULL);
+    if (st != ACAMERA_OK) {
+        __android_log_print(ANDROID_LOG_INFO, "egui_cr",
+                            "camera: set_mode repeating = %d", (int)st);
+        ACaptureRequest_free(req);
+        return;
+    }
+    ACaptureRequest_free(s->req);
+    s->req = req;
+    s->video_mode = video;
+    __android_log_print(ANDROID_LOG_INFO, "egui_cr",
+                        "camera: mode=%s fps=[%d,%d] eis=%d ois=%d",
+                        video ? "video" : "photo", fps_min, fps_max, eis, ois);
+}
+
 void egui_cr_cam_close(void* sp) {
     sh_cam_s* s = (sh_cam_s*)sp;
     if (!s) return;
@@ -6244,3 +6449,80 @@ void egui_cr_cam_close(void* sp) {
 
 const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
 #endif // camera capture
+
+// ===========================================================================
+// Desktop system ports: WakeLock (keep the display on) + Badge (dock
+// badge count) — the system_ports/{wake_lock,badge}.cr native side.
+// Android/iOS implement theirs through the JNI/ObjC sections above.
+#if defined(__APPLE__) && !defined(SH_IOS)
+#include <IOKit/pwr_mgt/IOPMLib.h>
+#include <IOKit/IOReturn.h>
+
+static IOPMAssertionID sh_pm_assertion = 0;
+
+// A display-sleep prevention assertion named with the app's reason;
+// idempotent — a second acquire while held just returns true.
+int egui_cr_wakelock_acquire(const char* reason) {
+    if (sh_pm_assertion) return 1;
+    IOPMAssertionID id = 0;
+    CFStringRef cf_reason = CFStringCreateWithCString(
+        NULL, reason ? reason : "egui-cr app",
+        kCFStringEncodingUTF8);
+    IOReturn r = IOPMAssertionCreateWithName(
+        kIOPMAssertionTypePreventUserIdleDisplaySleep,
+        kIOPMAssertionLevelOn, cf_reason, &id);
+    if (cf_reason) CFRelease(cf_reason);
+    if (r != kIOReturnSuccess) return 0;
+    sh_pm_assertion = id;
+    return 1;
+}
+
+void egui_cr_wakelock_release(void) {
+    if (!sh_pm_assertion) return;
+    IOPMAssertionRelease(sh_pm_assertion);
+    sh_pm_assertion = 0;
+}
+
+// Dock tile badge: count > 0 shows the number, 0 clears the label.
+void egui_cr_badge_set(int count) {
+    NSDockTile* tile = [[NSApplication sharedApplication] dockTile];
+    if (count > 0) {
+        NSString* label = [NSString stringWithFormat:@"%d", count];
+        [tile setBadgeLabel:label];
+    } else {
+        [tile setBadgeLabel:nil];
+    }
+}
+
+int egui_cr_badge_supported(void) { return 1; }
+
+#elif defined(_WIN32)
+
+// ES_CONTINUOUS must be set both to arm and to clear the state.
+int egui_cr_wakelock_acquire(const char* reason) {
+    (void)reason;
+    EXECUTION_STATE s = SetThreadExecutionState(
+        ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED);
+    return s != 0;
+}
+
+void egui_cr_wakelock_release(void) {
+    SetThreadExecutionState(ES_CONTINUOUS);
+}
+
+// No dock badge concept on Windows — the taskbar overlay needs
+// ITaskbarList3 + an icon handle; deliberately unimplemented (the
+// Crystal port reports unsupported).
+void egui_cr_badge_set(int count) { (void)count; }
+int egui_cr_badge_supported(void) { return 0; }
+
+#else
+
+// Linux/BSD: WakeLock falls back to a session-bus call from Crystal
+// (WakeLock port); the shim side is a no-op.
+int egui_cr_wakelock_acquire(const char* reason) { (void)reason; return 0; }
+void egui_cr_wakelock_release(void) {}
+void egui_cr_badge_set(int count) { (void)count; }
+int egui_cr_badge_supported(void) { return 0; }
+
+#endif // desktop system ports

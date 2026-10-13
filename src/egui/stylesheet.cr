@@ -202,7 +202,9 @@ module Egui
   # builds its editors purely from these declarations.
   struct StyleProp
     getter key : String
-    # :color | :number | :box | :bool | :string — picks the inspector editor.
+    # :color | :number | :box | :bool | :string | :weight | :enum —
+    # picks the inspector editor (:enum renders a SelectBox over
+    # #options, "не в списке" values still display).
     getter kind : Symbol
     getter label : String
     # True when the key also makes sense as a `:hover`/`:active` state
@@ -219,10 +221,14 @@ module Egui
     # clamps edits to it. nil = unclamped (offsets, spreads —
     # negatives are legitimate CSS there).
     getter min : Float64?
+    # The pick list for :enum keys (the editor's SelectBox options).
+    # nil for every other kind.
+    getter options : Array(String)?
 
     def initialize(@key : String, @kind : Symbol, label : String? = nil,
                    @states : Bool = false, @fallback : StyleValue? = nil,
-                   @min : Float64? = nil)
+                   @min : Float64? = nil,
+                   @options : Array(String)? = nil)
       @label = label || @key
     end
   end

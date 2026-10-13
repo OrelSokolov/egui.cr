@@ -9,9 +9,10 @@
 #   end
 #
 # Bounds live in `Memory#data` keyed by the plot id; `auto` re-fits
-# every frame until the user pans or zooms (then they stay put — no
-# reset API yet, delete the id's cells to refit). `fixed_bounds` pins
-# the view instead of auto-fitting (for live plots).
+# every frame until the user pans or zooms (then they stay put — the
+# reset pill / a double-click restores the default view).
+# `fixed_bounds` pins the view instead of auto-fitting (for live
+# plots).
 #
 # `animated: true` turns the plot into a live one: once the user pans
 # or zooms away from the default view, a "reset view" pill (custom
@@ -42,6 +43,7 @@ module Egui
     def initialize(id : String, @height : Float64 = 200.0,
                    @animated : Bool = false, @draggable : Bool = true,
                    @reset_button : Bool = true)
+      @id_str = id
       @pid = Id.from("plot/#{id}")
       @lines = [] of {String, Array(Point), Color32?}
       @dots = [] of {String, Array(Point), Color32?}
@@ -245,29 +247,26 @@ module Egui
       end
 
       # Once the view deviates from the default, show a reset pill
-      # top-center (drawn after the clip restore so it is never cut).
-      # Interacted after the plot rect, so hit-testing ranks it topmost
+      # top-center — a `Button` riding the Overlay widget (anchored to
+      # the plot's rect, out of the parent's flow), so the pill's
+      # geometry comes from the same mechanism app overlays use and
+      # its position/margin is inspector-editable ("overlay" class).
+      # Declared after the plot rect, so hit-testing ranks it topmost
       # and it wins the click. Hidden via `reset_button: false`.
       if @reset_button && !auto
-        small = style.font_size * 0.8
-        ts = ctx.fonts.measure(@reset_label, small)
-        size = Vec2.new(ts.x + 16.0, ts.y + 8.0)
-        box = Rect.from_min_size(
-          Pos2.new(rect.center.x - size.x / 2.0, rect.min.y + 6.0), size)
-        bresp = ui.interact(box, @pid.child(4), Sense.click)
-        if bresp.clicked?
-          # Default view from next frame on (this frame already drew
-          # with the user's bounds).
-          mem.data.set_int(@pid.child(3), 1)
-        else
-          painter.rect(box, rounding: 4.0,
-            fill: visuals.button_fill(bresp.hovered?, bresp.active?),
-            stroke_color: visuals.button_stroke, stroke_width: 1.0)
-          painter.text(Pos2.new(box.left + (box.width - ts.x) / 2.0,
-            box.center.y), @reset_label, small, visuals.text_color)
-          bresp.on_hover_cursor(CursorIcon::Pointer)
+        ui.overlay(:top_center, margin: StyleBox.new(top: 6.0),
+                   rect: rect, id: "plot_reset_#{@id_str}") do |o|
+          pill = Button.new(@reset_label, id: "plot_reset_#{@id_str}_btn")
+            .style { |s|
+              s.font_size = style.font_size * 0.8
+              s.button_padding = Vec2.new(8.0, 4.0)
+            }
+          if o.add(pill).clicked?
+            # Default view from next frame on (this frame already drew
+            # with the user's bounds).
+            mem.data.set_int(@pid.child(3), 1)
+          end
         end
-        mem.use_id(@pid.child(4))
       end
 
       if @draggable

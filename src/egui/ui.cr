@@ -411,6 +411,22 @@ module Egui
         .show(self) { |ui| yield ui }
     end
 
+    # A region-anchored floating block (`position: fixed`-style, see
+    # `Egui::Overlay`): widgets laid out ON TOP of this region at one
+    # of nine anchors with a margin from the pinned edges — the parent
+    # flow is untouched. `rect:` re-bases it (the map's rect);
+    # `pass_through: true` drops the background click target (HUD
+    # overlays must not eat the map's drags). Anchor/margin/z also
+    # style through the "overlay" class and are inspector-editable.
+    def overlay(anchor : Symbol? = nil, margin : StyleBox? = nil,
+                z : Int32? = nil, rect : Rect? = nil,
+                pass_through : Bool = false, id : String? = nil,
+                &block : Ui ->) : Response
+      add(Overlay.new(anchor, margin, z, rect, pass_through, id) do |o|
+        block.call(o)
+      end)
+    end
+
     # `variant:` picks the closed-combo look (`:button` separated arrow
     # strip, `:plain` rigid single button, `:field` input field + select
     # button); `label:` is a placeholder for the empty selection that

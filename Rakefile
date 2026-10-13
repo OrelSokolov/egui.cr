@@ -8,7 +8,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
 PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera", "device_api"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -85,11 +85,22 @@ end
 # Which shim objects go into which archive. The PTY shim gets its own
 # library so terminal embedders that never open a window link no
 # sokol/GL/X11; nanosvg stays with sokol (sokol.cr itself requires it
-# as the dev-only C rasterizer behind C_EXTENSIONS).
+# as the dev-only C rasterizer behind C_EXTENSIONS). Audio playback
+# lives in the minaudio shard (lib/minaudio after `shards install`) —
+# see the build:minaudio task below.
 ARCHIVES = {
   NATIVE_LIB => %w[sokol_shim nanosvg_shim],
   PTY_LIB    => %w[pty_shim],
 }
+
+# minaudio.cr's static library (SystemPorts::Audio). Built by the
+# shard's own Rakefile from its vendored single-header C; apps opt in
+# with require "egui/backend/audio", the @[Link] attributes live in
+# the shard. Plain `rake` there is incremental, so this is cheap.
+MINAUDIO_LIB = "lib/minaudio/lib/libminaudio.a"
+file MINAUDIO_LIB do
+  sh "cd lib/minaudio && rake build"
+end
 
 ARCHIVES.each do |lib, shims|
   objs = shims.map { |shim| "lib/#{shim}#{OBJ_EXT}" }
@@ -111,8 +122,8 @@ ARCHIVES.each do |lib, shims|
   end
 end
 
-desc "Build vendor C code into #{NATIVE_LIB} (sokol) + #{PTY_LIB} (pty shim)"
-task "build:native" => ARCHIVES.keys
+desc "Build vendor C code into #{NATIVE_LIB} (sokol) + #{PTY_LIB} (pty shim) + minaudio shard lib"
+task "build:native" => ARCHIVES.keys + [MINAUDIO_LIB]
 
 # Warm ONE compiler cache with a single small build, then clone it into
 # every empty worker slot. On a fresh clone (or after a cache wipe) the
@@ -149,7 +160,10 @@ def build_examples(names, opt_flags, label)
   FileUtils.mkdir_p("bin")
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.
-  lib_flag = WINDOWS ? "/LIBPATH:#{libdir}" : "-L#{libdir}"
+  # lib/minaudio/lib: the audio shard's static lib (only pulled in when
+  # an example requires "egui/backend/audio" — its @[Link] does the rest).
+  ma_dir = File.join(libdir, "minaudio", "lib")
+  lib_flag = WINDOWS ? "/LIBPATH:#{libdir} /LIBPATH:#{ma_dir}" : "-L#{libdir} -L#{ma_dir}"
   if DARWIN
     # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
     # brew prefix (-L only — @[Link("freetype")] already adds -lfreetype).
@@ -159,7 +173,8 @@ def build_examples(names, opt_flags, label)
     ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
     lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
                "-framework OpenGL -framework QuartzCore " \
-               "-framework AVFoundation -framework CoreMedia"
+               "-framework AVFoundation -framework CoreMedia " \
+               "-framework IOKit"
   end
   # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
   jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))

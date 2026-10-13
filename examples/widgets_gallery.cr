@@ -79,6 +79,9 @@ class GalleryApp < Egui::App
   @cpu_samples = Hash(Int32, Float64).new
   # Monotonic counter for tabs created via File → New ("tab 1", "tab 2"…).
   @next_tab = 1
+  # Overlay demo: the navigator-style zoom level the floating cluster
+  # over the gallery plot edits (100 = default view).
+  @zoom_level = 100
   # Hotkeys: defaults bound once on the first frame; @last_action is
   # the most recent action event (menu click or hotkey press).
   @hotkeys_ready = false
@@ -1185,9 +1188,37 @@ content slides out; open/close state is app-independent, like the tree view:")
 the view is panned/zoomed):")
     # sin_points/peak_points are computeds — the arrays are built on
     # first read only, not every frame.
-    ui.plot("gallery_plot", height: 220) do |p|
+    plot_resp = ui.plot("gallery_plot", height: 220) do |p|
       p.line("sin(x)", sin_points)
       p.points("peaks", peak_points)
+    end
+
+    # Overlay demo (the navigator-map idiom, see Egui::Overlay): a
+    # zoom cluster floating ON TOP of the plot — `rect:` re-bases the
+    # overlay on the plot's own rect from THIS frame (immediate mode:
+    # the response already knows it), anchored top-right with a
+    # margin. The parent flow is untouched. Pick it in the inspector
+    # (F12 → right-click → Inspect Overlay) and edit anchor/margin/z
+    # live — they style through the "overlay" class.
+    ui.overlay(:top_right, margin: Egui::StyleBox.new(top: 8.0, right: 8.0),
+               rect: plot_resp.rect, id: "gallery_zoom") do |o|
+      if o.button("+", id: "zoom_in").clicked?
+        @zoom_level = {@zoom_level + 25, 400}.min
+      end
+      if o.button("−", id: "zoom_out").clicked?
+        @zoom_level = {@zoom_level - 25, 25}.max
+      end
+      if o.button("0", id: "zoom_reset").clicked?
+        @zoom_level = 100
+      end
+    end
+    # A pass-through HUD pinned to the plot's bottom-left: it draws
+    # over the plot but never eats its drags/wheel (no background
+    # click target).
+    ui.overlay(:bottom_left, margin: Egui::StyleBox.new(bottom: 8.0, left: 8.0),
+               rect: plot_resp.rect, id: "gallery_zoom_hud",
+               pass_through: true) do |o|
+      o.label("zoom: #{@zoom_level}%")
     end
 
     ui.label("Same plot with reset_button: false — pan/zoom works, but there \

@@ -31,6 +31,9 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.os.VibratorManager;
 import android.text.InputType;
 import android.view.View;
 import android.view.ViewGroup;
@@ -58,6 +61,121 @@ public class EguiCrActivity extends NativeActivity {
     // UI thread.
     static volatile String editorText = "";
     static volatile int editorSelStart = 0, editorSelEnd = 0;
+
+    // Haptics (SystemPorts::Haptics): style 0 light / 1 medium /
+    // 2 heavy / 3 selection; ms > 0 = a plain timed buzz. minSdk 28:
+    // API 29+ uses the vendor-calibrated predefined effects (weak
+    // hand-rolled one-shots don't register on many OEM actuators —
+    // "only heavy vibrates"); the API 28 fallback carries strong
+    // amplitudes for the same reason. VIBRATE is a normal permission.
+    public static void vibrate(int style, int ms) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        try {
+            Vibrator v;
+            if (Build.VERSION.SDK_INT >= 31) {
+                VibratorManager vm = (VibratorManager)
+                    a.getSystemService(Context.VIBRATOR_MANAGER_SERVICE);
+                v = vm == null ? null : vm.getDefaultVibrator();
+            } else {
+                v = (Vibrator) a.getSystemService(Context.VIBRATOR_SERVICE);
+            }
+            if (v == null) { android.util.Log.i("egui_cr", "vibrate: no vibrator service"); return; }
+            if (!v.hasVibrator()) { android.util.Log.i("egui_cr", "vibrate: device has no vibrator"); return; }
+            if (ms > 0) {
+                v.vibrate(VibrationEffect.createOneShot(ms,
+                    VibrationEffect.DEFAULT_AMPLITUDE));
+                android.util.Log.i("egui_cr", "vibrate: one-shot " + ms + "ms");
+                return;
+            }
+            if (Build.VERSION.SDK_INT >= 29) {
+                // Vendor-tuned presets: reliably distinct intensities.
+                final int[] effects = {
+                    VibrationEffect.EFFECT_CLICK,        // light
+                    VibrationEffect.EFFECT_HEAVY_CLICK,  // medium (no calibrated middle preset)
+                    VibrationEffect.EFFECT_HEAVY_CLICK,  // heavy
+                    VibrationEffect.EFFECT_TICK,         // selection
+                };
+                int e = effects[Math.max(0, Math.min(3, style))];
+                v.vibrate(VibrationEffect.createPredefined(e));
+                android.util.Log.i("egui_cr", "vibrate: predefined effect=" + e + " style=" + style);
+                return;
+            }
+            // API 28 fallback: strong amplitudes — weak ones (<~100)
+            // are dropped or imperceptible on coin-motor devices.
+            final int[][] presets = {
+                {16, 130},   // light
+                {26, 190},   // medium
+                {36, 255},   // heavy
+                {10, 100},   // selection
+            };
+            int[] p = presets[Math.max(0, Math.min(3, style))];
+            v.vibrate(VibrationEffect.createOneShot(p[0], p[1]));
+            android.util.Log.i("egui_cr", "vibrate: one-shot " + p[0] + "ms amp=" + p[1]);
+        } catch (Exception e) {
+            android.util.Log.i("egui_cr", "vibrate failed: " + e);
+        }
+    }
+
+    // Audio route diagnostics (SystemPorts::Audio): the "play() said
+    // true but nothing audible" case is almost always a zeroed media
+    // stream or a silent/DND ringer state — this surfaces both.
+    public static String audioDiag() {
+        EguiCrActivity a = instance;
+        if (a == null) return null;
+        try {
+            android.media.AudioManager am = (android.media.AudioManager)
+                a.getSystemService(Context.AUDIO_SERVICE);
+            int vol = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC);
+            int max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC);
+            int ring = am.getRingerMode();
+            String rm = ring == 0 ? "SILENT" : (ring == 1 ? "VIBRATE" : "NORMAL");
+            return "music=" + vol + "/" + max + " ringer=" + rm;
+        } catch (Exception e) {
+            android.util.Log.i("egui_cr", "audioDiag failed: " + e);
+            return null;
+        }
+    }
+
+    // Share (SystemPorts::Share): ACTION_SEND text/plain chooser.
+    public static boolean shareText(final String subject, final String text) {
+        final EguiCrActivity a = instance;
+        if (a == null) return false;
+        try {
+            Intent i = new Intent(Intent.ACTION_SEND);
+            i.setType("text/plain");
+            i.putExtra(Intent.EXTRA_SUBJECT, subject == null ? "" : subject);
+            i.putExtra(Intent.EXTRA_TEXT, text == null ? "" : text);
+            Intent chooser = Intent.createChooser(i, null);
+            chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            a.startActivity(chooser);
+            return true;
+        } catch (Exception e) {
+            android.util.Log.i("egui_cr", "shareText failed: " + e);
+            return false;
+        }
+    }
+
+    // WakeLock (SystemPorts::WakeLock): FLAG_KEEP_SCREEN_ON — the
+    // cheapest screen-keep mechanism, no permission required.
+    public static void keepScreenOn(final boolean on) {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    android.view.Window w = a.getWindow();
+                    if (w == null) return;
+                    if (on) w.addFlags(android.view.WindowManager.LayoutParams
+                            .FLAG_KEEP_SCREEN_ON);
+                    else w.clearFlags(android.view.WindowManager.LayoutParams
+                            .FLAG_KEEP_SCREEN_ON);
+                } catch (Exception e) {
+                    android.util.Log.i("egui_cr", "keepScreenOn failed: " + e);
+                }
+            }
+        });
+    }
 
     // Called from native when the focused field's state changed.
     public static void editorStateChanged(final String text, final int selStart,

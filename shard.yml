@@ -25,6 +25,11 @@ dependencies:
   # highlight.js 11.12.0).
   highlight_cr:
     github: OrelSokolov/highlight.cr
+  # Звук SystemPorts::Audio: vendored miniaudio за идиоматичным API
+  # (Engine/Sound/Decoder). Нужен только приложениям, которые требуют
+  # "egui/backend/audio".
+  minaudio:
+    git: git@github.com:OrelSokolov/minaudio.cr.git
 
 # Demos only (examples/ + spec/) — never pulled in when egui-cr is
 # used as a library. examples/system_monitor.cr reads RAM, CPU and

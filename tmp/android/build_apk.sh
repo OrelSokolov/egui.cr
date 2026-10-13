@@ -42,11 +42,15 @@ OUTLIB="$HERE/apk/lib/arm64-v8a/lib$LIB.so"
 mkdir -p "$HERE/apk/lib/arm64-v8a"
 
 # 1) link the shared library
+#    Audio (SystemPorts::Audio, minaudio shard): pass lib/minaudio/ext/
+#    miniaudio_android.o (rake build:android in the shard) among the
+#    extra .o files, and the aaudio/OpenSLES libs below carry it.
 "$TOOLCHAIN/bin/clang" "--target=$TRIPLE$API" \
   -shared -u ANativeActivity_onCreate \
   -o "$OUTLIB" "$OBJ" "$@" \
   -L"$ROOT/etc/arm64-v8a" \
-  -llog -landroid -lEGL -lGLESv3 -lcamera2ndk -lmediandk -lz -lgc -lpcre2-8 -levent -lm
+  -llog -landroid -lEGL -lGLESv3 -lcamera2ndk -lmediandk -lz -lgc -lpcre2-8 -levent -lm \
+  -laaudio -lOpenSLES
 
 # 2) Java IME bridge → classes.dex (javac + d8; aapt picks up apk/)
 mkdir -p "$HERE/classes"
