@@ -229,7 +229,9 @@ describe "widget inspector" do
       pos = rect.not_nil!.center
     end
 
-    # frame 2: secondary press over the paragraph → pick menu opens
+    # frame 2: secondary press over the paragraph → the RichLabel's OWN
+    # context menu opens (selectable labels have Copy/Select all now);
+    # the inspector rides in its tail instead of a second popup
     events = [Egui::Event.pointer_moved(pos.not_nil!),
               Egui::Event.pointer_pressed(pos.not_nil!,
                 Egui::PointerButton::Secondary)]
@@ -238,7 +240,8 @@ describe "widget inspector" do
         ui.add(Egui::Markdown.new("# Title\n\nSome **bold** prose."))
       }
     end
-    ctx.popup_open?("inspector_pick").should be_true
+    ctx.popup_open?("inspector_pick").should be_false
+    ctx.popup_open?("context_menu_#{label_id.not_nil!.value}").should be_true
 
     # frame 3: the menu lists both the root and the nested label
     insp_frame(ctx, time: 0.048) do |c|
@@ -251,11 +254,17 @@ describe "widget inspector" do
     texts.any?(&.starts_with?("Inspect RichLabel")).should be_true
 
     # clicking the RichLabel row selects the subwidget, not the root
+    # (the label's menu renders from the markdown's own ui pass, so
+    # the content must keep drawing while the popup is up)
     row = ctx.painter.commands.select(Egui::TextCmd)
       .find(&.text.starts_with?("Inspect RichLabel")).not_nil!
     insp_frame(ctx, events: [Egui::Event.pointer_pressed(row.pos),
                              Egui::Event.pointer_released(row.pos)],
-      time: 0.064) { |c| }
+      time: 0.064) do |c|
+      c.window("w") { |ui|
+        ui.add(Egui::Markdown.new("# Title\n\nSome **bold** prose."))
+      }
+    end
     ctx.inspector.selected.should eq label_id
   end
 

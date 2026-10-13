@@ -151,6 +151,11 @@ module Egui
     @meta = {} of Id => WidgetMeta
     @pending_pick : {Array(Id), Pos2}?
     @pick_targets : Array(Id) = [] of Id
+    # The context menu the current @pick_targets belong to (see
+    # #render_menu_tail): keeps the «Inspect …» tail stable across the
+    # frames a menu stays open, and stops a stale list from an earlier
+    # pick leaking into a freshly opened one.
+    @tail_menu : String? = nil
     @last_selected_meta : WidgetMeta?
     # The "Class" tab's selected class. Linked to the Element tab:
     # switching to Class jumps to the LAST SELECTED element's class
@@ -276,17 +281,32 @@ module Egui
 
     # --- pick menu ----------------------------------------------------------
 
-    # The «Inspect …» row appended to a widget's OWN context menu — the
+    # The «Inspect …» rows appended to a widget's OWN context menu — the
     # one-menu rule: a widget never gets two context menus, so while
-    # the inspector is enabled its entry rides along as the LAST item
+    # the inspector is enabled its entries ride along as the LAST items
     # of whatever menu the widget already opens (`Response#context_menu`)
-    # instead of opening a second popup beside it. The standalone pick
-    # menu below only exists for widgets WITHOUT a menu of their own.
-    def render_menu_tail(ui : Ui, id : Id) : Nil
-      return unless m = meta_for(id)
+    # instead of opening a second popup beside it. On the opening press
+    # the rows cover EVERY widget under the pointer (the same list the
+    # standalone pick menu shows — right-clicked markdown offers the
+    # Markdown root and the RichLabel the clicked block is made of);
+    # later frames of the open menu reuse the captured list. The
+    # standalone pick menu below only exists for widgets WITHOUT a
+    # menu of their own.
+    def render_menu_tail(ui : Ui, id : Id, menu_id : String) : Nil
+      if (pk = @pending_pick)
+        @pick_targets = pk[0]
+        @tail_menu = menu_id
+        # A popup answered this press — the standalone pick menu must
+        # not open on top of it (mirrors the #after_update guard).
+        @pending_pick = nil
+      end
+      targets = @tail_menu == menu_id && !@pick_targets.empty? ? @pick_targets : [id]
       ui.separator
-      ui.menu_item("Inspect #{m.kind} · #{display_name(id, m)}") do
-        inspect_widget(id)
+      targets.each do |tid|
+        next unless m = meta_for(tid)
+        ui.menu_item("Inspect #{m.kind} · #{display_name(tid, m)}") do
+          inspect_widget(tid)
+        end
       end
     end
 

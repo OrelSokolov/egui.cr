@@ -10,10 +10,11 @@
 # Selectable by default (`userselect: true`, upstream
 # `interaction.selectable_labels`): the label senses click+drag, a
 # press places the caret, dragging selects a range, double-click
-# selects a word, and Ctrl+C copies the selection through the
-# Clipboard system port while no widget holds keyboard focus.
-# `userselect: false` reverts to the inert paint-only label (upstream
-# `Sense::hover()`).
+# selects a word, Ctrl/Cmd+C copies the selection through the
+# Clipboard system port while no widget holds keyboard focus, and a
+# secondary press (right-click) or long-press opens a Copy / Select
+# all context menu. `userselect: false` reverts to the inert
+# paint-only label (upstream `Sense::hover()`).
 #
 # CSS-wise the label styles under the "label" class and reads the
 # box-model `padding` (per-side `padding.top/…` or the scalar shorthand):
@@ -224,9 +225,13 @@ module Egui
 
       ctx.set_cursor_icon(CursorIcon::Text) if response.hovered?
 
+      menu_id = "context_menu_#{id.value}"
+      menu_open = ctx.popup_open?(menu_id)
       # A press anywhere else (or Escape with nothing focused) ends
-      # this label's selection (upstream deselects the same way).
-      if ctx.input.pointer_pressed? && !response.hovered?
+      # this label's selection (upstream deselects the same way) —
+      # except while this label's own context menu is open: the press
+      # ON a menu row must not kill the selection Copy acts on.
+      if ctx.input.pointer_pressed? && !response.hovered? && !menu_open
         anchor = -1
       elsif anchor >= 0 && anchor != cursor && ctx.memory.focus.id.nil? &&
             ctx.input.consume_key(KeyCode::Escape)
@@ -254,15 +259,39 @@ module Egui
         cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
       end
 
-      # Ctrl+C copies the selection — only while no widget holds
-      # keyboard focus (a focused TextEdit owns the clipboard), and
-      # #consume_key picks the first label with a selection.
+      # Ctrl/Cmd+C copies the selection (upstream `Modifiers::command`)
+      # — only while no widget holds keyboard focus (a focused TextEdit
+      # owns the clipboard), and #consume_key picks the first label
+      # with a selection.
       if anchor >= 0 && anchor != cursor && ctx.memory.focus.id.nil? &&
-         ctx.input.modifiers.ctrl && ctx.input.consume_key(KeyCode::C)
+         ctx.input.modifiers.command? && ctx.input.consume_key(KeyCode::C)
         sel_min = {cursor, anchor}.min
         sel_max = {cursor, anchor}.max
         Egui::SystemPorts::Clipboard.text =
           original_slice(@rich.text, sel_min, sel_max)
+      end
+
+      # Mouse copy: a secondary press (right-click) or a touch
+      # long-press over the label opens Copy / Select all — the label
+      # twin of TextEditMenu. The item handlers run during the popup
+      # render, still inside this method and before the state is
+      # stored, so Copy reads the live selection and Select all can
+      # move the cursor/anchor it mutates.
+      has_sel = anchor >= 0 && anchor != cursor
+      sel_text = has_sel ? original_slice(@rich.text,
+        {cursor, anchor}.min, {cursor, anchor}.max) : ""
+      response.context_menu do |menu|
+        menu.enabled(has_sel) do |m|
+          m.menu_item("Copy", nil, :copy, "Ctrl+C") do
+            Egui::SystemPorts::Clipboard.text = sel_text
+          end
+        end
+        menu.enabled(!flat.empty?) do |m|
+          m.menu_item("Select all", nil, nil, "Ctrl+A") do
+            cursor = flat.size
+            anchor = 0
+          end
+        end
       end
 
       ctx.memory.data.set_int(id, cursor)

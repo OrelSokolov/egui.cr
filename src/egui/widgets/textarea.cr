@@ -699,7 +699,7 @@ module Egui
       # Clipboard through the system port; paste keeps line breaks.
       # Ctrl+Home / Ctrl+End live here too (document-wise jumps — the
       # ctrl block returns early below, before the plain movement keys).
-      if input.modifiers.ctrl
+      if input.modifiers.command?
         if input.consume_key(KeyCode::Home)
           # Caret (or, with Shift kept, the selection edge) to the very
           # top of the buffer; follow-caret turns it into the instant

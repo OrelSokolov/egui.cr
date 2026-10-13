@@ -5385,6 +5385,75 @@ describe "selectable labels" do
     Egui::SystemPorts::Clipboard.text.should eq("Hello")
   end
 
+  it "copies the selection with Cmd+C (macOS super modifier)" do
+    ctx = Egui::Context.new
+    label_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      label_rect = ui.label("Hello World!").rect
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = label_rect.not_nil!
+    left = rect.min
+    right = Egui::Pos2.new(rect.right, rect.center.y)
+
+    draw.call([Egui::Event.pointer_moved(left),
+      Egui::Event.pointer_pressed(left)], 0.032)
+    draw.call([Egui::Event.pointer_moved(right)], 0.048)
+
+    # Cmd+C on macOS arrives as the SUPER modifier, not ctrl
+    cmd = Egui::Modifiers.new(super_key: true)
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::C, cmd)], 0.064)
+    Egui::SystemPorts::Clipboard.text.should eq("Hello World!")
+  end
+
+  it "right-click opens Copy / Select all and Copy works" do
+    Egui::SystemPorts::Clipboard.text = ""
+    ctx = Egui::Context.new
+    label_rect = nil
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      ui = widget_ui(ctx)
+      label_rect = ui.label("Hello World!").rect
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    rect = label_rect.not_nil!
+    left = rect.min
+    right = Egui::Pos2.new(rect.right, rect.center.y)
+
+    # drag-select the whole text
+    draw.call([Egui::Event.pointer_moved(left),
+      Egui::Event.pointer_pressed(left)], 0.032)
+    draw.call([Egui::Event.pointer_moved(right)], 0.048)
+    draw.call([Egui::Event.pointer_released(right)], 0.064)
+
+    # secondary (right-click) press over the label opens the menu
+    mid = rect.center
+    draw.call([Egui::Event.pointer_pressed(mid,
+      Egui::PointerButton::Secondary)], 0.080)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Copy")
+    texts.should contain("Select all")
+
+    # click the Copy row (popup opens at the press position)
+    item = Egui::Pos2.new(mid.x + 12.0, mid.y + 12.0)
+    draw.call([Egui::Event.pointer_released(mid,
+      Egui::PointerButton::Secondary)], 0.096)
+    draw.call([Egui::Event.pointer_pressed(item)], 0.112)
+    draw.call([Egui::Event.pointer_released(item)], 0.128)
+    Egui::SystemPorts::Clipboard.text.should eq("Hello World!")
+    # the menu closes on the click (menu_popup_key must survive the
+    # `enabled` child ui the rows live in)
+    ctx.memory.open_popups.empty?.should be_true
+  end
+
   it "userselect: false stays inert" do
     ctx = Egui::Context.new
     Egui::SystemPorts::Clipboard.text = "sentinel"

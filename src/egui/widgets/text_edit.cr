@@ -394,8 +394,8 @@ module Egui
       end
 
       # Clipboard through the system port; single-line paste strips
-      # line breaks. With Ctrl held no other key has meaning here.
-      if input.modifiers.ctrl
+      # line breaks. With Ctrl/Cmd held no other key has meaning here.
+      if input.modifiers.command?
         if input.consume_key(KeyCode::C)
           if has_sel
             Egui::SystemPorts::Clipboard.text = text[sel_min...sel_max]

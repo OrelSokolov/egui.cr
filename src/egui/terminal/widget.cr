@@ -512,7 +512,7 @@ module Egui
         mods = input.modifiers
 
         # View-level shortcuts first.
-        if mods.ctrl && mods.shift
+        if mods.command? && mods.shift
           if input.consume_key(KeyCode::C)
             if (sel = term.selection_text)
               SystemPorts::Clipboard.text = sel
@@ -548,9 +548,9 @@ module Egui
           end
         end
 
-        # Ctrl+C copies when something is selected and falls through
+        # Ctrl/Cmd+C copies when something is selected and falls through
         # to the child (^C) otherwise (egui_term's Copy handling).
-        if mods.ctrl && !mods.shift && !mods.alt &&
+        if mods.command? && !mods.shift && !mods.alt &&
            input.key_pressed?(KeyCode::C) && (sel = term.selection_text)
           SystemPorts::Clipboard.text = sel
           input.consume_key(KeyCode::C)

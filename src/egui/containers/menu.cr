@@ -48,7 +48,7 @@ module Egui
           # beside it (the class-based ContextMenu twin lands here too —
           # it renders through this block).
           if @ctx.inspector_enabled?
-            @ctx.inspector.try &.render_menu_tail(menu_ui, @id)
+            @ctx.inspector.try &.render_menu_tail(menu_ui, @id, menu_id)
           end
         end
       end
@@ -313,6 +313,10 @@ module Egui
         (hl_vars.color?("text_color") || visuals.menu_highlight_text ||
          visuals.text_color) :
         (vars.color?("text_color") || visuals.text_color)
+      # A disabled row (inside `Ui#enabled(false)`) grays out through
+      # its TEXT only — icons and the shortcut hint fade with it; no
+      # scrim (see Ui#enabled).
+      text_color = visuals.fade_color(text_color, 0.45) if ctx.memory.disabled?
       content_x = rect.left + box.left
       if has_icon
         icon_box = Rect.from_min_size(

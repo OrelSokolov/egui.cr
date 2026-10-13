@@ -63,6 +63,9 @@ describe "text clipboard context menu" do
 
     # The long-press selected "hello"; Copy put it on the clipboard.
     Egui::SystemPorts::Clipboard.text.should eq("hello")
+    # The menu closed on the click (menu_popup_key must survive the
+    # `enabled` child ui the rows live in).
+    ctx.memory.open_popups.empty?.should be_true
   end
 
   it "Copy stays disabled with no selection (empty field)" do
@@ -86,10 +89,22 @@ describe "text clipboard context menu" do
     draw.call([] of Egui::Event, 0.732)
     item = Egui::Pos2.new(pos.x + 12.0, pos.y + 12.0)
     draw.call([Egui::Event.pointer_pressed(item)], 0.748)
-    draw.call([Egui::Event.pointer_released(item)], 0.764)
-    draw.call([] of Egui::Event, 0.780) # even applied, Copy is disabled
-
+    draw.call([Egui::Event.pointer_released(item)], 0.780)
     Egui::SystemPorts::Clipboard.text.should eq("clip")
+
+    # Disabled rows gray out through MUTED TEXT, not a scrim band: the
+    # panel_fill rectangle read as a black background over the menu.
+    v = ctx.style.visuals
+    scrim = v.fade_color(v.panel_fill, 0.5)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == scrim }.should be_false
+    copy = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("Copy")).not_nil!
+    copy.color.should eq(v.fade_color(v.text_color, 0.45))
+    # the empty field disables Select all as well — muted the same way
+    sel = ctx.painter.commands.select(Egui::TextCmd)
+      .find(&.text.==("Select all")).not_nil!
+    sel.color.should eq(v.fade_color(v.text_color, 0.45))
   end
 
   it "applies a recorded paste command (single-line strips breaks)" do

@@ -111,6 +111,14 @@ module Egui
         alt: mask & 0x4 > 0,
         super_key: mask & 0x8 > 0)
     end
+
+    # The shortcut modifier (upstream `Modifiers::command`): Ctrl on
+    # Windows/Linux, Cmd (sokol SUPER) on macOS. Both are accepted
+    # everywhere so copy/paste fire under either hand — checking
+    # `ctrl` alone silently drops every Cmd+C on a Mac.
+    def command? : Bool
+      @ctrl || @super_key
+    end
   end
 
   struct Event

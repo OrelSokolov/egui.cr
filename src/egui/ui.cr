@@ -219,6 +219,9 @@ module Egui
       child.layer = @layer
       child.clip = @clip
       child.v_overflow = @v_overflow
+      # Menu rows inside a child Ui (e.g. `Ui#enabled` blocks grouping
+      # disabled items) must still close their popup on click.
+      child.menu_popup_key = @menu_popup_key
       child.set_style_scope(@style_scope)
       child
     end
@@ -791,7 +794,9 @@ module Egui
     # region. Contents ALWAYS render through a child Ui so widget ids
     # stay stable when the flag flips (interaction state must survive
     # disable/enable cycles). While disabled every Response comes back
-    # dead and a translucent scrim is back-painted over the region.
+    # dead and a translucent scrim is back-painted over the region —
+    # except inside menu popups, where rows gray out through muted text
+    # instead (a scrim band over the menu frame reads as black).
     def enabled(flag : Bool, &block : Ui ->) : Nil
       scrim_index = painter.add_noop
       child = child_ui(
@@ -809,6 +814,10 @@ module Egui
       @cursor = Pos2.new(@max_rect.min.x,
         child.min_rect.bottom + style.spacing.item_spacing.y)
       return if flag
+      # Menu rows mute their own text when disabled (menu_item_impl):
+      # a panel_fill band over the menu frame reads as a black
+      # rectangle, not as "grayed out".
+      return if @menu_popup_key
       v = style.visuals
       painter.set(scrim_index,
         RectCmd.new(painter.clip, child.min_rect, 0.0,
