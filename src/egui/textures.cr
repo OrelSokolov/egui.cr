@@ -3,6 +3,8 @@
 # GPU texture handles are backend resources; the core only ever sees
 # opaque UInt64 ids that flow through ImageCmd. The backend installs a
 # real registry (sokol_gfx); specs run headless with the dummy below.
+# Decoding image FILES is not this seam's business (see
+# Egui::ImageCodec) — the registry only uploads already-decoded RGBA8.
 
 module Egui
   abstract class TextureRegistry
@@ -17,16 +19,6 @@ module Egui
     # Upload RGBA8 pixel data; returns a texture id (0 = failure).
     abstract def register_rgba(width : Int32, height : Int32,
                                data : Bytes) : UInt64
-
-    # Load an image file (PNG/JPEG/…) from disk; 0 = failure.
-    abstract def load(path : String) : UInt64
-
-    # Pixel dimensions of an image file, header-only probe (nil =
-    # unknown / unreadable — the headless dummy). Layout-side sizing
-    # before/without a #load.
-    def image_size(path : String) : Vec2?
-      nil
-    end
 
     # Create an EMPTY updatable RGBA8 texture for pixels that change
     # every frame (decoded video, camera frames); 0 = failure. Content
@@ -63,10 +55,9 @@ module Egui
   end
 
   # Headless registry: hands out deterministic incrementing ids so
-  # specs can assert ImageCmd flow without a GPU. Caches loads.
+  # specs can assert ImageCmd flow without a GPU.
   class DummyTextureRegistry < TextureRegistry
     @next_id : UInt64 = 1_u64
-    @cache = {} of String => UInt64
     @alive = Set(UInt64).new
 
     def register_rgba(width : Int32, height : Int32, data : Bytes) : UInt64
@@ -74,15 +65,6 @@ module Egui
       @next_id += 1
       @alive << id
       id
-    end
-
-    def load(path : String) : UInt64
-      @cache[path] ||= begin
-        id = @next_id
-        @next_id += 1
-        @alive << id
-        id
-      end
     end
 
     def create_stream(width : Int32, height : Int32) : UInt64

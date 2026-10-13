@@ -152,15 +152,18 @@ compiles the shims separately; only archiving is shared.
 
 ### A5. Pixel utilities are backend class methods used by apps
 
-`Sokol.load_rgba` (paint.cr:822) and `Sokol.image_alpha_mask`
-(splash.cr:44) — CPU-side image decoding exposed on the windowing
-backend because the C shim has stb_image handy. Apps that decode a PNG
-now depend on sokol.
+~~`Sokol.load_rgba` (paint.cr:822)~~ — fixed by the `Egui::ImageCodec`
+seam (see `src/egui/image_codec.cr`): decode is bytes-in through an
+installable provider; paint.cr's bitmap cursor decodes through
+`Egui::ImageCodec.decode` with no sokol dependency in the app code.
+Still open: `Sokol.image_alpha_mask` (splash.cr:44) — the XShape
+window-shape mask — remains a backend class method over a path-based
+shim call.
 
-**Fix:** a `SystemPorts::Images` port (`decode_rgba(path)` /
-`alpha_mask(path)`), default nil-returning headless, installed by the
-backend — the same `@[Link]`-free shape NanoSvgCr took for SVG (core
-fallback, C accelerator optional).
+**Fix (remainder):** route the alpha-mask bake through the codec too
+(`ImageCodec.decode` → threshold in Crystal, drop the C-side
+`egui_cr_image_alpha_mask`), so apps that shape a window stop
+depending on sokol for pixel work.
 
 ---
 

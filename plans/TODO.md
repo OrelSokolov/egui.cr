@@ -233,35 +233,39 @@ mailbox с ответом.
 destroy/переиспользование слотов атласа, что закрывает и
 `EGUI_CR_MAX_ATLASES`.
 
-## Подсветка синтаксиса + IR рендеринга + LaTeX (syntax-highlighting-plan.md) — не начато
+## Подсветка синтаксиса + формулы LaTeX — сделано
 
-План согласован: грамматико-ориентированный движок подсветки (порт ядра
-highlight.js, грамматики как данные — поддержка всех языков), вместо
-HTML-движка — DOM-образный IR для markdown (текущий `Markdown.parse` →
-`Array(Block)` с `\x1F`-таблицами ему предшествует), формулы LaTeX —
-через SVG (nanosvg) с попиксельным оракулом MathJax. Подробности и фазы —
-syntax-highlighting-plan.md.
+**Статус.** Реализовано: подсветка — порт ядра highlight.js
+(`lib/highlight_cr`, грамматико-ориентированный движок), подключён в
+`Markdown` (фенс-блоки: info string называет язык, есть автодетект);
+формулы — LaTeX → SVG (nanosvg) с попиксельным MathJax-оракулом
+(`lib/mathjax`), демо `examples/formulas.cr` (bin/formulas). Отдельный
+DOM-образный IR вместо HTML-движка не понадобился.
 
 ## Непротекающие абстракции
 
-### Слой декодирования изображений — не начато
+### Слой декодирования изображений — сделано
 
-Ядро не должно знать, кто декодирует PNG/JPEG/GIF/WebP/… Сегодня
-виджеты и бекенд ходят напрямую в stb_image через C-шим
-(`backend/sokol_shim.c`, `egui_cr_load_rgba` / `egui_cr_info`) —
-абстракции нет, pure-Crystal декодер когда-нибудь потом.
+Ядро не знает, кто декодирует PNG/JPEG/GIF/WebP/…: введён шов
+`Egui::ImageCodec` (`src/egui/image_codec.cr`) по образцу SystemPorts —
 
-Ввести модуль-интерфейс (например `Egui::ImageCodec`) со сниффером по
-magic bytes:
+- интерфейс bytes-in: `decode(bytes) -> Frame?` (полный кадр RGBA8,
+  straight alpha) и `image_size(bytes) -> Vec2?` (header-only probe);
+- `sniff(bytes)` — сниффер magic bytes на чистом Crystal
+  (png/jpeg/gif/bmp/webp/ico/tiff), провайдер-независимый;
+- реализация устанавливается (`ImageCodec.use`), по умолчанию —
+  headless no-op. Провайдер пока один: `Sokol::StbImageCodec` поверх
+  mem-based функций шима (`egui_cr_decode_rgba_mem` /
+  `egui_cr_image_info_mem`, stb_image; path-based `egui_cr_load_image`/
+  `egui_cr_load_rgba`/`egui_cr_image_info` удалены).
 
-- `decode(bytes) -> {width, height, rgba}` — full-frame RGBA8
-  (straight alpha);
-- `image_size(bytes) -> Vec2?` — header-only probe для layout-side
-  сайзинга (сейчас `TextureRegistry#image_size` delegирует в stb_info);
-- расширяемо до кадров анимации (`frames?`), когда дойдёт до GIF.
+Всё выше слоя ходит только через интерфейс: `Context#load_image`
+(декодирует через кодек и заливает через `register_rgba`, кэш на путь)
+и новый `Context#image_size(path)` (probe), markdown (image-блоки),
+ImageView (raster-источник), bitmap-курсор в examples/paint.cr.
+`TextureRegistry` потерял `load`/`image_size` — реестр только заливает
+уже декодированный RGBA8. Спеки: `spec/image_codec_spec.cr`.
 
-Провайдер пока один: тонкая обёртка над sokol-бекендом (временно
-вызывает те же `egui_cr_load_rgba`/`stbi_info`). Всё, что выше слоя
-(`Image`-виджет, markdown, Svg-кэш, диалоги), ходит только через
-интерфейс — тогда будущая замена stb (pure-Crystal кодеки, второй
-провайдер) не тронет ни одного виджета.
+Будущее (не начато): pure-Crystal кодеки и вторые провайдеры
+(WebP/AVIF), кадры анимации (`frames?`) — садятся на тот же шов без
+правок потребителей.

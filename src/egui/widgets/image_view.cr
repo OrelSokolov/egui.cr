@@ -44,6 +44,9 @@ module Egui
 
     getter scale : Float64
     getter offset : Vec2
+    # Drawn size at scale 1.0 — the SVG's given base or the raster
+    # probe (Context#image_size) adopted on first load.
+    getter base : Vec2
 
     @pid : Id
     @svg : Svg?
@@ -72,7 +75,7 @@ module Egui
     end
 
     # Raster source (PNG/JPEG/…): `base` overrides the pixel size
-    # probe (TextureRegistry#image_size) when given.
+    # probe (Context#image_size — the ImageCodec seam) when given.
     def initialize(id : String, image_path : String, base : Vec2? = nil)
       @pid = Id.from("image_view/#{id}")
       @svg = nil
@@ -204,7 +207,7 @@ module Egui
     private def ensure_texture(ctx : Context, path : String) : Nil
       if @texture_id.zero?
         @texture_id = ctx.load_image(path)
-        if !@base_given && (sz = ctx.textures.image_size(path))
+        if !@base_given && (sz = ctx.image_size(path))
           @base = sz
         end
       end

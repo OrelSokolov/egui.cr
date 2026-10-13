@@ -2508,33 +2508,27 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
 }
 #endif
 
-// Decode an image file (PNG/JPEG/...) via stb_image and upload it as
-// RGBA8; returns the sg_view id (0 on failure).
-uint32_t egui_cr_load_image(const char* path) {
-    int w, h, n;
-    unsigned char* data = stbi_load(path, &w, &h, &n, 4);
-    if (!data) return 0;
-    uint32_t view_id = egui_cr_make_texture(w, h, data);
-    stbi_image_free(data);
-    return view_id;
+// In-memory image decode, the C side of the Egui::ImageCodec seam
+// (the caller — the Crystal core — owns file/network IO and sniffs
+// magic bytes; only the decoding itself lives here). These are the
+// ONLY stb_image entry points: nothing decodes from a path anymore.
+
+// Decode an in-memory image (PNG/JPEG/...) into a CPU-side
+// straight-alpha RGBA8 buffer — the source for GPU textures
+// (via egui_cr_make_texture) and for CustomCursorImage (a GPU texture
+// can't be read back). malloc'd, exactly w*h*4 bytes; free with
+// egui_cr_mem_free. NULL on failure.
+unsigned char* egui_cr_decode_rgba_mem(const unsigned char* bytes, int len, int* w, int* h) {
+    int n;
+    return stbi_load_from_memory(bytes, len, w, h, &n, 4);
 }
 
-// Header-only image probe (stbi_info): pixel dimensions without
-// decoding the pixels — layout-side sizing before/without a load.
+// Header-only probe (stbi_info_from_memory): pixel dimensions without
+// decoding the pixels — layout-side sizing before/without a decode.
 // Returns 1 on success and fills w/h, 0 on failure.
-int egui_cr_image_info(const char* path, int* w, int* h) {
+int egui_cr_image_info_mem(const unsigned char* bytes, int len, int* w, int* h) {
     int n;
-    return stbi_info(path, w, h, &n);
-}
-
-// Decode an image file into a CPU-side straight-alpha RGBA8 buffer —
-// the `CustomCursorImage` source (the GPU texture from
-// egui_cr_load_image can't be read back). malloc'd, exactly w*h*4
-// bytes; free with egui_cr_mem_free. NULL on failure.
-unsigned char* egui_cr_load_rgba(const char* path, int* w, int* h) {
-    int n;
-    unsigned char* data = stbi_load(path, w, h, &n, 4);
-    return data; // stb_image's buffer IS straight RGBA8, heap-allocated
+    return stbi_info_from_memory(bytes, len, w, h, &n);
 }
 
 // --- Crystal text stack GPU bits ---------------------------------------------

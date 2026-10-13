@@ -6,11 +6,10 @@
 ## Текст / Rich content
 
 - **Markdown** — ✅ есть (`examples/markdown.cr`)
-- **Syntax highlighting** — в планах (`plans/syntax-highlighting-plan.md`):
-  tree-sitter или port грамматико-ориентированного движка (highlight.js)
-- **Math (KaTeX/MathJax)** — MathJax тяжёлый (JS); для нативного рендера
-  port KaTeX или хотя бы subset LaTeX → свои глифы. В текущем плане
-  формулы через SVG (nanosvg) с оракулом MathJax
+- **Syntax highlighting** — ✅ есть: порт ядра highlight.js
+  (`lib/highlight_cr`), подключён в markdown-фенсы
+- **Math (KaTeX/MathJax)** — ✅ есть: LaTeX → SVG (nanosvg) с
+  попиксельным MathJax-оракулом (`examples/formulas.cr`)
 - **HTML-рендер** — minihtml/litehtml, если нужен rich text в лейблах
 - **i18n** — ICU (сортировка, плюрализм, bidi), gettext-подобный слой.
   Bidi/RTL критичен для арабского/иврита
@@ -20,8 +19,11 @@
 - **SVG** — ✅ есть (nanosvg), но он ограничен; для полного фарша —
   resvg
 - **Кодеки изображений** — JPEG, WebP, AVIF, GIF (включая анимацию),
-  TIFF — «открыть файл любого вида». Слой абстракции — см. TODO.md
-  «Непротекающие абстракции» (провайдер пока — stb через sokol-бекенд)
+  TIFF — «открыть файл любого вида». Слой абстракции — ✅ сделан
+  (`Egui::ImageCodec`: bytes-in decode/probe + magic-sniffer,
+  устанавливаемый провайдер; текущий — stb_image из шима, PNG/JPEG/
+  GIF/BMP; см. TODO.md «Непротекающие абстракции»). Новые кодеки —
+  просто вторые провайдеры на том же шове
 - **Lottie (rlottie)** — анимированные векторные ассеты
 - **Графики/charts** — built-in виджет (линии, свечи, heatmap) —
   обязательный атрибут фреймворков уровня Excel-like приложений
@@ -79,8 +81,8 @@
 ## Приоритет (по пользе)
 
 1. Responsive/мобильное (`plans/responsive-mobile.md`, Этапы 1–3)
-2. Image codecs (WebP/JPEG) — но сначала слой абстракции (TODO.md,
-   «Непротекающие абстракции»)
+2. Image codecs (WebP/JPEG) — слой абстракции готов (TODO.md,
+   «Непротекающие абстракции»), остались сами кодеки как провайдеры
 3. Bidi/IME
 4. Charts
 5. DnD / clipboard rich

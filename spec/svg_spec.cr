@@ -38,10 +38,6 @@ class CountingRegistry < Egui::TextureRegistry
     @count.to_u64
   end
 
-  def load(path) : UInt64
-    0_u64
-  end
-
   def create_stream(width, height) : UInt64
     0_u64
   end

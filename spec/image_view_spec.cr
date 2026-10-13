@@ -11,11 +11,10 @@ IV_SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero,
   Egui::Vec2.new(800.0, 600.0))
 
 # A graphical TextureRegistry stand-in: register_rgba counts bucket
-# bakes, load hands out a fake raster texture, image_size reports a
-# probed size (see widgets/image_view.cr raster path).
+# bakes (raster sources load through the ImageCodec seam now — see
+# the IVCodec stand-in and widgets/image_view.cr raster path).
 class IVRegistry < Egui::TextureRegistry
   property bakes = [] of Tuple(Int32, Int32)
-  property loaded = [] of String
 
   def graphical? : Bool
     true
@@ -26,15 +25,6 @@ class IVRegistry < Egui::TextureRegistry
     1_u64
   end
 
-  def load(path) : UInt64
-    @loaded << path
-    7_u64
-  end
-
-  def image_size(path) : Egui::Vec2?
-    Egui::Vec2.new(64.0, 48.0)
-  end
-
   def create_stream(width, height) : UInt64
     0_u64
   end
@@ -43,6 +33,22 @@ class IVRegistry < Egui::TextureRegistry
   end
 
   def destroy(id) : Nil
+  end
+end
+
+# An ImageCodec stand-in: every input decodes to a 64×48 frame and
+# probes as 64×48 (pixel content is irrelevant to the cache contract).
+class IVCodec < Egui::ImageCodec::Implementation
+  property decodes = 0
+
+  def decode(bytes) : Egui::ImageCodec::Frame?
+    @decodes += 1
+    Egui::ImageCodec::Frame.new(width: 64, height: 48,
+      rgba: Bytes.new(64 * 48 * 4))
+  end
+
+  def image_size(bytes) : Egui::Vec2?
+    Egui::Vec2.new(64.0, 48.0)
   end
 end
 
@@ -93,20 +99,35 @@ describe Egui::ImageView do
   end
 
   it "draws a raster source as one texture and bakes nothing" do
+    # Context#load_image reads the file itself (the codec is bytes-in),
+    # so the raster source needs a real (content-irrelevant) file.
+    path = File.tempname("iv_raster", ".png")
+    File.write(path, Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A] +
+      Bytes.new(16, 0))
+    codec = IVCodec.new
+    Egui::ImageCodec.use(codec)
     registry = IVRegistry.new
     ctx = Egui::Context.new
     ctx.textures = registry
-    view = Egui::ImageView.new("photo", "/art/photo.png")
-    focal = Egui::Pos2.new(400.0, 300.0)
-    Array.new(6, Egui::Event.zoom(1.5, focal)).each do |e|
-      iv_frame(ctx, [e])
-      ctx.window("w") { |ui| view.ui(ui) }
-      ctx.end_frame
-    end
+    begin
+      view = Egui::ImageView.new("photo", path)
+      focal = Egui::Pos2.new(400.0, 300.0)
+      Array.new(6, Egui::Event.zoom(1.5, focal)).each do |e|
+        iv_frame(ctx, [e])
+        ctx.window("w") { |ui| view.ui(ui) }
+        ctx.end_frame
+      end
 
-    registry.loaded.should eq(["/art/photo.png"]) # loaded once
-    registry.bakes.should be_empty                # no SVG bakes
-    ctx.painter.commands.select(Egui::ImageCmd).size.should be >= 1
-    view.scale.should be_close(1.5 ** 6, 0.001)   # zoom applied
+      codec.decodes.should eq(1) # decoded once (Context#load_image cache)
+      # one raster upload of the probed size — no SVG bucket bakes
+      # (those would be 256+ squares from the prewarm set)
+      registry.bakes.should eq([{64, 48}])
+      ctx.painter.commands.select(Egui::ImageCmd).size.should be >= 1
+      view.scale.should be_close(1.5 ** 6, 0.001) # zoom applied
+      view.base.should eq(Egui::Vec2.new(64.0, 48.0)) # probed size adopted
+    ensure
+      Egui::ImageCodec.use(Egui::ImageCodec::Implementation.new)
+      File.delete(path)
+    end
   end
 end

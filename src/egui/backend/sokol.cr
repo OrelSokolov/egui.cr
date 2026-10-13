@@ -198,8 +198,6 @@ lib LibEguiCr
   fun window_resize_start = egui_cr_window_resize_start(direction : Int32)
   fun image_alpha_mask = egui_cr_image_alpha_mask(path : UInt8*, w : Int32*,
                                                   h : Int32*) : UInt8*
-  fun image_info = egui_cr_image_info(path : UInt8*, w : Int32*,
-                                      h : Int32*) : Int32
   fun set_window_shape = egui_cr_set_window_shape(mask : UInt8*, w : Int32,
                                                   h : Int32)
   fun mem_free = egui_cr_mem_free(p : Void*)
@@ -280,7 +278,13 @@ lib LibEguiCr
   fun sgl_bind_texture_nearest = egui_cr_sgl_texture_nearest(view_id : UInt32)
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
   fun sgl_disable_texture = egui_cr_sgl_disable_texture
-  fun load_image = egui_cr_load_image(path : UInt8*) : UInt32
+
+  # in-memory image decode (the C side of the Egui::ImageCodec seam —
+  # see backend/sokol_shim.c; mem_free releases the decode buffer)
+  fun decode_rgba_mem = egui_cr_decode_rgba_mem(bytes : UInt8*, len : Int32,
+                                                w : Int32*, h : Int32*) : UInt8*
+  fun image_info_mem = egui_cr_image_info_mem(bytes : UInt8*, len : Int32,
+                                              w : Int32*, h : Int32*) : Int32
 
   # text pipeline + glyph atlas (Crystal text stack). Atlases are
   # per-instance: atlas_create returns its own view, atlas_update
@@ -303,9 +307,6 @@ lib LibEguiCr
   fun set_cursor_image = egui_cr_set_cursor_image(rgba : UInt8*, w : Int32,
                                                   h : Int32, hx : Int32,
                                                   hy : Int32)
-  # decode an image file to a CPU-side straight-alpha RGBA8 buffer
-  # (malloc'd — free via #mem_free)
-  fun load_rgba = egui_cr_load_rgba(path : UInt8*, w : Int32*, h : Int32*) : UInt8*
 end
 
 module Egui
@@ -470,6 +471,32 @@ module Egui
       class QuitPort < Egui::SystemPorts::Quit::Implementation
         def quit : Nil
           LibEguiCr.request_quit
+        end
+      end
+
+      # ImageCodec provider → the shim's mem-based stb_image entry
+      # points (egui_cr_decode_rgba_mem / egui_cr_image_info_mem): the
+      # single decoder for now — a future pure-Crystal codec set
+      # installs through the same seam without touching consumers.
+      class StbImageCodec < Egui::ImageCodec::Implementation
+        def decode(bytes : Bytes) : Egui::ImageCodec::Frame?
+          w = uninitialized Int32
+          h = uninitialized Int32
+          ptr = LibEguiCr.decode_rgba_mem(bytes.to_unsafe, bytes.size,
+            pointerof(w), pointerof(h))
+          return nil if ptr.null? || w <= 0 || h <= 0
+          rgba = Bytes.new(w * h * 4) { |i| ptr[i] }
+          LibEguiCr.mem_free(ptr)
+          Egui::ImageCodec::Frame.new(width: w, height: h, rgba: rgba)
+        end
+
+        def image_size(bytes : Bytes) : Egui::Vec2?
+          w, h = 0, 0
+          if LibEguiCr.image_info_mem(bytes.to_unsafe, bytes.size,
+                                      pointerof(w), pointerof(h)) == 1 &&
+             w > 0 && h > 0
+            Egui::Vec2.new(w.to_f, h.to_f)
+          end
         end
       end
 
@@ -685,20 +712,6 @@ module Egui
       # the start; `:hidden` enables it the same way but starts with
       # the panel closed (invoked via F12 or «Inspect»). Off by
       # default.
-      # Decode an image file (PNG/…) into a CPU-side straight-alpha RGBA
-      # buffer — the source for `CustomCursorImage` (a GPU texture can't
-      # be read back). Returns nil when the file can't be decoded.
-      def self.load_rgba(path : String)
-        w = uninitialized Int32
-        h = uninitialized Int32
-        ptr = LibEguiCr.load_rgba(path.to_unsafe, pointerof(w), pointerof(h))
-        return nil if ptr.null? || w <= 0 || h <= 0
-        size = w * h * 4
-        rgba = Bytes.new(size) { |i| ptr[i] }
-        LibEguiCr.mem_free(ptr)
-        {rgba: rgba, width: w, height: h}
-      end
-
       def self.run(app : Egui::App, title : String = "egui-cr",
                    width : Int32 = 800, height : Int32 = 600,
                    icon : NamedTuple(rgba: Bytes, width: Int32,
@@ -750,6 +763,7 @@ module Egui
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
+        Egui::ImageCodec.use(StbImageCodec.new)
         {% if flag?(:darwin) && !flag?(:ios) %}
           # System tray: NSStatusItem surface (backend/tray_darwin.cr);
           # other platforms keep the port's no-op default.
@@ -2647,20 +2661,6 @@ module Egui
           return 0_u64 if width <= 0 || height <= 0
           LibEguiCr.make_texture(width, height,
             data.to_unsafe).to_u64
-        end
-
-        def load(path : String) : UInt64
-          LibEguiCr.load_image(path.to_unsafe).to_u64
-        end
-
-        # Header-only probe (stbi_info shim) — pixel size for layout
-        # without decoding the whole image.
-        def image_size(path : String) : Egui::Vec2?
-          w, h = 0, 0
-          if LibEguiCr.image_info(path.to_unsafe, pointerof(w),
-                                  pointerof(h)) == 1 && w > 0 && h > 0
-            Egui::Vec2.new(w.to_f, h.to_f)
-          end
         end
 
         def create_stream(width : Int32, height : Int32) : UInt64

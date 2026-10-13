@@ -826,12 +826,13 @@ class PaintApp
   # 256×16 tools sprite, cropped CPU-side and 2x nearest-upscaled to
   # 32×32. The hotspot is the pouring spout (lower left of the bucket).
   private def build_fill_cursor : Egui::CustomCursorImage?
-    decoded = Egui::Backend::Sokol.load_rgba(
-      File.join({{ __DIR__ }}, "../assets/paint/tools.png"))
+    decoded = Egui::ImageCodec.decode(
+      File.open(File.join({{ __DIR__ }}, "../assets/paint/tools.png"),
+        &.getb_to_end))
     return nil unless decoded
-    rgba = decoded[:rgba]
-    width = decoded[:width]
-    height = decoded[:height]
+    rgba = decoded.rgba
+    width = decoded.width
+    height = decoded.height
     return nil unless width == 256 && height == 16
 
     cell = 3

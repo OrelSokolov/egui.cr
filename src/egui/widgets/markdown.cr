@@ -648,15 +648,16 @@ module Egui
 
     # Standalone image block: the texture loads through
     # `Context#load_image` (cached per path), sized by a header-only
-    # probe (`TextureRegistry#image_size`) and scaled DOWN to the
-    # available width (never up — small icons keep their pixels).
-    # An explicit `<img width=…>` clamps further; `align` shifts the
-    # block. An unloadable/remote image degrades to a weak alt label.
+    # probe (`Context#image_size` — the ImageCodec seam) and scaled
+    # DOWN to the available width (never up — small icons keep their
+    # pixels). An explicit `<img width=…>` clamps further; `align`
+    # shifts the block. An unloadable/remote image degrades to a weak
+    # alt label.
     private def render_image(ui : Ui, block : Block, style : Style) : Nil
       path = resolve_image_path(block.text)
       texture = ui.ctx.load_image(path)
       avail = ui.available_width
-      if texture > 0 && (sz = ui.ctx.textures.image_size(path)) &&
+      if texture > 0 && (sz = ui.ctx.image_size(path)) &&
          sz.x > 0 && sz.y > 0
         draw_w = sz.x
         # explicit <img width=…> clamps; then fit the available width

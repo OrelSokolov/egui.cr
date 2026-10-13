@@ -662,10 +662,29 @@ module Egui
       end
     end
 
-    # egui `Context::load_texture`: decode an image file and cache it
-    # per path; 0 means "couldn't load".
+    # egui `Context::load_texture`: decode an image file through the
+    # ImageCodec seam and upload it, cached per path; 0 means
+    # "couldn't load" (unreadable file, undecodable data or no codec
+    # installed — the headless default).
     def load_image(path : String) : UInt64
-      @texture_cache[path] ||= @textures.load(path)
+      @texture_cache[path] ||= begin
+        frame = read_image_bytes(path).try { |b| ImageCodec.decode(b) }
+        frame ? @textures.register_rgba(frame.width, frame.height,
+          frame.rgba) : 0_u64
+      end
+    end
+
+    # Header-only probe through the same seam: pixel dimensions of an
+    # image file without decoding the pixels (layout-side sizing).
+    # nil = unknown.
+    def image_size(path : String) : Vec2?
+      read_image_bytes(path).try { |b| ImageCodec.image_size(b) }
+    end
+
+    # The IO half of the codec seam (the codec takes bytes, the caller
+    # reads them); nil = unreadable file.
+    private def read_image_bytes(path : String) : Bytes?
+      File.open(path) { |f| f.getb_to_end } rescue nil
     end
 
     # egui repaint scheduling: an immediate request buys two repaints so
