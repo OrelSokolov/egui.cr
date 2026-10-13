@@ -5711,6 +5711,9 @@ typedef struct {
     CVPixelBufferRef latest; // retained until the next frame converts it
     uint8_t* rgba;           // w*h*4, written by egui_cr_cam_frame
     int w, h;
+    // User rotation on top of the (already upright) AVFoundation frame,
+    // set from the UI (the demo's Rotate button) in 90° steps.
+    int urot;
 } sh_cam_s;
 
 // The delegate holds a plain back-pointer (never owns the session); the
@@ -5879,11 +5882,14 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
     if (pb) {
         s->latest = NULL; // one poll per frame
         int cw = (int)CVPixelBufferGetWidth(pb), ch = (int)CVPixelBufferGetHeight(pb);
+        int rot = ((s->urot % 360) + 360) % 360;
+        int ow = (rot == 90 || rot == 270) ? ch : cw;
+        int oh = (rot == 90 || rot == 270) ? cw : ch;
         if (cw > 0 && ch > 0) {
-            if (cw != s->w || ch != s->h) {
+            if (ow != s->w || oh != s->h) {
                 free(s->rgba);
-                s->rgba = (uint8_t*)malloc((size_t)cw * ch * 4);
-                s->w = cw; s->h = ch;
+                s->rgba = (uint8_t*)malloc((size_t)ow * oh * 4);
+                s->w = ow; s->h = oh;
             }
             if (s->rgba) {
                 CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
@@ -5891,14 +5897,20 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
                 size_t bpr = CVPixelBufferGetBytesPerRow(pb);
                 for (int y = 0; y < ch; y++) {
                     const uint8_t* in = src + (size_t)y * bpr;
-                    uint8_t* o = s->rgba + (size_t)y * cw * 4;
                     for (int x = 0; x < cw; x++) {
+                        int ox, oy; // where (x,y) lands after the rotation
+                        switch (rot) {
+                            case 90:  ox = ch - 1 - y; oy = x;          break;
+                            case 180: ox = cw - 1 - x; oy = ch - 1 - y; break;
+                            case 270: ox = y;          oy = cw - 1 - x; break;
+                            default:  ox = x;          oy = y;          break;
+                        }
+                        uint8_t* o = s->rgba + ((size_t)oy * ow + ox) * 4;
                         o[0] = in[2]; o[1] = in[1]; o[2] = in[0]; o[3] = 255; // BGRA → RGBA
-                        in += 4; o += 4;
                     }
                 }
                 CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
-                *out = s->rgba; *w = cw; *h = ch;
+                *out = s->rgba; *w = ow; *h = oh;
                 got = 1;
             }
         }
@@ -5906,6 +5918,15 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
     }
     pthread_mutex_unlock(&s->lock);
     return got;
+}
+
+// UI rotation on top of the platform's own orientation fix, 90° steps.
+void egui_cr_cam_set_rotation(void* sp, int deg) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    int d = deg % 360;
+    if (d < 0) d += 360;
+    s->urot = d;
 }
 
 void egui_cr_cam_close(void* sp) {
@@ -6017,6 +6038,16 @@ typedef struct {
     ANativeWindow* win;
     uint8_t* rgba;
     int w, h;
+    // ACAMERA_SENSOR_ORIENTATION (0/90/180/270, clockwise) applied during
+    // the YUV→RGBA convert — a phone's sensor is landscape while the
+    // device's natural orientation is portrait, so an unrotated frame
+    // comes out sideways. Front cameras additionally get mirrored (the
+    // conventional preview behavior). urot is the USER rotation on top
+    // (the demo's Rotate button); the convert uses rot + urot.
+    int rot;
+    int urot;
+    int mirror;
+    int frames; // frame counter for the periodic logcat heartbeat
 } sh_cam_s;
 
 static void sh_cam_on_disconnect(void* ctx, ACameraDevice* dev) {
@@ -6050,6 +6081,22 @@ void* egui_cr_cam_open(const char* devid, int w, int h) {
     }
 
     sh_cam_s* s = (sh_cam_s*)calloc(1, sizeof(sh_cam_s));
+    // Sensor orientation + facing: how the YUV→RGBA convert must rotate
+    // (and mirror) each frame to come out upright in portrait.
+    ACameraMetadata* chars = NULL;
+    if (ACameraManager_getCameraCharacteristics(sh_cam_mgr, id, &chars) == ACAMERA_OK && chars) {
+        ACameraMetadata_const_entry e;
+        if (ACameraMetadata_getConstEntry(chars, ACAMERA_SENSOR_ORIENTATION, &e) == ACAMERA_OK &&
+            e.count > 0) {
+            int r = e.data.i32[0] % 360;
+            if (r < 0) r += 360;
+            s->rot = (r / 90) * 90; // 0 / 90 / 180 / 270
+        }
+        if (ACameraMetadata_getConstEntry(chars, ACAMERA_LENS_FACING, &e) == ACAMERA_OK &&
+            e.count > 0)
+            s->mirror = (e.data.u8[0] == ACAMERA_LENS_FACING_FRONT);
+        ACameraMetadata_free(chars);
+    }
     ACameraDevice_StateCallbacks dev_cbs;
     memset(&dev_cbs, 0, sizeof dev_cbs);
     dev_cbs.context = s;
@@ -6104,12 +6151,17 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
     int32_t cw = 0, ch = 0;
     AImage_getWidth(img, &cw);
     AImage_getHeight(img, &ch);
+    // Effective rotation: sensor fix + user rotation.
+    const int rot = ((s->rot + s->urot) % 360 + 360) % 360;
+    // Output dims after the rotation (90/270 swap the sides).
+    const int ow = (rot == 90 || rot == 270) ? ch : cw;
+    const int oh = (rot == 90 || rot == 270) ? cw : ch;
     int got = 0;
     if (cw > 0 && ch > 0) {
-        if (cw != s->w || ch != s->h) {
+        if (ow != s->w || oh != s->h) {
             free(s->rgba);
-            s->rgba = (uint8_t*)malloc((size_t)cw * ch * 4);
-            s->w = cw; s->h = ch;
+            s->rgba = (uint8_t*)malloc((size_t)ow * oh * 4);
+            s->w = ow; s->h = oh;
         }
         uint8_t *py = NULL, *pu = NULL, *pv = NULL;
         int32_t rs0 = 0, rs1 = 0, ps0 = 1, ps1 = 1;
@@ -6128,24 +6180,48 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
                 const uint8_t* yr = py + (size_t)y * rs0;
                 const uint8_t* ur = pu + (size_t)(y >> 1) * rs1;
                 const uint8_t* vr = pv + (size_t)(y >> 1) * rs1;
-                uint8_t* o = s->rgba + (size_t)y * cw * 4;
                 for (int x = 0; x < cw; x++) {
                     int Y = (yr[x * ps0] - 16) * 298;
                     int U = ur[(x >> 1) * ps1] - 128;
                     int V = vr[(x >> 1) * ps1] - 128;
+                    // Where this source pixel lands after the clockwise
+                    // rotation (sensor + user).
+                    int ox, oy;
+                    switch (rot) {
+                        case 90:  ox = ch - 1 - y; oy = x;          break;
+                        case 180: ox = cw - 1 - x; oy = ch - 1 - y; break;
+                        case 270: ox = y;          oy = cw - 1 - x; break;
+                        default:  ox = x;          oy = y;          break;
+                    }
+                    if (s->mirror) ox = ow - 1 - ox;
+                    uint8_t* o = s->rgba + ((size_t)oy * ow + ox) * 4;
                     o[0] = (uint8_t)sh_cam_clip((Y + 409 * V + 128) >> 8);
                     o[1] = (uint8_t)sh_cam_clip((Y - 100 * U - 208 * V + 128) >> 8);
                     o[2] = (uint8_t)sh_cam_clip((Y + 516 * U + 128) >> 8);
                     o[3] = 255;
-                    o += 4;
                 }
             }
-            *out = s->rgba; *w = cw; *h = ch;
+            *out = s->rgba; *w = ow; *h = oh;
             got = 1;
         }
     }
     AImage_delete(img);
+    if (got && ++s->frames % 30 == 1)
+        __android_log_print(ANDROID_LOG_INFO, "egui_cr",
+                            "camera: frame %d rot=%d %dx%d",
+                            s->frames, rot, ow, oh);
     return got;
+}
+
+// UI rotation on top of the sensor fix, 90° steps.
+void egui_cr_cam_set_rotation(void* sp, int deg) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    int d = deg % 360;
+    if (d < 0) d += 360;
+    s->urot = d;
+    __android_log_print(ANDROID_LOG_INFO, "egui_cr",
+                        "camera: set_rotation=%d (sensor %d)", d, s->rot);
 }
 
 void egui_cr_cam_close(void* sp) {

@@ -33,6 +33,8 @@ module Egui
         fun cam_frame = egui_cr_cam_frame(sess : Void*, data : UInt8**,
                                           w : Int32*, h : Int32*) : Int32
         fun cam_close = egui_cr_cam_close(sess : Void*) : Void
+        fun cam_set_rotation = egui_cr_cam_set_rotation(sess : Void*,
+                                                        deg : Int32) : Void
         fun last_error = egui_cr_cam_last_error : UInt8*
       end
 
@@ -82,6 +84,10 @@ module Egui
 
         def close(session : Camera::Session) : Nil
           LibEguiCam.cam_close(Pointer(Void).new(session.handle))
+        end
+
+        def set_rotation(session : Camera::Session, degrees : Int32) : Nil
+          LibEguiCam.cam_set_rotation(Pointer(Void).new(session.handle), degrees)
         end
 
         def last_error : String?

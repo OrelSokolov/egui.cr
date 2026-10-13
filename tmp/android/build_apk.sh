@@ -46,7 +46,7 @@ mkdir -p "$HERE/apk/lib/arm64-v8a"
   -shared -u ANativeActivity_onCreate \
   -o "$OUTLIB" "$OBJ" "$@" \
   -L"$ROOT/etc/arm64-v8a" \
-  -llog -landroid -lEGL -lGLESv3 -lcamera2ndk -lmediandk -lgc -lpcre2-8 -levent -lm
+  -llog -landroid -lEGL -lGLESv3 -lcamera2ndk -lmediandk -lz -lgc -lpcre2-8 -levent -lm
 
 # 2) Java IME bridge → classes.dex (javac + d8; aapt picks up apk/)
 mkdir -p "$HERE/classes"

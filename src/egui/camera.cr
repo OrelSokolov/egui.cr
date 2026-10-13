@@ -46,6 +46,14 @@ module Egui
         Camera.implementation.poll_frame(self)
       end
 
+      # Extra clockwise rotation for subsequent frames, in degrees
+      # (0/90/180/270; anything else is rounded by the backend). Applied
+      # on top of the platform's own orientation fix — the UI's "make it
+      # upright" knob.
+      def rotation=(degrees : Int32) : Nil
+        Camera.implementation.set_rotation(self, degrees)
+      end
+
       def close : Nil
         Camera.implementation.close(self)
         @handle = 0_u64
@@ -136,6 +144,9 @@ module Egui
       end
 
       def close(session : Session) : Nil
+      end
+
+      def set_rotation(session : Session, degrees : Int32) : Nil
       end
 
       def last_error : String?

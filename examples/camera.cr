@@ -21,6 +21,7 @@ class CameraApp < Egui::App
   @status = ""
   @listed = false
   @perm_requested = false
+  @rotation = 0
 
   def initialize
     super()
@@ -41,6 +42,7 @@ class CameraApp < Egui::App
     device = @selected >= 0 ? @devices[@selected]? : nil
     session = Egui::Camera.open(device.try &.id, 1280, 720)
     if session
+      session.rotation = @rotation
       @session = session
       @status = "Starting…"
     else
@@ -124,6 +126,13 @@ class CameraApp < Egui::App
           label = @session ? "Stop" : "Start"
           if row.button(label).clicked?
             @session ? stop_capture : start_capture
+          end
+          # Manual preview rotation in 90° steps (on top of the sensor
+          # orientation fix) — live when capturing, remembered for the
+          # next Start.
+          if row.button("Rotate #{@rotation}°").clicked?
+            @rotation = (@rotation + 90) % 360
+            @session.try &.rotation = @rotation
           end
         end
       end
