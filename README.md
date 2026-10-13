@@ -367,24 +367,42 @@ in total. See `docs/ANALYSIS.md` for the upstream map and what is next.
 
 ## License
 
-Dual-licensed — the Qt / MySQL model:
+Dual-licensed — the Qt / MySQL model. **Closed-source projects are
+fully allowed; there is no requirement to open your code.**
 
-- **AGPL-3.0** for open-source use (see [LICENSE](LICENSE)). Note the
-  Affero clause: a network service built on egui.cr must offer its
-  source to users, and shipping a closed-source app that embeds
-  egui.cr violates the license.
-- **Commercial license** for everything else — if you cannot or do not
-  want to open your application's source. One-time, no subscriptions,
-  no per-seat counting:
+The model in short:
+
+* **Haven't earned 2× the license price** over the product's
+  lifetime — **you owe nothing.**
+* **Earned more — pay within 30 days** ($49 indie / $499 per
+  product for a company).
+* **Paid upfront by choice — no refunds**; the license is
+  perpetual.
+* Or open-source your project under AGPL-3.0 and pay nothing ever,
+  at any revenue.
+
+Every payment goes back into the framework — maintenance, bug fixes,
+and platform testing — which is what keeps quality high for everyone
+building on it, commercial users first of all.
+
+- **Commercial license** (closed source) — no upfront payment. You
+  owe nothing until a product's lifetime gross revenue exceeds 2×
+  the license price; failed projects pay nothing. One-time, no
+  subscriptions, no per-seat counting:
 
   | Who | Price |
   |---|---|
-  | Open source / non-commercial | **$0** (AGPL-3.0) |
-  | Indie — individual developer | **$49** one-time, unlimited own products |
-  | Company | **$499** one-time per product (up to $100k revenue; +$100 per each further $100k) |
+  | Indie — individual developer | **$49** one-time, unlimited own products — due once any product earns **$98** |
+  | Company | **$499** one-time per product — due once the product earns **$998** (up to $100k revenue; +$100 per each further $100k) |
 
-  Full terms and payment details: **[PRICING.md](PRICING.md)** — card
-  and crypto (USDT) accepted, contact
-  Oleg Orlov <orelcokolov@gmail.com>.
+- **AGPL-3.0** (open source, see [LICENSE](LICENSE)) — the forever-
+  free option: if you license your own project under AGPL-3.0, you
+  owe nothing at any revenue. The Affero clause extends this to
+  network services: a service built on egui.cr must offer its
+  source to users.
+
+Full terms and payment details: **[PRICING.md](PRICING.md)** — card
+and crypto (USDT) accepted, contact
+Oleg Orlov <orelcokolov@gmail.com>.
 
 Vendored third-party code (`vendor/`) keeps its upstream licenses.

@@ -50,7 +50,111 @@
 module Egui
   # The closed vocabulary of stylable values (keeps `StyleVars` a plain
   # mergeable hash while still type-safe at the getter level).
-  alias StyleValue = Color32 | Float64 | Int32 | Bool | String
+  alias StyleValue = Color32 | Float64 | Int32 | Bool | String | StyleLength
+
+  # A length with a unit (CSS-like responsive sizing): `50%`, `10vw`,
+  # `4vmin`, `1.5rem`. A plain `Float64` in a `StyleVars` bag stays a
+  # point value (`px`), so pre-unit themes keep working untouched.
+  #
+  # Resolution (`#resolve`) happens against the widget's containing
+  # `Ui` — immediate mode needs no widget tree:
+  #   %    — the Ui's `max_rect` side (minus one `item_spacing` on the
+  #          flow axis of horizontal rows, so a pair of 50% widgets
+  #          splits the row exactly); vertical percents resolve to nil
+  #          in unbounded top-down regions (frames/scroll contents
+  #          grow downward with content — there is no definite height
+  #          to be a percent OF, the caller's fallback applies);
+  #   vw/vh/vmin/vmax — the Context's `screen_rect`;
+  #   rem  — the root `Style#font_size` (logical points).
+  struct StyleLength
+    getter value : Float64
+    getter unit : Symbol
+
+    def initialize(@value : Float64, @unit : Symbol)
+    end
+
+    # "50%" / "10vw" / "1.5rem" / "12px" — nil when the string is not
+    # a number with a known unit suffix. No suffix is a suffix of
+    # another, so iteration order never matters. The bare `env(top)`
+    # forms carry an implicit 1.0 multiplier.
+    UNITS = {"%" => :percent, "vmin" => :vmin, "vmax" => :vmax,
+             "rem" => :rem, "vw" => :vw, "vh" => :vh, "px" => :px,
+             "env(safe-area-inset-top)" => :safe_top,
+             "env(safe-area-inset-right)" => :safe_right,
+             "env(safe-area-inset-bottom)" => :safe_bottom,
+             "env(safe-area-inset-left)" => :safe_left}
+
+    def self.parse?(s : String) : StyleLength?
+      UNITS.each do |suffix, unit|
+        next unless s.ends_with?(suffix)
+        num_s = s[0...s.size - suffix.size]
+        # `env(top)` alone = the full inset; `0.5env(top)` scales it.
+        num = num_s.empty? ? 1.0 : num_s.to_f64?
+        return num ? new(num, unit) : nil
+      end
+      nil
+    end
+
+    def resolve(ui : Ui, axis : Symbol = :x) : Float64?
+      case @unit
+      when :px   then @value
+      when :rem  then @value * ui.ctx.style.font_size * ui.ctx.font_scale
+      when :vw   then @value / 100.0 * ui.ctx.input.screen_rect.width
+      when :vh   then @value / 100.0 * ui.ctx.input.screen_rect.height
+      when :vmin
+        r = ui.ctx.input.screen_rect
+        @value / 100.0 * {r.width, r.height}.min
+      when :vmax
+        r = ui.ctx.input.screen_rect
+        @value / 100.0 * {r.width, r.height}.max
+      when :safe_top    then @value * ui.ctx.safe_area.top
+      when :safe_right  then @value * ui.ctx.safe_area.right
+      when :safe_bottom then @value * ui.ctx.safe_area.bottom
+      when :safe_left   then @value * ui.ctx.safe_area.left
+      when :percent
+        base = axis == :x ? percent_base_x(ui) : percent_base_y(ui)
+        base ? @value / 100.0 * base : nil
+      else nil
+      end
+    end
+
+    def to_s(io : IO) : Nil
+      # Whole numbers print without the trailing ".0" — the spelling
+      # files are hand-written with ("50%", not "50.0%"). The bare
+      # `env()` form round-trips as `1env(...)` — equivalent.
+      io << (@value % 1 == 0 ? @value.to_i64.to_s : @value.to_s) << suffix
+    end
+
+    private def suffix : String
+      case @unit
+      when :percent     then "%"
+      when :safe_top    then "env(safe-area-inset-top)"
+      when :safe_right  then "env(safe-area-inset-right)"
+      when :safe_bottom then "env(safe-area-inset-bottom)"
+      when :safe_left   then "env(safe-area-inset-left)"
+      else @unit.to_s
+      end
+    end
+
+    # The horizontal containing-block width. In a horizontal row one
+    # `item_spacing` is subtracted: two `50%` widgets then split the
+    # row exactly (each (W−s)/2, the second's remaining space is the
+    # same number — see plans/responsive-mobile.md Этап 1).
+    private def percent_base_x(ui : Ui) : Float64
+      base = ui.max_rect.width
+      base -= ui.style.spacing.item_spacing.x if ui.layout.horizontal?
+      {base, 0.0}.max
+    end
+
+    # The vertical base — nil in unbounded regions (a definite height
+    # is what a percent needs to be a percent OF). Frames and scroll
+    # contents hand out ~1e6-high inner rects; 1e5 separates them from
+    # any real panel/viewport height.
+    private def percent_base_y(ui : Ui) : Float64?
+      h = ui.max_rect.height
+      h < 1e5 ? h : nil
+    end
+  end
 
   # CSS box model for paddings/margins/any four-sided spacing: every
   # side is its own key (`padding.top/left/right/bottom`), with the
@@ -147,6 +251,21 @@ module Egui
         StyleProp.new("stroke", :color, states: true),
       ]
     end
+
+    # Responsive sizing keys every widget understands (applied by
+    # `Widget#styled_size`): `width`/`min_width`/`max_width` and the
+    # height trio, values in points or responsive units (`%`, `vw`,
+    # `vh`, `vmin`, `vmax`, `rem` — see `StyleLength`). `transition`
+    # (ms) animates size keys towards new targets (per-key
+    # `transition.width` beats the shorthand).
+    def self.sizable : Array(StyleProp)
+      props = [%w[width min_width max_width],
+               %w[height min_height max_height]].flat_map do |keys|
+        keys.map { |k| StyleProp.new(k, :number, min: 0.0) }
+      end
+      props + [StyleProp.new("transition", :number, label: "transition (ms)",
+        min: 0.0)]
+    end
   end
 
   # A mergeable bag of style variables: `Hash(String, StyleValue)` with
@@ -173,6 +292,28 @@ module Egui
 
     def f64(key : String, fallback : Float64) : Float64
       f64?(key) || fallback
+    end
+
+    # A length key resolved to logical points against the widget's
+    # containing `Ui` (see `StyleLength#resolve`): plain numbers pass
+    # through (Int32 coerces), `%`/`vw`/`vh`/`vmin`/`vmax`/`rem`
+    # resolve per their unit. nil when the key is unset, holds a
+    # non-length value, or the unit's base is undefined (percent
+    # height in an unbounded region) — callers apply their fallback.
+    # The allocation max-size rule clamps the result to the region,
+    # so an oversized percent can never push past the parent.
+    def length_px?(key : String, ui : Ui, axis : Symbol = :x) : Float64?
+      case v = self[key]?
+      when Float64    then v
+      when Int32      then v.to_f64
+      when StyleLength then v.resolve(ui, axis)
+      else nil
+      end
+    end
+
+    def length_px(key : String, ui : Ui, fallback : Float64,
+                  axis : Symbol = :x) : Float64
+      length_px?(key, ui, axis) || fallback
     end
 
     # String values (font families, class names…).
@@ -273,51 +414,106 @@ module Egui
     end
   end
 
-  # A CSS media condition on width: `min-width` and/or `max-width` in
-  # logical points (CSS `px`), the analog of
-  # `@media (min-width: 600px) and (max-width: 899px)`. Media types
-  # (`screen`, `all`) are accepted and ignored. Both bounds are
-  # inclusive, like CSS.
+  # A CSS media condition: width/height bounds, orientation and the
+  # pointer type — `(min-width: 600px) and (orientation: portrait)`,
+  # `(pointer: coarse)`, `(hover: none)`, … Media types (`screen`,
+  # `all`) are accepted and ignored. Bounds are inclusive, like CSS.
+  # `(pointer: none)` (no pointing device at all) matches nothing —
+  # every backend egui.cr runs on has at least one pointer.
   struct MediaCond
     getter min_width : Float64?
     getter max_width : Float64?
+    getter min_height : Float64?
+    getter max_height : Float64?
+    getter orientation : Symbol?  # :portrait | :landscape
+    getter pointer : Symbol?      # :coarse | :fine | :none
+    getter hover : Symbol?        # :hover | :none
 
-    def initialize(@min_width : Float64? = nil, @max_width : Float64? = nil)
+    def initialize(@min_width : Float64? = nil, @max_width : Float64? = nil,
+                   @min_height : Float64? = nil,
+                   @max_height : Float64? = nil,
+                   @orientation : Symbol? = nil, @pointer : Symbol? = nil,
+                   @hover : Symbol? = nil)
     end
 
-    # Parse "(min-width: 600px)", "screen and (max-width: 899px)", … —
-    # nil when nothing width-like (or something unsupported) is there;
-    # the caller decides whether to warn and drop the rule.
+    # Parse "(min-width: 600px)", "(orientation: portrait)",
+    # "(pointer: coarse) and (max-height: 500px)", … — nil when
+    # nothing supported is there; the caller decides whether to warn
+    # and drop the rule. Strict units: a bare number or `Npx`
+    # (logical points); `600em`-style garbage no longer silently
+    # parses as 600.
     def self.parse(text : String) : MediaCond?
-      min_width = nil
-      max_width = nil
+      min_width = max_width = min_height = max_height = nil
+      orientation = pointer = hover = nil
+      seen = false
       text.strip.split(/\s+and\s+/i).each do |part|
         p = part.strip.downcase
         next if p.empty? || p == "screen" || p == "all" || p == "only screen"
         p = p[1...-1] if p.starts_with?('(') && p.ends_with?(')')
         key, _, val = p.partition(':')
-        num = val.strip.gsub("px", "").to_f64?
+        v = val.strip
         case key.strip
-        when "min-width"
-          min_width = num if num
-        when "max-width"
-          max_width = num if num
+        when "min-width", "max-width", "min-height", "max-height"
+          num = v.ends_with?("px") ? v[0...-2].to_f64? : v.to_f64?
+          return nil if num.nil?
+          case key.strip
+          when "min-width"  then min_width = num
+          when "max-width"  then max_width = num
+          when "min-height" then min_height = num
+          else                   max_height = num
+          end
+          seen = true
+        when "orientation"
+          return nil unless {"portrait", "landscape"}.includes?(v)
+          orientation = v == "portrait" ? :portrait : :landscape
+          seen = true
+        when "pointer"
+          return nil unless {"coarse", "fine", "none"}.includes?(v)
+          pointer = v == "coarse" ? :coarse : (v == "fine" ? :fine : :none)
+          seen = true
+        when "hover"
+          return nil unless {"hover", "none"}.includes?(v)
+          hover = v == "hover" ? :hover : :none
+          seen = true
         else
-          return nil # orientation/print/… — not a width condition
+          return nil # print/aspect-ratio/… — not supported
         end
-        return nil if num.nil?
       end
-      (min_width || max_width) ? new(min_width, max_width) : nil
+      seen ? new(min_width, max_width, min_height, max_height,
+        orientation, pointer, hover) : nil
     end
 
-    def matches?(width : Float64?) : Bool
-      return false if width.nil?
+    def matches?(width : Float64?, height : Float64? = nil,
+                 pointer_coarse : Bool = false) : Bool
       ok = true
       if (mn = @min_width)
+        return false if width.nil?
         ok &= width >= mn
       end
       if (mx = @max_width)
+        return false if width.nil?
         ok &= width <= mx
+      end
+      if (mn = @min_height)
+        return false if height.nil?
+        ok &= height >= mn
+      end
+      if (mx = @max_height)
+        return false if height.nil?
+        ok &= height <= mx
+      end
+      if (o = @orientation)
+        return false if width.nil? || height.nil?
+        ok &= (o == :landscape) == (width >= height)
+      end
+      if (p = @pointer)
+        # One coarse flag for every backend (touch screens); a mouse
+        # (or trackpad) is `fine`. `none` never matches — see the
+        # struct comment.
+        ok &= (pointer_coarse ? :coarse : :fine) == p
+      end
+      if (h = @hover)
+        ok &= (pointer_coarse ? :none : :hover) == h
       end
       ok
     end
@@ -330,6 +526,15 @@ module Egui
       if (mx = @max_width)
         parts << "(max-width: #{fmt(mx)}px)"
       end
+      if (mn = @min_height)
+        parts << "(min-height: #{fmt(mn)}px)"
+      end
+      if (mx = @max_height)
+        parts << "(max-height: #{fmt(mx)}px)"
+      end
+      parts << "(orientation: #{@orientation})" if @orientation
+      parts << "(pointer: #{@pointer})" if @pointer
+      parts << "(hover: #{@hover})" if @hover
       io << parts.join(" and ")
     end
 
@@ -385,10 +590,15 @@ module Egui
       @media_rules = [] of MediaRuleEntry
       # The viewport width the media conditions match against, in
       # logical points — set by `Context#begin_frame` from
-      # `screen_rect.width` (headless tests set it directly).
+      # `screen_rect` (headless tests set it directly).
       @viewport_width = nil
-      # The per-rule match bits at the last width update — a flip (the
-      # width crossed a condition boundary) drops the resolve cache.
+      @viewport_height = nil
+      # True when the input device is touch-first (a phone/tablet):
+      # `(pointer: coarse)` and `(hover: none)` conditions match.
+      # Backends flip this through `Context#pointer_coarse=`.
+      @pointer_coarse = false
+      # The per-rule match bits at the last viewport update — a flip
+      # (a condition boundary crossed) drops the resolve cache.
       @media_bits = [] of Bool
     end
 
@@ -552,10 +762,10 @@ module Egui
 
     # The viewport width the media conditions match against, in
     # logical points — set by `Context#begin_frame` from
-    # `screen_rect.width` (headless tests set it directly). A width
-    # change only drops the resolve cache when it flips some
-    # condition's match state; mere resizes inside a breakpoint band
-    # keep the cache.
+    # `screen_rect` (headless tests set it directly). A width change
+    # only drops the resolve cache when it flips some condition's
+    # match state; mere resizes inside a breakpoint band keep the
+    # cache.
     def viewport_width=(width : Float64?) : Nil
       return if width == @viewport_width
       @viewport_width = width
@@ -566,10 +776,37 @@ module Egui
       @viewport_width
     end
 
+    # The viewport height for `(min-height:…)`/`(orientation:…)`
+    # conditions — set alongside the width by `Context#begin_frame`.
+    def viewport_height=(height : Float64?) : Nil
+      return if height == @viewport_height
+      @viewport_height = height
+      refresh_media_matches
+    end
+
+    def viewport_height : Float64?
+      @viewport_height
+    end
+
+    # Touch-first input (phone/tablet): flips `(pointer: coarse)` /
+    # `(hover: none)` rules. Sticky — a desktop pointer after a touch
+    # does not un-coarse the device.
+    def pointer_coarse=(coarse : Bool) : Nil
+      return if coarse == @pointer_coarse
+      @pointer_coarse = coarse
+      refresh_media_matches
+    end
+
+    def pointer_coarse? : Bool
+      @pointer_coarse
+    end
+
     # Recompute the per-rule match bits; a flip (a condition crossed)
     # invalidates every cached merge.
     private def refresh_media_matches : Nil
-      bits = @media_rules.map &.cond.matches?(@viewport_width)
+      bits = @media_rules.map do |entry|
+        entry.cond.matches?(@viewport_width, @viewport_height, @pointer_coarse)
+      end
       @resolved.clear if bits != @media_bits
       @media_bits = bits
     end
@@ -577,10 +814,10 @@ module Egui
     # Media class rules for `path` (entry.path ∈ ancestors-or-self),
     # matching conditions only, declaration order.
     private def merge_media_class(bag : StyleVars, path : String) : Nil
-      return unless (width = @viewport_width)
       @media_rules.each do |entry|
         next if entry.state
-        next unless entry.cond.matches?(width)
+        next unless entry.cond.matches?(@viewport_width, @viewport_height,
+          @pointer_coarse)
         bag.merge!(entry.vars) if applies_to?(entry.path, path)
       end
     end
@@ -588,10 +825,10 @@ module Egui
     # Media state rules on top of the state layer.
     private def merge_media_state(bag : StyleVars, path : String,
                                   state : String) : Nil
-      return unless (width = @viewport_width)
       @media_rules.each do |entry|
         next unless entry.state == state
-        next unless entry.cond.matches?(width)
+        next unless entry.cond.matches?(@viewport_width, @viewport_height,
+          @pointer_coarse)
         bag.merge!(entry.vars) if applies_to?(entry.path, path)
       end
     end

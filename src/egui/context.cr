@@ -14,6 +14,33 @@
 # closes on outside click; #bottom_panel pins to the screen bottom.
 
 module Egui
+  # Safe-area insets in points (CSS `env(safe-area-inset-*)` analog —
+  # notch, status bar, home indicator). Backends set them from the OS
+  # (`Context#safe_area=`); `Context#begin_frame` carves them out of
+  # the root region every panel lays out against, and `env()` style
+  # lengths resolve to the same numbers.
+  struct SafeArea
+    getter top : Float64
+    getter right : Float64
+    getter bottom : Float64
+    getter left : Float64
+
+    def initialize(@top = 0.0, @right = 0.0, @bottom = 0.0, @left = 0.0)
+    end
+
+    def self.zero : SafeArea
+      new(0.0, 0.0, 0.0, 0.0)
+    end
+
+    def zero? : Bool
+      top <= 0.0 && right <= 0.0 && bottom <= 0.0 && left <= 0.0
+    end
+
+    def to_s(io : IO) : Nil
+      io << "(" << top << ", " << right << ", " << bottom << ", " << left << ")"
+    end
+  end
+
   # A widget was created with an explicit id (`Button.new("OK", id:
   # "save")`) that another widget already claimed this frame — explicit
   # ids are the developer's addressing tool and must be unique.
@@ -267,6 +294,17 @@ module Egui
     # the upstream ordering rule).
     getter available_rect : Rect
 
+    # Safe-area insets (see `SafeArea`): backends set them once per
+    # frame from the OS (or on the fly when the device rotates); the
+    # root region panels lay out against shrinks accordingly.
+    def safe_area=(insets : SafeArea) : Nil
+      @safe_area = insets
+    end
+
+    def safe_area : SafeArea
+      @safe_area
+    end
+
     @prev_time : Float64?
     @repaint_outstanding : Int32
     @frame_cache : Hash(String, IdTypeMap::Cell)
@@ -326,16 +364,42 @@ module Egui
       @inspector_enabled = false
       @popup_opened_this_frame = false
       @ecss = nil
+      # prefers-reduced-motion / OS font scale (see the transition
+      # section below and StyleLength#resolve).
+      @reduced_motion = false
+      @font_scale = 1.0
+      # Safe-area insets in points (notch/status bar/home indicator —
+      # Этап 4 of plans/responsive-mobile.md). Backends set them from
+      # the OS; zero insets reproduce the pre-safe-area layout.
+      @safe_area = SafeArea.zero
     end
 
     def begin_frame(raw : RawInput) : Nil
       @in_frame = true
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
-      @available_rect = raw.screen_rect
-      # Media conditions match against the viewport width (see
-      # StyleSheet#viewport_width=).
+      # Platform safe-area insets (backend detector — see RawInput)
+      # win over a manual setter: on a phone the OS is the authority.
+      if (insets = raw.safe_area)
+        @safe_area = insets
+      end
+      # The root region every panel bites out of: the screen minus the
+      # safe-area insets ( notch/status bar/home indicator). Media
+      # conditions keep matching against the FULL screen_rect below —
+      # a device's width class does not change because of a notch.
+      @available_rect = if @safe_area.zero?
+        raw.screen_rect
+      else
+        Rect.new(
+          Pos2.new(raw.screen_rect.min.x + @safe_area.left,
+            raw.screen_rect.min.y + @safe_area.top),
+          Pos2.new(raw.screen_rect.max.x - @safe_area.right,
+            raw.screen_rect.max.y - @safe_area.bottom))
+      end
+      # Media conditions match against the viewport (see
+      # StyleSheet#viewport_width= / #viewport_height=).
       @theme.sheet.viewport_width = raw.screen_rect.width
+      @theme.sheet.viewport_height = raw.screen_rect.height
       @cursor_icon = CursorIcon::Default
       @cursor_image = nil
 
@@ -510,6 +574,82 @@ module Egui
       result
     end
 
+    # --- cascade transitions (plans/animations.md Ур.1) --------------
+
+    # Interpolate a style COLOR towards its new cascade target — the
+    # `transition`/`transition.<key>` style keys hold the duration in
+    # milliseconds (0/absent = snap, no state kept), `easing` /
+    # `easing.<key>` name the curve (nil = smoothstep). Keyed by
+    # widget id + the key name, so several properties of one widget
+    # animate independently. `reduced_motion=` snaps everything.
+    def animate_style_color(id : Id, key : String, target : Color32,
+                            ms : Float64, easing : String? = nil) : Color32
+      return target if ms <= 0.0 || @reduced_motion
+      salted = id.child(Id.from("style/#{key}").value)
+      result = @memory.style_animations.color(salted, target,
+        ms / 1000.0, @input.time, easing)
+      request_repaint if @memory.style_animations.running?(salted,
+        @input.time)
+      result
+    end
+
+    # Same for a style SCALAR (a resolved px length, a rounding…).
+    def animate_style_scalar(id : Id, key : String, target : Float64,
+                             ms : Float64, easing : String? = nil) : Float64
+      return target if ms <= 0.0 || @reduced_motion
+      salted = id.child(Id.from("style/#{key}").value)
+      result = @memory.style_animations.scalar(salted, target,
+        ms / 1000.0, @input.time, easing)
+      request_repaint if @memory.style_animations.running?(salted,
+        @input.time)
+      result
+    end
+
+    # `prefers-reduced-motion` (plans/animations.md Ур.2): when true,
+    # every cascade transition snaps — targets apply instantly, no
+    # animation state is kept. Backends set it from the OS
+    # accessibility setting.
+    def reduced_motion=(flag : Bool) : Nil
+      @reduced_motion = flag
+    end
+
+    def reduced_motion? : Bool
+      @reduced_motion
+    end
+
+    # The OS font-size accessibility scale (Android `fontScale`, iOS
+    # Dynamic Type — plans/responsive-mobile.md Этап 5): multiplies
+    # the ROOT font size every `rem` resolves against, so rem-sized
+    # paddings/icons/buttons scale with the user's preference while
+    # pt-sized values stay put (CSS semantics).
+    def font_scale=(scale : Float64) : Nil
+      @font_scale = scale.clamp(0.5, 4.0)
+    end
+
+    def font_scale : Float64
+      @font_scale
+    end
+
+    # Hand-rolled animation helpers over the same manager (Ур.4):
+    # color/Vec2 counterparts of #animate_value_with_time.
+    def animate_color_with_time(id : Id, target : Color32,
+                                duration : Float64 = 0.15) : Color32
+      return target if @reduced_motion
+      result = @memory.style_animations.color(id, target, duration,
+        @input.time)
+      request_repaint if @memory.style_animations.running?(id, @input.time)
+      result
+    end
+
+    def animate_vec2_with_time(id : Id, target : Vec2,
+                               duration : Float64 = 0.15) : Vec2
+      return target if @reduced_motion
+      result = @memory.style_animations.vec2(id, target, duration,
+        @input.time)
+      request_repaint if @memory.style_animations.running?(id, @input.time)
+      result
+    end
+
     # egui CacheStorage-lite: memoize an expensive computation for the
     # current frame only (cleared in begin_frame).
     def frame_cache(key : String, &block : -> IdTypeMap::Cell) : IdTypeMap::Cell
@@ -638,6 +778,17 @@ module Egui
 
     def inspector? : Inspector?
       @inspector
+    end
+
+    # Touch-first input (phone/tablet) — flips the stylesheet's
+    # `(pointer: coarse)` / `(hover: none)` media rules. Sticky:
+    # a desktop pointer after a touch does not un-coarse the device.
+    def pointer_coarse=(coarse : Bool) : Nil
+      @theme.sheet.pointer_coarse = coarse
+    end
+
+    def pointer_coarse? : Bool
+      @theme.sheet.pointer_coarse?
     end
 
     def inspector_enabled? : Bool
@@ -1406,6 +1557,11 @@ module Egui
         inner_rect, layout)
       ui.clip = rect
       ui.layer = layer if layer
+      # Horizontal strips (top/bottom panels) wrap like #horizontal
+      # rows — a strip that overflows the screen breaks lines instead
+      # of cramming widgets into zero-width rects at the edge
+      # (mobile-safe default, Этап 6/7 of plans/responsive-mobile.md).
+      ui.wrap_x = true if layout.horizontal?
       # CSS `overflow-y: auto` by default for top-down panels (egui.cr
       # fix, no upstream counterpart): side/central panel content that
       # fits renders exactly as before — the overlay scrollbar only

@@ -187,7 +187,8 @@ module Egui
 
       width = ui.available_width
       height = @rows * line_h + inset.y * 2.0
-      rect = ui.allocate_at_least(Vec2.new(width, height))
+      sized = styled_size(Vec2.new(width, height), style_vars(ui, id), ui, id)
+      rect = ui.allocate_at_least(sized)
       response = ui.interact(rect, id,
         Sense::Click | Sense::Drag | Sense::Focusable)
       ui.ctx.set_cursor_icon(CursorIcon::Text) if response.hovered?

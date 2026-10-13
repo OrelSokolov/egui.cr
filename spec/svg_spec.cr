@@ -143,6 +143,50 @@ describe Egui::Svg do
     registry.count.should eq(2)
   end
 
+  # -- interactive zoom canvas (the examples/multitouch_demo pattern) --
+
+  it "keeps every reachable zoom bucket cached after a prewarm" do
+    # The multitouch canvas bakes per power-of-two bucket (256..2048)
+    # and prewarms all four at startup, so a pinch mid-gesture is
+    # always a cache hit (bake-not-there-not-then: a lazy bucket bake
+    # costs tens of ms in the frame that crosses the boundary). The
+    # contract under test: the FULL scale range at either common
+    # pixels_per_point resolves to the prewarmed set — zero further
+    # register_rgba calls after the warm. Pixel content is irrelevant
+    # to the cache contract, so the external rasterizer stubs the bake.
+    src = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="2"><path d="M4 20L20 4"/></svg>)
+    Egui::Svg.external_rasterizer = ->(_s : String, _t : Egui::Color32,
+      w : Int32, h : Int32) : Bytes? { Bytes.new(w * h * 4) }
+    registry = CountingRegistry.new
+    svg = Egui::Svg.new(src)
+    begin
+      base = 300.0
+      # the demo's prewarm queue, largest first
+      [2048, 1024, 512, 256].each do |bucket|
+        svg.raster_texture_id(registry, bucket, bucket).should be > 0
+      end
+      registry.count.should eq(4)
+      registry.sizes.sort.should eq(
+        [{256, 256}, {512, 512}, {1024, 1024}, {2048, 2048}])
+
+      # sweep every scale the gesture clamp (0.1..12) allows, at ppp
+      # 1.0 and 2.0 — the demo's bake formula, all cache hits
+      (1..119).each do |t|
+        scale = t / 10.0
+        {1.0, 2.0}.each do |ppp|
+          bake = 2.0 ** Math.log2(base * scale * ppp).ceil
+          bake = {bake, 256.0}.max
+          bake = {bake, 2048.0}.min
+          px = bake.round.to_i
+          svg.raster_texture_id(registry, px, px).should be > 0
+        end
+      end
+      registry.count.should eq(4)
+    ensure
+      Egui::Svg.external_rasterizer = nil
+    end
+  end
+
   it "paints nothing headless (no vector fallback)" do
     ctx = Egui::Context.new
     svg_frame(ctx)

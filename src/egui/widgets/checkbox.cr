@@ -21,7 +21,7 @@ module Egui
     end
 
     def style_properties : Array(StyleProp)
-      StyleProps.textlike + [
+      StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("box_fill", :color, states: true),
         StyleProp.new("box_stroke", :color),
         StyleProp.new("check_color", :color),
@@ -47,7 +47,9 @@ module Egui
       icon = sp.icon_width
       height = {icon, text_size.y}.max
       total_width = icon + sp.icon_spacing + text_size.x
-      rect = ui.allocate_at_least(Vec2.new(total_width, height))
+      size = styled_size(Vec2.new(total_width, height),
+        class_vars, ui, id)
+      rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       icon_rect = Rect.from_min_size(

@@ -54,6 +54,21 @@
 - **Serialization** — JSON ✅ (Crystal stdlib), но нужен layer для
   тем/конфигов
 
+## Адаптивность / мобильные экраны
+
+- **Единицы в стилях** (`%`, `vw/vh`, `vmin/vmax`, `rem`), `width/
+  min_width/max_width` как общие пропсы виджетов, медиа-условия
+  (`orientation`, height, `pointer`/`hover`), safe area, системный
+  fontScale, touch-эргономика, стили управляют лейаутом — полный
+  план с фазами и зависимостями: `plans/responsive-mobile.md`
+  (мобильные экраны уже используются — приоритет выше среднего,
+  Этапы 1–3 срочные)
+
+- **Анимации UI как встроенная фича** — `transition` в ECSS
+  (интерполяция в слое каскада, все виджетов разом), easing-библиотека,
+  reduced-motion, enter/exit — план: `plans/animations.md`
+  (опирается на единицы длин из `plans/responsive-mobile.md`)
+
 ## Виджеты-level
 
 - **DataGrid / таблицы на миллионы строк** — virtualized table
@@ -63,11 +78,12 @@
 
 ## Приоритет (по пользе)
 
-1. Image codecs (WebP/JPEG) — но сначала слой абстракции (TODO.md,
+1. Responsive/мобильное (`plans/responsive-mobile.md`, Этапы 1–3)
+2. Image codecs (WebP/JPEG) — но сначала слой абстракции (TODO.md,
    «Непротекающие абстракции»)
-2. Bidi/IME
-3. Charts
-4. DnD / clipboard rich
-5. Accessibility
+3. Bidi/IME
+4. Charts
+5. DnD / clipboard rich
+6. Accessibility
 
 Остальное — по мере запросов пользователей.

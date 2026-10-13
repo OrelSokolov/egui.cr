@@ -33,7 +33,7 @@ module Egui
     end
 
     def style_properties : Array(StyleProp)
-      StyleProps.textlike + [
+      StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (on)"),
         StyleProp.new("stroke", :color, label: "track stroke"),
         StyleProp.new("sync_with_text", :bool, fallback: true),
@@ -69,7 +69,8 @@ module Egui
       track_h = knob
       height = {track_h, text_size.y, style.spacing.interact_size.y * 0.7}.max
       total_w = track_w + (@text ? style.spacing.icon_spacing + text_size.x : 0.0)
-      rect = ui.allocate_at_least(Vec2.new(total_w, height))
+      size = styled_size(Vec2.new(total_w, height), class_vars, ui, id)
+      rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       track = Rect.from_min_size(

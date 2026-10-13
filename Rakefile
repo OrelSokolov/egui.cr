@@ -8,7 +8,7 @@ DARWIN     = RUBY_PLATFORM.include?("darwin")
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
 PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo"]
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera"]
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -153,10 +153,13 @@ def build_examples(names, opt_flags, label)
   if DARWIN
     # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
     # brew prefix (-L only — @[Link("freetype")] already adds -lfreetype).
+    # AVFoundation/CoreMedia: the shim's camera section (one big object)
+    # references them, so every macOS example link pulls them in.
     ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
     ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
     lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
-               "-framework OpenGL -framework QuartzCore"
+               "-framework OpenGL -framework QuartzCore " \
+               "-framework AVFoundation -framework CoreMedia"
   end
   # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
   jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))

@@ -61,6 +61,9 @@ module Egui
     getter areas : Areas
     getter focus : Focus
     getter animations : AnimationManager
+    # Cascade-driven transitions (`transition` style keys) — see
+    # StyleAnimations (plans/animations.md Ур.1).
+    getter style_animations : StyleAnimations
     getter open_popups : Set(Id)
     getter duplicate_ids : Array(Id)
     # Tooltip hover-start times, kept outside IdTypeMap on purpose: the
@@ -180,6 +183,7 @@ module Egui
       @areas = Areas.new
       @focus = Focus.new
       @animations = AnimationManager.new
+      @style_animations = StyleAnimations.new
       @open_popups = Set(Id).new
     @popups_opened_this_frame = Set(Id).new
     @tooltip_starts = {} of Id => Float64

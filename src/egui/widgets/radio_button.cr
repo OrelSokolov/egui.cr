@@ -20,8 +20,10 @@ module Egui
       icon = sp.icon_width
       height = {icon, text_size.y}.max
       total_width = icon + sp.icon_spacing + text_size.x
-      rect = ui.allocate_at_least(Vec2.new(total_width, height))
       id = ui.next_widget_id
+      size = styled_size(Vec2.new(total_width, height),
+        style_vars(ui, id), ui, id)
+      rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
       visuals = style.visuals

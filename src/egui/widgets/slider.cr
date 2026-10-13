@@ -110,7 +110,7 @@ module Egui
     end
 
     def style_properties : Array(StyleProp)
-      StyleProps.textlike + [
+      StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (handle)"),
         StyleProp.new("stroke", :color, label: "rail stroke"),
       ]
@@ -160,8 +160,11 @@ module Egui
       tips_h = tips ? TIP_GAP + {tips[0].height, tips[1].height}.max : 0.0
 
       width = {sp.slider_width, ui.available_width}.max
-      outer = ui.allocate_at_least(
-        Vec2.new(width, above_h + label_h + thickness + tick_h + tips_h))
+      outer_size = Vec2.new(width,
+        above_h + label_h + thickness + tick_h + tips_h)
+      outer_size = styled_size(outer_size, style_vars(ui, id), ui, id)
+      width = outer_size.x
+      outer = ui.allocate_at_least(outer_size)
       # The rail row sits under the label line and the up-tick band, at
       # the same offset from the outer rect's top every frame.
       rect = Rect.from_min_size(

@@ -29,9 +29,11 @@ describe "media conditions" do
     again.min_width.should eq(600.0)
     again.max_width.should eq(899.0)
 
-    # unsupported conditions are nil (caller warns and drops)
-    Egui::MediaCond.parse("(orientation: landscape)").should be_nil
+    # unsupported conditions are nil (caller warns and drops);
+    # orientation/pointer/hover became supported (Этап 3 of
+    # plans/responsive-mobile.md — see media_conditions_spec)
     Egui::MediaCond.parse("print").should be_nil
+    Egui::MediaCond.parse("(aspect-ratio: 16/9)").should be_nil
   end
 
   it "a matching media rule overrides the class defaults" do

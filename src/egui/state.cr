@@ -310,4 +310,144 @@ module Egui
       a.from + (a.target - a.from) * eased
     end
   end
+
+  # Animated style values (plans/animations.md Ур.1): the cascade's
+  # `transition` keys (`transition.background: 120`, or the `transition`
+  # shorthand for every key — milliseconds) drive per-widget
+  # interpolation of colors and scalars. Keyed by widget id + key salt;
+  # retargeting mid-flight restarts from the current value, the same
+  # semantics `AnimationManager` gives hand-coded animations. The
+  # smoothstep easing matches it, so transitions and hand-rolled
+  # animations ease alike.
+  # Named easing curves for cascade transitions (`easing` /
+  # `easing.<key>` style keys, plans/animations.md Ур.2). The default
+  # (`smoothstep`) matches `AnimationManager`, so hand-rolled and
+  # declared animations ease alike; unknown names fall back to it.
+  module Easing
+    def self.apply(name : String?, t : Float64) : Float64
+      tt = t.clamp(0.0, 1.0)
+      case name
+      when nil, "", "smoothstep" then tt * tt * (3.0 - 2.0 * tt)
+      when "linear"     then tt
+      when "ease"       then -(Math.cos(Math::PI * tt) - 1.0) / 2.0
+      when "ease-in"    then tt * tt * tt
+      when "ease-out"   then 1.0 - (1.0 - tt) ** 3
+      when "ease-in-out"
+        tt < 0.5 ? 4.0 * tt * tt * tt : 1.0 - ((-2.0 * tt + 2.0) ** 3) / 2.0
+      else tt * tt * (3.0 - 2.0 * tt)
+      end
+    end
+  end
+
+  class StyleAnimations
+    private class Cell(T)
+      property from : T
+      property target : T
+      property start : Float64
+      property duration : Float64
+      property easing : String?
+
+      def initialize(@from : T, @target : T, @start : Float64,
+                     @duration : Float64, @easing : String? = nil)
+      end
+    end
+
+    @colors = {} of Id => Cell(Color32)
+    @scalars = {} of Id => Cell(Float64)
+    @vec2s = {} of Id => Cell(Vec2)
+
+    # Smoothly move the color for `id` towards `target` over
+    # `duration` seconds; the first sighting jumps (CSS: no transition
+    # on the initial style application). `easing` names an
+    # `Easing.apply` curve (nil = smoothstep).
+    def color(id : Id, target : Color32, duration : Float64,
+              time : Float64, easing : String? = nil) : Color32
+      if duration <= 0.0
+        @colors.delete(id)
+        return target
+      end
+      anim = @colors[id]?
+      if anim.nil?
+        @colors[id] = Cell.new(target, target, time, duration, easing)
+        return target
+      end
+      if anim.target != target
+        anim.from = color_at(anim, time)
+        anim.target = target
+        anim.start = time
+        anim.duration = duration
+      end
+      anim.easing = easing
+      color_at(anim, time)
+    end
+
+    def scalar(id : Id, target : Float64, duration : Float64,
+               time : Float64, easing : String? = nil) : Float64
+      if duration <= 0.0
+        @scalars.delete(id)
+        return target
+      end
+      anim = @scalars[id]?
+      if anim.nil?
+        @scalars[id] = Cell.new(target, target, time, duration, easing)
+        return target
+      end
+      if anim.target != target
+        anim.from = scalar_at(anim, time)
+        anim.target = target
+        anim.start = time
+        anim.duration = duration
+      end
+      anim.easing = easing
+      scalar_at(anim, time)
+    end
+
+    def vec2(id : Id, target : Vec2, duration : Float64,
+             time : Float64, easing : String? = nil) : Vec2
+      if duration <= 0.0
+        @vec2s.delete(id)
+        return target
+      end
+      anim = @vec2s[id]?
+      if anim.nil?
+        @vec2s[id] = Cell.new(target, target, time, duration, easing)
+        return target
+      end
+      if anim.target != target
+        anim.from = vec2_at(anim, time)
+        anim.target = target
+        anim.start = time
+        anim.duration = duration
+      end
+      anim.easing = easing
+      vec2_at(anim, time)
+    end
+
+    # True while any flavor for `id` is still easing (the Context
+    # requests repaints until everything settles).
+    def running?(id : Id, time : Float64) : Bool
+      anim = @colors[id]? || @scalars[id]? || @vec2s[id]?
+      return false if anim.nil?
+      anim.duration > 0.0 && (time - anim.start) < anim.duration
+    end
+
+    private def color_at(a : Cell(Color32), time : Float64) : Color32
+      a.from.lerp(a.target, eased_t(a, time))
+    end
+
+    private def scalar_at(a : Cell(Float64), time : Float64) : Float64
+      a.from + (a.target - a.from) * eased_t(a, time)
+    end
+
+    private def vec2_at(a : Cell(Vec2), time : Float64) : Vec2
+      Vec2.new(
+        a.from.x + (a.target.x - a.from.x) * eased_t(a, time),
+        a.from.y + (a.target.y - a.from.y) * eased_t(a, time))
+    end
+
+    private def eased_t(a : Cell, time : Float64) : Float64
+      t = ((time - a.start) / a.duration).clamp(0.0, 1.0)
+      Easing.apply(a.easing, t)
+    end
+  end
 end

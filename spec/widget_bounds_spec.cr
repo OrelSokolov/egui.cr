@@ -45,9 +45,13 @@ describe "widget bounds (an explicit size is a hard bound)" do
     ctx.end_frame
 
     header_bottom = 10.0 + Egui::Inspector::TAB_H
+    # Header widgets are TAB_H-tall buttons; the panel's overlay
+    # scrollbar track (tall, starting under the header once the
+    # Class tab's prop rows overflow) is not one of them.
     ctx.painter.commands.select(Egui::RectCmd)
       .select { |cmd| cmd.rect.top < header_bottom }       # header strip
       .select { |cmd| cmd.rect.width <= 200.0 }            # (skip panel bg)
+      .select { |cmd| cmd.rect.height <= Egui::Inspector::TAB_H }
       .each { |cmd| cmd.rect.bottom.should be <= header_bottom }
   end
 

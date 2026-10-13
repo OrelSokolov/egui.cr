@@ -125,6 +125,7 @@ module Egui
                   inset.x * 2.0
       size = Vec2.new({natural_w, ui.available_width}.min,
         {line_h, style.spacing.interact_size.y}.max + inset.y * 2.0)
+      size = styled_size(size, style_vars(ui, id), ui, id)
       rect = ui.allocate_at_least(size)
       view_w = {rect.width - inset.x * 2.0, 0.0}.max
       scroll = ui.ctx.memory.data.get_f64(scroll_id, 0.0)

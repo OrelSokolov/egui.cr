@@ -44,7 +44,7 @@ module Egui
     # and 3D-bevel/shadow extras (see `default_theme.cr` for the
     # defaults). Declared here — the inspector renders what it's told.
     def style_properties : Array(StyleProp)
-      StyleProps.buttonlike + [
+      StyleProps.buttonlike + StyleProps.sizable + [
         StyleProp.new("padding", :box),
         StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
         StyleProp.new("bevel_light", :color, states: true),
@@ -143,6 +143,12 @@ module Egui
         size += Vec2.new(glyph_h + icon_adv, 0.0)
       end
 
+      # Responsive size keys (`width`/`min_width`/`max_width`… —
+      # points, `%` of the containing Ui, vw/vh/vmin/vmax, rem) are
+      # the last word on each axis, after content and min_size floor.
+      # `transition.width` animates the declared size between targets.
+      size = styled_size(size, class_vars, ui, id)
+
       rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, sense)
       if response.hovered? && (cursor = @cursor)
@@ -161,6 +167,8 @@ module Egui
         response.hovered?, response.active?)
       stroke_color = state_vars.color?("stroke") ||
                      style.visuals.button_stroke
+      stroke_color = transition_color("stroke", stroke_color,
+        state_vars, ui, id)
       # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
       # keys, read from the SAME state bag as the fill — a
       # `button:active` rule swapping the two colors sinks the box.

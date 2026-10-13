@@ -91,7 +91,10 @@ Bootstrap-трюк: `__crystal_main(argc, argv)` объявляется чере
 4. **Линковка**:
    `clang --target=aarch64-linux-android34 -shared -o libegui_cr_android.so
    hello.o sokol_shim_android.o android_native_app_glue.o nanosvg_shim.o
-   -Letc/arm64-v8a -lgc -lpcre2-8 -levent -llog -landroid -lEGL -lGLESv3 -lm`
+   -Letc/arm64-v8a -lgc -lpcre2-8 -levent -llog -landroid -lEGL -lGLESv3
+   -lcamera2ndk -lmediandk -lm`
+   (camera2ndk/mediandk — захват камеры, `src/egui/camera.cr`; манифест
+   требует `android.permission.CAMERA` с runtime-запросом через JNI.)
 5. **APK**: aapt + zipalign + apksigner (build-tools 34), `adb install`.
 
 ## Изменения в коде egui-cr

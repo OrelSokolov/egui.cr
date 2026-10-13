@@ -34,7 +34,11 @@
 #define SOKOL_GLCORE
 #endif
 
+// Not on Android: there sokol_app owns the entry (ANativeActivity_onCreate
+// calls our sokol_main directly) and SOKOL_NO_ENTRY is a hard #error there.
+#if !defined(__ANDROID__)
 #define SOKOL_NO_ENTRY // we drive sapp_run from Crystal's main
+#endif
 #define SOKOL_IMPL
 #if !defined(__APPLE__) && !defined(_WIN32) && !defined(__ANDROID__)
 #include <X11/Xlib.h>
@@ -1013,6 +1017,45 @@ static void sh_frame_cb(void) {
 }
 static void sh_cleanup_cb(void){ g_cleanup(); }
 
+#if defined(__ANDROID__) || defined(__APPLE__)
+// Two-finger pinch → zoom: the distance ratio between the touches is
+// re-emitted as a custom event type (outside sapp_event_type's 0..26
+// range) with mx/my = centroid in framebuffer pixels and sx = the
+// multiplicative zoom factor (dimensionless, so no ppp conversion —
+// the ratio cancels the unit). backend/sokol.cr turns it into
+// Egui::Event.zoom → InputState#zoom_delta, the touch twin of a
+// ctrl+wheel zoom.
+#define SH_EVENT_PINCH 100
+#endif
+
+#if defined(__ANDROID__) || defined(SH_IOS)
+#include <math.h>
+
+static float sh_pinch_dist(const sapp_touchpoint* a, const sapp_touchpoint* b) {
+    float dx = a->pos_x - b->pos_x, dy = a->pos_y - b->pos_y;
+    return sqrtf(dx * dx + dy * dy);
+}
+#endif
+
+#if defined(__APPLE__) && !defined(SH_IOS)
+// ---- macOS trackpad pinch → zoom ------------------------------------------
+// sokol's macOS backend handles only scrollWheel: NSEventTypeMagnify
+// (the trackpad pinch gesture) is dropped — a category on its view
+// class adds the responder. NSEvent.magnification is the per-event
+// delta (~±0.1 per tick) → the multiplicative factor 1 + it, emitted
+// as SH_EVENT_PINCH at the last mouse position (fb px, cached from
+// sh_event_cb below — the same position contract as every other
+// event, so Crystal's fb-px→points division applies).
+static float g_mac_mx, g_mac_my; // last mouse pos (fb px)
+
+@implementation _sapp_macos_view (ShPinch)
+- (void)magnifyWithEvent:(NSEvent*)event {
+    g_event(SH_EVENT_PINCH, g_mac_mx, g_mac_my,
+            1.0f + (float)event.magnification, 0.0f, 0, 0, 0, 0);
+}
+@end
+#endif
+
 #if defined(__ANDROID__)
 // ---- Touch → pointer/scroll mapping (phase 5, ANDROID_SUPPORT_PLAN.md) --
 // sokol delivers TOUCHES_* with positions in framebuffer pixels and no
@@ -1021,16 +1064,18 @@ static void sh_cleanup_cb(void){ g_cleanup(); }
 // events and full click/drag interaction works unmodified:
 //   1 finger  → pointer down/move/up (click + drag)
 //   2 fingers → pan: centroid delta re-emitted as MOUSE_SCROLL, in
-//               points (fb px / ppp, like desktop wheel ticks). A second
-//               finger landing mid-drag releases the pointer first
-//               (same behaviour as upstream egui mobile); when the pan
-//               finger lifts, the remaining finger re-presses on its
-//               next move.
+//               points (fb px / ppp, like desktop wheel ticks), plus
+//               pinch: distance ratio re-emitted as SH_EVENT_PINCH.
+//               A second finger landing mid-drag releases the pointer
+//               first (same behaviour as upstream egui mobile); when a
+//               pan/pinch finger lifts, the remaining finger re-presses
+//               on its next move.
 static float     g_tch_x, g_tch_y;        // last first-finger pos (fb px)
 static uintptr_t g_tch_id = (uintptr_t)-1;
 static bool      g_tch_down = false;
 static bool      g_tch_pan = false;
 static float     g_tch_pan_x, g_tch_pan_y; // last 2-finger centroid (fb px)
+static float     g_tch_dist = 0.0f;        // last 2-finger distance (fb px)
 
 static void sh_tch_pointer(int type, float x, float y) {
     g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
@@ -1061,6 +1106,7 @@ static void sh_handle_touch(const sapp_event* ev) {
                 g_tch_pan = true;
                 g_tch_pan_x = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
                 g_tch_pan_y = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+                g_tch_dist = sh_pinch_dist(&ev->touches[0], &ev->touches[1]);
             }
         }
         break;
@@ -1072,6 +1118,13 @@ static void sh_handle_touch(const sapp_event* ev) {
                 // scroll convention: positive = content moves down/left
                 sh_tch_scroll(g_tch_pan_x - cx, g_tch_pan_y - cy);
                 g_tch_pan_x = cx; g_tch_pan_y = cy;
+                // pinch: spread ratio → zoom factor around the centroid
+                float d = sh_pinch_dist(&ev->touches[0], &ev->touches[1]);
+                if (g_tch_dist > 1.0f) {
+                    g_event(SH_EVENT_PINCH, cx, cy, d / g_tch_dist,
+                            0.0f, 0, 0, 0, 0);
+                }
+                g_tch_dist = d;
             }
         } else if (n == 1) {
             // continue the drag, or restart one after the pan finger
@@ -1101,6 +1154,7 @@ static void sh_handle_touch(const sapp_event* ev) {
             }
             g_tch_id = (uintptr_t)-1;
             g_tch_pan = false;
+            g_tch_dist = 0.0f;
         } else {
             // pinch/pan over; a fresh single-finger move re-presses
             g_tch_pan = false;
@@ -1113,48 +1167,221 @@ static void sh_handle_touch(const sapp_event* ev) {
 }
 #endif
 
+#if defined(SH_IOS)
+// ---- Touch → pointer/pinch mapping (the iOS twin of the Android block) --
+// iOS reports touches as TOUCHES_* only (sokol_app's UIKit backend does
+// no mouse synthesis), while the Crystal event path speaks MOUSE_*.
+// Same state machine as the Android one above:
+//   1 finger  → the mouse triplet (hover-sync move + press / move /
+//               release), so tap + drag work unmodified
+//   2 fingers → pinch: distance ratio re-emitted as SH_EVENT_PINCH
+//               zoom events (centroid in fb px, like the Android path;
+//               Crystal divides by sapp_dpi_scale).
+static uintptr_t g_ios_id = (uintptr_t)-1;
+static float     g_ios_x, g_ios_y;        // last first-finger pos (fb px)
+static bool      g_ios_down = false;
+static bool      g_ios_pinch = false;
+static float     g_ios_dist = 0.0f;       // last 2-finger distance (fb px)
+
+static void sh_ios_pointer(int type, float x, float y) {
+    g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
+}
+
+static void sh_ios_handle_touch(const sapp_event* ev) {
+    const int n = ev->num_touches;
+    switch (ev->type) {
+    case SAPP_EVENTTYPE_TOUCHES_BEGAN:
+        if (n >= 2) {
+            // second finger: release the pointer, pinch takes over
+            if (g_ios_down) {
+                sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_ios_x, g_ios_y);
+                g_ios_down = false;
+                g_ios_id = (uintptr_t)-1;
+            }
+            g_ios_pinch = true;
+            g_ios_dist = sh_pinch_dist(&ev->touches[0], &ev->touches[1]);
+        } else if (n == 1 && !g_ios_pinch) {
+            g_ios_id = ev->touches[0].identifier;
+            g_ios_x = ev->touches[0].pos_x;
+            g_ios_y = ev->touches[0].pos_y;
+            g_ios_down = true;
+            // trailing hover-sync move first, like the desktop tap path
+            sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_MOVE, g_ios_x, g_ios_y);
+            sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_DOWN, g_ios_x, g_ios_y);
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_MOVED:
+        if (g_ios_pinch && n >= 2) {
+            float cx = (ev->touches[0].pos_x + ev->touches[1].pos_x) * 0.5f;
+            float cy = (ev->touches[0].pos_y + ev->touches[1].pos_y) * 0.5f;
+            float d = sh_pinch_dist(&ev->touches[0], &ev->touches[1]);
+            if (g_ios_dist > 1.0f) {
+                g_event(SH_EVENT_PINCH, cx, cy, d / g_ios_dist,
+                        0.0f, 0, 0, 0, 0);
+            }
+            g_ios_dist = d;
+        } else if (n == 1 && !g_ios_pinch) {
+            // continue the drag, or restart one after the pinch finger
+            // lifted while a finger is still on screen
+            if (!g_ios_down) {
+                g_ios_id = ev->touches[0].identifier;
+                g_ios_x = ev->touches[0].pos_x;
+                g_ios_y = ev->touches[0].pos_y;
+                g_ios_down = true;
+                sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_DOWN, g_ios_x, g_ios_y);
+            } else if (ev->touches[0].identifier == g_ios_id) {
+                g_ios_x = ev->touches[0].pos_x;
+                g_ios_y = ev->touches[0].pos_y;
+                sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_MOVE, g_ios_x, g_ios_y);
+            }
+        }
+        break;
+    case SAPP_EVENTTYPE_TOUCHES_ENDED:
+    case SAPP_EVENTTYPE_TOUCHES_CANCELLED: {
+        // touches[] still includes the lifting finger(s)
+        int remain = (ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED)
+                         ? 0 : n - 1;
+        if (remain <= 0) {
+            if (g_ios_down) {
+                sh_ios_pointer(SAPP_EVENTTYPE_MOUSE_UP, g_ios_x, g_ios_y);
+                g_ios_down = false;
+            }
+            g_ios_id = (uintptr_t)-1;
+            g_ios_pinch = false;
+            g_ios_dist = 0.0f;
+        } else {
+            // pinch over; a fresh single-finger move re-presses
+            g_ios_pinch = false;
+        }
+        break;
+    }
+    default:
+        break;
+    }
+}
+#endif
+
+// ---- Safe-area insets (Этап 4, plans/responsive-mobile.md) --------------
+// Cross-platform detector: the notch/status-bar/home-indicator insets in
+// LOGICAL POINTS, polled by the backend every frame into
+// RawInput.safe_area (desktops: the zero no-op below — no insets there).
+#if defined(SH_IOS)
+static UIWindow* sh_ios_safe_window(void) {
+    // sokol's own view controller first (the msgbox path rides it too);
+    // fall back to scanning the connected scenes (scene-based UIKit).
+    static UIWindow* cached = nil;
+    if (cached == nil) {
+        if (_sapp.ios.view_ctrl.view.window != nil) {
+            cached = _sapp.ios.view_ctrl.view.window;
+        } else {
+            for (UIScene* scene in [UIApplication sharedApplication].connectedScenes) {
+                if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+                UIWindowScene* ws = (UIWindowScene*)scene;
+                if (ws.windows.count > 0) { cached = ws.windows[0]; break; }
+            }
+        }
+    }
+    return cached;
+}
+
+void egui_cr_safe_area(float* top, float* right, float* bottom, float* left) {
+    UIWindow* win = sh_ios_safe_window();
+    if (win == nil) { *top = *right = *bottom = *left = 0.0f; return; }
+    UIEdgeInsets i = win.safeAreaInsets;
+    *top = i.top; *right = i.right; *bottom = i.bottom; *left = i.left;
+}
+#elif defined(__ANDROID__)
+#include <jni.h>
+float egui_cr_dpi_scale(void); // density probe, defined below in this file
+// WindowInsets (statusBars|navigationBars|displayCutout — the IME is
+// deliberately NOT part of the safe area: the canvas does not shrink
+// under the keyboard) via JNI off the NativeActivity. Values arrive in
+// px and convert to points with the density (egui_cr_dpi_scale below).
+static float sh_android_safe[4] = { 0, 0, 0, 0 }; // t r b l, points
+static int sh_android_safe_done = 0;
+static float sh_android_last_w = 0, sh_android_last_h = 0;
+
+static void sh_android_safe_area_refresh(float fb_w, float fb_h) {
+    // Insets change on rotation/fold (framebuffer size change); poll
+    // the first frame and every size change instead of paying ~20 JNI
+    // calls per frame.
+    if (sh_android_safe_done && fb_w == sh_android_last_w && fb_h == sh_android_last_h)
+        return;
+    sh_android_safe_done = 1;
+    sh_android_last_w = fb_w; sh_android_last_h = fb_h;
+    sh_android_safe[0] = sh_android_safe[1] = sh_android_safe[2] = sh_android_safe[3] = 0.0f;
+
+    ANativeActivity* act = (ANativeActivity*)sapp_android_get_native_activity();
+    if (!act || !act->vm || !act->clazz) return;
+    JavaVM* vm = act->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        // The sokol loop thread is normally attached; attach-and-stay
+        // as a fallback (the thread lives as long as the app).
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
+    }
+    jclass act_cls = (*env)->GetObjectClass(env, act->clazz);
+    jmethodID get_window = act_cls
+        ? (*env)->GetMethodID(env, act_cls, "getWindow", "()Landroid/view/Window;") : NULL;
+    jobject window = get_window ? (*env)->CallObjectMethod(env, act->clazz, get_window) : NULL;
+    jclass win_cls = window ? (*env)->GetObjectClass(env, window) : NULL;
+    jmethodID get_decor = win_cls
+        ? (*env)->GetMethodID(env, win_cls, "getDecorView", "()Landroid/view/View;") : NULL;
+    jobject decor = get_decor ? (*env)->CallObjectMethod(env, window, get_decor) : NULL;
+    jclass view_cls = decor ? (*env)->GetObjectClass(env, decor) : NULL;
+    jmethodID get_rwi = view_cls
+        ? (*env)->GetMethodID(env, view_cls, "getRootWindowInsets", "()Landroid/view/WindowInsets;") : NULL;
+    jobject rwi = get_rwi ? (*env)->CallObjectMethod(env, decor, get_rwi) : NULL;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!rwi) return;
+
+    jclass type_cls = (*env)->FindClass(env, "android/view/WindowInsets$Type");
+    jmethodID m_status = type_cls ? (*env)->GetStaticMethodID(env, type_cls, "statusBars", "()I") : NULL;
+    jmethodID m_nav = type_cls ? (*env)->GetStaticMethodID(env, type_cls, "navigationBars", "()I") : NULL;
+    jmethodID m_cut = type_cls ? (*env)->GetStaticMethodID(env, type_cls, "displayCutout", "()I") : NULL;
+    if (!m_status || !m_nav || !m_cut) { (*env)->ExceptionClear(env); return; }
+    jint mask = (*env)->CallStaticIntMethod(env, type_cls, m_status)
+              | (*env)->CallStaticIntMethod(env, type_cls, m_nav)
+              | (*env)->CallStaticIntMethod(env, type_cls, m_cut);
+
+    jclass rwi_cls = (*env)->GetObjectClass(env, rwi);
+    jmethodID get_insets = rwi_cls
+        ? (*env)->GetMethodID(env, rwi_cls, "getInsets", "(I)Landroid/graphics/Insets;") : NULL;
+    jobject ins = get_insets ? (*env)->CallObjectMethod(env, rwi, get_insets, mask) : NULL;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (!ins) return;
+
+    jclass ins_cls = (*env)->GetObjectClass(env, ins);
+    jfieldID f_top = (*env)->GetFieldID(env, ins_cls, "top", "I");
+    jfieldID f_right = (*env)->GetFieldID(env, ins_cls, "right", "I");
+    jfieldID f_bottom = (*env)->GetFieldID(env, ins_cls, "bottom", "I");
+    jfieldID f_left = (*env)->GetFieldID(env, ins_cls, "left", "I");
+    if (!f_top || !f_right || !f_bottom || !f_left) { (*env)->ExceptionClear(env); return; }
+    float density = egui_cr_dpi_scale();
+    if (density <= 0.0f) density = 1.0f;
+    sh_android_safe[0] = (*env)->GetIntField(env, ins, f_top) / density;
+    sh_android_safe[1] = (*env)->GetIntField(env, ins, f_right) / density;
+    sh_android_safe[2] = (*env)->GetIntField(env, ins, f_bottom) / density;
+    sh_android_safe[3] = (*env)->GetIntField(env, ins, f_left) / density;
+}
+
+void egui_cr_safe_area(float* top, float* right, float* bottom, float* left) {
+    sh_android_safe_area_refresh((float)sapp_width(), (float)sapp_height());
+    *top = sh_android_safe[0]; *right = sh_android_safe[1];
+    *bottom = sh_android_safe[2]; *left = sh_android_safe[3];
+}
+#else
+// Desktops have no notch — the architectural no-op.
+void egui_cr_safe_area(float* top, float* right, float* bottom, float* left) {
+    *top = *right = *bottom = *left = 0.0f;
+}
+#endif
+
 static void sh_event_cb(const sapp_event* ev) {
 #if defined(SH_IOS)
-    // iOS reports touches as TOUCHES_* only (sokol_app's UIKit backend does
-    // no mouse synthesis), while the Crystal event path speaks MOUSE_*.
-    // Translate the first/changed touch into the mouse triplet; positions
-    // are framebuffer pixels (pos * dpi_scale), same contract as the
-    // macOS mouse path (Crystal divides by sapp_dpi_scale).
-    if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN ||
-        ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED ||
-        ev->type == SAPP_EVENTTYPE_TOUCHES_ENDED ||
-        ev->type == SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
-        float mx = 0.0f, my = 0.0f;
-        int have = 0;
-        for (int i = 0; i < ev->num_touches; i++) {
-            if (ev->touches[i].changed) {
-                mx = ev->touches[i].pos_x;
-                my = ev->touches[i].pos_y;
-                have = 1;
-                break;
-            }
-        }
-        if (!have && ev->num_touches > 0) {
-            mx = ev->touches[0].pos_x;
-            my = ev->touches[0].pos_y;
-            have = 1;
-        }
-        if (have) {
-            if (ev->type == SAPP_EVENTTYPE_TOUCHES_BEGAN) {
-                g_event((int)SAPP_EVENTTYPE_MOUSE_MOVE, mx, my,
-                        0.0f, 0.0f, 0, 0, 0, 0);
-                g_event((int)SAPP_EVENTTYPE_MOUSE_DOWN, mx, my,
-                        0.0f, 0.0f, 0, 0, 0, 0);
-            } else if (ev->type == SAPP_EVENTTYPE_TOUCHES_MOVED) {
-                g_event((int)SAPP_EVENTTYPE_MOUSE_MOVE, mx, my,
-                        0.0f, 0.0f, 0, 0, 0, 0);
-            } else {
-                // ENDED / CANCELLED: release; a trailing move keeps the
-                // hover position in sync for the next interaction.
-                g_event((int)SAPP_EVENTTYPE_MOUSE_UP, mx, my,
-                        0.0f, 0.0f, 0, 0, 0, 0);
-            }
-        }
+    if (ev->type >= SAPP_EVENTTYPE_TOUCHES_BEGAN &&
+        ev->type <= SAPP_EVENTTYPE_TOUCHES_CANCELLED) {
+        sh_ios_handle_touch(ev);
         return;
     }
 #endif
@@ -1164,6 +1391,12 @@ static void sh_event_cb(const sapp_event* ev) {
         sh_handle_touch(ev);
         return;
     }
+#endif
+#if defined(__APPLE__) && !defined(SH_IOS)
+    // mouse_x/y are always valid (except during mouse lock) — keep the
+    // last position for the trackpad-pinch category above.
+    g_mac_mx = ev->mouse_x;
+    g_mac_my = ev->mouse_y;
 #endif
     g_event((int)ev->type, ev->mouse_x, ev->mouse_y, ev->scroll_x, ev->scroll_y,
             ev->modifiers, (unsigned)ev->mouse_button,
@@ -1538,21 +1771,20 @@ static void sh_shot_legacy(void) {
 static int g_fb_w, g_fb_h;
 
 #if defined(__APPLE__) && !defined(SH_IOS)
-// macOS 26 self-heal: the frame may be entered through an AppKit path we
-// do not fully control (NSOpenGLView is force layer-backed, and its
-// backing layer can drive display on a CoreAnimation GCD thread), on a
-// thread where the GL context is not current — GL calls then fail on a
-// nil libGL TLS context (the sokol assert / SIGSEGV seen at the first
-// glyph bake). Re-assert the binding at the GL entry points; the context
-// object is shared, so binding from whichever thread does the work is
-// valid GL usage.
-static void sh_gl_rebind(void) {
-    if (nil == [NSOpenGLContext currentContext]) {
-        [[_sapp.macos.view openGLContext] makeCurrentContext];
-    }
+// macOS 26: AppKit's update-cycle thread can run drawRect (the whole
+// frame) with the GL context not current — sokol_app's frame entry
+// skips such frames, but the context can ALSO go nil MID-frame, while
+// AppKit's launch/window activity owns it. The only safe response is
+// to skip the GL work: stealing the context back (makeCurrentContext
+// from under AppKit's feet) corrupted its state (objc autorelease-pool
+// crashes). Dropping is benign — sokol_gl buffers geometry on the CPU,
+// texture ids of 0 mean "retry next frame", and an abandoned sg pass
+// is closed lazily by the next successful begin_pass (see g_pass_open).
+static bool sh_gl_ok(void) {
+    return [NSOpenGLContext currentContext] != nil;
 }
 #else
-static void sh_gl_rebind(void) { }
+static bool sh_gl_ok(void) { return true; }
 #endif
 
 // The backend's pixels_per_point source. Desktop: sokol's own dpi
@@ -1566,11 +1798,20 @@ float egui_cr_dpi_scale(void) {
 #endif
 }
 
+// True while an sg pass was begun but not ended (an abandoned frame —
+// see sh_gl_ok). The next successful begin_pass closes it first: sokol
+// asserts on beginning a pass while the previous is still open.
+static bool g_pass_open;
+
 void egui_cr_begin_pass(int w, int h) {
     g_fb_w = w;
     g_fb_h = h;
     if (!sh_run_direct()) { egui_cr_pkt_begin(w, h); return; }
-    sh_gl_rebind();
+    // Frame dropped (nil context — see sh_gl_ok): no GL here. An
+    // abandoned pass from an earlier frame stays open; close it when
+    // drawing becomes possible again, not now.
+    if (!sh_gl_ok()) return;
+    if (g_pass_open) { sg_end_pass(); sg_commit(); g_pass_open = false; }
     // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
     // is only called by the detached produce loop), yet the mesh3d
     // restore divides by it — a stale 0 turns the restored ortho into
@@ -1597,14 +1838,21 @@ void egui_cr_begin_pass(int w, int h) {
             },
         },
     });
+    g_pass_open = true;
 }
 
 void egui_cr_end_pass(void) {
     if (!sh_run_direct()) { egui_cr_pkt_publish(); return; }
-    sh_gl_rebind();
+    // Context gone nil mid-frame: abandon the frame WITHOUT GL — no
+    // rebind-steal (that corrupted AppKit state), no sgl_draw/commit.
+    // The pass stays open and is closed by the next begin_pass; the
+    // sgl command buffer rewinds at the next real sgl_draw. (g_pass_open
+    // also covers the frame whose begin_pass was skipped entirely.)
+    if (!sh_gl_ok() || !g_pass_open) return;
     sgl_draw();
     sg_end_pass();
     sg_commit();
+    g_pass_open = false;
     sh_shot_legacy();
 }
 
@@ -1959,6 +2207,7 @@ static int sh_texture_slot(uint32_t view_id) {
 // The sampler is created once and shared.
 uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
+    if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (!g_linear_sampler.id) {
         g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
             .min_filter = SG_FILTER_LINEAR,
@@ -1993,6 +2242,7 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
 uint32_t egui_cr_make_stream_texture(int w, int h) {
     if (w <= 0 || h <= 0) return 0;
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, NULL, 1);
+    if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (g_texture_count >= EGUI_CR_MAX_TEXTURES) return 0;
     sg_image img = sg_make_image(&(sg_image_desc){
         .type = SG_IMAGETYPE_2D,
@@ -2022,6 +2272,7 @@ void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
                                     (size_t)w * h * 4);
         return;
     }
+    if (!sh_gl_ok()) return; // nil-context mid-frame — see sh_gl_ok
     int slot = sh_texture_slot(view_id);
     if (slot < 0 || !g_textures[slot].stream) return;
     sg_image_data data;
@@ -2255,9 +2506,7 @@ static struct {
 static int g_atlas_count = 0;
 
 uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
-#if defined(__APPLE__) && !defined(SH_IOS)
-    sh_gl_rebind(); // see sh_gl_rebind: nil-context entry on macOS 26
-#endif
+    if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
     if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
     // stream images cannot be created with initial data (sokol validation:
@@ -2289,6 +2538,7 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
                        (size_t)w * h * 4);
         return;
     }
+    if (!sh_gl_ok()) return; // nil-context mid-frame — see sh_gl_ok
     for (int i = 0; i < g_atlas_count; i++) {
         if (g_atlases[i].view_id == view_id) {
             sg_image_data data;
@@ -5430,3 +5680,491 @@ int egui_cr_ios_msgbox_take(void) {
 }
 #endif // SH_IOS
 #endif
+
+// ===========================================================================
+// Camera capture (src/egui/camera.cr — the Camera seam). One C API for
+// every platform with a native stack: AVFoundation on macOS, camera2 NDK
+// on Android. iOS keeps the core default "not implemented" answer.
+// Frames arrive on the capture stack's OWN threads into a locked
+// latest-frame slot; egui_cr_cam_frame runs on sokol's frame thread,
+// converts to RGBA in place and hands Crystal a buffer owned by the
+// session (valid until the next frame/close call). It returns 1 only
+// when a NEW frame arrived since the previous call — no new frame, no
+// texture update (sokol: one sg_update_image per image and frame).
+#if defined(__APPLE__) && !defined(SH_IOS)
+#import <AVFoundation/AVFoundation.h>
+#import <CoreMedia/CoreMedia.h>
+#import <dispatch/dispatch.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char sh_cam_err[256] = "";
+
+typedef struct {
+    AVCaptureSession* session;
+    AVCaptureVideoDataOutput* output;
+    id delegate;
+    dispatch_queue_t queue;
+    pthread_mutex_t lock;
+    CVPixelBufferRef latest; // retained until the next frame converts it
+    uint8_t* rgba;           // w*h*4, written by egui_cr_cam_frame
+    int w, h;
+} sh_cam_s;
+
+// The delegate holds a plain back-pointer (never owns the session); the
+// session owns it (manual retain — this file compiles non-ARC).
+@interface sh_cam_delegate : NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
+{
+@public
+    void* sess;
+}
+@end
+
+@implementation sh_cam_delegate
+- (void)captureOutput:(AVCaptureOutput*)captureOutput
+  didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
+         fromConnection:(AVCaptureConnection*)connection {
+    (void)captureOutput; (void)connection;
+    sh_cam_s* s = (sh_cam_s*)self->sess;
+    if (!s || !sampleBuffer) return;
+    CVPixelBufferRef pb = CMSampleBufferGetImageBuffer(sampleBuffer);
+    if (!pb) return;
+    CVPixelBufferRetain(pb);
+    pthread_mutex_lock(&s->lock);
+    if (s->latest) CVPixelBufferRelease(s->latest);
+    s->latest = pb;
+    pthread_mutex_unlock(&s->lock);
+}
+@end
+
+// 1 granted / 0 not determined yet / -1 denied (macOS TCC).
+int egui_cr_cam_perm(void) {
+    switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeVideo]) {
+        case AVAuthorizationStatusAuthorized: return 1;
+        case AVAuthorizationStatusNotDetermined: return 0;
+        default: return -1;
+    }
+}
+
+// requestAccess from a bare (non-bundle) executable makes TCC abort the
+// whole process: the "responsible process" (the terminal) carries no
+// NSCameraUsageDescription, and macOS kills the app at the XPC reply.
+// Only executables launched through a .app bundle get the dialog —
+// detect that and fail with a message instead of dying. The path check
+// matters: an embedded __TEXT __info_plist satisfies NSBundle even in a
+// bare binary, but TCC ignores it there and aborts anyway.
+static int sh_cam_bundled(void) {
+    NSBundle* b = [NSBundle mainBundle];
+    return [[b bundlePath] hasSuffix:@".app"] &&
+           [b objectForInfoDictionaryKey:@"NSCameraUsageDescription"] != nil;
+}
+
+void egui_cr_cam_perm_request(void) {
+    sh_cam_err[0] = 0;
+    if (!sh_cam_bundled()) {
+        snprintf(sh_cam_err, sizeof sh_cam_err,
+                 "no .app bundle: macOS shows the camera dialog only for "
+                 "bundled apps (scripts/make_camera_app.sh)");
+        return;
+    }
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeVideo
+        completionHandler:^(BOOL granted) { (void)granted; }];
+}
+
+// Device list: static slots refreshed by egui_cr_cam_devices (read right
+// after it; the pointers stay valid until the next refresh).
+#define SH_CAM_MAX 8
+static char sh_cam_ids[SH_CAM_MAX][64];
+static char sh_cam_names[SH_CAM_MAX][96];
+static int sh_cam_facing[SH_CAM_MAX];
+
+// External webcams: the constant was renamed in macOS 14 — the old name
+// still works but warns; pick by SDK.
+#if defined(__MAC_14_0)
+#define SH_CAM_EXTERNAL AVCaptureDeviceTypeExternal
+#else
+#define SH_CAM_EXTERNAL AVCaptureDeviceTypeExternalUnknown
+#endif
+
+static NSArray<AVCaptureDevice*>* sh_cam_discover(void) {
+    return [AVCaptureDeviceDiscoverySession
+        discoverySessionWithDeviceTypes:@[AVCaptureDeviceTypeBuiltInWideAngleCamera,
+                                           SH_CAM_EXTERNAL]
+                              mediaType:AVMediaTypeVideo
+                               position:AVCaptureDevicePositionUnspecified].devices;
+}
+
+int egui_cr_cam_devices(void) {
+    int n = 0;
+    for (AVCaptureDevice* d in sh_cam_discover()) {
+        if (n >= SH_CAM_MAX) break;
+        strncpy(sh_cam_ids[n], d.uniqueID.UTF8String, 63);
+        strncpy(sh_cam_names[n], d.localizedName.UTF8String, 95);
+        sh_cam_facing[n] = 0; // desktop webcams have no facing
+        n++;
+    }
+    return n;
+}
+const char* egui_cr_cam_dev_id(int i) { return sh_cam_ids[i]; }
+const char* egui_cr_cam_dev_name(int i) { return sh_cam_names[i]; }
+int egui_cr_cam_dev_facing(int i) { return sh_cam_facing[i]; }
+
+void* egui_cr_cam_open(const char* devid, int w, int h) {
+    sh_cam_err[0] = 0;
+    // Opening without TCC authorization crashes the process on macOS —
+    // gate on it instead: NotDetermined pops the system dialog (the
+    // retry after a grant succeeds), Denied says where to fix it.
+    int perm = egui_cr_cam_perm();
+    if (perm != 1) {
+        if (perm == 0) {
+            // Safe under the bundle guard inside (bare executables get
+            // the explanatory error instead of the TCC abort).
+            egui_cr_cam_perm_request();
+            if (!sh_cam_err[0])
+                snprintf(sh_cam_err, sizeof sh_cam_err,
+                         "camera permission requested — allow it, then Start again");
+        } else {
+            snprintf(sh_cam_err, sizeof sh_cam_err,
+                     "camera permission denied (System Settings > Privacy & Security > Camera)");
+        }
+        return NULL;
+    }
+    AVCaptureDevice* dev = nil;
+    if (devid && devid[0])
+        dev = [AVCaptureDevice deviceWithUniqueID:
+               [NSString stringWithUTF8String:devid]];
+    if (nil == dev) dev = sh_cam_discover().firstObject;
+    if (nil == dev) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "no camera device");
+        return NULL;
+    }
+    NSError* err = nil;
+    AVCaptureDeviceInput* input = [AVCaptureDeviceInput deviceInputWithDevice:dev error:&err];
+    if (nil == input) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "device input: %s",
+                 err.localizedDescription.UTF8String ? err.localizedDescription.UTF8String : "?");
+        return NULL;
+    }
+    sh_cam_s* s = (sh_cam_s*)calloc(1, sizeof(sh_cam_s));
+    pthread_mutex_init(&s->lock, NULL);
+    s->session = [[AVCaptureSession alloc] init];
+    NSString* preset = (w <= 640 || h <= 480) ? AVCaptureSessionPreset640x480
+                   : ((w <= 1280 || h <= 720) ? AVCaptureSessionPreset1280x720
+                                              : AVCaptureSessionPresetHigh);
+    if ([s->session canSetSessionPreset:preset]) s->session.sessionPreset = preset;
+    [s->session addInput:input]; // the session retains the input
+    s->output = [[AVCaptureVideoDataOutput alloc] init];
+    s->output.videoSettings =
+        @{(id)kCVPixelBufferPixelFormatTypeKey: @(kCVPixelFormatType_32BGRA)};
+    s->output.alwaysDiscardsLateVideoFrames = YES;
+    s->queue = dispatch_queue_create("egui_cr_cam", DISPATCH_QUEUE_SERIAL);
+    sh_cam_delegate* dlg = [[sh_cam_delegate alloc] init];
+    dlg->sess = s;
+    s->delegate = [dlg retain];
+    [s->session addOutput:s->output];
+    [s->output setSampleBufferDelegate:dlg queue:s->queue];
+    // startRunning blocks (configuration + HW spin-up) — keep it off the
+    // frame thread; polls simply report "no frame yet" until it's up.
+    dispatch_async(s->queue, ^{ [s->session startRunning]; });
+    return s;
+}
+
+int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    int got = 0;
+    pthread_mutex_lock(&s->lock);
+    CVPixelBufferRef pb = s->latest;
+    if (pb) {
+        s->latest = NULL; // one poll per frame
+        int cw = (int)CVPixelBufferGetWidth(pb), ch = (int)CVPixelBufferGetHeight(pb);
+        if (cw > 0 && ch > 0) {
+            if (cw != s->w || ch != s->h) {
+                free(s->rgba);
+                s->rgba = (uint8_t*)malloc((size_t)cw * ch * 4);
+                s->w = cw; s->h = ch;
+            }
+            if (s->rgba) {
+                CVPixelBufferLockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                const uint8_t* src = (const uint8_t*)CVPixelBufferGetBaseAddress(pb);
+                size_t bpr = CVPixelBufferGetBytesPerRow(pb);
+                for (int y = 0; y < ch; y++) {
+                    const uint8_t* in = src + (size_t)y * bpr;
+                    uint8_t* o = s->rgba + (size_t)y * cw * 4;
+                    for (int x = 0; x < cw; x++) {
+                        o[0] = in[2]; o[1] = in[1]; o[2] = in[0]; o[3] = 255; // BGRA → RGBA
+                        in += 4; o += 4;
+                    }
+                }
+                CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);
+                *out = s->rgba; *w = cw; *h = ch;
+                got = 1;
+            }
+        }
+        CVPixelBufferRelease(pb);
+    }
+    pthread_mutex_unlock(&s->lock);
+    return got;
+}
+
+void egui_cr_cam_close(void* sp) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    [s->session stopRunning];
+    [s->output setSampleBufferDelegate:nil queue:nil];
+    [s->delegate release];
+    [s->output release];
+    [s->session release];
+    dispatch_release(s->queue);
+    if (s->latest) CVPixelBufferRelease(s->latest);
+    pthread_mutex_destroy(&s->lock);
+    free(s->rgba);
+    free(s);
+}
+
+const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
+
+#elif defined(__ANDROID__)
+// camera2 through the NDK (NativeActivity — no Java for capture itself):
+// an AImageReader surface is the preview target; frames are pulled with
+// acquireLatestImage on sokol's frame thread and converted YUV_420_888
+// → RGBA in place (BT.601 limited range, planar and semi-planar via the
+// per-plane strides). Runtime permission goes over JNI to the activity's
+// static helpers (tmp/android/java/…/EguiCrActivity.java): the dialog is
+// async, the shim just keeps polling the granted flag between frames.
+#include <camera/NdkCameraManager.h>
+#include <camera/NdkCameraDevice.h>
+#include <camera/NdkCameraMetadata.h>
+#include <media/NdkImageReader.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+static char sh_cam_err[256] = "";
+static ACameraManager* sh_cam_mgr = NULL; // process-wide, created on demand
+
+#define SH_CAM_MAX 8
+static char sh_cam_ids[SH_CAM_MAX][64];
+static char sh_cam_names[SH_CAM_MAX][96];
+static int sh_cam_facing[SH_CAM_MAX];
+
+void egui_cr_cam_close(void* sp);
+
+// 1 granted / 0 not granted (the JNI helper only answers the binary
+// question — not-asked and denied look the same, requesting again is a
+// no-op once permanently denied).
+int egui_cr_cam_perm(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return -1;
+    jclass cls = sh_act_class(env);
+    if (!cls) return -1;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "hasCameraPermission", "()Z");
+    if (!m) return -1;
+    return (*env)->CallStaticBooleanMethod(env, cls, m) ? 1 : 0;
+}
+
+void egui_cr_cam_perm_request(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    if (!cls) return;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "requestCameraPermission", "()V");
+    if (!m) return;
+    (*env)->CallStaticVoidMethod(env, cls, m);
+}
+
+int egui_cr_cam_devices(void) {
+    if (!sh_cam_mgr) sh_cam_mgr = ACameraManager_create();
+    if (!sh_cam_mgr) return 0;
+    ACameraIdList* ids = NULL;
+    if (ACameraManager_getCameraIdList(sh_cam_mgr, &ids) != ACAMERA_OK || !ids)
+        return 0;
+    int n = 0;
+    for (int i = 0; i < ids->numCameras && n < SH_CAM_MAX; i++) {
+        const char* id = ids->cameraIds[i];
+        int facing = 0; // 0 unknown/external / 1 front / 2 back
+        ACameraMetadata* chars = NULL;
+        if (ACameraManager_getCameraCharacteristics(sh_cam_mgr, id, &chars) == ACAMERA_OK && chars) {
+            ACameraMetadata_const_entry e;
+            if (ACameraMetadata_getConstEntry(chars, ACAMERA_LENS_FACING, &e) == ACAMERA_OK &&
+                e.count > 0)
+                facing = e.data.u8[0] == ACAMERA_LENS_FACING_FRONT ? 1
+                       : (e.data.u8[0] == ACAMERA_LENS_FACING_BACK ? 2 : 0);
+            ACameraMetadata_free(chars);
+        }
+        strncpy(sh_cam_ids[n], id, 63);
+        snprintf(sh_cam_names[n], sizeof sh_cam_names[n], "Camera %s (%s)", id,
+                 facing == 1 ? "front" : (facing == 2 ? "back" : "external"));
+        sh_cam_facing[n] = facing;
+        n++;
+    }
+    ACameraManager_deleteCameraIdList(ids);
+    return n;
+}
+const char* egui_cr_cam_dev_id(int i) { return sh_cam_ids[i]; }
+const char* egui_cr_cam_dev_name(int i) { return sh_cam_names[i]; }
+int egui_cr_cam_dev_facing(int i) { return sh_cam_facing[i]; }
+
+typedef struct {
+    ACameraDevice* dev;
+    ACaptureSessionOutputContainer* outputs;
+    ACaptureSessionOutput* soutput;
+    ACameraOutputTarget* target;
+    ACaptureRequest* req;
+    ACameraCaptureSession* session;
+    AImageReader* reader;
+    ANativeWindow* win;
+    uint8_t* rgba;
+    int w, h;
+} sh_cam_s;
+
+static void sh_cam_on_disconnect(void* ctx, ACameraDevice* dev) {
+    (void)ctx;
+    ACameraDevice_close(dev);
+}
+
+static void sh_cam_on_error(void* ctx, ACameraDevice* dev, int code) {
+    (void)dev;
+    sh_cam_s* s = (sh_cam_s*)ctx;
+    if (s) snprintf(sh_cam_err, sizeof sh_cam_err, "camera error %d", code);
+}
+
+void* egui_cr_cam_open(const char* devid, int w, int h) {
+    sh_cam_err[0] = 0;
+    if (!sh_cam_mgr) sh_cam_mgr = ACameraManager_create();
+    if (!sh_cam_mgr) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "no camera manager");
+        return NULL;
+    }
+    // default: the first BACK-facing camera (the natural phone choice)
+    const char* id = (devid && devid[0]) ? devid : NULL;
+    if (!id) {
+        int n = egui_cr_cam_devices();
+        for (int i = 0; i < n; i++)
+            if (sh_cam_facing[i] == 2 || i == n - 1) { id = sh_cam_ids[i]; break; }
+    }
+    if (!id) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "no camera device");
+        return NULL;
+    }
+
+    sh_cam_s* s = (sh_cam_s*)calloc(1, sizeof(sh_cam_s));
+    ACameraDevice_StateCallbacks dev_cbs;
+    memset(&dev_cbs, 0, sizeof dev_cbs);
+    dev_cbs.context = s;
+    dev_cbs.onDisconnected = sh_cam_on_disconnect;
+    dev_cbs.onError = sh_cam_on_error;
+    camera_status_t st = ACameraManager_openCamera(sh_cam_mgr, id, &dev_cbs, &s->dev);
+    if (st != ACAMERA_OK) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "openCamera(%s) = %d", id, (int)st);
+        free(s);
+        return NULL;
+    }
+    if (AImageReader_new(w > 0 ? w : 1280, h > 0 ? h : 720,
+                         AIMAGE_FORMAT_YUV_420_888, 3, &s->reader) != AMEDIA_OK ||
+        !s->reader ||
+        AImageReader_getWindow(s->reader, &s->win) != AMEDIA_OK || !s->win) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "image reader failed");
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    ANativeWindow_acquire(s->win);
+    ACameraCaptureSession_stateCallbacks sess_cbs;
+    memset(&sess_cbs, 0, sizeof sess_cbs);
+    // Chained ||: each step runs until one fails (ACAMERA_OK == 0).
+    int rc = ACaptureSessionOutputContainer_create(&s->outputs)
+          || ACaptureSessionOutput_create(s->win, &s->soutput)
+          || ACaptureSessionOutputContainer_add(s->outputs, s->soutput)
+          || ACameraDevice_createCaptureSession(s->dev, s->outputs, &sess_cbs, &s->session)
+          || ACameraDevice_createCaptureRequest(s->dev, TEMPLATE_PREVIEW, &s->req)
+          || ACameraOutputTarget_create(s->win, &s->target)
+          || ACaptureRequest_addTarget(s->req, s->target);
+    if (rc != 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "capture session setup = %d", rc);
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    if (ACameraCaptureSession_setRepeatingRequest(s->session, NULL, 1, &s->req, NULL) != ACAMERA_OK) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "repeating request failed");
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    return s;
+}
+
+static int sh_cam_clip(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    AImage* img = NULL;
+    if (!s || !s->reader) return 0;
+    if (AImageReader_acquireLatestImage(s->reader, &img) != AMEDIA_OK || !img)
+        return 0;
+    int32_t cw = 0, ch = 0;
+    AImage_getWidth(img, &cw);
+    AImage_getHeight(img, &ch);
+    int got = 0;
+    if (cw > 0 && ch > 0) {
+        if (cw != s->w || ch != s->h) {
+            free(s->rgba);
+            s->rgba = (uint8_t*)malloc((size_t)cw * ch * 4);
+            s->w = cw; s->h = ch;
+        }
+        uint8_t *py = NULL, *pu = NULL, *pv = NULL;
+        int32_t rs0 = 0, rs1 = 0, ps0 = 1, ps1 = 1;
+        int ly = 0, lu = 0, lv = 0;
+        // Plane 2 shares plane 1's stride layout (guaranteed for the
+        // interleaved semi-planar case, true of every planar device).
+        if (s->rgba &&
+            AImage_getPlaneData(img, 0, &py, &ly) == AMEDIA_OK &&
+            AImage_getPlaneData(img, 1, &pu, &lu) == AMEDIA_OK &&
+            AImage_getPlaneData(img, 2, &pv, &lv) == AMEDIA_OK &&
+            AImage_getPlaneRowStride(img, 0, &rs0) == AMEDIA_OK &&
+            AImage_getPlaneRowStride(img, 1, &rs1) == AMEDIA_OK &&
+            AImage_getPlanePixelStride(img, 0, &ps0) == AMEDIA_OK &&
+            AImage_getPlanePixelStride(img, 1, &ps1) == AMEDIA_OK) {
+            for (int y = 0; y < ch; y++) {
+                const uint8_t* yr = py + (size_t)y * rs0;
+                const uint8_t* ur = pu + (size_t)(y >> 1) * rs1;
+                const uint8_t* vr = pv + (size_t)(y >> 1) * rs1;
+                uint8_t* o = s->rgba + (size_t)y * cw * 4;
+                for (int x = 0; x < cw; x++) {
+                    int Y = (yr[x * ps0] - 16) * 298;
+                    int U = ur[(x >> 1) * ps1] - 128;
+                    int V = vr[(x >> 1) * ps1] - 128;
+                    o[0] = (uint8_t)sh_cam_clip((Y + 409 * V + 128) >> 8);
+                    o[1] = (uint8_t)sh_cam_clip((Y - 100 * U - 208 * V + 128) >> 8);
+                    o[2] = (uint8_t)sh_cam_clip((Y + 516 * U + 128) >> 8);
+                    o[3] = 255;
+                    o += 4;
+                }
+            }
+            *out = s->rgba; *w = cw; *h = ch;
+            got = 1;
+        }
+    }
+    AImage_delete(img);
+    return got;
+}
+
+void egui_cr_cam_close(void* sp) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    if (s->session) {
+        ACameraCaptureSession_stopRepeating(s->session);
+        ACameraCaptureSession_close(s->session);
+    }
+    if (s->req) ACaptureRequest_free(s->req);
+    if (s->target) ACameraOutputTarget_free(s->target);
+    if (s->soutput) ACaptureSessionOutput_free(s->soutput);
+    if (s->outputs) ACaptureSessionOutputContainer_free(s->outputs);
+    if (s->dev) ACameraDevice_close(s->dev);
+    if (s->win) ANativeWindow_release(s->win);
+    if (s->reader) AImageReader_delete(s->reader);
+    free(s->rgba);
+    free(s);
+}
+
+const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
+#endif // camera capture

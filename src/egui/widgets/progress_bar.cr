@@ -13,8 +13,12 @@ module Egui
       @id_name = id
     end
 
+    def style_class : String?
+      "progressbar"
+    end
+
     def style_properties : Array(StyleProp)
-      StyleProps.textlike + [
+      StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill"),
         StyleProp.new("stroke", :color, label: "track stroke"),
       ]
@@ -30,6 +34,7 @@ module Egui
       height = {style.spacing.interact_size.y * 1.25,
                 style.font_size * 1.5}.max
       size = Vec2.new(ui.available_width, height)
+      size = styled_size(size, style_vars(ui, id), ui, id)
       rect = ui.allocate_at_least(size)
 
       fraction = @fraction.clamp(0.0, 1.0)

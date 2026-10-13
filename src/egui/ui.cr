@@ -37,6 +37,14 @@ module Egui
     # and flows down the whole subtree.
     getter style_scope : String?
 
+    # Horizontal-row line wrapping (CSS `flex-wrap: wrap`, on by
+    # default in #horizontal): when the next widget does not fit the
+    # remaining row width — and would fit on a fresh line — the
+    # cursor breaks to a new line instead of pinning the widget at
+    # the region edge as a zero-remainder rect. Mobile-safe default:
+    # nothing runs off the screen edge just because a row overflows.
+    property wrap_x : Bool = false
+
     @child_counter : UInt64 = 0
 
     # Horizontal-row cross-axis extent (upstream's cursor cross sides):
@@ -127,6 +135,23 @@ module Egui
     # `overflow-y`: the content grows past the bottom on purpose,
     # clipped by `clip` and scrolled by the owning ScrollArea).
     def allocate_space(size : Vec2) : Rect
+      if @layout.horizontal? && @wrap_x
+        # Line wrap (see #wrap_x): break to a fresh line when the
+        # widget cannot fit the remainder but fits a full line. A
+        # widget wider than the WHOLE row stays put (the max-size
+        # clamp applies, as before wrapping existed). A wrapped
+        # galley may overshoot the row width by a hair (rounding, a
+        # word slightly wider than the wrap limit) — tolerate up to
+        # one item spacing so such a widget still breaks to a fresh
+        # line instead of collapsing into the end-of-row sliver.
+        remaining = @max_rect.right - @cursor.x
+        if @cursor.x > @max_rect.min.x && size.x > remaining &&
+           size.x <= @max_rect.width + style.spacing.item_spacing.x
+          @cursor = Pos2.new(@max_rect.min.x,
+            @cursor.y + @row_h + style.spacing.item_spacing.y)
+          @row_h = 0.0 # the new line's height starts fresh
+        end
+      end
       max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x }.max
       if @layout.horizontal?
         # Cross-axis centering (see #@row_h): center the widget within
@@ -829,10 +854,27 @@ module Egui
     # Built through #child_ui so the row inherits the parent's layer and
     # clip rect — a horizontal row inside a window/scroll area must stay
     # in that layer's z-order and viewport clip.
-    def horizontal(&block : Ui ->) : self
+    # egui `ui.horizontal` — a left-to-right row. WRAPS by default
+    # (CSS `flex-wrap: wrap`): a widget that cannot fit the remaining
+    # row width breaks onto a new line instead of collapsing at the
+    # region edge — the mobile-safe default. `wrap: false` restores
+    # the single-line behavior (fixed toolbars that prefer clipping).
+    #
+    # Inside a HORIZONTAL parent the row is a line-break block: it
+    # starts on a fresh full-width line of the parent (its own width
+    # is only known after the content runs — the parent's remaining
+    # sliver must not cramp it) and the parent's flow continues below.
+    def horizontal(wrap : Bool = true, &block : Ui ->) : self
+      row_rect = if @layout.horizontal?
+        Pos2.new(@max_rect.min.x,
+          @cursor.y + @row_h + style.spacing.item_spacing.y)
+      else
+        @cursor
+      end
       row = child_ui(
-        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)),
+        Rect.new(row_rect, Pos2.new(@max_rect.right, @max_rect.bottom)),
         layout: Layout.left_to_right)
+      row.wrap_x = wrap
       # Upstream seeds the row at `interact_size.y` ("assume there will
       # be something interactive on the horizontal layout") so short
       # widgets share a common center line before anything tall grows
@@ -842,6 +884,9 @@ module Egui
       @min_rect = @min_rect.union(row.min_rect)
       @cursor = Pos2.new(@max_rect.min.x,
         row.min_rect.bottom + style.spacing.item_spacing.y)
+      # A horizontal parent continues on a fresh line below the row
+      # block — its line-height tracker starts over.
+      @row_h = 0.0 if @layout.horizontal?
       self
     end
   end

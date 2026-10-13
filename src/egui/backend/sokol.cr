@@ -16,6 +16,7 @@
 require "../../egui"
 require "./text"
 require "./crystalfonts"
+require "./camera"
 # Win32 detached loop: the doorbell's A-side end is an overlapped socket
 # (see run_detached) — Socket comes from the stdlib, egui itself never
 # needs it elsewhere.
@@ -164,6 +165,14 @@ lib LibEguiCr
   {% end %}
   fun request_quit = egui_cr_request_quit
   fun show_keyboard = egui_cr_show_keyboard(shown : Int32)
+  # Safe-area insets in points (backend/sokol_shim.c detector: UIKit
+  # on iOS, WindowInsets via JNI on Android). Only referenced under
+  # the mobile flags — desktop binaries link the prebuilt
+  # libegui_cr_sokol.a, which may predate the symbol.
+  {% if flag?(:ios) || flag?(:android) %}
+    fun safe_area = egui_cr_safe_area(top : Float32*, right : Float32*,
+      bottom : Float32*, left : Float32*) : Void
+  {% end %}
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
   fun set_window_title = egui_cr_set_window_title(title : UInt8*)
@@ -621,6 +630,10 @@ module Egui
       FOCUSED       = 17
       UNFOCUSED     = 18
       FILES_DROPPED = 23
+      # The shim's synthesized pinch-zoom event (backend/sokol_shim.c,
+      # SH_EVENT_PINCH) — not a sapp_event_type value. mx/my = centroid
+      # in framebuffer pixels, sx = multiplicative zoom factor.
+      PINCH         = 100
 
       # eframe::run_native — blocks until the window closes.
       #
@@ -719,6 +732,12 @@ module Egui
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
+        {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) %}
+          # Native camera capture (AVFoundation / camera2 NDK —
+          # backend/camera.cr); iOS and the desktops without a shim keep
+          # the core default "not implemented" implementation.
+          Egui::Camera.use(Backend::NativeCam.new)
+        {% end %}
         {% if flag?(:win32) %}
           Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
             native_file_dialog(save, title, filters, dir, name)
@@ -1011,6 +1030,7 @@ module Egui
               Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
                 fb_h.to_f64 / @@pixels_per_point)),
             @@events, time)
+          raw.safe_area = poll_safe_area
           @@events = [] of Egui::Event
 
           app.ctx.begin_frame(raw)
@@ -1355,6 +1375,23 @@ module Egui
         {% end %}
       end
 
+      # Platform safe-area insets in points for this frame — the
+      # backend/sokol_shim.c detector (UIKit safeAreaInsets on iOS,
+      # WindowInsets via JNI on Android). nil on desktops: the no-op
+      # there, RawInput.safe_area stays unset and Context keeps a
+      # manual value (or the zero default).
+      private def self.poll_safe_area : Egui::SafeArea?
+        {% if flag?(:ios) || flag?(:android) %}
+          t = uninitialized Float32; r = uninitialized Float32
+          b = uninitialized Float32; l = uninitialized Float32
+          LibEguiCr.safe_area(pointerof(t), pointerof(r),
+            pointerof(b), pointerof(l))
+          Egui::SafeArea.new(t.to_f64, r.to_f64, b.to_f64, l.to_f64)
+        {% else %}
+          nil
+        {% end %}
+      end
+
       protected def self.translate_event(type : Int32, mx : Float32,
                                          my : Float32, sx : Float32,
                                          sy : Float32, mods : UInt32,
@@ -1390,6 +1427,10 @@ module Egui
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
           # is positive = content scrolls down → negate.
           @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
+        when PINCH
+          # The shim's touch pinch mapping: mx/my = the two-finger
+          # centroid (fb px → points above), sx = the zoom factor.
+          @@events << Egui::Event.zoom(sx.to_f64, Egui::Pos2.new(mx, my))
         when KEY_DOWN, KEY_UP
           # sapp fires KEY_* plus a separate CHAR event for text; we
           # only forward non-modifier keys here (modifier state rides
@@ -1545,6 +1586,7 @@ module Egui
             Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
               fb_h.to_f64 / @@pixels_per_point)),
           @@events, time)
+        raw.safe_area = poll_safe_area
         @@events = [] of Egui::Event
 
         app.ctx.begin_frame(raw)

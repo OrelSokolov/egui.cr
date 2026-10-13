@@ -157,6 +157,10 @@ module Egui
 
     private def vars_for(ui : Ui, id : Id, paths : Array(String),
                          state : String?) : StyleVars
+      # Touch devices have no hover (Этап 6 of
+      # plans/responsive-mobile.md): `:hover` overlays read as the
+      # base state, so a finger tap leaves no stuck highlight.
+      state = nil if state == "hover" && ui.ctx.pointer_coarse?
       bag = case paths.size
             when 0 then StyleVars.new
             when 1 then ui.ctx.stylesheet.resolve(paths.first, state)
@@ -170,6 +174,85 @@ module Egui
       else
         bag
       end
+    end
+
+    # Style-driven sizing (plans/responsive-mobile.md Этап 2): apply
+    # the cascade's `width`/`min_width`/`max_width` (and the height
+    # trio) to the widget's natural size. `width` overrides the axis
+    # (content still centers inside), `min_*` floors, `max_*` caps;
+    # values resolve through `StyleVars#length_px` — plain numbers are
+    # points, `%` is the containing Ui, `vw/vh/vmin/vmax` the viewport,
+    # `rem` the root font. Returns `natural` unchanged when no size
+    # key is set; percent heights in unbounded regions stay unset (the
+    # natural size applies). The allocation max-size rule clamps the
+    # result to the region, so an oversized percent can never push
+    # past the parent.
+    protected def styled_size(natural : Vec2, vars : StyleVars,
+                              ui : Ui, id : Id? = nil) : Vec2
+      Vec2.new(
+        styled_axis(natural.x, vars, ui, :x, id),
+        styled_axis(natural.y, vars, ui, :y, id))
+    end
+
+    private def styled_axis(natural : Float64, vars : StyleVars, ui : Ui,
+                            axis : Symbol, id : Id?) : Float64
+      key = axis == :x ? "width" : "height"
+      if (target = vars.length_px?(key, ui, axis))
+        # An EXPLICIT size key: animate towards the new target when a
+        # `transition` is declared (natural-size changes never
+        # animate — CSS semantics; only declared properties do).
+        v = id ? transition_scalar(key, target, vars, ui, id) : target
+      else
+        v = natural
+      end
+      if (mn = vars.length_px?("min_#{key}", ui, axis))
+        v = {v, mn}.max
+      end
+      if (mx = vars.length_px?("max_#{key}", ui, axis))
+        v = {v, mx}.min
+      end
+      v
+    end
+
+    # The class vars of this widget (class chain + element override),
+    # sized with #styled_size — the one-liner first-wave widgets call
+    # right before allocating.
+    protected def styled_size(natural : Vec2, ui : Ui, id : Id) : Vec2
+      styled_size(natural, style_vars(ui, id), ui, id)
+    end
+
+    # --- cascade transitions (plans/animations.md Ур.1) --------------
+    #
+    # `transition.<key>: <ms>` (or the `transition: <ms>` shorthand
+    # for every key) animates a style value towards its new cascade
+    # target. Duration in milliseconds; absent/0 = snap.
+
+    # The declared transition duration for `key` in milliseconds
+    # (0.0 = not transitioned). Per-key beats the shorthand.
+    protected def transition_ms?(key : String, vars : StyleVars) : Float64
+      (vars.f64?("transition.#{key}") || vars.f64?("transition") ||
+       0.0).clamp(0.0, 10_000.0)
+    end
+
+    # The named easing curve for `key` (`easing.<key>` beats the
+    # `easing` shorthand; nil = smoothstep). Values are quoted
+    # strings: `easing.background: "ease-out"`.
+    protected def transition_easing?(key : String, vars : StyleVars) : String?
+      vars.str?("easing.#{key}") || vars.str?("easing")
+    end
+
+    protected def transition_color(key : String, target : Color32,
+                                   vars : StyleVars, ui : Ui,
+                                   id : Id) : Color32
+      ui.ctx.animate_style_color(id, key, target, transition_ms?(key, vars),
+        transition_easing?(key, vars))
+    end
+
+    protected def transition_scalar(key : String, target : Float64,
+                                     vars : StyleVars, ui : Ui,
+                                     id : Id) : Float64
+      ui.ctx.animate_style_scalar(id, key, target, transition_ms?(key, vars),
+        transition_easing?(key, vars))
     end
 
     # The CSS-like `background` of a state-painted widget, resolved
@@ -186,16 +269,32 @@ module Egui
     #      user-agent default with built-in per-state colors.
     protected def background_color(ui : Ui, id : Id, state : String?,
                                    hovered : Bool, active : Bool) : Color32
-      if (c = ui.ctx.id_style_state_vars(id, state).try(&.color?("background")))
-        c
-      elsif (c = @style_override.try(&.background))
-        c
-      elsif !(paths = class_paths(ui.style_scope)).empty? &&
-           (c = ui.ctx.stylesheet.resolve_chain(paths, state).color?("background"))
-        c
+      paths = class_paths(ui.style_scope)
+      c = if (oc = ui.ctx.id_style_state_vars(id, state).try(&.color?("background")))
+        oc
+      elsif (ic = @style_override.try(&.background))
+        ic
+      elsif !paths.empty? &&
+           (cc = ui.ctx.stylesheet.resolve_chain(paths, state).color?("background"))
+        cc
       else
-        ui.style.visuals.button_fill(hovered, active)
+        nil
       end
+      target = c || ui.style.visuals.button_fill(hovered, active)
+      # `transition`/`transition.background` animates the fill towards
+      # its new cascade target (duration in ms; absent = snap). The
+      # duration rides the same state-aware bags the value came from.
+      if c && !paths.empty?
+        vars = ui.ctx.stylesheet.resolve_chain(paths, state)
+        if (ov = ui.ctx.id_style_state_vars(id, state))
+          merged = StyleVars.new
+          merged.merge!(vars)
+          merged.merge!(ov)
+          vars = merged
+        end
+        return transition_color("background", target, vars, ui, id)
+      end
+      target
     end
 
     # The effective Style with the full cascade applied:

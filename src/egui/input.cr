@@ -119,6 +119,7 @@ module Egui
       KeyReleased
       TextInput
       DroppedFiles
+      Zoom
     end
 
     getter type : Type
@@ -131,6 +132,9 @@ module Egui
     # Absolute paths of the files dropped onto the window this frame
     # (Type::DroppedFiles only).
     getter paths : Array(String)
+    # Multiplicative zoom factor (Type::Zoom only): > 1 zooms in, < 1
+    # out. Emitted by the touch backends' pinch mapping.
+    getter zoom : Float64
 
     def initialize(@type : Type, @pos : Pos2? = nil,
                    @button : PointerButton = :primary,
@@ -138,7 +142,8 @@ module Egui
                    @key : KeyCode = :escape,
                    @text : String = "",
                    @modifiers : Modifiers = Modifiers.new,
-                   @paths : Array(String) = [] of String)
+                   @paths : Array(String) = [] of String,
+                   @zoom : Float64 = 1.0)
     end
 
     def self.pointer_moved(pos : Pos2) : Event
@@ -174,16 +179,29 @@ module Egui
     def self.dropped_files(paths : Array(String)) : Event
       new(:dropped_files, paths: paths)
     end
+
+    # A pinch-zoom gesture step: `factor` is multiplicative (> 1 zooms
+    # in), `pos` the gesture's focal point (the two-finger centroid) in
+    # points.
+    def self.zoom(factor : Float64, pos : Pos2? = nil) : Event
+      new(:zoom, pos: pos, zoom: factor)
+    end
   end
 
   class RawInput
     property events : Array(Event)
     property screen_rect : Rect
     property time : Float64
+    # Safe-area insets reported by the platform detector (backend
+    # shims: UIKit on iOS, WindowInsets via JNI on Android; nil on
+    # desktops — the no-op). When present, `Context#begin_frame`
+    # applies them (overriding a manual `Context#safe_area=`).
+    property safe_area : SafeArea?
 
     def initialize(@screen_rect : Rect = Rect.zero,
                    @events : Array(Event) = [] of Event,
-                   @time : Float64 = 0.0)
+                   @time : Float64 = 0.0,
+                   @safe_area : SafeArea? = nil)
     end
   end
 
@@ -224,6 +242,11 @@ module Egui
     getter modifiers : Modifiers
     # Files dropped onto the window this frame (empty on every other).
     getter dropped_files : Array(String)
+    # Pinch-zoom this frame: the product of all Event.zoom factors
+    # (1.0 when none), with the gesture's focal point in `zoom_pos`
+    # (nil when the backend didn't report one).
+    getter zoom_delta : Float64
+    getter zoom_pos : Pos2?
 
     def initialize(@screen_rect : Rect, @pointer_pos : Pos2?, @pointer_down : Bool,
                    @pointer_pressed : Bool, @pointer_released : Bool, @scroll : Vec2,
@@ -240,7 +263,9 @@ module Egui
                    @secondary_pos : Pos2? = nil,
                    @secondary_down : Bool = false,
                    @secondary_released : Bool = false,
-                   @dropped_files : Array(String) = [] of String)
+                   @dropped_files : Array(String) = [] of String,
+                   @zoom_delta : Float64 = 1.0,
+                   @zoom_pos : Pos2? = nil)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -316,6 +341,8 @@ module Egui
       secondary_down = prev.try(&.secondary_down?) || false
       secondary_released = false
       dropped_files = [] of String
+      zoom_delta = 1.0
+      zoom_pos : Pos2? = nil
 
       raw.events.each do |e|
         case e.type
@@ -357,6 +384,9 @@ module Egui
           text += e.text
         in .dropped_files?
           dropped_files.concat(e.paths)
+        in .zoom?
+          zoom_delta *= e.zoom
+          zoom_pos = e.pos unless e.pos.nil?
         end
       end
 
@@ -375,7 +405,7 @@ module Egui
         delta, velocity, keys_down, keys_pressed, keys_released,
         key_press_counts, text, modifiers,
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
-        dropped_files)
+        dropped_files, zoom_delta, zoom_pos)
     end
   end
 end

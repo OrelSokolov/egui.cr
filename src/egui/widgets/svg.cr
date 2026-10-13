@@ -123,6 +123,18 @@ module Egui
         Vec2.new(qw, qh)), id)
     end
 
+    # Raster cache access for callers that draw the quad themselves:
+    # fetch/bake the texture for an arbitrary pixel size, then replay
+    # it with Painter#image at any rect. An interactive zoom canvas
+    # must not rebake per frame, so it bakes per size bucket (see
+    # examples/multitouch_demo) and lets the GPU resample in between.
+    # Same cache as #paint — bucketed entries coexist with exact-size
+    # bakes.
+    def raster_texture_id(registry : TextureRegistry,
+                          w_px : Int32, h_px : Int32) : UInt64
+      raster_texture(registry, w_px, h_px)
+    end
+
     # Cache lookup/bake for #paint's textured path. Keyed by
     # (source, tint) with per-size entries — the "invalidate on size
     # change" contract, same as the font atlas per-ppem rebake.

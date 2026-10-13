@@ -2,22 +2,25 @@ egui.cr — an immediate-mode GUI for Crystal
 ============================================
 
 Dual-licensed under the GNU Affero General Public License v3.0 OR a
-commercial license (the Qt / MySQL model):
+commercial license (the Qt / MySQL model). Pick either:
 
-  * Open source use: license your project under AGPL-3.0 (full text
-    below). The Affero clause extends the GPL to network use — a
-    service built on egui.cr must offer its source to its users, and
-    distributing a closed-source application that embeds egui.cr
-    violates the license.
+  * Closed source — allowed, no upfront payment. Commercial
+    (closed-source) use is covered by the commercial license:
+    nothing is due until your product's lifetime gross revenue
+    exceeds twice the license price ($98 for the Indie tier, $998
+    per product for the Company tier) — if it never does, you owe
+    nothing. The commercial license lifts the AGPL copyleft
+    obligations for your product. Terms and contact: Oleg Orlov
+    <orelcokolov@gmail.com>, https://github.com/OrelSokolov,
+    see PRICING.md.
 
-  * Commercial use: if you cannot or do not want to release your
-    application's source, purchase a commercial license from the
-    author: Oleg Orlov <orelcokolov@gmail.com>,
-    https://github.com/OrelSokolov. The commercial license lifts the
-    copyleft obligations for your product.
+  * Open source — completely free. License your own project under
+    AGPL-3.0 (full text below) and you owe nothing ever, at any
+    revenue. The Affero clause extends the GPL to network use — a
+    service built on egui.cr must offer its source to its users.
 
-Unless you have purchased a commercial license, the AGPL-3.0 terms
-below apply to your use of this software.
+If you are not using egui.cr under the commercial license terms
+above, the AGPL-3.0 terms below apply to your use of this software.
 
 Scope: this license covers egui.cr's own sources (src/, backend/,
 examples/, spec/, bench/, assets/ where not stated otherwise). The

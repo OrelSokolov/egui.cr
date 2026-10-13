@@ -361,6 +361,33 @@ public class EguiCrActivity extends NativeActivity {
         }
     }
 
+    // Camera capture (src/egui/camera.cr): the permission gate for the
+    // camera2-NDK stack in the shim. requestPermissions shows the system
+    // dialog on the UI thread; the answer is observed by the shim polling
+    // hasCameraPermission between frames (no native callback needed).
+    public static boolean hasCameraPermission() {
+        EguiCrActivity a = instance;
+        if (a == null) return false;
+        try {
+            return a.checkSelfPermission(android.Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Exception e) { return false; }
+    }
+
+    public static void requestCameraPermission() {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (!hasCameraPermission())
+                        a.requestPermissions(
+                            new String[]{android.Manifest.permission.CAMERA}, 1003);
+                } catch (Exception e) { /* activity not attached */ }
+            }
+        });
+    }
+
     // Called from the native shim (sokol loop thread) via JNI.
     public static void showKeyboard(final int kind, final int action) {
         final EguiCrActivity a = instance;

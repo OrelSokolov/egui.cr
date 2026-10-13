@@ -76,7 +76,8 @@ module Egui
     end
 
     def style_properties : Array(StyleProp)
-      StyleProps.textlike + [StyleProp.new("padding", :box)]
+      StyleProps.textlike + StyleProps.sizable +
+        [StyleProp.new("padding", :box)]
     end
 
     def inspector_label : String?
@@ -117,24 +118,44 @@ module Egui
         # stack they draw in the proportional font — retint them.
         runs = RichText.fade_code_runs(runs, style.visuals) if ui.ctx.mono_fonts.nil?
       end
-      # Default (nil): wrap only where the label owns the rest of the
-      # line — a vertical layout (upstream `TextWrapMode::Wrap`); a
-      # label inside a horizontal row stays inline (`Extend`). A zero
-      # remaining width would char-break every glyph onto its own row —
-      # treat it as unbounded instead.
-      wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
-      available = ui.available_width
-      room = available - pad.horizontal
-      max_width = wrap && room > 0.0 ? room : nil
       # Runs may carry their own family (RichText#code — code blocks):
       # resolve those through ctx.fonts_for for BOTH measuring and
       # drawing; the base runs measure through the weight-resolved
       # stack (`fonts` above — a real cut face when one matched).
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
+      # Default (nil): wrap where the label owns the rest of the line
+      # — a vertical layout (upstream `TextWrapMode::Wrap`); a label
+      # inside a horizontal row stays inline (`Extend`) unless even a
+      # FRESH line cannot hold it (unwrapped text wider than the whole
+      # row) — then it wraps against the row width instead of painting
+      # past the screen edge (mobile-safe default). A zero remaining
+      # width would char-break every glyph onto its own row — treat it
+      # as unbounded instead.
+      wrap = @wrap
+      if wrap.nil?
+        wrap = ui.layout.vertical?
+        unless wrap
+          natural = fonts.layout(runs, nil, resolve, @line_height).size.x
+          wrap = natural + pad.horizontal > ui.max_rect.width
+        end
+      end
+      available = ui.available_width
+      # The width the label can actually count on when wrapping: in a
+      # WRAP-CAPABLE horizontal row (#horizontal / wrap strips) a
+      # label that outgrows the remainder moves to a fresh FULL line —
+      # wrap against that, never against the sliver (a room of one
+      # glyph char-breaks the text into a vertical column).
+      wrap_base = ui.layout.horizontal? && ui.wrap_x ? ui.max_rect.width
+                                                      : available
+      room = (wrap ? wrap_base : available) - pad.horizontal
+      max_width = wrap && room > 0.0 ? room : nil
       galley = fonts.layout(runs, max_width, resolve, @line_height)
 
-      rect = ui.allocate_at_least(
-        galley.size + Vec2.new(pad.horizontal, pad.vertical))
+      size = galley.size + Vec2.new(pad.horizontal, pad.vertical)
+      # Responsive size keys are the last word on each axis (width
+      # overrides the wrapped galley width; text centers in the rect).
+      size = styled_size(size, class_vars, ui, id)
+      rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id,
         @userselect ? Sense.click_and_drag : Sense.none)
 

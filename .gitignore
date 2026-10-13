@@ -39,3 +39,6 @@ hello2*.png
 hello2.xwd
 
 tmp/
+
+# Android cross-compile sysroot (libevent/pcre2/gc) — kept on disk for build_apk.sh, not for git
+/etc/

@@ -258,13 +258,16 @@ module Egui
       end
 
       # The value spelling: colors as `#rrggbbaa` (the same lowercase
-      # hex `StyleSheet#dump` uses), whole numbers without the `.0`.
+      # hex `StyleSheet#dump` uses), whole numbers without the `.0`,
+      # unit lengths as written (`50%`, `10vw`, `1.5rem`).
       def self.format_value(v : StyleValue) : String
         case v
         when Color32
           sprintf("#%02x%02x%02x%02x", v.r, v.g, v.b, v.a)
         when Float64
           v % 1 == 0 ? v.to_i64.to_s : v.to_s
+        when StyleLength
+          v.to_s
         when String
           v.inspect
         else
@@ -317,8 +320,8 @@ module Egui
             if (parsed = MediaCond.parse(cond))
               media = parsed.to_s
             else
-              warn "@media #{cond.inspect} is not a width condition — \
-block ignored"
+              warn "@media #{cond.inspect} is not a supported media \
+condition — block ignored"
               media = "@ignored" # swallow until the closing brace
             end
             # Step INSIDE the block: the inner rules parse as normal
@@ -418,6 +421,10 @@ explicit id to persist element overrides"
         else
           if (n = s.to_f64?)
             n
+          elsif s.ends_with?("px") && (n = s[0...s.size - 2].to_f64?)
+            n # px is the default unit — a plain number, back-compat
+          elsif (l = StyleLength.parse?(s))
+            l
           else
             warn "unparseable value \"#{s}\" — ignored"
             nil

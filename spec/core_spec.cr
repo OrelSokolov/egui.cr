@@ -1449,17 +1449,39 @@ describe "rich text & wrapping (phase 4)" do
     rect.width.should be <= 300.0
   end
 
-  it "keeps a label on one line inside a horizontal row by default" do
+  it "keeps a fitting label on one line in a horizontal row; wraps only when wider than the whole row" do
     ctx = Egui::Context.new
     text = "The quick brown fox jumps over the lazy dog again and again"
 
     raw_frame(ctx)
-    widget_ui(ctx).horizontal { |row| row.label(text) }
+    widget_ui(ctx).horizontal { |row| row.label("short text") }
     ctx.end_frame
 
-    # one row, one merged run — the whole text in a single TextCmd
-    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
-    texts.should contain(text)
+    # A label that FITS the row stays a single inline run (one
+    # TextCmd holds the whole text).
+    ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain("short text")
+
+    # The long one is wider than the 300pt row even on a fresh line —
+    # the mobile-safe default wraps it against the row width instead
+    # of painting past the screen edge (old default: one line, text
+    # running off the region). wrap: false restores that inline mode.
+    ctx2 = Egui::Context.new
+    raw_frame(ctx2)
+    widget_ui(ctx2).horizontal { |row| row.label(text) }
+    ctx2.end_frame
+    cmds = ctx2.painter.commands.select(Egui::TextCmd).map(&.text)
+    cmds.join.should eq(text)          # nothing lost
+    cmds.size.should be > 1            # actually wrapped
+
+    ctx3 = Egui::Context.new
+    raw_frame(ctx3)
+    widget_ui(ctx3).horizontal do |row|
+      row.add(Egui::Label.new(text, wrap: false))
+    end
+    ctx3.end_frame
+    ctx3.painter.commands.select(Egui::TextCmd).map(&.text)
+      .should contain(text)            # opt-out keeps the single line
   end
 
   it "hard-breaks a word longer than the whole width character by character" do

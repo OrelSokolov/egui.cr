@@ -20,6 +20,7 @@ dependencies:
   # no libfreetype dependency in shipped binaries.
   freetype-cr:
     github: OrelSokolov/freetype.cr
+    version: 1.1.0
   # Синтаксическая подсветка fenced-code в markdown-виджете (порт
   # highlight.js 11.12.0).
   highlight_cr:
