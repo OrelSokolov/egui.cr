@@ -146,7 +146,7 @@ module Egui
         asc, desc = fonts.metrics_at(font_size)
         rows << Galley::Row.new(
           [Galley::RowRun.new(line_text, 0.0, font_size, nil, false)],
-          w, line_h, li.to_f64 * line_h, (line_h + asc - desc) / 2.0, li > 0)
+          w, line_h, li.to_f64 * line_h, (line_h + asc + desc) / 2.0, li > 0)
       end
       galley = Galley.new(rows)
       # Starts aligned to the window's rows, padded to rows+1 entries

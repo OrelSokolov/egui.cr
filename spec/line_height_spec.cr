@@ -85,9 +85,10 @@ describe "line height" do
        Egui::TextRun.new("x", 16.0, family: "monospace")],
       nil, resolve)
     row = galley.rows.first
-    # union: asc = max(16, 16), desc = min(-4.8, -3.2) → em = 20.8
+    # union: asc = max(16, 16), desc = min(-4.8, -3.2) → em = 20.8;
+    # baseline = row center + (asc+desc)/2 (em box centered in the row)
     row.height.should eq(16.0 * 1.3)
-    row.ascent.should eq((16.0 * 1.3 + 20.8) / 2.0)
+    row.ascent.should be_close(16.0 * 1.3 / 2.0 + (16.0 + -4.8) / 2.0, 1e-9)
     # paint_galley's math: every run's em-center anchor plus its own
     # em/2 lands on the SAME baseline (the row's), whatever its stack
     baselines = row.runs.map do |run|
@@ -106,9 +107,12 @@ describe "line height" do
     fonts = Egui::MonospaceFonts.new
     galley = fonts.layout([Egui::TextRun.new("hi", 16.0)])
     row = galley.rows.first
-    em = 16.0 * 1.3 # default metrics_at: {size, -0.3×size}
-    # legacy (no explicit line_height): row center + em/2
-    row.ascent.should eq(row.height / 2.0 + em / 2.0)
+    # default metrics_at: {size, -0.3×size} → asc = 16, desc = -4.8.
+    # Legacy = the TextCmd row-center anchor: the em-box CENTER sits on
+    # the row center, so the baseline is center + (asc+desc)/2 — NOT
+    # center + em/2 (that dropped every row by |desc| and read as top
+    # padding inside TextEdit/TextArea fields).
+    row.ascent.should be_close(row.height / 2.0 + (16.0 + -4.8) / 2.0, 1e-9)
   end
 
   it "splits an explicit line_height's leading half above / half below" do

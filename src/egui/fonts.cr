@@ -232,18 +232,18 @@ module Egui
         height = (@height > 0 ? @height : 16.0) *
                  (@line_height || LINE_H_FACTOR)
         # Shared baseline of the row, from the union em-box (max ascent
-        # to deepest descent over the row's runs). Two distributions:
-        # an EXPLICIT line_height means paragraph-style layout — the
-        # extra leading splits half above / half below the em box
-        # (CSS/GitHub half-leading), so text and its decorations (the
-        # inline-code chip) sit centered in the roomy line box; the
-        # default keeps the legacy geometry (em box centered on the row
-        # center, baseline below it) so tight rows everywhere render
-        # pixel-identically to before. Either way mixed rows (inline
-        # code) align on ONE baseline instead of per-font centers.
-        em = @asc - @desc
-        ascent = @line_height ? (height - em) / 2.0 + @asc
-                              : (height + em) / 2.0
+        # to deepest descent over the row's runs): the em box CENTERS
+        # in the row box, so the baseline sits (asc+desc)/2 — the
+        # em-center-to-baseline offset — below the row center. That is
+        # exactly the legacy `TextCmd` row-center anchor (its baseline
+        # conversion is pos.y + (asc+desc)/2, NOT + em/2: em/2 would
+        # drop every row by |desc| and read as top padding inside
+        # bordered fields). An explicit line_height only grows the row
+        # box, so the extra leading splits half above / half below the
+        # em box (CSS half-leading) with no separate formula. Either
+        # way mixed rows (inline code) align on ONE baseline instead of
+        # per-font centers.
+        ascent = (height + @asc + @desc) / 2.0
         @rows << build_row(@tokens, @y, height, ascent, @newline_before)
         @y += height
         @tokens = [] of Token
