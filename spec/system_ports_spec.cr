@@ -235,6 +235,96 @@ def drain_async_dialogs : Nil
   end
 end
 
+class TrayRecorder < Egui::SystemPorts::Tray::Implementation
+  getter created = false
+  getter items = Hash(Int32, Egui::SystemPorts::Tray::TrayItem).new
+  getter separators = [] of Int32
+  getter removed = [] of Int32
+  getter icon : Egui::SystemPorts::Tray::IconSource?
+
+  def supported? : Bool
+    true
+  end
+
+  def create(icon, title, tooltip) : Nil
+    @created = true
+    @icon = icon
+  end
+
+  def add_item(item : Egui::SystemPorts::Tray::TrayItem) : Nil
+    @items[item.id] = item
+  end
+
+  def add_separator(id : Int32) : Nil
+    @separators << id
+  end
+
+  def remove_item(id : Int32) : Nil
+    @removed << id
+  end
+end
+
+describe Egui::SystemPorts::Tray do
+  it "TrayItem models separators, checkables and submenu parents" do
+    item = Egui::SystemPorts::Tray::TrayItem.new(7, "Toggle", checkable: true, checked: true, parent_id: 3)
+    item.separator?.should be_false
+    item.checkable.should be_true
+    item.checked.should be_true
+    item.parent_id.should eq(3)
+    item.checked = false
+
+    Egui::SystemPorts::Tray::TrayItem.new(8, "-").separator?.should be_true
+  end
+
+  it "IconSource carries bytes + format with helpers" do
+    icon = Egui::SystemPorts::Tray::IconSource.png(Bytes[1, 2, 3])
+    icon.png?.should be_true
+    icon.svg?.should be_false
+    icon.ico?.should be_false
+    icon.bytes.should eq(Bytes[1, 2, 3])
+    Egui::SystemPorts::Tray::IconSource.ico(Bytes.new(0)).ico?.should be_true
+  end
+
+  it "delegates to the installed implementation" do
+    recorder = TrayRecorder.new
+    Egui::SystemPorts::Tray.use(recorder)
+    Egui::SystemPorts::Tray.supported?.should be_true
+
+    icon = Egui::SystemPorts::Tray::IconSource.png(Bytes[1])
+    Egui::SystemPorts::Tray.create(icon: icon, tooltip: "t")
+    Egui::SystemPorts::Tray.add_item(1, "One")
+    Egui::SystemPorts::Tray.add_item(2, "Nested", parent_id: 1)
+    Egui::SystemPorts::Tray.add_separator(10)
+    Egui::SystemPorts::Tray.remove_item(1)
+
+    recorder.created.should be_true
+    recorder.icon.should eq(icon)
+    recorder.items[2].parent_id.should eq(1)
+    recorder.separators.should eq([10])
+    recorder.removed.should eq([1])
+  ensure
+    Egui::SystemPorts::Tray.use(Egui::SystemPorts::Tray::Implementation.new)
+    Egui::SystemPorts::Tray.take_clicks
+  end
+
+  it "default implementation is a headless no-op and unsupported" do
+    Egui::SystemPorts::Tray.supported?.should be_false
+    Egui::SystemPorts::Tray.create # must not raise
+  end
+
+  it "enqueue_click queues ids, fires the handler, take_clicks drains" do
+    fired = [] of Int32
+    Egui::SystemPorts::Tray.on_click { |id| fired << id }
+    Egui::SystemPorts::Tray.enqueue_click(5)
+    Egui::SystemPorts::Tray.enqueue_click(6)
+    fired.should eq([5, 6])
+    Egui::SystemPorts::Tray.take_clicks.should eq([5, 6])
+    Egui::SystemPorts::Tray.take_clicks.should be_empty # drained
+  ensure
+    Egui::SystemPorts::Tray.on_click { }
+  end
+end
+
 describe Egui::SystemPorts::AsyncDialogs do
   it "delivers the result via callback during a scheduler pass" do
     got = [] of String?

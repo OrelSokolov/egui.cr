@@ -40,6 +40,13 @@ require "./camera"
 {% if flag?(:android) %}
   require "./android_boot"
 {% end %}
+# macOS: the system-tray adapter (NSStatusBar/NSStatusItem through
+# the minimal ObjC runtime layer). iOS has no status bar concept —
+# the port keeps its headless no-op default there and elsewhere.
+{% if flag?(:darwin) && !flag?(:ios) %}
+  require "./objc"
+  require "./tray_darwin"
+{% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
 # bounds checks on every array access), while the C code is cc -O2
@@ -743,6 +750,11 @@ module Egui
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
+        {% if flag?(:darwin) && !flag?(:ios) %}
+          # System tray: NSStatusItem surface (backend/tray_darwin.cr);
+          # other platforms keep the port's no-op default.
+          Egui::SystemPorts::Tray.use(Backend::DarwinTray.new)
+        {% end %}
         {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) %}
           # Native camera capture (AVFoundation / camera2 NDK —
           # backend/camera.cr); iOS and the desktops without a shim keep
@@ -802,7 +814,11 @@ module Egui
           translate_event(t, mx, my, sx, sy, mods, btn, key, chr,
             Pointer(Void).null)
         }
-        cleanup = -> { }
+        cleanup = -> {
+          # Release the tray's native surface (status item, menu) before
+          # the process tears down AppKit.
+          Egui::SystemPorts::Tray.quit
+        }
 
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
