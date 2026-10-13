@@ -26,6 +26,11 @@
 module Egui
   class Canvas
     include Widget
+    # Pixel changes also DRIVE the frame loop (see AutoRepaint): a
+    # canvas fed by a live source (audio meter, PTY, decoder) keeps
+    # the backend painting while content changes; an idle one costs
+    # no frames.
+    include Egui::AutoRepaint
 
     # Per-frame interaction report. Positions are in CANVAS pixels
     # (already divided by the zoom `scale`), nil when the pointer is
@@ -63,6 +68,9 @@ module Egui
     # Zoom: screen pixels per canvas pixel (integer, ≥ 1).
     property scale : Int32 = 1
     getter? dirty : Bool
+    # Initialized at the type level: mutators funnel through #dirty!
+    # (a method call), so the compiler can't infer it from initialize.
+    @dirty : Bool = false
     getter texture_id : UInt64
 
     @pid : Id
@@ -80,7 +88,7 @@ module Egui
       @height = height
       @pixels = Bytes.new(width.to_i64 * height * 4)
       fill_with(fill)
-      @dirty = true
+      dirty!
       @texture_id = 0_u64
     end
 
@@ -96,7 +104,15 @@ module Egui
     getter pixels : Bytes
 
     def mark_dirty : Nil
+      dirty!
+    end
+
+    # Pixel mutation funnel: set the upload flag AND grant a frame to
+    # show the change (AutoRepaint — no ctx yet before the first show,
+    # the request is just remembered).
+    private def dirty! : Nil
       @dirty = true
+      auto_repaint!
     end
 
     def inside?(x : Int32, y : Int32) : Bool
@@ -116,7 +132,7 @@ module Egui
       @pixels[i + 1] = color.g
       @pixels[i + 2] = color.b
       @pixels[i + 3] = color.a
-      @dirty = true
+      dirty!
     end
 
     # Coverage blend: `cov` in 0..255 multiplies the incoming color's
@@ -140,7 +156,7 @@ module Egui
         @pixels[i + 2] = ((color.b.to_i32 * a + @pixels[i + 2].to_i32 * ia) / 255).to_u8
         @pixels[i + 3] = 255_u8
       end
-      @dirty = true
+      dirty!
     end
 
     def fill_with(color : Color32) : Nil
@@ -152,14 +168,14 @@ module Egui
         @pixels[i + 3] = color.a
         i += 4
       end
-      @dirty = true
+      dirty!
     end
 
     # Replace the whole buffer (must be width*height*4 bytes, RGBA8).
     def replace_pixels(data : Bytes) : Nil
       raise "canvas buffer size mismatch" unless data.size == @pixels.size
       @pixels.copy_from(data)
-      @dirty = true
+      dirty!
     end
 
     def snapshot : Bytes
@@ -426,7 +442,7 @@ module Egui
           stack << {i, py + 1} if py < @height - 1 && self[i, py + 1] == target
         end
       end
-      @dirty = true
+      dirty!
     end
 
     # RGB inversion of the whole canvas (Paint: Image → Invert Colors).
@@ -438,7 +454,7 @@ module Egui
         @pixels[i + 2] = (255 - @pixels[i + 2]).to_u8
         i += 4
       end
-      @dirty = true
+      dirty!
     end
 
     # Copy a w×h region out (RGBA8); out-of-bounds areas read as
@@ -494,6 +510,9 @@ module Egui
     # Allocate, interact, paint. Returns this frame's Interaction.
     def show(ui : Ui) : Interaction
       ctx = ui.ctx
+      # Bind AutoRepaint to this Context (pre-first-show changes are
+      # consumed here as repaint requests).
+      pump_auto_repaint(ctx)
       rect = ui.allocate_at_least(
         Vec2.new((@width * @scale).to_f64, (@height * @scale).to_f64))
       response = ui.interact(rect, @pid, Sense.click_and_drag)
@@ -591,7 +610,7 @@ module Egui
         @texture_id = ctx.textures.create_stream(@width, @height)
         @texture_w = @width
         @texture_h = @height
-        @dirty = true
+        dirty!
       end
     end
 

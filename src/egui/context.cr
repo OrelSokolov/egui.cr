@@ -921,21 +921,36 @@ module Egui
       # dragged or sized off-screen.
       pos, size = constrain_floating(pos, size, WINDOW_MIN_SIZE.x, fixed)
       @memory.areas.set_pos(win_id, pos)
-      clip = fixed ? Rect.from_min_size(pos, size) :
-                     Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
-      content_size = Vec2.new(size.x - 2 * pad.x,
-        fixed ? {size.y - title_h - 2 * pad.y, 1.0}.max : 1e6)
+      content_min = pos + Vec2.new(pad.x, title_h + pad.y)
+      # Auto-fit windows stop at the screen bottom (upstream `Resize`
+      # max_size): content taller than the screen must live inside a
+      # ScrollArea — not be painted past the edge where it can't be
+      # reached. Dragging the window up moves the clip with it, so
+      # unscrolled overflow stays reachable exactly as before.
+      screen = @input.screen_rect
+      if fixed
+        clip = Rect.from_min_size(pos, size)
+        content_h = {size.y - title_h - 2 * pad.y, 1.0}.max
+      elsif screen.height > 0.0
+        auto_h = {screen.bottom - content_min.y - pad.y, 100.0}.max
+        clip = Rect.from_min_size(pos,
+          Vec2.new(size.x, auto_h + title_h + pad.y))
+        content_h = auto_h
+      else
+        clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
+        content_h = 1e6
+      end
+      content_size = Vec2.new(size.x - 2 * pad.x, content_h)
 
       @painter.layer = Order::Middle
       bg_index = @painter.add_noop
       @painter.clip = clip
-      content_min = pos + Vec2.new(pad.x, title_h + pad.y)
       ui = Ui.new(self, win_id,
         Rect.from_min_size(content_min, content_size))
       ui.layer = layer
       # Interaction stays inside the window's horizontal extent while
-      # auto-fitting (the height grows with the content, hence the 1e6
-      # tall strip); a fixed-size window clips to its rect on both axes.
+      # auto-fitting (the height caps at the screen bottom — see the
+      # clip above); a fixed-size window clips to its rect on both axes.
       ui.clip = clip
       yield ui
 
