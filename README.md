@@ -270,6 +270,33 @@ a modal confirm-close page). Demo screenshots for those states:
 the app, deep-links each route, drives the modal with synthetic
 XTEST input and captures the window into `screenshots/`).
 
+## Responsive design expectations
+
+Complex widgets ship two renderers — a desktop one and a mobile one
+(the menu bar becomes a hamburger side panel with accordion sections)
+— while their logic (actions, hotkeys, item state) is written once and
+shared. Which renderer runs is decided by two independent mechanisms:
+
+- **Form factor is sticky.** `:desktop` / `:mobile` is resolved once at
+  startup — from the build target (an Android binary is `:mobile`) or
+  an explicit override (`Egui.form_factor = :mobile`, also how specs
+  and screenshot scripts force the mobile view on a desktop). It never
+  reacts to window size: shrinking a desktop window does not turn the
+  app into a phone. Users expect a desktop app to degrade gracefully,
+  not to change identity (VS Code hides its sidebar at narrow widths;
+  it never grows a hamburger drawer) — so that is the contract here
+  too. On mobile, orientation changes may re-arrange within the
+  mobile form (a side panel appears in landscape).
+- **Width degrades fluidly, within the form factor.** Window width
+  drives graceful adaptation only: root menu items collapse into an
+  overflow `⋯` popup, side panels collapse or hide, toolbars wrap.
+  The widget keeps its desktop identity at any size.
+
+For widget authors: add the mobile twin inside the widget, switched by
+`ctx.form_factor` — never by viewport metrics — and degrade by width
+inside each renderer separately. Styles (the ECSS cascade) adjust
+looks per form factor; they are never the mechanism that swaps layout.
+
 ## Terminal
 
 `egui/terminal` is a cross-platform terminal emulator built on the
