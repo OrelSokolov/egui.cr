@@ -70,6 +70,24 @@ describe Egui::Page do
     fired.should eq(1)
   end
 
+  it "the mouse X1 (back) side button fires on_back wherever it lands" do
+    fired = 0
+    back = -> { fired += 1; nil }
+    ctx = Egui::Context.new
+    page_frame(ctx, [] of Egui::Event, 0.016, on_back: back) { |ui| }
+
+    # A press anywhere in the window — the middle of the page content,
+    # not the header button. Fired on the press, once; the release is
+    # a no-op.
+    anywhere = Egui::Pos2.new(400.0, 300.0)
+    page_frame(ctx,
+      [Egui::Event.pointer_pressed(anywhere, :extra1),
+       Egui::Event.pointer_released(anywhere, :extra1)], 0.032,
+      on_back: back) { |ui| }
+    page_frame(ctx, [] of Egui::Event, 0.048, on_back: back) { |ui| }
+    fired.should eq(1)
+  end
+
   it "content runs below the header; no header without title/on_back" do
     ctx = Egui::Context.new
     cursor_y = 0.0

@@ -81,8 +81,12 @@ module Egui
           icon = Rect.from_min_size(
             Pos2.new(icon.left - 2.0, icon.top), icon.size)
           Icons.draw(painter, :left, icon, visuals.text_color, 2.0)
-          on_back.call if back.clicked?
-          ctx.request_repaint if back.clicked?
+          # The mouse X1 ("back") side button fires on_back too — the
+          # same hardware gesture browsers intercept. Only while the
+          # page with a back button is open; fired on the press.
+          mouse_back = ctx.input.extra1_pressed?
+          on_back.call if back.clicked? || mouse_back
+          ctx.request_repaint if back.clicked? || mouse_back
         end
         if (t = title)
           painter.layer = Order::Background

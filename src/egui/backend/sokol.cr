@@ -1443,14 +1443,28 @@ module Egui
           @@dbg_moves += 1 if @@frame_debug
           @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
         when MOUSE_DOWN
-          # sapp mouse_button: 0 = left, 1 = right, 2 = middle.
-          # Secondary presses drive context menus
-          # (Response#context_menu); middle is dropped here (no
-          # middle-click behavior yet).
-          button = btn == 1 ? PointerButton::Secondary : PointerButton::Primary
+          # sapp mouse_button: 0 = left, 1 = right, 2 = middle, 3/4 =
+          # X1/X2 side buttons (mouse back/forward — the egui-cr sokol
+          # patch maps X11 buttons 8/9 onto them). Secondary drives
+          # context menus (Response#context_menu); middle and X1/X2
+          # carry no primary-click role (InputState ignores middle;
+          # X1 is the page-back navigation gesture).
+          button = case btn
+                   when 1 then PointerButton::Secondary
+                   when 2 then PointerButton::Middle
+                   when 3 then PointerButton::Extra1
+                   when 4 then PointerButton::Extra2
+                   else        PointerButton::Primary
+                   end
           @@events << Egui::Event.pointer_pressed(Egui::Pos2.new(mx, my), button)
         when MOUSE_UP
-          button = btn == 1 ? PointerButton::Secondary : PointerButton::Primary
+          button = case btn
+                    when 1 then PointerButton::Secondary
+                    when 2 then PointerButton::Middle
+                    when 3 then PointerButton::Extra1
+                    when 4 then PointerButton::Extra2
+                    else        PointerButton::Primary
+                    end
           @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my), button)
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention

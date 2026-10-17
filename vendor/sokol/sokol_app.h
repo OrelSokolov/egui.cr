@@ -1586,6 +1586,10 @@ typedef enum sapp_mousebutton {
     SAPP_MOUSEBUTTON_LEFT = 0x0,
     SAPP_MOUSEBUTTON_RIGHT = 0x1,
     SAPP_MOUSEBUTTON_MIDDLE = 0x2,
+    /* egui-cr extension: the X1/X2 side buttons (mouse "back"/"forward"),
+       mapped from X11 buttons 8/9 in _sapp_x11_translate_button. */
+    SAPP_MOUSEBUTTON_X1 = 0x3,
+    SAPP_MOUSEBUTTON_X2 = 0x4,
     SAPP_MOUSEBUTTON_INVALID = 0x100,
     _SAPP_MOUSEBUTTON_FORCE_U32 = 0x7FFFFFFF,
 } sapp_mousebutton;
@@ -13689,6 +13693,12 @@ _SOKOL_PRIVATE sapp_mousebutton _sapp_x11_translate_button(const XEvent* event) 
         case Button1: return SAPP_MOUSEBUTTON_LEFT;
         case Button2: return SAPP_MOUSEBUTTON_MIDDLE;
         case Button3: return SAPP_MOUSEBUTTON_RIGHT;
+        /* egui-cr extension: buttons 8/9 are the X1/X2 side buttons
+           ("back"/"forward") — without these cases they fell through to
+           INVALID and were dropped before the app ever saw them.
+           Literal numbers because old X11 headers stop at Button7. */
+        case 8: return SAPP_MOUSEBUTTON_X1;
+        case 9: return SAPP_MOUSEBUTTON_X2;
         default:      return SAPP_MOUSEBUTTON_INVALID;
     }
 }

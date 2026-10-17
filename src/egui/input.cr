@@ -9,6 +9,11 @@ module Egui
     Primary
     Secondary
     Middle
+    # X1/X2 — the side buttons ("back"/"forward") on many mice. X1 is
+    # intercepted by pages (Egui::Page) as navigation-back, the browser
+    # hardware gesture.
+    Extra1
+    Extra2
   end
 
   # Keyboard codes — values match `sapp_keycode` exactly (USB HID:
@@ -223,6 +228,9 @@ module Egui
     # the press event (which is all #secondary_pressed? carries).
     getter? secondary_down : Bool
     getter? secondary_released : Bool
+    # X1 ("back") side button: a press this frame — enough for page
+    # navigation, which fires on the press and holds no drag state.
+    getter? extra1_pressed : Bool
     getter scroll : Vec2
     getter time : Float64
     getter dt : Float64
@@ -263,6 +271,7 @@ module Egui
                    @secondary_pos : Pos2? = nil,
                    @secondary_down : Bool = false,
                    @secondary_released : Bool = false,
+                   @extra1_pressed : Bool = false,
                    @dropped_files : Array(String) = [] of String,
                    @zoom_delta : Float64 = 1.0,
                    @zoom_pos : Pos2? = nil)
@@ -340,6 +349,7 @@ module Egui
       secondary_pos : Pos2? = nil
       secondary_down = prev.try(&.secondary_down?) || false
       secondary_released = false
+      extra1_pressed = false
       dropped_files = [] of String
       zoom_delta = 1.0
       zoom_pos : Pos2? = nil
@@ -357,6 +367,8 @@ module Egui
             secondary_pressed = true
             secondary_down = true
             secondary_pos = e.pos
+          elsif e.button.extra1?
+            extra1_pressed = true
           end
         in .pointer_button_released?
           if e.button.primary?
@@ -405,6 +417,7 @@ module Egui
         delta, velocity, keys_down, keys_pressed, keys_released,
         key_press_counts, text, modifiers,
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
+        extra1_pressed,
         dropped_files, zoom_delta, zoom_pos)
     end
   end
