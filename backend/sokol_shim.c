@@ -30,6 +30,12 @@
 #endif
 #elif defined(__ANDROID__)
 #define SOKOL_GLES3
+#elif defined(SOKOL_VULKAN)
+// Linux option (BACKEND=vulkan in the Rakefile): sokol_app creates the
+// VkInstance/device and the X11/XWayland window itself, sokol_gfx renders
+// through Vulkan, and the UI shader is sokol_gl's embedded SPIR-V. Immune
+// to the GLX userspace/kernel skew that breaks glXCreateContextAttribsARB
+// after an NVIDIA driver upgrade (see VULKAN.md).
 #else
 #define SOKOL_GLCORE
 #endif
@@ -1789,7 +1795,9 @@ static void sh_x11_sync_request_confirm(void) {
 // constants the capture helpers use. The GL3
 // glBindFramebuffer(GL_READ_FRAMEBUFFER, …) is skipped there — the
 // default framebuffer is the read target anyway.
-#if defined(_SAPP_WIN32)
+// GL backends only: under SOKOL_VULKAN there are no GL entry points at
+// all — capture is debug tooling, so it degrades to a no-op there.
+#if defined(_SAPP_WIN32) && !defined(SOKOL_VULKAN)
 #define GL_PACK_ALIGNMENT 0x0D05
 #define GL_RGB            0x1907
 #define GL_UNSIGNED_BYTE  0x1401
@@ -1800,6 +1808,9 @@ extern void glReadPixels(int x, int y, int w, int h, unsigned format,
                          unsigned type, void* data);
 #endif
 static void sh_shot_legacy(void) {
+#if defined(SOKOL_VULKAN)
+    return; // no GL entry points on the Vulkan backend (debug tool only)
+#else
     static const char* dir;
     static int idx;
     static const int ticks[] = {15, 40, 80};
@@ -1828,6 +1839,7 @@ static void sh_shot_legacy(void) {
     }
     free(px);
     idx++;
+#endif // !SOKOL_VULKAN
 }
 
 // Framebuffer size of the pass in progress (both paths) — the mesh3d
@@ -5011,8 +5023,16 @@ static void sh_replay(sh_packet_t* p) {
 // screen grabber (XWayland windows can't be XGetImage'd). Thresholds
 // are present counts, not vsync ticks: an occluded XWayland window can
 // present as rarely as once a second.
+#if defined(SOKOL_VULKAN)
+// no GL entry points on the Vulkan backend — capture is debug tooling
+#else
 static int sh_shot_ticks[] = {3, 8, 20};
+#endif
 static void sh_shot(sh_packet_t* p) {
+#if defined(SOKOL_VULKAN)
+    (void)p; // no GL entry points on the Vulkan backend (debug tool only)
+    return;
+#else
     static const char* dir;
     static int idx;
     if (!dir) { dir = getenv("EGUI_SHOT"); if (!dir) dir = (const char*)-1; }
@@ -5040,6 +5060,7 @@ static void sh_shot(sh_packet_t* p) {
     }
     free(px);
     idx++;
+#endif // !SOKOL_VULKAN
 }
 
 static sh_texop_t* g_post_pending;

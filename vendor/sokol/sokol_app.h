@@ -5037,6 +5037,15 @@ _SOKOL_PRIVATE bool _sapp_vk_has_present_mode(VkPresentModeKHR mode) {
     return false;
 }
 
+/* egui-cr patch hook (defined in backend/sokol_shim.c; the GLX section
+   below re-declares it for the fbconfig chooser): 1 = per-pixel
+   transparent window wanted. Under Vulkan it drives the depth-32 ARGB
+   X11 visual choice in _sapp_linux_run and the PRE_MULTIPLIED
+   composite alpha picked in _sapp_vk_create_swapchain. */
+#if defined(_SAPP_LINUX)
+int egui_cr_glx_want_argb(void);
+#endif
+
 _SOKOL_PRIVATE void _sapp_vk_create_swapchain(void) {
     SOKOL_ASSERT(_sapp.vk.physical_device);
     SOKOL_ASSERT(_sapp.vk.surface);
@@ -5096,8 +5105,18 @@ _SOKOL_PRIVATE void _sapp_vk_create_swapchain(void) {
     create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
     create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     create_info.preTransform = surf_caps.currentTransform;
-    // FIXME: composite mode
+    // egui-cr patch: transparent windows (egui_cr_glx_want_argb) must
+    // blend per pixel with the desktop — PRE_MULTIPLIED when the surface
+    // supports it, otherwise the stock OPAQUE (replaces the upstream
+    // "FIXME: composite mode" hardcode).
     create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+    #if defined(_SAPP_LINUX)
+    if (egui_cr_glx_want_argb() &&
+        (surf_caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR))
+    {
+        create_info.compositeAlpha = VK_COMPOSITE_ALPHA_PRE_MULTIPLIED_BIT_KHR;
+    }
+    #endif
     create_info.presentMode = present_mode;
     create_info.clipped = true;
     create_info.oldSwapchain = old_swapchain;
@@ -14474,7 +14493,31 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
         _sapp_x11_create_window(0, 0);
         _sapp_wgpu_init();
     #elif defined(SOKOL_VULKAN)
-        _sapp_x11_create_window(0, 0);
+        /* egui-cr patch: transparent windows need a depth-32 ARGB visual
+           for the compositor to blend per pixel (same requirement as the
+           GLX fbconfig hook — without it the swapchain alpha never
+           reaches the screen). Falls back to the default visual when no
+           depth-32 TrueColor visual exists or transparency wasn't asked
+           for. */
+        if (egui_cr_glx_want_argb()) {
+            XVisualInfo vis_tmpl;
+            memset(&vis_tmpl, 0, sizeof(vis_tmpl));
+            vis_tmpl.depth = 32;
+            vis_tmpl.class = TrueColor;
+            int vis_count = 0;
+            XVisualInfo* vis_infos = XGetVisualInfo(_sapp.x11.display,
+                VisualDepthMask | VisualClassMask, &vis_tmpl, &vis_count);
+            if (vis_infos && vis_count > 0) {
+                _sapp_x11_create_window(vis_infos[0].visual, vis_infos[0].depth);
+            } else {
+                _sapp_x11_create_window(0, 0);
+            }
+            if (vis_infos) {
+                XFree(vis_infos);
+            }
+        } else {
+            _sapp_x11_create_window(0, 0);
+        }
         _sapp_vk_init();
     #endif
     sapp_set_icon(&desc->icon);

@@ -4,6 +4,20 @@ require "monitor"
 
 WINDOWS    = Gem.win_platform?
 DARWIN     = RUBY_PLATFORM.include?("darwin")
+# Render backend for the Linux native lib (see VULKAN.md): "gl" (default,
+# GLX through XWayland) or "vulkan" (X11 window + Vulkan swapchain —
+# immune to the NVIDIA GLX userspace/kernel skew that breaks
+# glXCreateContextAttribsARB after an apt upgrade). macOS (Cocoa/GL) and
+# Windows (WGL) stay GL regardless.
+#   BACKEND=vulkan rake build:release
+BACKEND    = ENV.fetch("BACKEND", "gl").downcase
+unless %w[gl vulkan].include?(BACKEND)
+  raise "BACKEND must be gl or vulkan (got: #{BACKEND})"
+end
+if BACKEND == "vulkan" && (WINDOWS || DARWIN)
+  raise "BACKEND=vulkan is Linux-only (macOS/Windows have no Vulkan sokol_app path here)"
+end
+VULKAN     = BACKEND == "vulkan"
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
@@ -32,6 +46,27 @@ end
 # former — crosspack runs both, so the shims were built twice per run).
 OBJ_EXT = WINDOWS ? ".obj" : ".o"
 
+# Backend stamp for the sokol shim object: the .o path is shared between
+# the gl and vulkan builds, and timestamps alone can't see a -D change —
+# a flip would silently link the old backend's object into the new
+# archive. So a mismatching stamp drops both the stamp and the object,
+# forcing a full recompile/re-archive through the normal file rules.
+NATIVE_BACKEND_STAMP = "lib/.native-backend"
+stamped = begin
+  File.read(NATIVE_BACKEND_STAMP).strip
+rescue StandardError
+  nil
+end
+if stamped != BACKEND
+  # drop the archive too: nothing may link a stale object of the OTHER
+  # backend (build:dev/spec would otherwise silently pick it up)
+  FileUtils.rm_f([NATIVE_BACKEND_STAMP, "lib/sokol_shim#{OBJ_EXT}", NATIVE_LIB])
+end
+file NATIVE_BACKEND_STAMP do
+  FileUtils.mkdir_p("lib")
+  File.write(NATIVE_BACKEND_STAMP, BACKEND)
+end
+
 # Headers each shim pulls in (see its #include block) — an edited vendor
 # header must trigger a recompile, not just an edited backend/*.c.
 SHIM_HEADERS = {
@@ -54,7 +89,10 @@ SHIM_HEADERS = {
 
 SHIM_HEADERS.each do |shim, headers|
   obj = "lib/#{shim}#{OBJ_EXT}"
-  file obj => ["backend/#{shim}.c"] + headers do
+  # the backend stamp gates the sokol shim: a BACKEND flip recompiles it
+  prereqs = ["backend/#{shim}.c"] + headers
+  prereqs << NATIVE_BACKEND_STAMP if shim == "sokol_shim"
+  file obj => prereqs do
     FileUtils.mkdir_p("lib")
     if WINDOWS
       includes = case shim
@@ -73,7 +111,8 @@ SHIM_HEADERS.each do |shim, headers|
       # shim must be compiled as ObjC even though it is a .c file.
       args = case shim
         when "sokol_shim"
-          "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor"
+          "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor" \
+          "#{" -DSOKOL_VULKAN" if VULKAN}"
         when "nanosvg_shim"      then "-Ivendor/nanosvg"
         else ""
       end
@@ -164,6 +203,14 @@ def build_examples(names, opt_flags, label)
   # an example requires "egui/backend/audio" — its @[Link] does the rest).
   ma_dir = File.join(libdir, "minaudio", "lib")
   lib_flag = WINDOWS ? "/LIBPATH:#{libdir} /LIBPATH:#{ma_dir}" : "-L#{libdir} -L#{ma_dir}"
+  # GNU ld.bfd resolves a static archive's undefined symbols (X11, GL,
+  # vulkan) only from libraries placed AFTER it, but Crystal emits the
+  # @[Link("egui_cr_sokol")] -l flag after the -lX11/-lGL group — so the
+  # archive is passed explicitly, before the shared libs. The later -l
+  # stays harmless: its members are already pulled in by then.
+  if !WINDOWS && !DARWIN
+    lib_flag = "#{File.expand_path(NATIVE_LIB)} #{lib_flag}"
+  end
   if DARWIN
     # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
     # brew prefix (-L only — @[Link("freetype")] already adds -lfreetype).
@@ -176,6 +223,9 @@ def build_examples(names, opt_flags, label)
                "-framework AVFoundation -framework CoreMedia " \
                "-framework IOKit"
   end
+  # Vulkan backend (BACKEND=vulkan, Linux): sokol_app calls into
+  # libvulkan directly — every example link needs it.
+  lib_flag = "#{lib_flag} -lvulkan" if VULKAN
   # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
   jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
   warm_compiler_caches(jobs, opt_flags, lib_flag)
@@ -227,7 +277,7 @@ end
 #   rake build:dev              # all examples
 #   OPT=-O3 rake build:dev      # optimized iteration
 desc "Build example(s) into bin/ without --release (fast iteration; OPT=-O3 for optimized)"
-task "build:dev", [:name] do |_, args|
+task "build:dev", [:name] => ["build:native"] do |_, args|
   # Empty for dev, e.g. "-O3 " for the optimized-iteration mode; passed to
   # the cache warm-up too — o3 units live under different cache names
   # (*.o3.o), so a dev-warmed slot does not warm them.
@@ -247,7 +297,7 @@ task "build:release", [:name] => ["build:native"] do |_, args|
 end
 
 desc "Run the spec suite (headless — no GPU needed)"
-task :spec do
+task spec: ["build:native"] do
   sh "crystal spec"
 end
 

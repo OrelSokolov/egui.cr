@@ -94,7 +94,7 @@ module Egui
       # daemons. The cookie string comes back from the D-Bus reply.
       {% if flag?(:linux) && !flag?(:android) %}
         private def self.dbus_acquire(reason : String) : Bool
-          reply = Dialogs.run?("gdbus", [
+          reply = Dialogs.run("gdbus", [
             "call", "--session",
             "--dest", "org.freedesktop.ScreenSaver",
             "--object-path", "/org/freedesktop/ScreenSaver",
