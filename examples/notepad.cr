@@ -22,7 +22,10 @@ require "json"
 require "mime"
 
 require "./icon" # ICON_64_RGBA — the shared app icon (64x64 RGBA)
-require "../src/egui/backend_selector"
+# Embedded builds (EGUI_EMBEDDED=1 at COMPILE time — Capybara screenshot
+# / suite scripts require this file as a library) skip the backend
+# entirely: a headless test binary links no sokol, no X11.
+{% unless env("EGUI_EMBEDDED") %}require "../src/egui/backend_selector"{% end %}
 
 class NotepadApp < Egui::App
   # Debug builds keep the inspector's style edits in a `.ecss` diff
@@ -544,6 +547,8 @@ end
 # place — the file arguments left over go to the app), the router is
 # deep-linked before the first frame, and Backend.run does the same
 # parse as a no-op fallback for apps that don't do it themselves.
+# Skipped whole in embedded builds (see the require guard at the top).
+{% unless env("EGUI_EMBEDDED") %}
 cli = Egui::CLI.parse(ARGV)
 # `--theme Dark|Light` — a palette override for this run (screenshots);
 # pulled out of the file list before the app sees it.
@@ -567,3 +572,4 @@ Egui.run(app,
   title: "egui-cr — notepad", width: 800, height: 600,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64},
   decorations: false, inspector: :hidden)
+{% end %}
