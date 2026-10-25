@@ -2028,6 +2028,24 @@ module Egui
         y = (clip.min.y * s).floor
         w = {(clip.max.x * s).ceil - x, 1.0}.max
         h = {(clip.max.y * s).ceil - y, 1.0}.max
+        # Clamp to the framebuffer before emitting. "Infinite" clip
+        # sentinels (Rect ±1e9 in points — e.g. the painter reset after
+        # Context#popup) scale past the int32 range once ppp > 2.14 (a
+        # 400 dpi phone is 2.5), and the float→int casts down in
+        # sgl_scissor_rectf / sg_apply_scissor_rectf are UB for
+        # out-of-range values: ARM64 saturates them to INT_MIN,
+        # glScissor rejects the negative sizes with GL_INVALID_VALUE
+        # and keeps the STALE (popup-sized) scissor — every widget
+        # painted after an open popup disappears. Intersecting with the
+        # pass covers the same pixels with in-range values (desktop,
+        # ppp 1.0, is unaffected: the clamp is the identity there for
+        # on-screen rects).
+        fb_w = LibEguiCr.sapp_width.to_f64
+        fb_h = LibEguiCr.sapp_height.to_f64
+        x = x.clamp(0.0, fb_w)
+        y = y.clamp(0.0, fb_h)
+        w = {(x + w).clamp(0.0, fb_w) - x, 0.0}.max
+        h = {(y + h).clamp(0.0, fb_h) - y, 0.0}.max
         # sgl_scissor_rect emits a command UNCONDITIONALLY (no
         # same-rect dedupe in sokol_gl), and a scissor between two
         # begin/end blocks breaks sgl's consecutive-draw merging — so
