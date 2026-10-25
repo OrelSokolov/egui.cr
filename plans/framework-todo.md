@@ -24,7 +24,12 @@
   устанавливаемый провайдер; текущий — stb_image из шима, PNG/JPEG/
   GIF/BMP; см. TODO.md «Непротекающие абстракции»). Новые кодеки —
   просто вторые провайдеры на том же шове
-- **Lottie (rlottie)** — анимированные векторные ассеты
+- **Lottie (rlottie)** — анимированные векторные ассеты — ✅ фаза 1
+  (C-shim twin): `Egui::Lottie::Player` + `ui.lottie` (widgets/lottie.cr,
+  stream-текстуры), рендер через vendored rlottie за флагом `LOTTIE=1`
+  (backend/rlottie.cr, `require "egui/backend/rlottie"`); фаза 2 —
+  чисто-Crystal интерпретатор поверх растеризатора nanosvg.cr (A/B
+  побайтово против шима)
 - **Графики/charts** — built-in виджет (линии, свечи, heatmap) —
   обязательный атрибут фреймворков уровня Excel-like приложений
 

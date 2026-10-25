@@ -5905,6 +5905,34 @@ void egui_cr_cam_perm_request(void) {
         completionHandler:^(BOOL granted) { (void)granted; }];
 }
 
+// Microphone TCC gate (SystemPorts::Microphone via backend/audio.cr):
+// the same poll-request pattern as the camera, for AVMediaTypeAudio.
+// CoreAudio delivers digital silence to processes without mic
+// authorization, so the runner checks first and pops the system dialog
+// from a bundled app. Bare (non-bundle) executables get no dialog —
+// requestAccess there would make TCC abort the process (see
+// sh_cam_bundled), so the request is a no-op and the runner surfaces
+// the bundle hint instead.
+int egui_cr_mic_perm(void) {
+    switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]) {
+        case AVAuthorizationStatusAuthorized: return 1;
+        case AVAuthorizationStatusNotDetermined: return 0;
+        default: return -1;
+    }
+}
+
+static int sh_mic_bundled(void) {
+    NSBundle* b = [NSBundle mainBundle];
+    return [[b bundlePath] hasSuffix:@".app"] &&
+           [b objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"] != nil;
+}
+
+void egui_cr_mic_perm_request(void) {
+    if (!sh_mic_bundled()) return;
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+        completionHandler:^(BOOL granted) { (void)granted; }];
+}
+
 // Device list: static slots refreshed by egui_cr_cam_devices (read right
 // after it; the pointers stay valid until the next refresh).
 #define SH_CAM_MAX 8
@@ -6127,6 +6155,28 @@ void egui_cr_cam_perm_request(void) {
     jclass cls = sh_act_class(env);
     if (!cls) return;
     jmethodID m = (*env)->GetStaticMethodID(env, cls, "requestCameraPermission", "()V");
+    if (!m) return;
+    (*env)->CallStaticVoidMethod(env, cls, m);
+}
+
+// Microphone permission gate for SystemPorts::Microphone (backend/
+// audio.cr MicRunner) — the same poll-request pattern as the camera.
+int egui_cr_mic_perm(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return -1;
+    jclass cls = sh_act_class(env);
+    if (!cls) return -1;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "hasMicPermission", "()Z");
+    if (!m) return -1;
+    return (*env)->CallStaticBooleanMethod(env, cls, m) ? 1 : 0;
+}
+
+void egui_cr_mic_perm_request(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    if (!cls) return;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "requestMicPermission", "()V");
     if (!m) return;
     (*env)->CallStaticVoidMethod(env, cls, m);
 }

@@ -42,3 +42,6 @@ tmp/
 
 # Android cross-compile sysroot (libevent/pcre2/gc) — kept on disk for build_apk.sh, not for git
 /etc/
+
+# rlottie full CMake tree (LOTTIE=1 builds) — populated by `rake download:rlottie`, not vendored in git
+/vendor/rlottie/

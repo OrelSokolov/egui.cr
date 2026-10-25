@@ -763,12 +763,12 @@ module Egui
         Egui::SystemPorts::Window.use(WindowPort.new)
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
-        Egui::ImageCodec.use(StbImageCodec.new)
         {% if flag?(:darwin) && !flag?(:ios) %}
           # System tray: NSStatusItem surface (backend/tray_darwin.cr);
           # other platforms keep the port's no-op default.
           Egui::SystemPorts::Tray.use(Backend::DarwinTray.new)
         {% end %}
+        Egui::ImageCodec.use(StbImageCodec.new)
         {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) %}
           # Native camera capture (AVFoundation / camera2 NDK —
           # backend/camera.cr); iOS and the desktops without a shim keep
@@ -1598,11 +1598,16 @@ module Egui
           Egui::SystemPorts::Ios.pump
         {% end %}
         Egui::SystemPorts::AsyncDialogs.pump_pass
+        # Same contract for the HTTP fetch fibers (image-by-URL etc.)
+        # — no-op with nothing in flight, and never needed under the
+        # detached loop where the scheduler runs naturally.
+        Egui::Http.pump_pass
         # Same slot for native reader fibers (PTY sessions) — nil (a
         # no-op) unless backend/pty was required, and a no-op under the
         # detached loop where the scheduler runs naturally.
         Egui::Runtime.frame_scheduler_pass.try &.call
-        delivered = Egui::SystemPorts::AsyncDialogs.take_delivered
+        delivered = Egui::SystemPorts::AsyncDialogs.take_delivered +
+                    Egui::Http.take_delivered
 
         if @@frame_debug
           # Wall-clock gap between on_frame entries: anything way over

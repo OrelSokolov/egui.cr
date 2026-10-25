@@ -352,6 +352,12 @@ module Egui
       add(Svg.new(source, size, current_color))
     end
 
+    # Animated vector (Lottie); see `Egui::Lottie::Player` and
+    # `LottieWidget`. `size` defaults to the renderer's viewport.
+    def lottie(player : Lottie::Player, size : Vec2? = nil) : Response
+      add(LottieWidget.new(player, size))
+    end
+
     # egui `ui.hyperlink(url)` / `ui.hyperlink_to(label, url)`.
     # egui `ui.add_enabled`-style block helpers for value widgets:
     # the block fires with the new value when it changed this frame.
@@ -584,6 +590,12 @@ module Egui
     def image(texture_id : UInt64, size : Vec2,
               tint : Color32 = Color32.new(255, 255, 255, 255)) : Response
       add(Image.new(texture_id, size, tint))
+    end
+
+    # An image fetched from `url` (placeholder + spinner while it
+    # loads); see `Egui::RemoteImage`.
+    def remote_image(url : String, size : Vec2? = nil, fit : Bool = true) : Response
+      add(RemoteImage.new(url, size, fit))
     end
 
     # A pixel Canvas with Paint-style interaction; the block receives

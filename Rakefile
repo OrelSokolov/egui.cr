@@ -22,7 +22,14 @@ VULKAN     = BACKEND == "vulkan"
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
 PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera", "device_api", "audio", "tray"]
+# Lottie (rlottie) feature flag — OFF by default: without it the build is
+# exactly the pre-Lottie one (no cmake, no vendored C++ tree, no C++
+# standard library on the link line). `LOTTIE=1` turns on the rlottie
+# shim + archive, adds the `lottie` example and its link flags. The
+# vendor tree itself lands via `rake download:rlottie` (network, once).
+LOTTIE_FEATURE = ENV["LOTTIE"] == "1"
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera", "device_api", "audio", "remote_image", "tray"] +
+             (LOTTIE_FEATURE ? ["lottie"] : [])
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -87,6 +94,16 @@ SHIM_HEADERS = {
   "pty_shim" => [],
 }
 
+# LOTTIE=1: the rlottie C shim (needs the vendored upstream tree). Its
+# archive is separate — like the PTY lib, so apps that never require
+# "egui/backend/rlottie" link no C++ runtime.
+if LOTTIE_FEATURE
+  SHIM_HEADERS["rlottie_shim"] = %w[
+    vendor/rlottie/inc/rlottie_capi.h
+    vendor/rlottie/inc/rlottiecommon.h
+  ]
+end
+
 SHIM_HEADERS.each do |shim, headers|
   obj = "lib/#{shim}#{OBJ_EXT}"
   # the backend stamp gates the sokol shim: a BACKEND flip recompiles it
@@ -98,6 +115,7 @@ SHIM_HEADERS.each do |shim, headers|
       includes = case shim
         when "sokol_shim"        then "/Ivendor\\sokol /Ivendor\\fontstash /Ivendor"
         when "nanosvg_shim"      then "/Ivendor\\nanosvg"
+        when "rlottie_shim"      then "/Ivendor\\rlottie\\inc"
         else ""
       end
       msvc(
@@ -114,6 +132,7 @@ SHIM_HEADERS.each do |shim, headers|
           "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor" \
           "#{" -DSOKOL_VULKAN" if VULKAN}"
         when "nanosvg_shim"      then "-Ivendor/nanosvg"
+        when "rlottie_shim"      then "-Ivendor/rlottie/inc"
         else ""
       end
       sh "cc -O2 #{args} -c backend/#{shim}.c -o #{obj}"
@@ -127,10 +146,15 @@ end
 # as the dev-only C rasterizer behind C_EXTENSIONS). Audio playback
 # lives in the minaudio shard (lib/minaudio after `shards install`) —
 # see the build:minaudio task below.
+# The rlottie shim archive (LOTTIE=1): its own library so embedders
+# that never require "egui/backend/rlottie" link no C++ runtime — the
+# egui_cr_pty split applied to Lottie.
+RLOTTIE_LIB = WINDOWS ? "lib/egui_cr_rlottie.lib" : "lib/libegui_cr_rlottie.a"
 ARCHIVES = {
   NATIVE_LIB => %w[sokol_shim nanosvg_shim],
   PTY_LIB    => %w[pty_shim],
 }
+ARCHIVES[RLOTTIE_LIB] = %w[rlottie_shim] if LOTTIE_FEATURE
 
 # minaudio.cr's static library (SystemPorts::Audio). Built by the
 # shard's own Rakefile from its vendored single-header C; apps opt in
@@ -139,6 +163,61 @@ ARCHIVES = {
 MINAUDIO_LIB = "lib/minaudio/lib/libminaudio.a"
 file MINAUDIO_LIB do
   sh "cd lib/minaudio && rake build"
+end
+
+# The upstream rlottie static library (LOTTIE=1), built by its own
+# CMake from vendor/rlottie. Threads/cache off: render() runs
+# synchronously on the UI thread and memoization lives on the Crystal
+# side (the NanoSvgCr pattern). Artifact copied to a fixed path so the
+# @[Link("rlottie")] + -Llib/rlottie link line never depends on the
+# generator's layout (single-config Makefiles/Ninja put it directly in
+# the build dir, multi-config ones under Release/).
+RLOTTIE_A = WINDOWS ? "lib/rlottie/rlottie.lib" : "lib/rlottie/librlottie.a"
+file RLOTTIE_A => ["backend/rlottie_stb_glue.c"] do
+  unless File.directory?("vendor/rlottie")
+    raise "vendor/rlottie missing — run `rake download:rlottie` first"
+  end
+  FileUtils.mkdir_p("lib/rlottie")
+  built = WINDOWS ? "lib/rlottie/build/rlottie.lib" : nil
+  if WINDOWS
+    # Static rlottie defaults to /MT (CMakeLists), but the rest of the
+    # vendor code is /MD — match it to avoid the LNK4098 two-CRT clash.
+    msvc("cmake -G \"NMake Makefiles\" -S vendor\\rlottie -B lib\\rlottie\\build " \
+         "-DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DLOTTIE_MODULE=OFF " \
+         "-DLOTTIE_THREAD=OFF -DLOTTIE_CACHE=OFF -DLOTTIE_TEST=OFF " \
+         "-DCMAKE_CXX_FLAGS_RELEASE=\"/MD\" && " \
+         "cmake --build lib\\rlottie\\build --target rlottie")
+    # Strip rlottie's embedded jpeg/png-only stb_image (sokol_shim.obj
+    # carries the full build — duplicate symbols otherwise) and splice
+    # in the forwarding glue (backend/rlottie_stb_glue.c).
+    msvc("cl /nologo /O2 /MD /std:c11 /c backend\\rlottie_stb_glue.c " \
+         "/Fo#{File.join('lib', 'rlottie_stb_glue.obj').tr('/', '\\')} && " \
+         "lib /nologo /REMOVE:stb_image.cpp.o lib\\rlottie\\build\\rlottie.lib")
+    FileUtils.cp(built, RLOTTIE_A)
+    sh "lib /nologo #{RLOTTIE_A.tr('/', '\\')} #{File.join('lib', 'rlottie_stb_glue.obj').tr('/', '\\')}"
+  else
+    # -U__ARM_NEON__: rlottie's arm64 path is broken upstream — the
+    # NEON C++ helper (vdrawhelper_neon.cpp) calls 32-bit-only pixman
+    # asm that its CMake never assembles (the guard variable ARCH is
+    # set nowhere), and the asm itself is .arch armv7a anyway. Undefine
+    # __ARM_NEON__ for the whole library so the generic draw helpers in
+    # vdrawhelper.cpp compile in instead (their #if matches).
+    sh "cmake -S vendor/rlottie -B lib/rlottie/build -DCMAKE_BUILD_TYPE=Release " \
+       "-DBUILD_SHARED_LIBS=OFF -DLOTTIE_MODULE=OFF -DLOTTIE_THREAD=OFF " \
+       "-DLOTTIE_CACHE=OFF -DLOTTIE_TEST=OFF -DCMAKE_POLICY_VERSION_MINIMUM=3.5 " \
+       "-DCMAKE_CXX_FLAGS=\"-U__ARM_NEON__\""
+    sh "cmake --build lib/rlottie/build --target rlottie"
+    built = Dir.glob("lib/rlottie/build/**/librlottie.a").first
+    # Strip rlottie's embedded jpeg/png-only stb_image — sokol_shim.o
+    # already carries the full build, and the duplicate stbi_* symbols
+    # are a hard error for Mach-O ld. The glue object re-provides
+    # rlottie's lottie_image_* entry points by forwarding to the sokol
+    # shim's stb (so GIF/PIC-bearing lotties decode too).
+    sh "cc -O2 -c backend/rlottie_stb_glue.c -o lib/rlottie_stb_glue.o"
+    sh "ar d #{built} stb_image.cpp.o"
+    sh "ar r #{built} lib/rlottie_stb_glue.o"
+    FileUtils.cp(built, RLOTTIE_A)
+  end
 end
 
 ARCHIVES.each do |lib, shims|
@@ -162,7 +241,7 @@ ARCHIVES.each do |lib, shims|
 end
 
 desc "Build vendor C code into #{NATIVE_LIB} (sokol) + #{PTY_LIB} (pty shim) + minaudio shard lib"
-task "build:native" => ARCHIVES.keys + [MINAUDIO_LIB]
+task "build:native" => ARCHIVES.keys + [MINAUDIO_LIB] + (LOTTIE_FEATURE ? [RLOTTIE_A] : [])
 
 # Warm ONE compiler cache with a single small build, then clone it into
 # every empty worker slot. On a fresh clone (or after a cache wipe) the
@@ -210,6 +289,15 @@ def build_examples(names, opt_flags, label)
   # stays harmless: its members are already pulled in by then.
   if !WINDOWS && !DARWIN
     lib_flag = "#{File.expand_path(NATIVE_LIB)} #{lib_flag}"
+  end
+  if LOTTIE_FEATURE
+    # lib/rlottie: upstream librlottie.a + the C++ standard library it
+    # needs (rlottie itself is -fno-exceptions -fno-rtti, but std::vector
+    # / std::string still pull the runtime). Only the lottie example's
+    # @[Link]s actually drag the archive in.
+    lib_flag += " /LIBPATH:#{File.join(libdir, 'rlottie')}" if WINDOWS
+    lib_flag += " -L#{File.join(libdir, 'rlottie')}" unless WINDOWS
+    lib_flag += DARWIN ? " -lc++" : " -lstdc++" unless WINDOWS
   end
   if DARWIN
     # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
@@ -294,6 +382,25 @@ end
 desc "Build example(s) into bin/ with --release (shipped binaries)"
 task "build:release", [:name] => ["build:native"] do |_, args|
   build_examples(example_names_for(args), "--release ", "")
+end
+
+desc "Vendor rlottie (Samsung, MIT — animated vector/Lottie player) for LOTTIE=1 builds"
+task "download:rlottie" do
+  src = "/tmp/rlottie-src"
+  FileUtils.rm_rf(src)
+  system("git", "clone", "--no-checkout", "https://github.com/Samsung/rlottie.git", src) or abort "clone failed"
+  # Pinned master commit — see vendor/VENDORED.md.
+  system("git", "-C", src, "checkout", "--detach",
+    "ea06d2f29ba01b8d06c00a838d107f5e484ae59b") or abort "checkout failed"
+  dest = "vendor/rlottie"
+  FileUtils.rm_rf(dest)
+  FileUtils.mkdir_p(dest)
+  # What the CMake build reaches: example/ is referenced by the root
+  # CMakeLists (add_subdirectory), test/wasm are not. .git stays behind.
+  %w[CMakeLists.txt cmake inc src example rlottie.pc.in rlottie.expmap
+     LICENSE README.md]
+    .each { |e| p = File.join(src, e); FileUtils.cp_r(p, dest) if File.exist?(p) }
+  puts "vendor/rlottie: populated @ ea06d2f (MIT)"
 end
 
 desc "Run the spec suite (headless — no GPU needed)"

@@ -31,6 +31,7 @@ architecture (Rust) and its ideas, not a port of it.
 | **System ports** | clipboard, file dialogs (Explorer / Files / SAF), message boxes, notifications, OpenUrl, user dirs — native per OS: Win32, osascript, JNI, UIKit |
 | **Font renderer** | [freetype.cr](https://github.com/OrelSokolov/freetype.cr) — our pure-Crystal FreeType port (SFNT, TrueType hinting, ftgrays) |
 | **SVG renderer** | [nanosvg.cr](https://github.com/OrelSokolov/nanosvg.cr) — our pure-Crystal NanoSVG port (fills, gradients, transforms, dashes) |
+| **Lottie (opt-in)** | animated vector assets through vendored rlottie (MIT) — `LOTTIE=1` build flag + `require "egui/backend/rlottie"`; pure-Crystal player planned |
 | **Rendering backend** | [sokol_gfx](https://github.com/floooh/sokol) — window + GPU; the only native dependency |
 
 Everything between the backend and your app is pure Crystal — no
