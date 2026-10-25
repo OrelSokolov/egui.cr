@@ -1,0 +1,3 @@
+{"asset":"spinner","frame":59,"size":[512,512],
+"tree":{"keypath":"__","alpha":255,"visible":1,"matte":0,"layers":[{"keypath":"square","alpha":255,"visible":1,"matte":0,"nodes":[{"keypath":"","brush":0,"fill_rule":1,"color":[51,114,229,255],"stroke":{"enable":0,"width":0,"cap":0,"join":0,"miter":0,"dash":[]},"gradient":{"type":0,"stops":[],"start":[0,0],"end":[0,0],"center":[0,0],"focal":[0,0],"cradius":0,"fradius":0},"path":{"pts":[336,208,336,304,336,321.673096,321.673096,336,304,336,208,336,190.326889,336,176,321.673096,176,304,176,208,176,190.326889,190.326889,176,208,176,304,176,321.673096,176,336,190.326889,336,208],"elm":[0,1,2,1,2,1,2,1,2,3]}}]}]}
+}
