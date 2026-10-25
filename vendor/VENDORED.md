@@ -9,6 +9,7 @@ builds offline. Upstream commits they were copied from:
 | `fontstash/fontstash.h`, `fontstash/stb_truetype.h` | https://github.com/memononen/fontstash (src/) | `b5ddc97` |
 | `stb_image.h` | https://github.com/nothings/stb (v2.30) | `ae72102` |
 | `nanosvg/nanosvg.h`, `nanosvgrast.h` | https://github.com/memononen/nanosvg (src/) | `239e102` |
+| `rlottie/` (full CMake source tree — only needed by `LOTTIE=1` builds; populated by `rake download:rlottie`) | https://github.com/Samsung/rlottie | `ea06d2f` |
 
 Licenses: sokol and fontstash are zlib/libpng (see their headers); the
 fontstash `stb_truetype.h` is public domain / MIT (stb); nanosvg is

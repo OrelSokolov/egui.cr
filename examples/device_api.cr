@@ -14,6 +14,11 @@ class DeviceApiApp < Egui::App
   # TMPDIR is not guaranteed to be set in app processes on all vendor
   # builds (a failed write here used to read as "аудио недоступно").
   @wav_path : String = File.join(chime_dir, "egui_device_api_chime.wav")
+  # v2 surface: a decoded-once sample (clicks) and the mic level meter.
+  @chime_sample : Egui::SystemPorts::Audio::Sample?
+  @mic : Egui::SystemPorts::Microphone::Mic?
+  @mic_buf = Bytes.new(4800 * 4) # 100 ms of mono f32 @ 48 kHz
+  @mic_level = 0.0f32
   @badge : Int32 = 3
   @wake : Bool = false
   @status : String = ""
@@ -39,6 +44,9 @@ class DeviceApiApp < Egui::App
       @wav_path = ""
       puts "[device_api] chime write failed: #{ex.message}"
     end
+    # Decode the chime once for the replay-cheap sample path.
+    @chime_sample = @wav_path.empty? ? nil :
+      Egui::SystemPorts::Audio.sample(@wav_path)
   end
 
   # A little two-tone chime (16-bit PCM WAV, 44.1 kHz).
@@ -107,10 +115,47 @@ class DeviceApiApp < Egui::App
         @status = ok ? "звук играет" :
           "аудио: #{Egui::SystemPorts::Audio.last_error || "недоступно"}"
       end
+      if ui.button("Клик сэмплом (decode once)").clicked?
+        if (s = @chime_sample)
+          ok = !s.play(volume: 0.8f32, bus: "ui").nil?
+        else
+          ok = false
+        end
+        puts "[device_api] sample play: #{ok}"
+        @status = ok ? "сэмпл играет" :
+          "сэмпл: #{Egui::SystemPorts::Audio.last_error || "не загрузился"}"
+      end
       if ui.button("Стоп все звуки").clicked?
         Egui::SystemPorts::Audio.stop_all
         puts "[device_api] audio stop_all"
         @status = "звуки остановлены"
+      end
+
+      ui.separator
+      ui.label("Микрофон — #{Egui::SystemPorts::Microphone.supported? ? "pull-модель" : "нет"}")
+      mic = @mic
+      if mic.nil?
+        if ui.button("Открыть микрофон").clicked?
+          @mic = Egui::SystemPorts::Microphone.open
+          @status = @mic ? "микрофон открыт" :
+            "микрофон: #{Egui::SystemPorts::Microphone.last_error || "отказ"}"
+        end
+      else
+        # Pull every frame; RMS over the fresh chunk feeds the meter.
+        got = mic.read(@mic_buf)
+        if got > 0
+          sum = 0.0f32
+          ptr = @mic_buf.to_unsafe.as(Float32*)
+          got.times { |i| v = ptr[i]; sum += v * v }
+          @mic_level = Math.sqrt(sum / got)
+        end
+        ui.label("уровень (RMS): #{@mic_level.round(4)}")
+        if ui.button("Закрыть микрофон").clicked?
+          mic.close
+          @mic = nil
+          @mic_level = 0.0f32
+          @status = "микрофон закрыт"
+        end
       end
 
       ui.separator

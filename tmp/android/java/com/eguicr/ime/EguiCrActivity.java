@@ -506,6 +506,33 @@ public class EguiCrActivity extends NativeActivity {
         });
     }
 
+    // Microphone capture (SystemPorts::Microphone via backend/audio.cr):
+    // the same poll-request pattern as the camera gate. The native mic
+    // runner calls egui_cr_mic_perm / egui_cr_mic_perm_request, which
+    // bind to these two.
+    public static boolean hasMicPermission() {
+        EguiCrActivity a = instance;
+        if (a == null) return false;
+        try {
+            return a.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO)
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Exception e) { return false; }
+    }
+
+    public static void requestMicPermission() {
+        final EguiCrActivity a = instance;
+        if (a == null) return;
+        a.runOnUiThread(new Runnable() {
+            @Override public void run() {
+                try {
+                    if (!hasMicPermission())
+                        a.requestPermissions(
+                            new String[]{android.Manifest.permission.RECORD_AUDIO}, 1004);
+                } catch (Exception e) { /* activity not attached */ }
+            }
+        });
+    }
+
     // Called from the native shim (sokol loop thread) via JNI.
     public static void showKeyboard(final int kind, final int action) {
         final EguiCrActivity a = instance;

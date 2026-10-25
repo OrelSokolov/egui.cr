@@ -29,7 +29,10 @@ app (examples/)            requires src/egui + a backend file
 - `Fonts` abstract base (fonts.cr) — layout/wrap logic is a template
   method over `measure`; headless `MonospaceFonts` is deterministic.
 - `SystemPorts` installable implementations (window/screen/clipboard/
-  quit) — `.use(impl)` pattern, default no-op.
+  quit) — `.use(impl)` pattern, default no-op. Audio (samples, streams,
+  buses) and Microphone (pull-model capture) follow the same pattern:
+  headless no-ops, `egui/backend/audio.cr` installs the minaudio
+  runners (system_ports/audio.cr, microphone.cr).
 - `Egui::Svg.external_rasterizer` — inversion of dependency for the
   dev-only C NanoSVG accelerator.
 - `Terminal::Backend` (terminal/backend.cr) — the TermView renders

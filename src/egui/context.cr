@@ -269,6 +269,11 @@ module Egui
         ["system", "monospace"]).uniq.sort
     end
     property textures : TextureRegistry
+    # Image-by-URL cache (Context#load_image_url) — one entry per URL,
+    # holding the fetch/decode/upload state. Like @texture_cache it
+    # lives for the Context's lifetime; a failed URL stays failed
+    # (retry = restart the app or a new Context).
+    getter url_images : Hash(String, Http::UrlImage)
     # Framebuffer pixels per UI point (retina: 2.0), set by the
     # backend each frame — 1.0 headless. Raster caches (Svg textures,
     # like the font atlas) bake at this scale so a 2x display gets
@@ -353,6 +358,7 @@ module Egui
       @frame_cache = {} of String => IdTypeMap::Cell
       @available_rect = Rect.zero
       @texture_cache = {} of String => UInt64
+      @url_images = {} of String => Http::UrlImage
       @hotkeys = HotkeyMap.new
       @fired_actions = [] of HotkeyAction
       @hotkey_capture = false
@@ -685,6 +691,67 @@ module Egui
     # reads them); nil = unreadable file.
     private def read_image_bytes(path : String) : Bytes?
       File.open(path) { |f| f.getb_to_end } rescue nil
+    end
+
+    # Fetch-decode-upload pipeline for a REMOTE image (the egui-cr
+    # counterpart apps build themselves upstream). One fetch per URL
+    # for the Context's lifetime:
+    #
+    #   * unseen URL → starts an `Http.get` worker fiber (the bytes
+    #     land between frames — see Egui::Http) and returns 0;
+    #   * fetched-but-undecoded → decodes NOW (ImageCodec) and uploads
+    #     through TextureRegistry#register_rgba — the GPU work stays
+    #     on the frame path, never in the fetch fiber;
+    #   * ready → the texture id.
+    #
+    # 0 means "not ready YET or failed" — `url_image_state` tells the
+    # two apart (spinner vs broken placeholder).
+    def load_image_url(url : String) : UInt64
+      img = @url_images[url] ||= begin
+        started = Http::UrlImage.new
+        Http.get(url) do |result|
+          if result.error
+            started.error = result.error
+            started.state = :failed
+          elsif !result.success?
+            started.error = "HTTP #{result.status}"
+            started.state = :failed
+          else
+            started.bytes = result.body
+            started.state = :fetched
+          end
+          request_repaint
+        end
+        started
+      end
+      if img.state == :fetched && (bytes = img.bytes)
+        img.bytes = nil
+        if (decoded = ImageCodec.decode(bytes)) &&
+           (id = @textures.register_rgba(decoded.width, decoded.height,
+             decoded.rgba)) > 0_u64
+          img.texture_id = id
+          img.size = Vec2.new(decoded.width.to_f64, decoded.height.to_f64)
+          img.state = :ready
+        else
+          img.error = "undecodable image data"
+          img.state = :failed
+        end
+      end
+      img.state == :ready ? img.texture_id : 0_u64
+    end
+
+    # Lifecycle of a #load_image_url slot: :loading (fetch in flight,
+    # also :fetched pre-decode — see Http::UrlImage#loading?),
+    # :ready, :failed, or :idle for a URL never asked for.
+    def url_image_state(url : String) : Symbol
+      @url_images[url]?.try(&.state) || :idle
+    end
+
+    # Decoded pixel size of a ready URL image; nil otherwise.
+    def url_image_size(url : String) : Vec2?
+      if (img = @url_images[url]?) && img.state == :ready
+        img.size
+      end
     end
 
     # egui repaint scheduling: an immediate request buys two repaints so
