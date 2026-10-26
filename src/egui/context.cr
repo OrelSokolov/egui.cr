@@ -858,7 +858,8 @@ module Egui
     # egui popup (containers/popup.rs): rides the Foreground layer,
     # closes when a click lands outside it (Memory#end_frame). `pad`
     # overrides the frame's inner padding (menus pass a zero vertical
-    # pad so the frame hugs the first/last item).
+    # pad so the frame hugs the first/last item); `fill` overrides the
+    # frame's background (the theme's window_fill by default).
     # Dropdown anchor (upstream `popup::above_or_below`): the popup
     # opens below `button`, but flips above it when the button sits too
     # close to the screen's bottom for the popup's last measured height
@@ -882,7 +883,7 @@ module Egui
 
     def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
               pad : Vec2? = nil, min_width : Float64? = nil,
-              &block : Ui ->) : Nil
+              fill : Color32? = nil, &block : Ui ->) : Nil
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
 
@@ -918,7 +919,7 @@ module Egui
       @memory.popup_rects[pop_id] = outer
       @painter.clip = outer
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, 4.0, style.visuals.window_fill,
+        RectCmd.new(outer, outer, 4.0, fill || style.visuals.window_fill,
           style.visuals.window_stroke, 1.0))
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))

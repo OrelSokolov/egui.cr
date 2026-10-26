@@ -163,7 +163,6 @@ lib LibEguiCr
     fun android_ime_set_editor = egui_cr_android_ime_set_editor(text : UInt8*, cursor : Int32, anchor : Int32) : Void
   {% end %}
   fun request_quit = egui_cr_request_quit
-  fun show_keyboard = egui_cr_show_keyboard(shown : Int32)
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
   fun set_window_title = egui_cr_set_window_title(title : UInt8*)
@@ -202,24 +201,6 @@ lib LibEguiCr
   fun file_dialog_done = egui_cr_file_dialog_done(handle : Void*) : Int32
   fun file_dialog_result = egui_cr_file_dialog_result(handle : Void*) : UInt16*
   fun file_dialog_free = egui_cr_file_dialog_free(handle : Void*)
-
-  {% if flag?(:ios) %}
-    # UIDocumentPickerViewController (shim): the system Files browser.
-    # Same polled-from-a-fiber protocol as the Win32 dialogs above.
-    fun docpick_start = egui_cr_docpick_start(comma_exts : UInt8*) : Int32
-    fun docpick_done = egui_cr_docpick_done : Int32
-    fun docpick_take = egui_cr_docpick_take : UInt8*
-    fun docpick_free = egui_cr_docpick_free(path : UInt8*)
-
-    # Soft-keyboard profile (TextInputKind / TextInputAction — the iOS
-    # counterpart of the Android IME bridge): applied before the
-    # keyboard comes up so the layout and return key match the widget.
-    fun ios_kb_profile = egui_cr_ios_kb_profile(kind : Int32, action : Int32)
-
-    # Local notification (UNUserNotificationCenter; the iOS counterpart
-    # of notify-send / osascript).
-    fun notify = egui_cr_notify(title : UInt8*, body : UInt8*) : Int32
-  {% end %}
 
   # sokol_gl (shim wrappers: on the detached path these become packet
   # ops replayed on the render thread; pass-throughs otherwise)
@@ -286,11 +267,6 @@ module Egui
     module Sokol
       class_getter app : Egui::App?
       @@events = [] of Egui::Event
-      # On-screen keyboard state (iOS): text focus → show/hide, edge-
-      # triggered so sapp_show_keyboard is only called on transitions.
-      @@kb_shown = false
-      # Last soft-keyboard profile pushed to the shim ({kind, action}).
-      @@kb_profile = {TextInputKind::Plain, TextInputAction::Done}
       @@fonts : Egui::Backend::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
       @@mono_fonts : Egui::Backend::AtlasFonts? = nil
@@ -716,17 +692,6 @@ module Egui
           Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
             native_file_dialog(save, title, filters, dir, name)
           end
-        {% elsif flag?(:ios) %}
-          # UIDocumentPickerViewController: open only for now — the save
-          # flow needs the export picker + security-scope writes.
-          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
-            save ? nil : ios_document_picker(filters)
-          end
-          # UNUserNotificationCenter local notifications (the osascript
-          # tool path obviously does not exist on iOS).
-          Egui::SystemPorts::Notification.use_native do |summary, body|
-            LibEguiCr.notify(summary.to_unsafe, body.to_unsafe) == 1
-          end
         {% end %}
 
         # Backdrop from the first tick: push the initial theme's panel
@@ -1063,30 +1028,6 @@ module Egui
         end
       end
 
-      {% if flag?(:ios) %}
-        # UIDocumentPickerViewController through the shim: present the
-        # system Files browser (asCopy — the pick lands in the sandbox,
-        # no security scope needed), then sleep-poll THIS fiber; Crystal
-        # sleep yields the fiber only, and on_frame's pump_pass keeps
-        # advancing it between frames, so the frame loop keeps rendering
-        # while the picker is up. Called from the AsyncDialogs worker
-        # fiber — blocking it alone is the contract.
-        private def self.ios_document_picker(filters : Array(String)) : String?
-          exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact.join(",")
-          return nil if LibEguiCr.docpick_start(exts.to_unsafe) != 0
-          until LibEguiCr.docpick_done != 0
-            sleep 20.milliseconds
-          end
-          ptr = LibEguiCr.docpick_take
-          return nil if ptr.null?
-          begin
-            String.new(ptr)
-          ensure
-            LibEguiCr.docpick_free(ptr)
-          end
-        end
-      {% end %}
-
       protected def self.on_init(skip_gl : Bool = false) : Nil
         {% if flag?(:android) %} egui_android_log("on_init: start") {% end %}
         # sg_setup + sgl_setup + the text pipelines are GL work: on the
@@ -1384,22 +1325,18 @@ module Egui
           # is positive = content scrolls down → negate.
           @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
         when KEY_DOWN, KEY_UP
-          # sapp fires KEY_* plus a separate CHAR event for text; we
-          # only forward non-modifier keys here (modifier state rides
-          # along in Modifiers).
-          return if key >= 340 # SAPP_KEYCODE_LEFT_SHIFT .. RIGHT_SUPER
+          # sapp fires KEY_* plus a separate CHAR event for text. The
+          # modifier keys (sokol 340..347) are forwarded TOO — they are
+          # KeyCode members, and their events carry the fresh modifier
+          # mask, so a bare Ctrl/Shift press updates
+          # InputState.modifiers immediately (hover affordances like
+          # go-to-definition links key off it). Modifier presses
+          # produce no CHAR, so nothing double-fires.
           code = Egui::KeyCode.from_value?(key)
           return unless code
           modifiers = Egui::Modifiers.from_mask(mods)
           if type == KEY_DOWN
             @@events << Egui::Event.key_pressed(code, modifiers)
-            {% if flag?(:ios) %}
-              # sokol's on-screen keyboard reports Space only as
-              # KEY_DOWN (its textfield delegate skips the CHAR event
-              # for c <= 32) — synthesize the text event so focused
-              # text widgets insert the space.
-              @@events << Egui::Event.text_input(" ") if key == 32
-            {% end %}
           else
             @@events << Egui::Event.key_released(code, modifiers)
           end
@@ -1549,29 +1486,6 @@ module Egui
         # press and the inspector yields to it (no second popup; the
         # «Inspect …» row rides as that menu's last item instead).
         commands = app.ctx.end_frame
-
-        {% if flag?(:ios) %}
-          # Text focus drives the on-screen keyboard (sokol's hidden
-          # UITextField → CHAR / KEY events), with the focused widget's
-          # profile (kind/action — same registry the Android IME sync
-          # reads) applied first so the keyboard layout and return key
-          # match the field. NOTE: the canvas does NOT shrink under the
-          # keyboard — sokol_app's scene-based resize path measures the
-          # screen, not the view frame — so keep text fields near the
-          # top of the screen.
-          if (ti = app.ctx.memory.focused_text_input)
-            profile = {ti[:kind], ti[:action]}
-            if profile != @@kb_profile
-              @@kb_profile = profile
-              LibEguiCr.ios_kb_profile(ti[:kind].value, ti[:action].value)
-            end
-          end
-          want_kb = app.ctx.memory.focus.wants_text_input?
-          if want_kb != @@kb_shown
-            @@kb_shown = want_kb
-            LibEguiCr.show_keyboard(want_kb ? 1 : 0)
-          end
-        {% end %}
 
         @@last_commands = commands
         @@last_fb_w = fb_w

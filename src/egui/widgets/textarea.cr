@@ -276,11 +276,6 @@ module Egui
           end
         end
       end
-      # egui: a press outside the field surrenders focus (this is what
-      # lowers the on-screen keyboard on touch platforms).
-      if response.has_focus? && response.clicked_elsewhere?
-        ui.ctx.memory.focus.clear
-      end
       if response.drag_started? && (pos = input.pointer_pos) && anchor == -1
         anchor = caret_at(galley, row_starts, fonts, inner, offset, pos)
       end
@@ -308,7 +303,6 @@ module Egui
 
       if response.has_focus?
         ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
-        ui.ctx.memory.focus.text_input! # raises the on-screen keyboard
         new_text, cursor, anchor, changed =
           handle_keyboard(ui.ctx, @text, cursor, anchor,
             galley, row_starts, fonts, view_h)

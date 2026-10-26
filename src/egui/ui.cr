@@ -755,6 +755,10 @@ module Egui
       scrim_index = painter.add_noop
       child = child_ui(
         Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)))
+      # A menu_item inside the region must still close its popup on
+      # click: the child inherits the owning popup's key (nil here
+      # would strand the menu open after every item click).
+      child.menu_popup_key = @menu_popup_key
 
       if flag
         yield child

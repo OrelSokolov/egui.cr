@@ -117,8 +117,14 @@ module Egui
         v_kin.glide(input.dt, max_v_prev, ui.ctx)
       end
       if (hk = h_kin)
-        dx = input.scroll.x
-        dx = input.scroll.y if dx.zero? && to_h
+        # Sokol's scroll_x sign: a positive notch is view-LEFT (X11
+        # button 6, macOS scrollingDeltaX with natural scrolling,
+        # negated Win32 WM_MOUSEHWHEEL) — the same direction family as
+        # shift+wheel-up. Invert into the offset's view-right direction;
+        # the shift+wheel fallback below keeps its own sign (scroll.y is
+        # already negated by the backend).
+        dx = -input.scroll.x
+        dx = input.scroll.y if input.scroll.x.zero? && to_h
         if canvas_drag && @hbar
           hk.input(-memory.canvas_drag_delta(id).x, input.time, max_h_prev)
         elsif active && !dx.zero?

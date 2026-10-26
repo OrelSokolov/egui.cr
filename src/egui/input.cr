@@ -81,6 +81,19 @@ module Egui
     F10        = 299
     F11        = 300
     F12        = 301
+    # Modifier keys (sokol 340..347). Forwarding them as real
+    # key_pressed/key_released events is what lets InputState.modifiers
+    # track a BARE held modifier — before, the state only refreshed on
+    # the next non-modifier key event, so "hold Ctrl, hover, click"
+    # (go-to-definition links) never saw Ctrl down at all.
+    LeftShift    = 340
+    LeftControl  = 341
+    LeftAlt      = 342
+    LeftSuper    = 343
+    RightShift   = 344
+    RightControl = 345
+    RightAlt     = 346
+    RightSuper   = 347
 
     def digit? : Bool
       value >= 48 && value <= 57

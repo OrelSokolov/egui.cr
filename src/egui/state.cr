@@ -162,8 +162,6 @@ module Egui
     @lock_v_next : Bool
     @lock_kb : Bool
     @lock_kb_next : Bool
-    @text : Bool
-    @text_next : Bool
 
     def initialize
       @id = nil
@@ -175,8 +173,6 @@ module Egui
       @lock_v_next = false
       @lock_kb = false
       @lock_kb_next = false
-      @text = false
-      @text_next = false
     end
 
     def begin_frame : Nil
@@ -189,8 +185,6 @@ module Egui
       @lock_v_next = false
       @lock_kb = @lock_kb_next
       @lock_kb_next = false
-      @text = @text_next
-      @text_next = false
     end
 
     def request(id : Id) : Nil
@@ -224,18 +218,6 @@ module Egui
 
     def lock_keyboard? : Bool
       @lock_kb
-    end
-
-    # Claim text entry for the focused widget (egui's wants_text_input):
-    # text widgets set this every focused frame, mirroring the lock_*
-    # flags above — the backend uses it to raise the on-screen keyboard
-    # on touch platforms.
-    def text_input! : Nil
-      @text_next = true
-    end
-
-    def wants_text_input? : Bool
-      !@id.nil? && @text
     end
 
     def lock_h? : Bool

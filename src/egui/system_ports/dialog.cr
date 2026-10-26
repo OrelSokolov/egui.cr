@@ -6,13 +6,10 @@
 # runs the WinForms picker through PowerShell (`System.Windows.Forms` —
 # part of the OS, no extra dependency); the script travels base64-
 # encoded (`-EncodedCommand`) so titles, filters and paths need no
-# quoting gymnastics. iOS opens through UIDocumentPickerViewController
-# (the system Files browser; the pick is copied into the sandbox — no
-# permission entries needed); save/pick-folder fail fast with nil when
-# the backend runner is missing. Android runs the SAF pickers
-# (ACTION_OPEN_DOCUMENT &c) through the sysport JNI bridge
-# (system_ports/android.cr) — the result is a content:// URI delivered
-# on a later frame.
+# quoting gymnastics. Android runs the SAF pickers (ACTION_OPEN_DOCUMENT
+# &c) through the sysport JNI bridge (system_ports/android.cr) — the
+# result is a content:// URI delivered on a later frame. Other platforms
+# are not wired yet: the request completes with nil on the next frame.
 #
 # The call is NEVER blocking: `show` only starts a request and returns
 # immediately. The dialog itself runs in its own fiber (`AsyncDialogs`)
@@ -198,14 +195,11 @@ module Egui
       @@tool : String?
 
       # Native file-dialog runner installed by the backend when it has
-      # a platform picker (Win32 IFileDialog via the sokol shim thread —
-      # instant, Explorer-native, no PowerShell/.NET startup cost;
-      # UIDocumentPickerViewController on iOS — the system Files
-      # browser, open only: the save flow needs the export picker +
-      # security-scope writes, so save stays nil there).
+      # a platform picker (Win32 IFileDialog via the sokol shim thread
+      # — instant, Explorer-native, no PowerShell/.NET startup cost).
       # Called inside the AsyncDialogs worker fiber: it may block that
-      # fiber alone. Installed only on win32 and iOS; nil = headless
-      # build → the fail-fast/PowerShell fallbacks take over.
+      # fiber alone. Installed only on win32; nil = headless build →
+      # the PowerShell fallback takes over.
       @@native : ((Bool, String, Array(String), String?, String?) -> String?)?
 
       def self.use_native_dialogs(&runner : Bool, String, Array(String),
@@ -273,17 +267,6 @@ module Egui
 
       protected def self.open(title : String, filters : Array(String),
                               directory : String?) : String?
-        {% if flag?(:ios) %}
-          # iOS: UIDocumentPickerViewController via the backend's native
-          # runner (the system Files browser; the pick is copied into the
-          # sandbox, so the returned path needs no extra permissions).
-          # Headless builds (no runner installed) fail fast with nil.
-          if (runner = @@native)
-            runner.call(false, title, filters, directory, nil)
-          else
-            nil
-          end
-        {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
             runner.call(false, title, filters, directory, nil)
@@ -306,15 +289,10 @@ module Egui
             run("kdialog", args)
           end
         {% end %}
-        {% end %}
       end
 
       protected def self.save(title : String, filters : Array(String),
                               directory : String?, default_name : String?) : String?
-        {% if flag?(:ios) %}
-          # iOS: same as open — fail fast with nil (cancel).
-          nil
-        {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
             runner.call(true, title, filters, directory, default_name)
@@ -338,17 +316,12 @@ module Egui
             run("kdialog", args)
           end
         {% end %}
-        {% end %}
       end
 
       # Pick a directory (zenity `--directory`, kdialog
       # `--getexistingdirectory`, AppleScript `choose folder`, WinForms
       # FolderBrowserDialog on Windows): nil on cancel.
       protected def self.pick_folder(title : String, directory : String?) : String?
-        {% if flag?(:ios) %}
-          # iOS: same as open — fail fast with nil (cancel).
-          nil
-        {% else %}
         {% if flag?(:win32) %}
           script = String.build do |s|
             s << "Add-Type -AssemblyName System.Windows.Forms\n"
@@ -377,7 +350,6 @@ module Egui
             args.concat(["--title", title])
             run("kdialog", args)
           end
-        {% end %}
         {% end %}
       end
 

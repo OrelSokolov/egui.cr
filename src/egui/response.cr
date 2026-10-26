@@ -89,14 +89,6 @@ module Egui
       @ctx.memory.focus.request(@id)
     end
 
-    # egui `clicked_elsewhere`: a primary press happened this frame
-    # somewhere that is not this widget — the classic "tap outside the
-    # text field surrenders focus" (which drops the on-screen keyboard
-    # on touch platforms).
-    def clicked_elsewhere? : Bool
-      @ctx.input.pointer_pressed? && !pressed? && !clicked?
-    end
-
     # egui focus highlight: a ring around the focused widget (upstream
     # draws it in the widget's own stroke; a dedicated ring is simpler
     # here). Widgets call this right after painting themselves.
