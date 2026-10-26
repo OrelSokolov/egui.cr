@@ -769,8 +769,8 @@ module Egui
           Egui::SystemPorts::Tray.use(Backend::DarwinTray.new)
         {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
-        {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) %}
-          # Native camera capture (AVFoundation / camera2 NDK —
+        {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) || flag?(:linux) %}
+          # Native camera capture (AVFoundation / camera2 NDK / V4L2 —
           # backend/camera.cr); iOS and the desktops without a shim keep
           # the core default "not implemented" implementation.
           Egui::Camera.use(Backend::NativeCam.new)

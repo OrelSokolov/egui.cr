@@ -1,11 +1,11 @@
 # egui-cr camera demo — a separate binary (bin/camera).
 #
 # Framework side: the Camera seam (src/egui/camera.cr) — AVFoundation on
-# macOS, camera2 NDK on Android, "not implemented" on iOS for now. Frames
-# flow Session#poll (RGBA) → TextureRegistry#create_stream/#update, the
-# same pipeline the video player uses. Device picker, runtime permission
-# (mobile) and start/stop; platforms without a native stack get the
-# honest message instead.
+# macOS, camera2 NDK on Android, V4L2 on Linux, "not implemented" on iOS
+# and Windows for now. Frames flow Session#poll (RGBA) →
+# TextureRegistry#create_stream/#update, the same pipeline the video
+# player uses. Device picker, runtime permission (mobile) and start/stop;
+# platforms without a native stack get the honest message instead.
 
 require "../src/egui/backend_selector"
 

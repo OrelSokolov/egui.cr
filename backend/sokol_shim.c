@@ -5813,7 +5813,8 @@ int egui_cr_ios_msgbox_take(void) {
 // ===========================================================================
 // Camera capture (src/egui/camera.cr — the Camera seam). One C API for
 // every platform with a native stack: AVFoundation on macOS, camera2 NDK
-// on Android. iOS keeps the core default "not implemented" answer.
+// on Android, V4L2 on Linux. iOS and Windows keep the core default
+// "not implemented" answer.
 // Frames arrive on the capture stack's OWN threads into a locked
 // latest-frame slot; egui_cr_cam_frame runs on sokol's frame thread,
 // converts to RGBA in place and hands Crystal a buffer owned by the
@@ -6508,6 +6509,388 @@ void egui_cr_cam_close(void* sp) {
     if (s->dev) ACameraDevice_close(s->dev);
     if (s->win) ANativeWindow_release(s->win);
     if (s->reader) AImageReader_delete(s->reader);
+    free(s->rgba);
+    free(s);
+}
+
+const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
+
+#elif defined(__linux__)
+// V4L2 webcams (raw ioctls, no libv4l): MMAP buffers drained on a
+// capture thread into a locked latest-frame slot — the same shape as the
+// AVFoundation section above — while egui_cr_cam_frame converts YUYV /
+// RGB24 -> RGBA in place on sokol's frame thread. Webcams deliver upright
+// frames (no sensor orientation like phones), so only the USER rotation
+// applies. No runtime permission prompt on Linux: the device node's own
+// group/ACL gates access and open() reports EACCES otherwise.
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/videodev2.h>
+#include <poll.h>
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+static char sh_cam_err[256] = "";
+
+// No permission broker on Linux — capture is gated by the device node.
+int egui_cr_cam_perm(void) { return 1; }
+void egui_cr_cam_perm_request(void) {}
+
+// Device list: static slots refreshed by egui_cr_cam_devices (read right
+// after it; the pointers stay valid until the next refresh).
+#define SH_CAM_MAX 8
+static char sh_cam_ids[SH_CAM_MAX][64];
+static char sh_cam_names[SH_CAM_MAX][96];
+static int sh_cam_facing[SH_CAM_MAX];
+
+// Capture-capable nodes only: modern webcams also expose /dev/videoN
+// metadata/output siblings that would fill the list with dead entries.
+static int sh_cam_is_capture(int fd) {
+    struct v4l2_capability c;
+    if (ioctl(fd, VIDIOC_QUERYCAP, &c) < 0) return 0;
+    uint32_t caps = c.capabilities;
+    if (caps & V4L2_CAP_DEVICE_CAPS) caps = c.device_caps;
+    return (caps & V4L2_CAP_VIDEO_CAPTURE) != 0;
+}
+
+int egui_cr_cam_devices(void) {
+    int n = 0;
+    for (int i = 0; i < 64 && n < SH_CAM_MAX; i++) {
+        char path[24];
+        snprintf(path, sizeof path, "/dev/video%d", i);
+        int fd = open(path, O_RDWR | O_NONBLOCK);
+        if (fd < 0) continue; // ENOENT gaps in the numbering are normal
+        if (sh_cam_is_capture(fd)) {
+            struct v4l2_capability c;
+            if (ioctl(fd, VIDIOC_QUERYCAP, &c) == 0) {
+                strncpy(sh_cam_ids[n], path, 63);
+                strncpy(sh_cam_names[n], (const char*)c.card, 95);
+                sh_cam_names[n][95] = 0;
+                sh_cam_facing[n] = 0; // desktop webcams have no facing
+                n++;
+            }
+        }
+        close(fd);
+    }
+    return n;
+}
+const char* egui_cr_cam_dev_id(int i) { return sh_cam_ids[i]; }
+const char* egui_cr_cam_dev_name(int i) { return sh_cam_names[i]; }
+int egui_cr_cam_dev_facing(int i) { return sh_cam_facing[i]; }
+
+typedef struct {
+    int fd;
+    pthread_t th;
+    volatile int running;
+    pthread_mutex_t lock;
+    void* map[4];      // MMAP'd buffers queued to the driver
+    size_t map_len[4];
+    int nbufs;
+    uint32_t fourcc;   // negotiated capture format
+    int cap_w, cap_h, stride, raw_len;
+    uint8_t* raw;      // latest frame copied out of its MMAP buffer
+    volatile int fresh;
+    uint8_t* rgba;     // w*h*4, written by egui_cr_cam_frame
+    int w, h;
+    int urot;          // user rotation (the demo's Rotate button)
+} sh_cam_s;
+
+void egui_cr_cam_close(void* sp);
+
+// The decodable formats in preference order (MJPEG needs a JPEG decoder
+// and stays out for now; most webcams offer YUYV at some size).
+static const uint32_t sh_cam_fmts[] = {
+    V4L2_PIX_FMT_YUYV, V4L2_PIX_FMT_RGB24, V4L2_PIX_FMT_BGR24,
+};
+
+// Closest decodable format/size to the request: score every discrete
+// frame size of every format we can convert by area distance; a format
+// that hits the asked size exactly beats one that only comes close
+// (strict < keeps the earlier, preferred fourcc on ties).
+static uint32_t sh_cam_pick(int fd, int want_w, int want_h,
+                            int* set_w, int* set_h) {
+    long want = (long)want_w * want_h;
+    uint32_t best_fmt = 0;
+    int best_w = 0, best_h = 0;
+    long best_d = 0;
+    for (size_t f = 0; f < sizeof sh_cam_fmts / sizeof *sh_cam_fmts; f++) {
+        int have = 0;
+        for (int i = 0; ; i++) {
+            struct v4l2_fmtdesc d;
+            memset(&d, 0, sizeof d);
+            d.index = i;
+            d.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            if (ioctl(fd, VIDIOC_ENUM_FMT, &d) < 0) break;
+            if (d.pixelformat == sh_cam_fmts[f]) { have = 1; break; }
+        }
+        if (!have) continue;
+        struct v4l2_frmsizeenum fs;
+        memset(&fs, 0, sizeof fs);
+        fs.pixel_format = sh_cam_fmts[f];
+        fs.index = 0;
+        if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &fs) < 0) continue;
+        if (fs.type != V4L2_FRMSIZE_TYPE_DISCRETE) {
+            // stepwise/continuous: S_FMT lands on the nearest supported —
+            // ask exactly what was requested
+            if (!best_fmt) {
+                best_fmt = sh_cam_fmts[f]; best_w = want_w; best_h = want_h;
+            }
+            break;
+        }
+        for (int i = 0; ; i++) {
+            memset(&fs, 0, sizeof fs);
+            fs.pixel_format = sh_cam_fmts[f];
+            fs.index = i;
+            if (ioctl(fd, VIDIOC_ENUM_FRAMESIZES, &fs) < 0) break;
+            long d = labs((long)fs.discrete.width * fs.discrete.height - want);
+            if (!best_fmt || d < best_d) {
+                best_fmt = sh_cam_fmts[f];
+                best_w = fs.discrete.width; best_h = fs.discrete.height;
+                best_d = d;
+            }
+        }
+    }
+    *set_w = best_w; *set_h = best_h;
+    return best_fmt;
+}
+
+// Capture thread: poll (the fd is O_NONBLOCK, DQBUF alone would spin),
+// copy the newest frame into the locked slot, requeue the buffer. Exits
+// on close (running = 0 + poll timeout) or an unrecoverable ioctl error.
+static void* sh_cam_thread(void* arg) {
+    sh_cam_s* s = (sh_cam_s*)arg;
+    while (s->running) {
+        struct pollfd p = { s->fd, POLLIN, 0 };
+        if (poll(&p, 1, 200) <= 0) continue;
+        struct v4l2_buffer b;
+        memset(&b, 0, sizeof b);
+        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        b.memory = V4L2_MEMORY_MMAP;
+        if (ioctl(s->fd, VIDIOC_DQBUF, &b) < 0) {
+            if (errno == EAGAIN) continue;
+            break; // device unplugged: frame polls simply go quiet
+        }
+        if ((int)b.index < s->nbufs && b.bytesused >= (unsigned)s->raw_len) {
+            pthread_mutex_lock(&s->lock);
+            memcpy(s->raw, s->map[b.index], (size_t)s->raw_len);
+            s->fresh = 1;
+            pthread_mutex_unlock(&s->lock);
+        }
+        if (ioctl(s->fd, VIDIOC_QBUF, &b) < 0) break;
+    }
+    return NULL;
+}
+
+void* egui_cr_cam_open(const char* devid, int w, int h) {
+    sh_cam_err[0] = 0;
+    char path[64];
+    if (devid && devid[0]) {
+        strncpy(path, devid, sizeof path - 1);
+        path[sizeof path - 1] = 0;
+    } else {
+        int n = egui_cr_cam_devices();
+        if (n == 0) {
+            snprintf(sh_cam_err, sizeof sh_cam_err, "no camera device");
+            return NULL;
+        }
+        strncpy(path, sh_cam_ids[0], sizeof path - 1);
+        path[sizeof path - 1] = 0;
+    }
+    int fd = open(path, O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "open %s: %s%s", path,
+                 strerror(errno),
+                 errno == EACCES ? " (video group / ACL needed)" : "");
+        return NULL;
+    }
+    if (!sh_cam_is_capture(fd)) {
+        snprintf(sh_cam_err, sizeof sh_cam_err,
+                 "%s is not a capture device", path);
+        close(fd);
+        return NULL;
+    }
+    int fw = 0, fh = 0;
+    uint32_t fourcc = sh_cam_pick(fd, w > 0 ? w : 1280, h > 0 ? h : 720,
+                                  &fw, &fh);
+    if (!fourcc) {
+        snprintf(sh_cam_err, sizeof sh_cam_err,
+                 "%s: no YUYV/RGB capture format", path);
+        close(fd);
+        return NULL;
+    }
+    struct v4l2_format fmt;
+    memset(&fmt, 0, sizeof fmt);
+    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    fmt.fmt.pix.width = fw;
+    fmt.fmt.pix.height = fh;
+    fmt.fmt.pix.pixelformat = fourcc;
+    fmt.fmt.pix.field = V4L2_FIELD_ANY;
+    if (ioctl(fd, VIDIOC_S_FMT, &fmt) < 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "S_FMT %s: %s", path,
+                 strerror(errno));
+        close(fd);
+        return NULL;
+    }
+    sh_cam_s* s = (sh_cam_s*)calloc(1, sizeof *s);
+    s->fd = fd;
+    pthread_mutex_init(&s->lock, NULL); // before anything below can fail
+    s->fourcc = fmt.fmt.pix.pixelformat;
+    s->cap_w = fmt.fmt.pix.width;
+    s->cap_h = fmt.fmt.pix.height;
+    s->stride = fmt.fmt.pix.bytesperline;
+    s->raw_len = fmt.fmt.pix.sizeimage;
+    struct v4l2_requestbuffers rb;
+    memset(&rb, 0, sizeof rb);
+    rb.count = 4;
+    rb.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    rb.memory = V4L2_MEMORY_MMAP;
+    if (ioctl(fd, VIDIOC_REQBUFS, &rb) < 0 || rb.count < 1 || rb.count > 4) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "REQBUFS %s: %s", path,
+                 strerror(errno));
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    s->nbufs = rb.count;
+    for (int i = 0; i < s->nbufs; i++) {
+        struct v4l2_buffer b;
+        memset(&b, 0, sizeof b);
+        b.index = i;
+        b.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        b.memory = V4L2_MEMORY_MMAP;
+        if (ioctl(fd, VIDIOC_QUERYBUF, &b) < 0 ||
+            (s->map[i] = mmap(NULL, b.length, PROT_READ, MAP_SHARED,
+                              fd, b.m.offset)) == MAP_FAILED) {
+            s->map[i] = NULL;
+            snprintf(sh_cam_err, sizeof sh_cam_err, "MMAP %s: %s", path,
+                     strerror(errno));
+            egui_cr_cam_close(s);
+            return NULL;
+        }
+        s->map_len[i] = b.length;
+        if (ioctl(fd, VIDIOC_QBUF, &b) < 0) {
+            snprintf(sh_cam_err, sizeof sh_cam_err, "QBUF %s: %s", path,
+                     strerror(errno));
+            egui_cr_cam_close(s);
+            return NULL;
+        }
+    }
+    int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(fd, VIDIOC_STREAMON, &type) < 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "STREAMON %s: %s", path,
+                 strerror(errno));
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    s->raw = (uint8_t*)malloc(s->raw_len ? (size_t)s->raw_len : 1);
+    if (!s->raw) {
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    s->running = 1;
+    if (pthread_create(&s->th, NULL, sh_cam_thread, s) != 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "capture thread failed");
+        egui_cr_cam_close(s);
+        return NULL;
+    }
+    return s;
+}
+
+static int sh_cam_clip(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s || !s->raw) return 0;
+    int got = 0;
+    pthread_mutex_lock(&s->lock);
+    if (s->fresh) {
+        s->fresh = 0; // one poll per frame
+        const int cw = s->cap_w, ch = s->cap_h;
+        const int rot = ((s->urot % 360) + 360) % 360;
+        const int ow = (rot == 90 || rot == 270) ? ch : cw;
+        const int oh = (rot == 90 || rot == 270) ? cw : ch;
+        if (cw > 0 && ch > 0 &&
+            (size_t)s->stride * ch <= (size_t)s->raw_len) {
+            if (ow != s->w || oh != s->h) {
+                free(s->rgba);
+                s->rgba = (uint8_t*)malloc((size_t)ow * oh * 4);
+                s->w = ow; s->h = oh;
+            }
+            if (s->rgba) {
+                for (int y = 0; y < ch; y++) {
+                    const uint8_t* row = s->raw + (size_t)y * s->stride;
+                    for (int x = 0; x < cw; x++) {
+                        uint8_t px[4];
+                        if (s->fourcc == V4L2_PIX_FMT_YUYV) {
+                            // packed Y0 U Y1 V; chroma shared per pair
+                            int Y = (row[x * 2] - 16) * 298;
+                            int U = row[(x & ~1) * 2 + 1] - 128;
+                            int V = row[(x & ~1) * 2 + 3] - 128;
+                            px[0] = (uint8_t)sh_cam_clip((Y + 409 * V + 128) >> 8);
+                            px[1] = (uint8_t)sh_cam_clip((Y - 100 * U - 208 * V + 128) >> 8);
+                            px[2] = (uint8_t)sh_cam_clip((Y + 516 * U + 128) >> 8);
+                        } else { // RGB24 / BGR24
+                            const uint8_t* p = row + x * 3;
+                            px[0] = s->fourcc == V4L2_PIX_FMT_RGB24 ? p[0] : p[2];
+                            px[1] = p[1];
+                            px[2] = s->fourcc == V4L2_PIX_FMT_RGB24 ? p[2] : p[0];
+                        }
+                        px[3] = 255;
+                        int ox, oy; // where (x,y) lands after the rotation
+                        switch (rot) {
+                            case 90:  ox = ch - 1 - y; oy = x;          break;
+                            case 180: ox = cw - 1 - x; oy = ch - 1 - y; break;
+                            case 270: ox = y;          oy = cw - 1 - x; break;
+                            default:  ox = x;          oy = y;          break;
+                        }
+                        uint8_t* o = s->rgba + ((size_t)oy * ow + ox) * 4;
+                        o[0] = px[0]; o[1] = px[1]; o[2] = px[2]; o[3] = px[3];
+                    }
+                }
+                *out = s->rgba; *w = ow; *h = oh;
+                got = 1;
+            }
+        }
+    }
+    pthread_mutex_unlock(&s->lock);
+    return got;
+}
+
+// UI rotation on top of the (already upright) webcam frame, 90° steps.
+void egui_cr_cam_set_rotation(void* sp, int deg) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    int d = deg % 360;
+    if (d < 0) d += 360;
+    s->urot = d;
+}
+
+// Photo/Video mode is an Android camera2 concept; webcams have no such
+// switch — a no-op so the uniform C API links.
+void egui_cr_cam_set_mode(void* sp, int video) {
+    (void)sp; (void)video;
+}
+
+void egui_cr_cam_close(void* sp) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    if (s->running) {
+        s->running = 0;
+        pthread_join(s->th, NULL); // poll's 200ms timeout bounds the wait
+    }
+    if (s->fd >= 0) {
+        int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        ioctl(s->fd, VIDIOC_STREAMOFF, &type);
+        close(s->fd);
+    }
+    for (int i = 0; i < 4; i++)
+        if (s->map[i]) munmap(s->map[i], s->map_len[i]);
+    pthread_mutex_destroy(&s->lock);
+    free(s->raw);
     free(s->rgba);
     free(s);
 }

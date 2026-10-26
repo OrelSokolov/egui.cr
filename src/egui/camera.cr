@@ -7,8 +7,8 @@
 # app pushes it into a stream texture (`TextureRegistry#create_stream` /
 # `#update`, the pipeline the video player uses). Native capture lives
 # behind an installable implementation: the sokol backend installs
-# AVFoundation on macOS and camera2-NDK on Android; iOS keeps the
-# default "not implemented" implementation below.
+# AVFoundation on macOS, camera2-NDK on Android and V4L2 on Linux; iOS
+# and Windows keep the default "not implemented" implementation below.
 
 module Egui
   module Camera
