@@ -280,7 +280,10 @@ port, a native Win32 impl installed by the backend at sokol.cr:607,
 plus backend-pumped delivery fibers). Legitimate — but which pattern a
 new port should use is tribal knowledge. One paragraph in
 `system_ports/system_ports.cr`'s header (the comment there is good —
-extend it with the decision rule) closes this.
+extend it with the decision rule) closes this. Sensor-style ports
+(`camera.cr`, `voice_recorder.cr` — enumeration + permission + a poll
+pump) are the third, installable-`Implementation` pattern over a
+backend C seam; follow them for anything streaming bytes in.
 
 ### C4. `CursorIcon#to_css` — accepted coupling, not a bug
 

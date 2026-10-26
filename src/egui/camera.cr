@@ -86,7 +86,11 @@ module Egui
       implementation.available?
     end
 
+    # Причина недоступности — только у НЕдоступной реализации: NativeCam
+    # не переопределяет #unavailable_reason и иначе отдаёт дефолтное
+    # «not implemented» даже когда камера прекрасно работает.
     def self.unavailable_reason : String?
+      return nil if implementation.available?
       implementation.unavailable_reason
     end
 

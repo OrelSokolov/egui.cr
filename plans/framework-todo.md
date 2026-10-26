@@ -37,7 +37,10 @@
 
 - **Video** — ✅ есть демо (VP8/VP9/AV1, `examples/video.cr`), но нужен
   полноценный пайплайн: декод в текстуру, синхронизация аудио
-- **Аудио-слой** — miniaudio / SDL_audio: клики, стриминг, микрофон
+- **Аудио-слой** — ✅ minaudio: клики/музыка (`SystemPorts::Audio` +
+  `backend/audio.cr`), микрофон с выбором устройства
+  (`VoiceRecorder` + `backend/voice_recorder.cr`, демо
+  `examples/voice_echo.cr`); осталось — стриминг длинных треков
 - **Камера / capture** — редко, но для «полного фарша»
 
 ## Система / platform
