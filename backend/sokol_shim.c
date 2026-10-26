@@ -6899,6 +6899,75 @@ const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
 #endif // camera capture
 
 // ===========================================================================
+// Microphone permission (src/egui/voice_recorder.cr — the VoiceRecorder
+// seam's permission gate; capture itself is miniaudio's job, so this is
+// all the shim contributes). Same shape as the camera section: TCC on
+// macOS, JNI to the activity's static helpers on Android, and "granted"
+// stubs where desktop sound stacks ask no question.
+#if defined(__APPLE__) && !defined(SH_IOS)
+#import <AVFoundation/AVFoundation.h>
+#include <stdio.h>
+
+// Same TCC story as the camera: a bare executable is never asked, the
+// OS just refuses — the prompt (and NSMicrophoneUsageDescription) only
+// exists for .app bundles.
+static int sh_mic_bundled(void) {
+    NSBundle* b = [NSBundle mainBundle];
+    return [[b bundlePath] hasSuffix:@".app"] &&
+           [b objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"] != nil;
+}
+
+// 1 granted / 0 not determined yet / -1 denied (macOS TCC).
+int egui_cr_mic_perm(void) {
+    switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]) {
+        case AVAuthorizationStatusAuthorized: return 1;
+        case AVAuthorizationStatusNotDetermined: return 0;
+        default: return -1;
+    }
+}
+
+void egui_cr_mic_perm_request(void) {
+    if (!sh_mic_bundled()) {
+        fprintf(stderr, "egui_cr: no .app bundle: macOS shows the mic "
+                        "dialog only for bundled apps (scripts/make_voice_app.sh)\n");
+        return;
+    }
+    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
+        completionHandler:^(BOOL granted) { (void)granted; }];
+}
+
+#elif defined(__ANDROID__)
+// 1 granted / 0 not granted (the JNI helper only answers the binary
+// question — not-asked and denied look the same, see the camera note).
+int egui_cr_mic_perm(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return -1;
+    jclass cls = sh_act_class(env);
+    if (!cls) return -1;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "hasMicPermission", "()Z");
+    if (!m) return -1;
+    return (*env)->CallStaticBooleanMethod(env, cls, m) ? 1 : 0;
+}
+
+void egui_cr_mic_perm_request(void) {
+    JNIEnv* env = sh_sys_env();
+    if (!env) return;
+    jclass cls = sh_act_class(env);
+    if (!cls) return;
+    jmethodID m = (*env)->GetStaticMethodID(env, cls, "requestMicPermission", "()V");
+    if (!m) return;
+    (*env)->CallStaticVoidMethod(env, cls, m);
+}
+
+#else
+// Linux/Windows/BSD: ALSA/Pulse/WASAPI capture needs no runtime prompt.
+// iOS falls through here too, but its backend is not compiled in (the
+// core's default "not implemented" implementation is the answer there).
+int egui_cr_mic_perm(void) { return 1; }
+void egui_cr_mic_perm_request(void) {}
+#endif // mic permission
+
+// ===========================================================================
 // Desktop system ports: WakeLock (keep the display on) + Badge (dock
 // badge count) — the system_ports/{wake_lock,badge}.cr native side.
 // Android/iOS implement theirs through the JNI/ObjC sections above.

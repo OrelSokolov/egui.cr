@@ -1,9 +1,30 @@
 # Запись голоса (VoiceRecorder) + voice-echo приложение
 
-Статус: план. Выполняется на macOS (MacBook) — там есть Xcode, SDK/NDK
-(`~/Library/Android/sdk`), крист и оба репо (egui.cr + minaudio.cr).
-Пишется по образцу камеры (`src/egui/camera.cr` + `src/egui/backend/camera.cr`
-+ camera-секция `backend/sokol_shim.c`) и аудио-порта
+Статус: **реализовано** (2026-10-25). Готово и проверено на Linux:
+шарда (capture C-хелперы + `MinAudio::CaptureDevice`), ядро
+`src/egui/voice_recorder.cr` (+ `Wav.encode`), бэкенд
+`backend/voice_recorder.cr`, mic-разрешения в `backend/sokol_shim.c`,
+`examples/voice_echo.cr` (выбор микрофона из списка — как камера),
+`spec/voice_recorder_spec.cr` (suite 749 зелёных), драйв-тест: запись с
+реального микрофона → `Wav.encode` → воспроизведение эха (лог
+`[mic] capture up` / `[audio] play`).
+
+Отличия от плана: C-хелпер `minaudio_capture_new` возвращает opaque
+wrapper (device + буфер + mutex в куче) вместо caller-allocated
+`ma_device` — per-device состояние не умещается в sizeof-подход; выбор
+устройства — blob `DeviceInfo#id` (не строка, как у камеры: ma_device_id
+бинарен).
+
+Осталось (на Mac/устройстве): Фаза 3 macOS-бандл
+(`scripts/make_voice_app.sh` — готов, проверить TCC-промпт вручную),
+Фаза 4 Android APK (манифест/Java-мост `hasMicPermission` — готовы,
+сборка по рецепту ниже), Фаза 6 iOS (опционально).
+
+Изначальный план (для истории): выполняется на macOS (MacBook) — там
+есть Xcode, SDK/NDK (`~/Library/Android/sdk`), крист и оба репо
+(egui.cr + minaudio.cr). Пишется по образцу камеры (`src/egui/camera.cr`
++ `src/egui/backend/camera.cr` + camera-секция
+`backend/sokol_shim.c`) и аудио-порта
 (`src/egui/system_ports/audio.cr` + `src/egui/backend/audio.cr`).
 
 ## Цель
