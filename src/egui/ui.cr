@@ -45,6 +45,13 @@ module Egui
     # nothing runs off the screen edge just because a row overflows.
     property wrap_x : Bool = false
 
+    # Cross-axis growth direction of a horizontal row (see #horizontal
+    # and #allocate_space): true only for a row opened inside an
+    # up-flowing (bottom_up) region — the row band then hugs the flow
+    # line from above and grows upward, instead of the default
+    # downward growth. Never set by hand; #horizontal flips it.
+    property cross_up : Bool = false
+
     @child_counter : UInt64 = 0
 
     # Horizontal-row cross-axis extent (upstream's cursor cross sides):
@@ -66,13 +73,39 @@ module Egui
       @row_h = {@row_h, h}.max
     end
 
+    # The exact-size cell of #add_sized, when this Ui is one (nil for
+    # every flow region). A widget in an exact cell FILLS it — the
+    # upstream `add_sized` contract ("make the widget exactly this
+    # size"): the natural/content size only governs layout in flow
+    # regions, in a sized cell it is the CELL that wins (see
+    # #allocate_at_least). Not inherited by child regions — only the
+    # single widget placed by #add_sized sees it.
+    @exact_cell : Rect? = nil
+
+    protected def exact_cell=(rect : Rect?) : Nil
+      @exact_cell = rect
+    end
+
     def initialize(@ctx : Context, @id : Id, @max_rect : Rect,
                    @layout : Layout = Layout.top_down)
-      @cursor = @max_rect.min
-      @min_rect = Rect.new(@max_rect.min, @max_rect.min)
+      # rendering_direction :up (bottom_up layout, dialogue mode): the
+      # cursor starts at the region's bottom-left corner and the flow
+      # marches upward; every other direction starts at the top-left.
+      @cursor = @layout.bottom_up? ? Pos2.new(@max_rect.min.x, @max_rect.bottom)
+                                   : @max_rect.min
+      @min_rect = Rect.new(@cursor, @cursor)
       @layer = LayerId.background
       @clip = Rect.infinite
       @style_scope = nil
+    end
+
+    # rendering_direction (`:down` by default, `:up` for the bottom_up
+    # layout): the vertical axis this region lays widgets out along.
+    # Architectural, not per-widget — every widget places itself
+    # through #allocate_space, so labels, buttons, frames, rows… all
+    # flip together with the region (see #with_rendering_direction).
+    def rendering_direction : Symbol
+      @layout.bottom_up? ? :up : :down
     end
 
     def style : Style
@@ -147,30 +180,57 @@ module Egui
         remaining = @max_rect.right - @cursor.x
         if @cursor.x > @max_rect.min.x && size.x > remaining &&
            size.x <= @max_rect.width + style.spacing.item_spacing.x
+          step = @row_h + style.spacing.item_spacing.y
           @cursor = Pos2.new(@max_rect.min.x,
-            @cursor.y + @row_h + style.spacing.item_spacing.y)
+            @cursor.y + (@cross_up ? -step : step))
           @row_h = 0.0 # the new line's height starts fresh
         end
       end
       max_x = { {@cursor.x + size.x, @max_rect.right}.min, @cursor.x }.max
       if @layout.horizontal?
         # Cross-axis centering (see #@row_h): center the widget within
-        # the current row height, clamped to this region's bottom by
-        # the max-size rule like everything else.
+        # the current row height, clamped to this region's far edge by
+        # the max-size rule like everything else. In an up-flowing
+        # parent (#cross_up) the row band hugs the flow line from
+        # ABOVE and grows upward — the mirror of "horizontal rows
+        # always expand down, or we will overlap the row above".
         @row_h = {@row_h, size.y}.max
-        top = @cursor.y + (@row_h - size.y) / 2.0
-        raw_bottom = top + size.y
-        max_y = @v_overflow ? raw_bottom : {raw_bottom, @max_rect.bottom}.min
-        max_y = {max_y, @cursor.y}.max
-        rect = Rect.new(Pos2.new(@cursor.x, top), Pos2.new(max_x, max_y))
-        # The row slice (upstream's frame rect) reserves the FULL row
-        # height even when the centered widget doesn't reach its bottom
-        # edge — otherwise the region's bounding box would depend on
-        # widget order.
-        frame_bottom = @v_overflow ? @cursor.y + @row_h
-                                   : {@cursor.y + @row_h, @max_rect.bottom}.min
-        @min_rect = @min_rect.union(
-          Rect.new(@cursor, Pos2.new(max_x, {frame_bottom, @cursor.y}.max)))
+        if @cross_up
+          bottom = @cursor.y - (@row_h - size.y) / 2.0
+          raw_top = bottom - size.y
+          min_y = @v_overflow ? raw_top : {raw_top, @max_rect.min.y}.max
+          min_y = {min_y, @cursor.y}.min
+          rect = Rect.new(Pos2.new(@cursor.x, min_y), Pos2.new(max_x, bottom))
+          frame_top = @v_overflow ? @cursor.y - @row_h
+                                  : {@cursor.y - @row_h, @max_rect.min.y}.max
+          @min_rect = @min_rect.union(
+            Rect.new(Pos2.new(@cursor.x, {frame_top, @cursor.y}.min),
+              Pos2.new(max_x, @cursor.y)))
+        else
+          top = @cursor.y + (@row_h - size.y) / 2.0
+          raw_bottom = top + size.y
+          max_y = @v_overflow ? raw_bottom : {raw_bottom, @max_rect.bottom}.min
+          max_y = {max_y, @cursor.y}.max
+          rect = Rect.new(Pos2.new(@cursor.x, top), Pos2.new(max_x, max_y))
+          # The row slice (upstream's frame rect) reserves the FULL row
+          # height even when the centered widget doesn't reach its bottom
+          # edge — otherwise the region's bounding box would depend on
+          # widget order.
+          frame_bottom = @v_overflow ? @cursor.y + @row_h
+                                     : {@cursor.y + @row_h, @max_rect.bottom}.min
+          @min_rect = @min_rect.union(
+            Rect.new(@cursor, Pos2.new(max_x, {frame_bottom, @cursor.y}.max)))
+        end
+      elsif @layout.bottom_up?
+        # rendering_direction :up — the mirror of the top_down branch
+        # below: the rect sits ABOVE the cursor, the max-size rule
+        # clamps it to max_rect's top edge (v_overflow lets content
+        # grow past it, CSS overflow-y flipped).
+        raw_min_y = @cursor.y - size.y
+        min_y = @v_overflow ? raw_min_y : {raw_min_y, @max_rect.min.y}.max
+        min_y = {min_y, @cursor.y}.min
+        rect = Rect.new(Pos2.new(@cursor.x, min_y), Pos2.new(max_x, @cursor.y))
+        @min_rect = @min_rect.union(rect)
       else
         raw_y = @cursor.y + size.y
         max_y = @v_overflow ? raw_y : {raw_y, @max_rect.bottom}.min
@@ -198,6 +258,14 @@ module Egui
     end
 
     def allocate_at_least(size : Vec2) : Rect
+      # Exact-size cell (#add_sized): the widget fills the cell — the
+      # upstream contract. Without this a sized Button hugs its natural
+      # size at the cell's start (allocate_space only CLAMPS to
+      # max_rect, it never grows UP to it), which is the "inline, not
+      # block" look. The cell rect is already allocated and the parent
+      # cursor already advanced (#add_sized did allocate_space itself),
+      # so there is nothing else to do here.
+      return @exact_cell.not_nil! if @exact_cell
       allocate_space(size)
     end
 
@@ -211,11 +279,15 @@ module Egui
     # (`v_overflow` — the CSS overflow-y semantics of a scroll
     # viewport must reach the whole subtree: without this, rows built
     # through `#horizontal`/`#scope` near the fold would clamp their
-    # children to the viewport's bottom edge and overlap there) AND
-    # style scope (a widget inside stays inside the scope).
+    # children to the viewport's bottom edge and overlap there), style
+    # scope (a widget inside stays inside the scope) AND the vertical
+    # rendering direction — a child of an up-flowing region flows up
+    # too, unless the caller passes an explicit layout (the #horizontal
+    # row is always left_to_right; panels are pinned top_down).
     def child_ui(max_rect : Rect, id : Id? = nil,
-                 layout : Layout = Layout.top_down) : Ui
-      child = Ui.new(@ctx, id || next_widget_id, max_rect, layout)
+                 layout : Layout? = nil) : Ui
+      child = Ui.new(@ctx, id || next_widget_id, max_rect,
+        layout || (@layout.bottom_up? ? Layout.bottom_up : Layout.top_down))
       child.layer = @layer
       child.clip = @clip
       child.v_overflow = @v_overflow
@@ -293,8 +365,12 @@ module Egui
     # A block-level button filling the region's width — the Windows
     # dialog idiom, where `#button` is the inline (content-hugging)
     # one. `height` overrides the 40pt default.
-    def big_button(text : String, height : Float64 = 40.0) : Response
-      add(Button.new(text).min_size(Vec2.new(available_width, height)))
+    def big_button(text : String, height : Float64 = 40.0,
+                   icon : Svg? = nil, rounding : Float64? = nil) : Response
+      btn = Button.new(text).min_size(Vec2.new(available_width, height))
+      btn.icon(icon) if icon
+      btn.rounding(rounding) if rounding
+      add(btn)
     end
 
     # egui `ui.checkbox(&mut bool, text)` — Crystal keeps the value in
@@ -752,7 +828,8 @@ module Egui
       # a horizontal row the cell is left_to_right too, so its content
       # cross-centers within the exact cell instead of hugging its top
       # (a Label in a 20pt cell would sit 2px low otherwise). Vertical
-      # parents keep the top_down cell unchanged.
+      # parents keep their flow direction — an up-flowing parent gets a
+      # bottom_up cell (#child_ui inheritance).
       if @layout.horizontal?
         cell = child_ui(rect, layout: Layout.left_to_right)
         cell.seed_row_height(rect.height)
@@ -760,6 +837,7 @@ module Egui
         cell = child_ui(rect)
       end
       cell.v_overflow = false
+      cell.exact_cell = rect
       # Same current_widget bookkeeping as #add — #interact records
       # inspector meta from it, and widgets placed through #add_sized
       # (the Inspector header's Export/✕ buttons) must not be the only
@@ -774,32 +852,87 @@ module Egui
     end
 
     # egui `ui.scope` — a nested region with its own id space (children
-    # mint ids under the scope's id, not the parent's counter).
+    # mint ids under the scope's id, not the parent's counter). In an
+    # up-flowing region the scope covers the space ABOVE the cursor and
+    # the flow continues above it (see #remaining_rect/#advance_flow_past).
     def scope(&block : Ui ->) : self
-      child = child_ui(
-        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)))
+      child = child_ui(remaining_rect)
       yield child
       @min_rect = @min_rect.union(child.min_rect)
-      @cursor = Pos2.new(@max_rect.min.x,
-        child.min_rect.bottom + style.spacing.item_spacing.y)
+      @cursor = advance_flow_past(child.min_rect)
       self
     end
 
+    # rendering_direction entry point (dialogue mode): run the block in
+    # a child region whose widgets flow `:up` — the first widget is
+    # laid out at the region's bottom edge, the next one above it, and
+    # so on — or `:down` (the default everywhere). Architectural: any
+    # widget allocated through the child Ui flips (labels, buttons,
+    # frames, rows, scopes) because they all place themselves via
+    # #allocate_space. Afterwards the parent flow continues past the
+    # block's bounding box in the parent's own direction.
+    def with_rendering_direction(direction : Symbol, &block : Ui ->) : self
+      layout = direction == :up ? Layout.bottom_up : Layout.top_down
+      child = child_ui(remaining_rect, layout: layout)
+      yield child
+      @min_rect = @min_rect.union(child.min_rect)
+      @cursor = advance_flow_past(child.min_rect)
+      self
+    end
+
+    # The space left in this region after the cursor, in the region's
+    # own flow direction (below the cursor for :down flows, above it
+    # for :up) — what a child block (#scope, #enabled,
+    # #with_rendering_direction) lays out into.
+    private def remaining_rect : Rect
+      if @layout.bottom_up?
+        Rect.new(Pos2.new(@cursor.x, @max_rect.min.y),
+          Pos2.new(@max_rect.right, @cursor.y))
+      else
+        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom))
+      end
+    end
+
+    # Where this region's flow continues after a child block's
+    # bounding box (below it for :down flows, above it for :up).
+    private def advance_flow_past(child_rect : Rect) : Pos2
+      if @layout.bottom_up?
+        Pos2.new(@max_rect.min.x,
+          child_rect.top - style.spacing.item_spacing.y)
+      else
+        Pos2.new(@max_rect.min.x,
+          child_rect.bottom + style.spacing.item_spacing.y)
+      end
+    end
+
     # egui `ui.columns(n)` — split the remaining width into `n` equal
-    # columns; the block receives one Ui per column.
+    # columns; the block receives one Ui per column. In an up-flowing
+    # region the columns hug the flow line from above and the flow
+    # continues above the tallest one.
     def columns(n : Int32, &block : Array(Ui) ->) : Nil
       spacing = style.spacing.item_spacing.x
       gap_total = spacing * (n - 1)
       col_w = {(available_width - gap_total) / {n, 1}.max, 1.0}.max
+      height = available_height
       cols = (0...n).map do |i|
         x = @cursor.x + i * (col_w + spacing)
-        child_ui(Rect.from_min_size(Pos2.new(x, @cursor.y),
-          Vec2.new(col_w, available_height)))
+        if @layout.bottom_up?
+          child_ui(Rect.new(Pos2.new(x, @cursor.y - height),
+            Pos2.new(x + col_w, @cursor.y)))
+        else
+          child_ui(Rect.from_min_size(Pos2.new(x, @cursor.y),
+            Vec2.new(col_w, height)))
+        end
       end
       yield cols
       cols.each { |c| @min_rect = @min_rect.union(c.min_rect) }
-      bottom = cols.map(&.min_rect.bottom).max
-      @cursor = Pos2.new(@max_rect.min.x, bottom + style.spacing.item_spacing.y)
+      @cursor = if @layout.bottom_up?
+        Pos2.new(@max_rect.min.x,
+          cols.map(&.min_rect.top).min - style.spacing.item_spacing.y)
+      else
+        Pos2.new(@max_rect.min.x,
+          cols.map(&.min_rect.bottom).max + style.spacing.item_spacing.y)
+      end
     end
 
     # egui `ui.enabled(flag, |ui| …)` — gray-out + interaction-block a
@@ -811,8 +944,7 @@ module Egui
     # instead (a scrim band over the menu frame reads as black).
     def enabled(flag : Bool, &block : Ui ->) : Nil
       scrim_index = painter.add_noop
-      child = child_ui(
-        Rect.new(@cursor, Pos2.new(@max_rect.right, @max_rect.bottom)))
+      child = child_ui(remaining_rect)
 
       if flag
         yield child
@@ -823,8 +955,7 @@ module Egui
       end
 
       @min_rect = @min_rect.union(child.min_rect)
-      @cursor = Pos2.new(@max_rect.min.x,
-        child.min_rect.bottom + style.spacing.item_spacing.y)
+      @cursor = advance_flow_past(child.min_rect)
       return if flag
       # Menu rows mute their own text when disabled (menu_item_impl):
       # a panel_fill band over the menu frame reads as a black
@@ -841,6 +972,9 @@ module Egui
     def available_size : Vec2
       if @layout.horizontal?
         Vec2.new({@max_rect.right - @cursor.x, 0.0}.max, @max_rect.bottom - @cursor.y)
+      elsif @layout.bottom_up?
+        Vec2.new({@max_rect.right - @cursor.x, 0.0}.max,
+          {@cursor.y - @max_rect.min.y, 0.0}.max)
       else
         Vec2.new(@max_rect.right - @cursor.x, @max_rect.bottom - @cursor.y)
       end
@@ -851,21 +985,33 @@ module Egui
     end
 
     def available_height : Float64
-      {@max_rect.bottom - @cursor.y, 0.0}.max
+      if @layout.bottom_up?
+        {@cursor.y - @max_rect.min.y, 0.0}.max
+      else
+        {@max_rect.bottom - @cursor.y, 0.0}.max
+      end
     end
 
     # egui `Frame::show` — a padded, painted panel around a block of
     # contents. Reserve a paint slot, lay the children out inside the
     # margin, then back-paint the frame under them (the #window trick).
+    # In an up-flowing region the frame's inner region is semi-infinite
+    # UPWARD: the contents start at the flow line (minus the bottom
+    # margin) and grow above it — the dialogue bubble anchored on the
+    # flow line.
     def frame(fill : Color32? = nil, stroke : Color32? = nil,
               rounding : Float64 = 6.0, margin : Vec2? = nil,
               stroke_width : Float64 = 1.0, &block : Ui ->) : Rect
       m = margin || style.spacing.window_padding
       bg_index = painter.add_noop
 
-      inner = Rect.from_min_size(
-        @cursor + m,
-        Vec2.new({@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max, 1e6))
+      w = {@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max
+      inner = if @layout.bottom_up?
+        Rect.new(Pos2.new(@cursor.x + m.x, @cursor.y - m.y - 1e6),
+          Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y))
+      else
+        Rect.from_min_size(@cursor + m, Vec2.new(w, 1e6))
+      end
       child = child_ui(inner)
       yield child
 
@@ -907,6 +1053,25 @@ module Egui
           @cursor.y + @row_h + style.spacing.item_spacing.y)
       else
         @cursor
+      end
+      if @layout.bottom_up?
+        # Up flow: the row hugs the flow line from ABOVE — the region
+        # is the remaining space above the cursor, the row's own cursor
+        # starts on the line, and the row band grows upward (#cross_up)
+        # so it never overlaps the widgets already rendered below.
+        row = child_ui(Rect.new(
+          Pos2.new(@cursor.x, @max_rect.min.y),
+          Pos2.new(@max_rect.right, @cursor.y)),
+          layout: Layout.left_to_right)
+        row.wrap_x = wrap
+        row.cross_up = true
+        row.seed_row_height(style.spacing.interact_size.y)
+        row.cursor = Pos2.new(@cursor.x, @cursor.y)
+        yield row
+        @min_rect = @min_rect.union(row.min_rect)
+        @cursor = Pos2.new(@max_rect.min.x,
+          row.min_rect.top - style.spacing.item_spacing.y)
+        return self
       end
       row = child_ui(
         Rect.new(row_rect, Pos2.new(@max_rect.right, @max_rect.bottom)),
