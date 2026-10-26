@@ -9,7 +9,10 @@
 #
 # egui.cr extras: `#gradient(c1, c2)` paints a vertical gradient fill,
 # `#icon(name)` draws a vector icon left of the text (a `Symbol` from
-# `Icons::NAMES` or an `Svg`, e.g. `Icon.from_file(:lucide, :save)`).
+# `Icons::NAMES` or an `Svg`, e.g. `Icon.from_file(:lucide, :save)`);
+# `#vertical` stacks the icon ABOVE the text (both centered — the
+# square-tile idiom of home-screen mode buttons), with `#icon_size`
+# scaling the icon independently of the label's line height.
 
 module Egui
   class Button
@@ -22,6 +25,8 @@ module Egui
     @icon_svg : Svg?
     @image_texture : UInt64?
     @cursor : CursorIcon?
+    @vertical = false
+    @icon_size : Float64?
 
     def initialize(@text : String, id : String? = nil)
       @id_name = id
@@ -35,6 +40,14 @@ module Egui
     end
 
     @min_size : Vec2?
+    @rounding : Float64?
+
+    # Corner rounding override (points); nil keeps the class default
+    # (4 px). `height / 2` turns the button into a pill/oval.
+    def rounding(r : Float64) : self
+      @rounding = r
+      self
+    end
 
     def style_class : String?
       "button"
@@ -72,6 +85,22 @@ module Egui
     # state fill.
     def gradient(c1 : Color32, c2 : Color32) : self
       @gradient = {c1, c2}
+      self
+    end
+
+    # Vertical layout: the icon sits above the label (both centered in
+    # the button) — the square-tile idiom; in this mode the icon takes
+    # its size from `#icon_size` when given, else the label's line
+    # height (the horizontal default).
+    def vertical(flag : Bool = true) : self
+      @vertical = flag
+      self
+    end
+
+    # Explicit icon size in points; without it the icon is a
+    # glyph-height square (the text's line height).
+    def icon_size(s : Float64) : self
+      @icon_size = s
       self
     end
 
@@ -124,24 +153,31 @@ module Egui
       # box: `measure("")` is zero and would collapse the icon to
       # nothing. Fall back to the estimated line height.
       glyph_h = text_size.y > 0.0 ? text_size.y : font_size * Fonts::LINE_H_FACTOR
-      # No text after the icon → no icon→text gap, so the glyph
-      # centers in an icon-only button.
-      icon_adv = @text.empty? ? 0.0 : style.spacing.icon_spacing
-      size = Vec2.new(text_size.x + pad.horizontal,
-        {text_size.y, glyph_h}.max + pad.vertical)
+      # Icon presence up front: the natural size (both layouts) and the
+      # content block below share it. The icon is a square of the
+      # explicit `#icon_size`, else the label's line height.
+      has_icon = ((tex0 = @image_texture) && !tex0.zero?) ||
+                 @icon_svg.is_a?(Svg) ||
+                 ((name0 = @icon) && Icons::NAMES.includes?(name0))
+      icon_h = has_icon ? (@icon_size || glyph_h) : 0.0
+      # The icon→text gap exists only between a real icon and a
+      # non-empty label — without an icon there is nothing to gap, and
+      # a phantom advance would push the text off-center.
+      gap = has_icon && !@text.empty? ? style.spacing.icon_spacing : 0.0
+      if @vertical
+        # Square tile: the icon stacks ABOVE the label, so the icon
+        # grows the HEIGHT and the width is the wider of the two.
+        size = Vec2.new({text_size.x, icon_h}.max + pad.horizontal,
+          icon_h + gap + {text_size.y, glyph_h}.max + pad.vertical)
+      else
+        size = Vec2.new(text_size.x + icon_h + gap + pad.horizontal,
+          {text_size.y, glyph_h}.max + pad.vertical)
+      end
       # Size floor: the button's own `min_size:` when given, else the
       # global default (Ui::DEFAULT_WIDGET_SIZE) — content may grow the
       # button larger, but its size never collapses to zero.
       ms = @min_size || Vec2.new(Ui::DEFAULT_WIDGET_SIZE, Ui::DEFAULT_WIDGET_SIZE)
       size = Vec2.new({size.x, ms.x}.max, {size.y, ms.y}.max)
-      if (tex = @image_texture) && !tex.zero?
-        size += Vec2.new(glyph_h + icon_adv, 0.0)
-      end
-      if (svg = @icon_svg)
-        size += Vec2.new(glyph_h + icon_adv, 0.0)
-      elsif (name = @icon) && Icons::NAMES.includes?(name)
-        size += Vec2.new(glyph_h + icon_adv, 0.0)
-      end
 
       # Responsive size keys (`width`/`min_width`/`max_width`… —
       # points, `%` of the containing Ui, vw/vh/vmin/vmax, rem) are
@@ -177,7 +213,7 @@ module Egui
       # through the state overlay too: outset UNDER the fill, inset over
       # it — `button:active { shadow.inset }` is the bootstrap pressed
       # look.
-      rounding = class_vars.f64("rounding", 4.0)
+      rounding = @rounding || class_vars.f64("rounding", 4.0)
       shadow = state_vars.shadow?
       if shadow && !shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
@@ -209,57 +245,61 @@ module Egui
           inset: true)
       end
 
-      # Content: optional icon + centered text. The icon→text gap
-      # exists only between a real icon and a non-empty label — without
-      # an icon there is nothing to gap, and a phantom advance would
-      # push the text off-center (block_w would exceed the measured
-      # text by icon_spacing, and the pen starts icon_spacing right of
-      # block_left). Icon-only buttons likewise gap nothing.
-      has_icon = ((tex = @image_texture) && !tex.zero?) ||
-                 @icon_svg.is_a?(Svg) ||
-                 ((name = @icon) && Icons::NAMES.includes?(name))
-      icon_w = has_icon ? glyph_h : 0.0
-      icon_adv = has_icon && !@text.empty? ? style.spacing.icon_spacing : 0.0
-      # A host may clamp the rect below the natural size (the max-size
-      # rule at a region edge — e.g. a "➕ Agent" button overflowing
-      # the sidebar): truncate the label to what fits so the text
-      # stays INSIDE the button instead of spilling past its fill.
-      icon_room = icon_w + icon_adv
-      max_text_w = {rect.width - pad.horizontal - icon_room, 0.0}.max
+      # Content: optional icon + centered text. Horizontal layout packs
+      # the block [icon | gap | label] left-to-right and centers it in
+      # the content box; `#vertical` stacks it [icon / gap / label]
+      # top-to-bottom instead. When the cell is TIGHTER than the
+      # natural size (#add_sized hard-clamps to the region's max rect
+      # — e.g. a fixed-size tile at a panel edge), the block centers in
+      # the whole rect so the glyph stays inside instead of spilling
+      # past the edge into the clip. A host clamp may also force the
+      # label to truncate (`fonts.fit`) to what fits.
+      max_text_w = if @vertical
+        {rect.width - pad.horizontal, 0.0}.max
+      else
+        {rect.width - pad.horizontal - icon_h - gap, 0.0}.max
+      end
       label = @text.empty? ? @text : fonts.fit(@text, font_size, max_text_w)
       label_size = label.same?(@text) ? text_size :
                    fonts.measure_cached(label, font_size)
-      block_w = icon_w + icon_adv + label_size.x
-      # Center the block in the content box (rect minus padding); when
-      # the cell is TIGHTER than the natural size (#add_sized
-      # hard-clamps to the region's max rect — e.g. a fixed-size icon
-      # cell at a panel edge), center in the whole rect instead so the
-      # glyph stays inside instead of spilling past the right edge
-      # into the clip.
-      slack = (rect.width - pad.horizontal) - block_w
-      block_left = if slack >= 0.0
-        rect.left + pad.left + slack / 2.0
+
+      icon_box : Rect? = nil
+      pos : Pos2
+      if @vertical
+        block_h = icon_h + gap + label_size.y
+        slack = (rect.height - pad.vertical) - block_h
+        block_top = slack >= 0.0 ? rect.top + pad.top + slack / 2.0
+                                 : rect.top + (rect.height - block_h) / 2.0
+        cx = rect.center.x
+        if has_icon
+          icon_box = Rect.from_min_size(
+            Pos2.new(cx - icon_h / 2.0, block_top),
+            Vec2.new(icon_h, icon_h))
+        end
+        pos = Pos2.new(cx - label_size.x / 2.0,
+          block_top + icon_h + gap + label_size.y / 2.0)
       else
-        rect.left + (rect.width - block_w) / 2.0
+        block_w = icon_h + gap + label_size.x
+        slack = (rect.width - pad.horizontal) - block_w
+        block_left = if slack >= 0.0
+          rect.left + pad.left + slack / 2.0
+        else
+          rect.left + (rect.width - block_w) / 2.0
+        end
+        if has_icon
+          icon_box = Rect.from_min_size(
+            Pos2.new(block_left, rect.center.y - icon_h / 2.0),
+            Vec2.new(icon_h, icon_h))
+        end
+        pos = Pos2.new(block_left + icon_h + gap, rect.center.y)
       end
-      if (tex = @image_texture) && !tex.zero?
-        icon_box = Rect.from_min_size(
-          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
-          Vec2.new(glyph_h, glyph_h))
-        ui.painter.image(icon_box, tex)
-      elsif (svg = @icon_svg)
-        icon_box = Rect.from_min_size(
-          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
-          Vec2.new(glyph_h, glyph_h))
-        svg.paint(ui, icon_box)
-      elsif (name = @icon) && Icons::NAMES.includes?(name)
-        icon_box = Rect.from_min_size(
-          Pos2.new(block_left, rect.center.y - glyph_h / 2.0),
-          Vec2.new(glyph_h, glyph_h))
-        Icons.draw(ui.painter, name, icon_box,
-          style.visuals.text_color)
+      if (b = icon_box) && (tex = @image_texture) && !tex.zero?
+        ui.painter.image(b, tex)
+      elsif (b = icon_box) && (svg = @icon_svg)
+        svg.paint(ui, b)
+      elsif (b = icon_box) && (name = @icon) && Icons::NAMES.includes?(name)
+        Icons.draw(ui.painter, name, b, style.visuals.text_color)
       end
-      pos = Pos2.new(block_left + icon_w + icon_adv, rect.center.y)
       text_color = state_vars.color?("text_color") ||
                    style.visuals.text_color
       ui.painter.text(pos, label, font_size, text_color,

@@ -1241,6 +1241,31 @@ describe "phase 2 widgets" do
     box.x.should_not eq(box.y) # a real square, not a degenerate point
   end
 
+  it "vertical button stacks the icon above the label" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    ui = widget_ui(ctx)
+    btn = ui.add(Egui::Button.new("OK").icon(:check).vertical.icon_size(60.0))
+    ctx.end_frame
+    rect = btn.rect
+
+    # the 60pt icon drives the height (icon + gap + label), while the
+    # width stays at the label's (plus padding)
+    rect.height.should be > 60.0
+    rect.height.should be > rect.width
+
+    # the check icon = 2 line segments; their vertical center must sit
+    # ABOVE the label's glyph center (painter text pos.y), both inside
+    # the button rect
+    lines = ctx.painter.commands.select(Egui::LineCmd)
+    lines.size.should eq(2)
+    icon_cy = lines.sum { |l| (l.p1.y + l.p2.y) / 2.0 } / lines.size
+    text = ctx.painter.commands.select(Egui::TextCmd).first.not_nil!
+    icon_cy.should be < text.pos.y
+    icon_cy.should be > rect.top
+    text.pos.y.should be < rect.bottom
+  end
+
   it "tooltip appears after the hover delay" do
     ctx = Egui::Context.new
     center = nil
@@ -3781,6 +3806,27 @@ describe "Ui helpers (phase 7)" do
     ctx.end_frame
     gap = second.not_nil!.top - (first.not_nil!.top + 40.0)
     gap.should be_close(ctx.style.spacing.item_spacing.y, 0.1)
+  end
+
+  it "a widget in an add_sized cell FILLS the cell (upstream contract)" do
+    ctx = Egui::Context.new
+    raw_frame(ctx)
+    cell = Egui::Rect.from_min_size(Egui::Pos2.new(0.0, 0.0),
+      Egui::Vec2.new(220.0, 220.0))
+    btn = nil
+    ctx.window("demo") do |ui|
+      btn = ui.add_sized(Egui::Vec2.new(220.0, 220.0),
+        Egui::Button.new("OK")).rect
+    end
+    ctx.end_frame
+    btn = btn.not_nil!
+    # not the natural content size — the exact cell (block, not inline)
+    btn.width.should be_close(220.0, 0.5)
+    btn.height.should be_close(220.0, 0.5)
+    # the fill rect is painted too (background over the whole cell)
+    fill = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.rect.width > 200.0 && c.rect.height > 200.0 }
+    fill.should_not be_nil
   end
 
   it "columns splits the width into equal columns" do
