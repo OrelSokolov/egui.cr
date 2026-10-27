@@ -56,6 +56,12 @@ module Egui
     # egui InputOptions click classification defaults.
     DOUBLE_CLICK_TIME = 0.3
     CLICK_MAX_DIST    = 6.0
+    # A FINGER can't hold still the way a mouse does: the touch twin of
+    # CLICK_MAX_DIST for the click-vs-drag disambiguation (≈ Android
+    # ViewConfiguration touch slop with headroom). Without it every tap
+    # wobbles past 6px, engages drags instead of clicks, and cancels
+    # the long-press.
+    TOUCH_MAX_DIST    = 16.0
 
     getter data : IdTypeMap
     getter areas : Areas
@@ -143,6 +149,11 @@ module Egui
     # Interaction state machine (egui InteractionState + PointerState).
     @press_pos : Pos2?
     @press_time : Float64
+    # Whether the current press came from a finger (InputState#
+    # touch_pointer?, latched at press): picks the slop and the touch
+    # gesture semantics for the whole press, even if pointer events of
+    # the other kind arrive mid-gesture.
+    @press_touch : Bool = false
     @potential_click_id : Id?
     @potential_drag_id : Id?
     @dragging_id : Id?
@@ -321,6 +332,7 @@ module Egui
       if input.pointer_pressed?
         @press_pos = input.pointer_pos
         @press_time = input.time
+        @press_touch = input.touch_pointer?
         @moved_too_much_for_click = false
         @long_press_done = false
         @long_press_pos = nil
@@ -341,7 +353,11 @@ module Egui
 
       # --- motion while pressed: decide click vs drag ---
       if (origin = @press_pos) && input.pointer_down? && (pos = input.pointer_pos)
-        if (pos - origin).length > CLICK_MAX_DIST
+        # Touch presses get the finger-sized slop (TOUCH_MAX_DIST): a
+        # wobbling tap stays a tap, and the long-press timeout below
+        # survives finger jitter.
+        if (pos - origin).length >
+           (@press_touch ? TOUCH_MAX_DIST : CLICK_MAX_DIST)
           @moved_too_much_for_click = true
           if @dragging_id.nil? && (candidate = @potential_drag_id)
             @dragging_id = candidate
@@ -749,6 +765,19 @@ module Egui
     # Where the long-press fired (the held pointer position).
     def long_press_pos : Pos2?
       @long_press_pos
+    end
+
+    # The current press came from a finger (see @press_touch): touch
+    # slop and touch gesture semantics apply to this gesture.
+    def press_touch? : Bool
+      @press_touch
+    end
+
+    # The current gesture IS a completed long-press with the pointer
+    # still held (press state lives until release): text fields let
+    # movement now EXTEND the selection instead of scrolling.
+    def long_press_active? : Bool
+      !@press_pos.nil? && @long_press_done
     end
 
     # A press is still within the long-press window (pending): the

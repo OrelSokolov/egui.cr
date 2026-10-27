@@ -14,7 +14,13 @@ module Egui
   # pointer; built on the same popup system as `Ui#menu_button`, so
   # `menu_item` rows close it and a click elsewhere dismisses it.
   class Response
-    def context_menu(&block : Ui ->) : self
+    # `long_press_if` gates the touch long-press opening: when given,
+    # the menu opens on a long-press only while the callable holds
+    # (text fields pass "a selection already exists" — the Android
+    # rule where the FIRST long-press selects and only the next one
+    # menus). nil (default) keeps the ungated legacy behavior; the
+    # mouse secondary-press path is never gated.
+    def context_menu(*, long_press_if : (-> Bool)? = nil, &block : Ui ->) : self
       menu_id = "context_menu_#{@id.value}"
 
       # Open on secondary press (upstream opens on click; press feels
@@ -29,7 +35,8 @@ module Egui
       pos = nil
       if @ctx.input.secondary_pressed?
         pos = @ctx.input.secondary_pos
-      elsif @ctx.memory.long_press_fired?
+      elsif @ctx.memory.long_press_fired? &&
+            (long_press_if.nil? || long_press_if.call)
         pos = @ctx.memory.long_press_pos
       end
       if pos && @rect.contains?(pos)

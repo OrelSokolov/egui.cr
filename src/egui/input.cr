@@ -148,6 +148,11 @@ module Egui
     # Multiplicative zoom factor (Type::Zoom only): > 1 zooms in, < 1
     # out. Emitted by the touch backends' pinch mapping.
     getter zoom : Float64
+    # True when the pointer event came from a FINGER (the touch shims
+    # mark their synthesized MOUSE_* events; see the backend). Lets the
+    # gesture layer apply touch semantics — bigger tap slop,
+    # drag-to-scroll in text fields — without touching the mouse path.
+    getter? from_touch : Bool
 
     def initialize(@type : Type, @pos : Pos2? = nil,
                    @button : PointerButton = :primary,
@@ -156,19 +161,24 @@ module Egui
                    @text : String = "",
                    @modifiers : Modifiers = Modifiers.new,
                    @paths : Array(String) = [] of String,
-                   @zoom : Float64 = 1.0)
+                   @zoom : Float64 = 1.0,
+                   @from_touch : Bool = false)
     end
 
-    def self.pointer_moved(pos : Pos2) : Event
-      new(:pointer_moved, pos: pos)
+    def self.pointer_moved(pos : Pos2, from_touch : Bool = false) : Event
+      new(:pointer_moved, pos: pos, from_touch: from_touch)
     end
 
-    def self.pointer_pressed(pos : Pos2, button : PointerButton = :primary) : Event
-      new(:pointer_button_pressed, pos: pos, button: button)
+    def self.pointer_pressed(pos : Pos2, button : PointerButton = :primary,
+                             from_touch : Bool = false) : Event
+      new(:pointer_button_pressed, pos: pos, button: button,
+        from_touch: from_touch)
     end
 
-    def self.pointer_released(pos : Pos2, button : PointerButton = :primary) : Event
-      new(:pointer_button_released, pos: pos, button: button)
+    def self.pointer_released(pos : Pos2, button : PointerButton = :primary,
+                              from_touch : Bool = false) : Event
+      new(:pointer_button_released, pos: pos, button: button,
+        from_touch: from_touch)
     end
 
     def self.scroll(delta : Vec2) : Event
@@ -263,6 +273,12 @@ module Egui
     # (nil when the backend didn't report one).
     getter zoom_delta : Float64
     getter zoom_pos : Pos2?
+    # True when the most recent pointer event came from a finger (see
+    # Event#from_touch). Latched from the previous frame when no pointer
+    # events arrive, so it stays stable through a drag; a real mouse
+    # move/press clears it. Hybrid touch+mouse devices thus switch modes
+    # on whichever was touched last.
+    getter? touch_pointer : Bool
 
     def initialize(@screen_rect : Rect, @pointer_pos : Pos2?, @pointer_down : Bool,
                    @pointer_pressed : Bool, @pointer_released : Bool, @scroll : Vec2,
@@ -282,7 +298,8 @@ module Egui
                    @extra1_pressed : Bool = false,
                    @dropped_files : Array(String) = [] of String,
                    @zoom_delta : Float64 = 1.0,
-                   @zoom_pos : Pos2? = nil)
+                   @zoom_pos : Pos2? = nil,
+                   @touch_pointer : Bool = false)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -361,12 +378,15 @@ module Egui
       dropped_files = [] of String
       zoom_delta = 1.0
       zoom_pos : Pos2? = nil
+      touch_pointer = prev.try(&.touch_pointer?) || false
 
       raw.events.each do |e|
         case e.type
         in .pointer_moved?
           pos = e.pos unless e.pos.nil?
+          touch_pointer = e.from_touch?
         in .pointer_button_pressed?
+          touch_pointer = e.from_touch?
           if e.button.primary?
             down = true
             pressed = true
@@ -379,6 +399,7 @@ module Egui
             extra1_pressed = true
           end
         in .pointer_button_released?
+          touch_pointer = e.from_touch?
           if e.button.primary?
             down = false
             released = true
@@ -426,7 +447,7 @@ module Egui
         key_press_counts, text, modifiers,
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
         extra1_pressed,
-        dropped_files, zoom_delta, zoom_pos)
+        dropped_files, zoom_delta, zoom_pos, touch_pointer)
     end
   end
 end

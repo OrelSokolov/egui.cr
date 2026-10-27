@@ -1464,6 +1464,12 @@ module Egui
           mx /= scale
           my /= scale
         end
+        # The touch shims re-emit finger events as MOUSE_* with the
+        # SH_EVENT_TOUCH_BASE marker (200) added to the type — strip it
+        # and flag the Event so gesture routing can tell finger from
+        # mouse (slop, drag-vs-scroll; see InputState#touch_pointer?).
+        from_touch = type >= 200
+        type -= 200 if from_touch
         if @@frame_debug && type != MOUSE_MOVE
           STDERR.puts "[event] %8.3f type=#{type} btn=#{btn} key=#{key} chr=#{chr}" %
             dbg_now
@@ -1471,7 +1477,8 @@ module Egui
         case type
         when MOUSE_MOVE
           @@dbg_moves += 1 if @@frame_debug
-          @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my))
+          @@events << Egui::Event.pointer_moved(Egui::Pos2.new(mx, my),
+            from_touch: from_touch)
         when MOUSE_DOWN
           # sapp mouse_button: 0 = left, 1 = right, 2 = middle, 3/4 =
           # X1/X2 side buttons (mouse back/forward — the egui-cr sokol
@@ -1486,7 +1493,8 @@ module Egui
                    when 4 then PointerButton::Extra2
                    else        PointerButton::Primary
                    end
-          @@events << Egui::Event.pointer_pressed(Egui::Pos2.new(mx, my), button)
+          @@events << Egui::Event.pointer_pressed(Egui::Pos2.new(mx, my), button,
+            from_touch: from_touch)
         when MOUSE_UP
           button = case btn
                     when 1 then PointerButton::Secondary
@@ -1495,7 +1503,8 @@ module Egui
                     when 4 then PointerButton::Extra2
                     else        PointerButton::Primary
                     end
-          @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my), button)
+          @@events << Egui::Event.pointer_released(Egui::Pos2.new(mx, my), button,
+            from_touch: from_touch)
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
           # is positive = content scrolls down → negate.

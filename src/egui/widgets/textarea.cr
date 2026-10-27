@@ -28,6 +28,7 @@ module Egui
     SCROLL_SALT = 0x5C40_u64
     VEL_SALT    =  0x7E1_u64
     BAR_SALT    =  0xBA2_u64
+    HANDLE_SALT =  0x4A4D_u64 # touch selection handles (left/right edge)
     BAR_W       =        8.0
     # Above this size (bytes) the textarea goes virtual — see the file
     # header. 512 KiB still full-wraps in ~100 ms once; past it, the
@@ -233,6 +234,14 @@ module Egui
       if memory.active_scroll_area? == scroll_id && !input.scroll.y.zero?
         kin.input(input.scroll.y * style.scroll_speed, input.time,
           max_offset)
+      elsif input.touch_pointer? && !memory.long_press_active? &&
+            response.dragged?
+        # Finger drag = kinetic scroll (Android): the pointer follows
+        # the content, so the delta feeds straight in (same sign as the
+        # ScrollArea canvas drag). Long-press gestures keep the drag for
+        # selection extending instead. Fling works via the release
+        # velocity in KineticScroller's history.
+        kin.input(-response.drag_delta.y, input.time, max_offset)
       else
         kin.glide(input.dt, max_offset, ui.ctx)
       end
@@ -254,38 +263,100 @@ module Egui
       anchor = memory.data.get_int(anchor_id, -1)
       new_text = @text
       changed = false
+      # Touch gesture semantics (Android): a plain finger drag scrolls,
+      # only a long-press gesture (or a selection handle) drags a
+      # selection. `touch` is latched per pointer (InputState#
+      # touch_pointer?); `had_sel` is the selection state BEFORE this
+      # frame's presses — the context-menu gate below reads it so the
+      # FIRST long-press (the one that selects the word) doesn't also
+      # open the menu in the same frame.
+      touch = input.touch_pointer?
+      had_sel = anchor >= 0 && anchor != cursor
+
+      # --- touch selection handles (Android teardrops) ----------------
+      # The two edges of a live selection grow draggable handles; each
+      # is its own interact id registered AFTER the field itself, so it
+      # wins the hit-test over the text (same trick as the scrollbar).
+      # Hit-testing rides the PREVIOUS frame's rect — one frame after
+      # the long-press the handles become grabbable. Runs BEFORE the
+      # press block: a press on a handle (or inside the selection) must
+      # not read as "outside the field" and drop focus/selection, and
+      # the handle's own drag drives a selection edge directly.
+      handle_tips = [] of {Pos2, Bool}
+      handle_pressed = false
+      if touch && anchor >= 0 && anchor != cursor && !new_text.empty?
+        sel_min, sel_max = {cursor, anchor}.min, {cursor, anchor}.max
+        [{sel_min, false}, {sel_max, true}].each do |(edge, right)|
+          row_index, col = caret_row_col(galley, row_starts, edge)
+          next unless (row = galley.rows[row_index]?)
+          tip = Pos2.new(
+            inner.min.x + galley.x_at(row_index, col, fonts),
+            inner.min.y + row.y + row.height - offset)
+          handle_tips << {tip, right}
+          hit = Rect.from_min_size(
+            Pos2.new(tip.x - 20.0, tip.y - 2.0), Vec2.new(40.0, 44.0))
+          h_resp = ui.interact(hit, id.child(HANDLE_SALT + (right ? 1 : 0)),
+            Sense.click_and_drag)
+          handle_pressed ||= h_resp.pressed?
+          if h_resp.dragged? && (pos = input.pointer_pos)
+            caret = caret_at(galley, row_starts, fonts, inner, offset, pos)
+            # Left handle drives the anchor, right the cursor; crossing
+            # them simply flips min/max (the handles swap next frame).
+            if right
+              cursor = caret
+            else
+              anchor = caret
+            end
+          end
+        end
+      end
 
       # Press places the caret, double-click selects a word, dragging
       # extends the selection (anchor latched at the press). The touch
-      # LONG-PRESS focuses and places the caret too — the context menu
-      # it opens (TextEditMenu below) works on a live caret.
+      # LONG-PRESS focuses and places the caret too — the handles it
+      # shows (above) work on a live caret.
       lp_fired = memory.long_press_fired? &&
                  (lpos = memory.long_press_pos) &&
                  rect.contains?(lpos) ? true : false
       if response.pressed? || response.clicked? || lp_fired
         response.request_focus
         if (pos = input.pointer_pos)
-          # Long-press selects the WORD under the finger (Android
-          # semantics) — same as double-click — so Copy/Cut in the
-          # menu it opens are live.
-          if response.double_clicked? || lp_fired
-            cursor, anchor = word_range(@text,
-              caret_at(galley, row_starts, fonts, inner, offset, pos))
+          caret = caret_at(galley, row_starts, fonts, inner, offset, pos)
+          if lp_fired && touch && had_sel
+            # Second long-press over an existing selection: Android
+            # keeps the selection and just opens the menu — no
+            # re-selection, no caret collapse.
+          elsif response.double_clicked? || lp_fired
+            # Long-press selects the WORD under the finger (Android
+            # semantics) — same as double-click — and enters the
+            # handle-selection mode.
+            cursor, anchor = word_range(@text, caret)
+          elsif touch && response.pressed? && !response.clicked? && had_sel &&
+                ({cursor, anchor}.min <= caret < {cursor, anchor}.max)
+            # Touch press INSIDE the live selection (or on a handle):
+            # hold it — the gesture may still become a long-press (menu)
+            # or a handle grab. A plain TAP collapses on its click
+            # frame, which lands in the else below.
           else
-            cursor = caret_at(galley, row_starts, fonts, inner, offset, pos)
+            cursor = caret
             anchor = cursor
           end
         end
       end
       # egui: a press outside the field surrenders focus (this is what
-      # lowers the on-screen keyboard on touch platforms).
-      if response.has_focus? && response.clicked_elsewhere?
+      # lowers the on-screen keyboard on touch platforms) — a press on
+      # one of the field's own selection handles is NOT elsewhere.
+      if response.has_focus? && response.clicked_elsewhere? && !handle_pressed
         ui.ctx.memory.focus.clear
       end
-      if response.drag_started? && (pos = input.pointer_pos) && anchor == -1
+      # Selection drag — mouse always, touch only INSIDE a long-press
+      # gesture (a plain touch drag scrolls the viewport instead; the
+      # kinetic branch in the scroll block above/below routes it).
+      select_drag = !touch || memory.long_press_active?
+      if response.drag_started? && select_drag && (pos = input.pointer_pos) && anchor == -1
         anchor = caret_at(galley, row_starts, fonts, inner, offset, pos)
       end
-      if response.dragged? && (pos = input.pointer_pos)
+      if response.dragged? && select_drag && (pos = input.pointer_pos)
         cursor = caret_at(galley, row_starts, fonts, inner, offset, pos)
       end
 
@@ -490,6 +561,26 @@ module Egui
 
       ui.painter.clip = outer_clip
 
+      # --- touch selection handles, painted (see the interact block) --
+      # The Android teardrop: an accent circle hanging below the edge
+      # with a wedge up to the edge itself. Drawn outside the text clip
+      # so the drop may overhang the box padding like the native
+      # widgets; ~44px of it is the grab zone registered above.
+      unless handle_tips.empty?
+        handle_tips.each do |tip, _right|
+          r = 7.0
+          gap = 2.0
+          cy = tip.y + gap + r
+          ui.painter.triangle(
+            Pos2.new(tip.x - r * 0.55, cy - 0.5),
+            Pos2.new(tip.x + r * 0.55, cy - 0.5),
+            Pos2.new(tip.x, tip.y + gap),
+            visuals.selection_fill)
+          ui.painter.circle_filled(Pos2.new(tip.x, cy), r,
+            visuals.selection_fill)
+        end
+      end
+
       # --- scrollbar (direct control, no inertia) --------------------
       kin_velocity = kin.velocity
       if content_h > view_h && view_h > 0.0
@@ -543,8 +634,11 @@ module Egui
       response.widget_text = new_text
       response.mark_changed if changed
       # Clipboard context menu (Copy/Cut/Paste/Select All) — long-press
-      # on touch, secondary press on the mouse.
-      TextEditMenu.show(ui, id, response, new_text, cursor, anchor)
+      # on touch (only with a selection already in place — the Android
+      # rule; the first long-press just selects + shows the handles),
+      # secondary press on the mouse.
+      TextEditMenu.show(ui, id, response, new_text, cursor, anchor,
+        touch_sel: touch ? had_sel : nil)
       # Soft-keyboard profile + editor mirror: multiline mode, Enter =
       # newline; the focused field's text/cursor feed the IME's editor
       # queries (registered AFTER the keyboard pass so this frame's

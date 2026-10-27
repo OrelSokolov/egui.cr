@@ -22,8 +22,14 @@ module Egui
     # Attach the menu to `response`; call every frame from the widget's
     # #ui. `text`, `cursor`, `anchor` are this frame's edit state — the
     # enable flags read from them.
+    #
+    # `touch_sel`: on touch devices, gate the long-press opening on a
+    # selection that existed BEFORE the press (Android: long-press #1
+    # selects the word, long-press #2 menus). nil keeps the legacy
+    # ungated long-press for widgets without touch selection semantics.
     def self.show(ui : Ui, id : Id, response : Response,
-                  text : String, cursor : Int32, anchor : Int32) : Nil
+                  text : String, cursor : Int32, anchor : Int32,
+                  touch_sel : Bool? = nil) : Nil
       ctx = ui.ctx
       cmd_id = id.child(CMD_SALT)
       ctx.memory.use_id(cmd_id)
@@ -34,7 +40,8 @@ module Egui
       # re-checks the clipboard.
       ctx.memory.data.set_string(clip_cell, "") unless ctx.popup_open?(menu_id)
 
-      response.context_menu do |menu|
+      response.context_menu(long_press_if:
+        touch_sel.nil? ? nil : ->{ touch_sel == true }) do |menu|
         has_sel = anchor >= 0 && anchor != cursor
         probe = ctx.memory.data.get_string(clip_cell, "")
         if probe.empty?

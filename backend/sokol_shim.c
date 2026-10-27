@@ -1097,6 +1097,12 @@ static void sh_cleanup_cb(void){ g_cleanup(); }
 // Egui::Event.zoom → InputState#zoom_delta, the touch twin of a
 // ctrl+wheel zoom.
 #define SH_EVENT_PINCH 100
+// Touch-synthesized pointer events carry SH_EVENT_TOUCH_BASE added to
+// the event type (same out-of-range trick): backend/sokol.cr strips it
+// and marks the Event as finger-sourced, so gesture routing (tap slop,
+// drag-vs-select in text fields) can follow Android semantics while
+// the desktop mouse path stays bit-identical.
+#define SH_EVENT_TOUCH_BASE 200
 #endif
 
 #if defined(__ANDROID__) || defined(SH_IOS)
@@ -1149,7 +1155,7 @@ static float     g_tch_pan_x, g_tch_pan_y; // last 2-finger centroid (fb px)
 static float     g_tch_dist = 0.0f;        // last 2-finger distance (fb px)
 
 static void sh_tch_pointer(int type, float x, float y) {
-    g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
+    g_event(type + SH_EVENT_TOUCH_BASE, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
 }
 static void sh_tch_scroll(float dx_px, float dy_px) {
     g_event(SAPP_EVENTTYPE_MOUSE_SCROLL, 0.0f, 0.0f,
@@ -1255,7 +1261,7 @@ static bool      g_ios_pinch = false;
 static float     g_ios_dist = 0.0f;       // last 2-finger distance (fb px)
 
 static void sh_ios_pointer(int type, float x, float y) {
-    g_event(type, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
+    g_event(type + SH_EVENT_TOUCH_BASE, x, y, 0.0f, 0.0f, 0, 0, 0, 0);
 }
 
 static void sh_ios_handle_touch(const sapp_event* ev) {
