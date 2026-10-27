@@ -232,6 +232,83 @@ The sheet rides on the `Theme` (`ctx.theme = …` swaps class styles
 together with the palette); the default theme's rules live in
 `default_theme.cr`.
 
+## Declarative layouts — `.exml`
+
+Structure can be declarative too, like style: an `.exml` document
+(`src/egui/exml.cr`) describes pages, menus, panels and widgets as
+markup, the binary owns the logic. The two talk through a store of
+named values (bindings, `{interpolation}`) and named actions
+(`on_click="save"` → registered procs) — no interpreter, the per-frame
+cost is a tree walk dispatching to the regular widgets. Editing the
+file hot-reloads in the running app; widget state (caret, scroll)
+survives via stable document-path ids. Named `<partial>` blocks and
+`<use partial="…">` compose the document at parse time — plain
+splicing, no parameters — and `Exml.validate` lints the markup
+against the widget vocabulary (attribute names/shapes, required
+attrs) so drift is caught by the spec suite, not in the render. See
+`examples/notepad_with_exml.cr` + `assets/notepad.exml`: the whole
+notepad interface — menus, editor, status bar, settings page, the
+unsaved-changes modal — is markup, hot-reloaded live.
+
+The vocabulary is open per application: any element name outside the
+built-in set parses as a custom node and dispatches to a handler the
+app registers — domain widgets and custom containers without
+touching the module. The top-level `widget` sugar registers one
+every renderer sees (an instance `Renderer#on` of the same name
+overrides it):
+
+```crystal
+widget :cpu_graph do |node, ui, ctx, rt, renderer|
+  ctx.request_repaint
+  rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, 160.0))
+  MyGraph.draw(ui.painter, rect, rt.floats["cpu"] || 0.0)
+end
+```
+
+```xml
+<cpu_graph/>
+```
+
+And components — the Vue SFC shape with the script half in **compiled
+Crystal** (no VM to embed): template + logic in one class, `<counter/>`
+in markup renders it. `setup` seeds the store once, `update` publishes
+live values each frame, actions are plain procs:
+
+```crystal
+class Counter < Egui::Exml::Component
+  exml "assets/components/counter.exml"  # template: embedded at compile
+                                         # time, live-file wins (hot reload)
+
+  def setup(rt)                          # const count = ref(0)
+    rt.floats["count"] = 0
+    rt.actions["inc"] = ->bump
+  end
+
+  def bump : Nil                         # @click="count++"
+    rt.not_nil!.floats["count"] += 1
+  end
+end
+
+renderer.component(Counter.new)          # → <counter/> anywhere in markup
+```
+
+List UIs are the Vue v-for: rows published as a store list slot, one
+scope per row (fields interpolate as `{item.field}`), `key=` keeps
+widget identities across reorders, and an action fired from a row
+lands its index in the root store as `_i`:
+
+```xml
+<repeat for="doc" in="docs" key="name">
+  <row><label text="{doc.name} — {doc.pages}p"/><button text="×" on_click="remove"/></row>
+</repeat>
+```
+
+Components take props from their use-site attributes (seeded into the
+scope before `setup`, interpolated against the app store), and any
+widget with `id="name"` registers its `Response` for the frame —
+`renderer.ref("name")` gives the app the rect/clicked?/hovered? of a
+markup widget (`<markdown text="…"/>` is in the vocabulary too).
+
 ## Reactive state
 
 On top of the immediate-mode core sits a thin reactive layer

@@ -1,0 +1,73 @@
+<exml>
+  <!-- The notepad UI, fully declarative — and composed: each page is a
+       short list of <use> lines pulling named partials (the sections)
+       and custom elements. Those pick the shape that fits:
+       <status_bar/> (chars/lines derivation) is a Component class,
+       <fps_meter/> (the live FPS reading) a stateless top-level
+       `widget` handler — both registered by the app binary; edit this
+       file while the app runs — it hot-reloads. -->
+
+  <partial id="app_menu">
+    <menubar>
+      <menu label="File">
+        <item label="New" on_click="new" hint="Ctrl+N"/>
+        <item label="Open…" on_click="open" hint="Ctrl+O"/>
+        <item label="Save" on_click="save" hint="Ctrl+S"/>
+        <item label="Save As…" on_click="save_as" hint="Ctrl+Shift+S"/>
+        <item label="Close Tab" on_click="close" hint="Ctrl+W"/>
+        <item label="Quit" on_click="quit" hint="Ctrl+Q"/>
+      </menu>
+      <menu label="View">
+        <item label="Next Tab" on_click="next_tab" hint="Ctrl+Tab"/>
+        <item label="Previous Tab" on_click="prev_tab" hint="Ctrl+Shift+Tab"/>
+      </menu>
+      <menu label="Settings">
+        <item label="Settings…" on_click="settings" hint="Ctrl+Comma"/>
+        <item label="{fps_mark}Show FPS" on_click="toggle_fps"/>
+      </menu>
+    </menubar>
+  </partial>
+
+  <partial id="editor">
+    <central>
+      <label if="no_docs"
+             text="No documents open — File → New (Ctrl+N), or the &quot;+&quot; in the title bar."/>
+      <!-- editor_id switches per tab: each document keeps its own
+           caret and selection; a changed id takes keyboard focus. -->
+      <textarea unless="no_docs" bind="doc_text" rows="100" frame="false"
+                editor_id="notepad/doc/{selected}"/>
+    </central>
+  </partial>
+
+  <partial id="status_panel">
+    <statusbar id="status">
+      <status_bar/>
+      <label text="{status}"/>
+      <fps_meter if="show_fps"/>
+    </statusbar>
+  </partial>
+
+  <page id="root/root">
+    <use partial="app_menu"/>
+    <use partial="editor"/>
+    <use partial="status_panel"/>
+  </page>
+
+  <page id="root/settings" title="Settings">
+    <heading text="Settings"/>
+    <input bind="search" hint="Search settings…" focus_id="search"/>
+    <separator/>
+    <label text="Theme:"/>
+    <combo bind="theme" options="Dark, Light" on_change="theme_changed"/>
+    <separator/>
+    <label text="Editor font size: 14"/>
+    <label text="Tab width: 4"/>
+    <label text="This page is a routed page — deep-link with --page root/settings (+#search to focus the search field)."/>
+    <label text="This page is EXML — edit assets/notepad.exml while the app runs and watch it change."/>
+  </page>
+
+  <modal id="root/confirm-close" if="pending_close" title="{confirm_title}"
+         buttons="Save|Don't save|Cancel" on_button="confirm">
+    <label text="&quot;{pending_title}&quot; has unsaved changes."/>
+  </modal>
+</exml>

@@ -28,7 +28,7 @@ PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
 # shim + archive, adds the `lottie` example and its link flags. The
 # vendor tree itself lands via `rake download:rlottie` (network, once).
 LOTTIE_FEATURE = ENV["LOTTIE"] == "1"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera", "device_api", "audio", "remote_image", "tray", "voice_echo"] +
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "notepad_with_exml", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "camera", "device_api", "audio", "remote_image", "tray", "voice_echo"] +
              (LOTTIE_FEATURE ? ["lottie"] : [])
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's

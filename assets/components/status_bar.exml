@@ -1,0 +1,5 @@
+<!-- StatusBar component template — the stats line. The counts
+     ({chars}/{lines}) are derived by the component's update from the
+     doc_text slot; doc_path/dirty_mark/has_doc stay the app's model
+     slots. Hot-reloads on edit. -->
+<label if="has_doc" text="{doc_path} — {chars} chars, {lines} lines{dirty_mark}"/>

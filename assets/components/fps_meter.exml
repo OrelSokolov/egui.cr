@@ -1,0 +1,6 @@
+<!-- FpsMeter template — the fixture for the spec suite's `exml` macro
+     test (MacroFps in spec/exml_spec.cr). The notepad app itself
+     renders <fps_meter/> through the top-level `widget` handler in
+     examples/notepad_with_exml.cr — a stateless element needs no
+     component machinery. -->
+<label text="FPS: {fps}  (frame {frame_ms} ms)"/>

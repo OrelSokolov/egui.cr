@@ -777,6 +777,13 @@ module Egui
                                 row_starts : Array(Int32), fonts : Fonts,
                                 view_h : Float64)
       input = ctx.input
+      # The caret can outlive a SHORTER buffer: a document swap under a
+      # stable widget id (the per-tab editors reuse "doc/N"; an exml
+      # store slot rebinds the same widget to new text) leaves the
+      # remembered caret past the end — clamp before any indexing so a
+      # swap can never IndexError the next keystroke.
+      cursor = cursor.clamp(0, text.size)
+      anchor = anchor == -1 ? anchor : anchor.clamp(0, text.size)
       new_text = text
       new_cursor = cursor
       new_anchor = anchor
