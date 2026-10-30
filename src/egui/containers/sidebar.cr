@@ -160,9 +160,9 @@ module Egui
       # The section/tab column sits on a vertical scroll area: when
       # the tabs overflow the panel the wheel + overlay scrollbar take
       # over (instead of the non-fitting tabs silently disappearing off
-      # the panel bottom). The bar rides the LEFT side — outside the
-      # content, pressed into the panel's left padding, away from the
-      # tabs' close X buttons on the right.
+      # the panel bottom). The bar rides the LEFT side — its strip is
+      # reserved out of the content, away from the tabs' close X
+      # buttons on the right.
       ScrollArea.new(vbar: :left).show(ui) do |inner|
         @sections.each_with_index do |section, si|
           # Space above each section block (replaces separators).

@@ -102,15 +102,17 @@ module Egui
     PANEL_H    = 190.0
     # Default width of the right column (the bottom strip is PANEL_H):
     # wide enough for the header's action cluster (tabs + Export + ⚙ +
-    # ✕ + gaps) even after the panel padding. Exact budget: interior =
-    # PANEL_W − 2×10 window padding; the header needs 2×TAB_W + 2 tab
-    # gaps + EXPORT_W + MENU_W + CLOSE_W + 3 cluster gaps (+8 item
-    # spacing each) = 402 → 422 leaves the spacer's gap non-negative
-    # (at 420 the ✕ cell was clamped 26→24 and its glyph spilled).
-    PANEL_W    = 422.0
+    # ✕ + gaps) even after the panel padding and the scrollbar strip
+    # the panel's auto-scroll reserves. Exact budget: interior =
+    # PANEL_W − 2×10 window padding − 8 reserved scrollbar strip; the
+    # header needs 2×TAB_W + 2 tab gaps + EXPORT_W + MENU_W + CLOSE_W +
+    # 3 cluster gaps (+8 item spacing each) = 402 → 430 leaves the
+    # spacer's gap non-negative (one notch tighter and the ✕ cell wraps
+    # to the next row).
+    PANEL_W    = 430.0
     # The width with a live .ecss session: the header adds the «Сохранить»
     # button (SAVE_W + its item-spacing gap) before Export.
-    PANEL_W_SAVE = 530.0
+    PANEL_W_SAVE = 538.0
     LABEL_W    = 130.0
     # Header geometry: equal-width tab cells (the "Class"/"Element"
     # pair reads as one control) and the right-pinned action cluster.

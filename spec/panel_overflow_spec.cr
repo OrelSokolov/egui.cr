@@ -126,8 +126,10 @@ describe "panel overflow (CSS overflow-y: auto by default)" do
         end
       end
     end
-    # the interior right edge of a 150px panel with 10px padding
-    edge = 140.0
+    # the interior right edge of a 150px panel with 10px padding, minus
+    # the always-reserved scrollbar strip (ScrollArea carves it out of
+    # the content's available width even when nothing scrolls)
+    edge = 140.0 - Egui::ScrollArea::BAR_W
     second = ctx.memory.widget_rects[Egui::Id.from("second")].not_nil!
     third = ctx.memory.widget_rects[Egui::Id.from("third")].not_nil!
     second.right.should be <= edge

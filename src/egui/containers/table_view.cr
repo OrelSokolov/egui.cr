@@ -391,7 +391,10 @@ module Egui
       visuals = style.visuals
       memory = ui.ctx.memory
       fs = style.font_size
-      width = ui.available_width
+      # The body's ScrollArea reserves its scrollbar strip out of the
+      # available width — the header band and column widths follow, so
+      # the header and the scrolled rows stay edge-aligned.
+      width = ui.available_width - ScrollArea::BAR_W
       row_h = {fs * Fonts::LINE_H_FACTOR + 2 * PAD_Y,
                style.spacing.interact_size.y}.max
       header_h = {fs * Fonts::LINE_H_FACTOR + 2 * (PAD_Y + 1.0),

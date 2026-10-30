@@ -291,8 +291,11 @@ describe "TableView sorting and resizing" do
     tv.column("N", 1)
     2.times { |i| tv_frame(ctx, time: 0.016 * (i + 1)) { |ui| tv.show(ui) } }
 
-    # Two equal columns over 400px: the boundary sits at x=200.
-    grip = Egui::Pos2.new(200.0, 12.0)
+    # Two equal columns over the 400px region minus the scrollbar
+    # strip TableView reserves for its body: the boundary sits at
+    # (400 − BAR_W)/2 = 196.
+    edge = 400.0 - Egui::ScrollArea::BAR_W
+    grip = Egui::Pos2.new(edge / 2.0, 12.0)
     tv_frame(ctx, [Egui::Event.pointer_moved(grip),
       Egui::Event.pointer_pressed(grip)], 0.048) { |ui| tv.show(ui) }
     moved = Egui::Pos2.new(250.0, 12.0)
@@ -304,7 +307,7 @@ describe "TableView sorting and resizing" do
     w0 = ctx.memory.data.get_f64(id.child(0x5001_u64), 0.0)
     w1 = ctx.memory.data.get_f64(id.child(0x5002_u64), 0.0)
     w0.should be_close(250.0, 1.0)
-    w1.should be_close(150.0, 1.0)
+    w1.should be_close(edge - 250.0, 1.0)
 
     # …and the next frame keeps the resized layout (the second column
     # header "N" now starts at the dragged boundary)

@@ -8,16 +8,17 @@
 # scroll sink — only the top-most sink under the pointer (scroll area,
 # textarea, plot…) consumes `input.scroll`.
 #
-# Two scrollbar flavors: `:overlay` (default) paints a thin bar over
-# the content's edge; `:classic` reserves a separate 16px strip
-# beside the content, Win95/XP style — square arrow buttons on both
-# ends, a draggable thumb, and track clicks that page toward the
-# pointer.
+# Two scrollbar flavors, both RESERVING their strip up front — the
+# content's available_width/height never includes the bar, so layout
+# is stable whether or not the bars are currently scrollable (the
+# same contract the TextArea and terminal widgets keep):
+#   :overlay (default) — a thin 8px strip beside the content
+#   :classic — a 16px strip, Win95/XP style: square arrow buttons on
+#        both ends, a draggable thumb, and track clicks that page
+#        toward the pointer
 #
 # Bar PLACEMENT is per axis and per side:
 #   vbar: :right (default) | :left   — the vertical scrollbar's side
-#        (an overlay :left bar rides OUTSIDE the viewport, in the
-#        margin left of it — flush to the region edge, off the content)
 #   hbar: nil (default) | :bottom | :top — horizontal scrolling, off
 #        unless a side is given (nil keeps the inner Ui viewport-wide,
 #        which is what fill-width content like the Sidebar wants)
@@ -61,15 +62,17 @@ module Egui
       id = @id || ui.next_widget_id
 
       height = {@max_height || ui.available_height, ui.available_height}.min
-      # The classic strips are reserved up front, so the viewport (and
-      # thus the content size) is stable whether or not the bars are
-      # currently scrollable. A left/top classic bar shifts the
-      # viewport in; a right/bottom one is carved out of its far edge.
-      vbar_w = classic? ? CLASSIC_W : 0.0
-      hbar_h = classic? && @hbar ? CLASSIC_W : 0.0
+      # The scrollbar strips are reserved up front — both flavors — so
+      # the viewport (and thus the content size) is stable whether or
+      # not the bars are currently scrollable, and the content never
+      # sees an available_width/height that includes the bar. A
+      # left/top bar shifts the viewport in; a right/bottom one is
+      # carved out of its far edge.
+      vbar_w = bar_w
+      hbar_h = @hbar ? bar_w : 0.0
       viewport = Rect.from_min_size(
-        Pos2.new(ui.cursor.x + (classic? && vbar_left? ? CLASSIC_W : 0.0),
-          ui.cursor.y + (classic? && hbar_top? ? CLASSIC_W : 0.0)),
+        Pos2.new(ui.cursor.x + (vbar_left? ? bar_w : 0.0),
+          ui.cursor.y + (hbar_top? ? bar_w : 0.0)),
         Vec2.new({ui.available_width - vbar_w, 0.0}.max,
           {height - hbar_h, 0.0}.max))
 
@@ -174,14 +177,16 @@ module Egui
 
       # Scrollbars when the content overflows. Both flavors report
       # whether the user directly drove the offset this frame (thumb
-      # drag / arrows / paging) — direct control kills inertia.
-      covering = viewport
+      # drag / arrows / paging) — direct control kills inertia. The
+      # reserved strips are always part of the covering min_rect, so
+      # the widget's bounds stay stable whether the bars show or not.
+      covering = viewport.union(vbar_rect(viewport))
+      covering = covering.union(hbar_rect(viewport)) if @hbar
       v_direct = false
       if content_size.y > viewport.height && viewport.height > 0.0
         if classic?
-          bar, v_direct = classic_vbar(ui, id, viewport, content_size.y,
+          _bar, v_direct = classic_vbar(ui, id, viewport, content_size.y,
             max_v, offset, v_kin)
-          covering = covering.union(bar)
         else
           v_direct = overlay_vbar(ui, id, viewport, content_size.y,
             max_v, offset, v_kin)
@@ -190,22 +195,19 @@ module Egui
         # Nothing to scroll: the column stays (stable layout) with a
         # disabled look — groove + dimmed arrows, no thumb, no clicks.
         classic_vbar_disabled(ui, viewport)
-        covering = covering.union(classic_vbar_rect(viewport))
       end
       h_direct = false
       if (hk = h_kin)
         if content_size.x > viewport.width && viewport.width > 0.0
           if classic?
-            bar, h_direct = classic_hbar(ui, id, viewport, content_size.x,
+            _bar, h_direct = classic_hbar(ui, id, viewport, content_size.x,
               max_h, offset, hk)
-            covering = covering.union(bar)
           else
             h_direct = overlay_hbar(ui, id, viewport, content_size.x,
               max_h, offset, hk)
           end
         elsif classic?
           classic_hbar_disabled(ui, viewport)
-          covering = covering.union(classic_hbar_rect(viewport))
         end
       end
 
@@ -224,19 +226,25 @@ module Egui
       @hbar == :top
     end
 
-    # Classic strip rects: the reserved column/row at the configured
-    # side of the viewport (outside it — the viewport was shrunk/shift
-    # ed up front to make room).
-    private def classic_vbar_rect(viewport : Rect) : Rect
-      x = vbar_left? ? viewport.left - CLASSIC_W : viewport.right
-      Rect.from_min_size(Pos2.new(x, viewport.top),
-        Vec2.new(CLASSIC_W, viewport.height))
+    # The reserved strip's thickness (px) — the only geometric
+    # difference between the two flavors.
+    private def bar_w : Float64
+      classic? ? CLASSIC_W : BAR_W
     end
 
-    private def classic_hbar_rect(viewport : Rect) : Rect
-      y = hbar_top? ? viewport.top - CLASSIC_W : viewport.bottom
+    # Reserved strip rects: the column/row at the configured side of
+    # the viewport (outside it — the viewport was shrunk/shifted up
+    # front to make room).
+    private def vbar_rect(viewport : Rect) : Rect
+      x = vbar_left? ? viewport.left - bar_w : viewport.right
+      Rect.from_min_size(Pos2.new(x, viewport.top),
+        Vec2.new(bar_w, viewport.height))
+    end
+
+    private def hbar_rect(viewport : Rect) : Rect
+      y = hbar_top? ? viewport.top - bar_w : viewport.bottom
       Rect.from_min_size(Pos2.new(viewport.left, y),
-        Vec2.new(viewport.width, CLASSIC_W))
+        Vec2.new(viewport.width, bar_w))
     end
 
     # --- overlay bars (default) -----------------------------------------
@@ -251,16 +259,12 @@ module Egui
                              content_h : Float64, max_offset : Float64,
                              offset : Vec2, kin : KineticScroller) : Bool
       memory = ui.ctx.memory
-      # A LEFT overlay bar rides OUTSIDE the viewport — pressed into
-      # the margin left of it (the window padding), flush against the
-      # region's edge and clear of the content instead of on top of
-      # it. The strip can fall outside the ambient clip (which already
-      # ends at the viewport), so hit-testing and painting below run
-      # on a clip widened by the track rect.
-      track = Rect.from_min_size(
-        Pos2.new(vbar_left? ? viewport.left - BAR_W : viewport.right - BAR_W,
-          viewport.top),
-        Vec2.new(BAR_W, viewport.height))
+      # The bar lives in the strip RESERVED beside the viewport (see
+      # `vbar_rect`) — the content never flows under it. The strip can
+      # still fall outside the ambient clip (which ends at the
+      # viewport), so hit-testing and painting below run on a clip
+      # widened by the track rect.
+      track = vbar_rect(viewport)
       bar_id = id.child(2)
       response = ui.ctx.interact(bar_id, track, Sense.click_and_drag,
         ui.layer, ui.clip.union(track))
@@ -326,10 +330,7 @@ module Egui
                              content_w : Float64, max_offset : Float64,
                              offset : Vec2, kin : KineticScroller) : Bool
       memory = ui.ctx.memory
-      track = Rect.from_min_size(
-        Pos2.new(viewport.left,
-          hbar_top? ? viewport.top : viewport.bottom - BAR_W),
-        Vec2.new(viewport.width, BAR_W))
+      track = hbar_rect(viewport)
       bar_id = id.child(7)
       response = ui.interact(track, bar_id, Sense.click_and_drag)
 
@@ -383,7 +384,7 @@ module Egui
     # Vertical geometry shared by the live and disabled branches:
     # {bar, up button, down button} (the track spans between them).
     private def classic_v_geometry(viewport : Rect)
-      bar = classic_vbar_rect(viewport)
+      bar = vbar_rect(viewport)
       up_r = Rect.from_min_size(bar.min, Vec2.new(CLASSIC_W, CLASSIC_W))
       down_r = Rect.from_min_size(
         Pos2.new(bar.left, bar.bottom - CLASSIC_W),
@@ -393,7 +394,7 @@ module Egui
 
     # Horizontal geometry: {bar, left button, right button}.
     private def classic_h_geometry(viewport : Rect)
-      bar = classic_hbar_rect(viewport)
+      bar = hbar_rect(viewport)
       left_r = Rect.from_min_size(bar.min, Vec2.new(CLASSIC_W, CLASSIC_W))
       right_r = Rect.from_min_size(
         Pos2.new(bar.right - CLASSIC_W, bar.top),

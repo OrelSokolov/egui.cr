@@ -112,8 +112,12 @@ module Egui
         # The scrollbar strip (right edge). It is carved out of BOTH
         # the cell area and the terminal's own interact rect —
         # overlapping interact rects would make the press hit-test
-        # (Memory#topmost_at) ambiguous. Hidden on the alternate
-        # screen (no scrollback there) and when history is empty.
+        # (Memory#topmost_at) ambiguous. The bar itself is HIDDEN on
+        # the alternate screen (no scrollback there) and while history
+        # is empty, but the strip below is always carved out of the
+        # grid width — the column count must not jump the moment the
+        # first scrollback line shows a bar (that used to re-fit the
+        # grid and SIGWINCH the child).
         bar_rect = nil
         if !term.alt_active? && term.grid.scrollback_used > 0
           bar_rect = Rect.from_min_size(
@@ -139,7 +143,8 @@ module Egui
         @backend.pump
 
         # Grid geometry: fit whole cells, keep the leftover as padding.
-        grid_avail_w = rect.width - PAD * 2 - (bar_rect ? BAR_W : 0.0)
+        # The bar strip is always reserved (see above).
+        grid_avail_w = rect.width - PAD * 2 - BAR_W
         cols = (grid_avail_w / @cell_w).floor.to_i.clamp(2, 500)
         rows = ((rect.height - PAD * 2) / @cell_h).floor.to_i.clamp(2, 250)
         if cols != term.cols || rows != term.rows
