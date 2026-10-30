@@ -317,7 +317,8 @@ module Egui
                      default_color : Color32, family : String? = nil,
                      resolve : ((String?, Bool, Bool) -> Fonts)? = nil,
                      selection : Array(Tuple(Int32, Float64, Float64))? = nil,
-                     selection_color : Color32? = nil) : Nil
+                     selection_color : Color32? = nil,
+                     row_align : Symbol? = nil) : Nil
       # Cull rows outside the clip rect: a scrolled textarea with a
       # multi-megabyte galley must not tessellate (and rasterize) every
       # row of the buffer each frame — only the visible window. Rows
@@ -328,6 +329,14 @@ module Egui
         row_top = pos.y + row.y
         next if row_top + row.height < clip_top
         break if row_top > clip_bottom
+        # Per-row horizontal alignment (CSS text-align semantics: each
+        # LINE is placed by its own width inside the galley block) —
+        # the Label#align plumbing passes :center/:right through here.
+        dx = case row_align
+             when :center then {galley.size.x - row.width, 0.0}.max / 2.0
+             when :right  then {galley.size.x - row.width, 0.0}.max
+             else              0.0
+             end
         # The row's SHARED baseline (see Galley::Row#ascent): every run
         # aligns on it, whatever stack it draws through. Each run's
         # TextCmd still anchors the em-box CENTER (`#text` semantics the
@@ -353,7 +362,7 @@ module Egui
                      row_top + row.height - chip_h / 2.0}.min
           chip_cy = {chip_cy, row_top + chip_h / 2.0}.max
           rect(Rect.from_min_size(
-            Pos2.new(pos.x + run.x - pad_x, chip_cy - chip_h / 2.0),
+            Pos2.new(pos.x + dx + run.x - pad_x, chip_cy - chip_h / 2.0),
             Vec2.new(w + pad_x * 2.0, chip_h)),
             6.0, bg)
         end
@@ -362,7 +371,7 @@ module Egui
           selection.each do |sri, x0, x1|
             next unless sri == ri && x1 > x0
             rect(Rect.from_min_size(
-              Pos2.new(pos.x + x0, row_top + 1.0),
+              Pos2.new(pos.x + dx + x0, row_top + 1.0),
               Vec2.new(x1 - x0, row.height - 2.0)),
               0.0, color)
           end
@@ -371,7 +380,7 @@ module Egui
         row.runs.each do |run|
           run_fonts = resolve ? resolve.not_nil!.call(run.family, run.bold?, run.italic?) : fonts
           asc, desc = run_fonts.metrics_at(run.size)
-          run_pos = Pos2.new(pos.x + run.x, baseline - (asc + desc) / 2.0)
+          run_pos = Pos2.new(pos.x + dx + run.x, baseline - (asc + desc) / 2.0)
           color = run.color || default_color
           run_family = run.family || family
           text(run_pos, run.text, run.size, color, run_family,

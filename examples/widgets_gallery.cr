@@ -93,6 +93,10 @@ class GalleryApp < Egui::App
   @text_menu : Egui::ContextMenu?
   @input_menu : Egui::ContextMenu?
   @button_menu : Egui::ContextMenu?
+  # The Firefox-style About as a window-inside-window (Help menu) —
+  # see Egui::EmbeddedWindow.
+  @about_win_open = false
+  @about_win : Egui::EmbeddedWindow?
   # System-style presets (Ubuntu / Windows XP / Windows 11 / macOS),
   # built lazily once — themes are swapped by reference, so the Theme
   # instances are reused across clicks (see #system_themes).
@@ -196,6 +200,9 @@ class GalleryApp < Egui::App
         menu.menu_item(ctx.theme.dark? ? "Light theme" : "Dark theme",
           ACTION_THEME)
       end
+      bar.menu_button("Help") do |menu|
+        menu.menu_item("About egui.cr (window)…") { @about_win_open = true }
+      end
     end
 
     # Side panel hosting the Sidebar widget — it draws the sections and
@@ -257,6 +264,13 @@ class GalleryApp < Egui::App
         ui.label("Everything below is blocked while this is open.")
       end
       @modal_open = false if clicked == "Close"
+    end
+
+    # Help → About (window): the Firefox-style About as a real dialog
+    # window inside the app (Egui::EmbeddedWindow).
+    if @about_win_open && about_window.show(ctx)
+      @about_win_open = false
+      about_window.update_status = ""
     end
 
     ctx.bottom_panel("fps") do |ui|
@@ -706,6 +720,36 @@ class GalleryApp < Egui::App
       .item("Cancel", icon: :close) { @last_action = "context: cancelled" }
       .separator
       .item("New tab", icon: :plus, action: ACTION_NEW)
+  end
+
+  # The Firefox-style About window (Help menu), built once: icon |
+  # name/version/update/description, then the links row and the small
+  # footer — see Egui::EmbeddedWindow.
+  private def about_window : Egui::EmbeddedWindow
+    @about_win ||= begin
+      win = Egui::EmbeddedWindow.new(
+        "About egui.cr",
+        version: "0.3.0",
+        icon: LOGO_VARIANTS["icon"],
+        description: "An immediate-mode GUI for Crystal — a from-scratch " \
+                     "port of egui ideas on a custom sokol backend.\n\n" \
+                     "The update check is a demo stub: the button fires " \
+                     "the on_update callback, the status line under it is " \
+                     "live state the handler sets.",
+        links: [
+          {"Licensing", "https://github.com/OrelSokolov/egui.cr/blob/main/LICENSE"},
+          {"End User Rights", "https://github.com/OrelSokolov/egui.cr/blob/main/LICENSE"},
+          {"Privacy policy", "https://github.com/emilk/egui"},
+        ],
+        footer: "egui.cr contributors — immediate-mode, Crystal, sokol. " \
+                "Built with egui.cr itself.",
+        update_label: "Check for updates")
+      win.on_update = ->{
+        win.update_status = "egui.cr is up to date (0.3.0)"
+        nil
+      }
+      win
+    end
   end
 
   private def display_gallery(ui : Egui::Ui) : Nil

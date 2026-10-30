@@ -342,16 +342,17 @@ module Egui
     # egui `ui.label` — selectable text by default (`userselect: false`
     # for the inert paint-only label). `wrap` nil (default) wraps the
     # label against the available width in a vertical layout; `true`
-    # wraps always, `false` never.
+    # wraps always, `false` never. `align:` (:left/:center/:right)
+    # places the text inside the rect (nil = left).
     def label(text : String, wrap : Bool? = nil,
-              userselect : Bool = true) : Response
-      add(Label.new(text, wrap: wrap, userselect: userselect))
+              userselect : Bool = true, align : Symbol? = nil) : Response
+      add(Label.new(text, wrap: wrap, userselect: userselect, align: align))
     end
 
     # egui `ui.label(RichText)`.
     def rich(text : RichText, wrap : Bool? = nil,
-             userselect : Bool = true) : Response
-      add(Label.new(text, wrap: wrap, userselect: userselect))
+             userselect : Bool = true, align : Symbol? = nil) : Response
+      add(Label.new(text, wrap: wrap, userselect: userselect, align: align))
     end
 
     # A label that scrolls: wraps exactly like a TextArea, grows with

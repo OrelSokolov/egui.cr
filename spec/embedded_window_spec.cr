@@ -1,9 +1,9 @@
 require "../src/egui"
 require "./core_spec" # raw_frame helper + SCREEN
 
-# The card shell of an embedded window/modal: the largest RectCmd that
-# is not the full-screen scrim (the scrim spans the whole 800×600
-# screen; the shell of a taller-than-screen dialog is taller than it).
+# The card shell of an embedded window/modal: the widest RectCmd —
+# with the scrim-free embedded window simply the card itself (a
+# taller-than-screen dialog is taller than the 800×600 screen).
 private def card_shell(ctx)
   ctx.painter.commands.select(Egui::RectCmd)
     .reject { |c| c.rect.width >= 800.0 }
@@ -42,7 +42,7 @@ describe "Context#embedded_window" do
     ctx.end_frame
   end
 
-  it "closes on the ✕, the scrim and Escape" do
+  it "closes on the ✕ only — no scrim, no Escape, no dim" do
     ctx = Egui::Context.new
     closed = false
 
@@ -57,13 +57,22 @@ describe "Context#embedded_window" do
     draw.call([] of Egui::Event, 0.016)
     draw.call([] of Egui::Event, 0.032)
 
-    # Escape closes
-    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Escape)], 0.048)
-    closed.should be_true
+    # no scrim: nothing is painted with the modal dim over the screen
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == ctx.style.visuals.modal_dim }.should be_false
 
-    # reopen: ✕ closes
-    draw.call([] of Egui::Event, 0.064)
+    # Escape does NOT close
+    draw.call([Egui::Event.key_pressed(Egui::KeyCode::Escape)], 0.048)
     closed.should be_false
+
+    # a click outside the card (where the scrim used to be) does NOT close
+    corner = Egui::Pos2.new(4.0, 4.0) # far from the centered card
+    draw.call([Egui::Event.pointer_moved(corner),
+               Egui::Event.pointer_pressed(corner),
+               Egui::Event.pointer_released(corner)], 0.064)
+    closed.should be_false
+
+    # the ✕ closes
     close_rect = ctx.memory.widget_rects[Egui::Id.from("embedded/d/close")]?
     close_rect.should_not be_nil
     center = close_rect.not_nil!.center
@@ -71,14 +80,6 @@ describe "Context#embedded_window" do
                Egui::Event.pointer_pressed(center)], 0.080)
     closed.should be_false
     draw.call([Egui::Event.pointer_released(center)], 0.096)
-    closed.should be_true
-
-    # reopen: a scrim click (outside the card) closes
-    draw.call([] of Egui::Event, 0.112)
-    corner = Egui::Pos2.new(4.0, 4.0) # far from the centered card
-    draw.call([Egui::Event.pointer_moved(corner),
-               Egui::Event.pointer_pressed(corner),
-               Egui::Event.pointer_released(corner)], 0.128)
     closed.should be_true
   end
 
@@ -91,10 +92,9 @@ describe "Context#embedded_window" do
     texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
     texts.should contain("Settings")
     texts.should contain("body")
-    # centered: the card (not the full-screen scrim) spans the middle
-    # of the 800×600 screen
+    # centered: the card spans the middle of the 800×600 screen
     shell = ctx.painter.commands.select(Egui::RectCmd)
-      .map(&.rect).reject { |r| r.width >= 800.0 }.max_by(&.width)
+      .map(&.rect).max_by(&.width)
     shell.left.should be > 100.0
     shell.right.should be < 700.0
   end

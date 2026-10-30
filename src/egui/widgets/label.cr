@@ -20,7 +20,9 @@
 # box-model `padding` (per-side `padding.top/…` or the scalar shorthand):
 # padding grows the allocated rect and offsets the text into the
 # content box, and a wrapping label wraps against the width minus the
-# horizontal padding.
+# horizontal padding. `text_align` ("left"/"center"/"right") places
+# the galley inside the rect; the `align:` parameter does the same
+# per widget.
 
 module Egui
   class Label
@@ -37,10 +39,16 @@ module Egui
     # token). When set they replace `rich.runs` verbatim — the RichText
     # only carries the plain text (selection/measure fallback).
     getter preset_runs : Array(TextRun)?
+    # Horizontal placement of the text inside the allocated rect:
+    # nil/:left hugs the content box's left edge (upstream default),
+    # :center/:right shift the galley by the free slack. Also stylable
+    # as the CSS-like `text_align` key ("left" / "center" / "right")
+    # — the explicit parameter wins.
+    property align : Symbol?
 
     def initialize(text : String, size : Float64? = nil, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil,
-                   line_height : Float64? = nil)
+                   line_height : Float64? = nil, align : Symbol? = nil)
       @rich = RichText.new(text)
       @rich.size(size) if size
       @wrap = wrap
@@ -48,16 +56,18 @@ module Egui
       @id_name = id
       @line_height = line_height
       @preset_runs = nil
+      @align = align
     end
 
     def initialize(@rich : RichText, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil,
                    @preset_runs : Array(TextRun)? = nil,
-                   line_height : Float64? = nil)
+                   line_height : Float64? = nil, align : Symbol? = nil)
       @wrap = wrap
       @userselect = userselect
       @id_name = id
       @line_height = line_height
+      @align = align
     end
 
     # Text-decoration chainables (the `Hyperlink#underline` parity):
@@ -72,13 +82,25 @@ module Egui
       self
     end
 
+    # "left" / "center" / "right" (case-insensitive) → the symbol;
+    # anything else (nil included) = the default left alignment.
+    private def parse_align(value : String?) : Symbol?
+      case value.try(&.downcase)
+      when "center" then :center
+      when "right"  then :right
+      when "left"   then :left
+      else               nil
+      end
+    end
+
     def style_class : String?
       "label"
     end
 
     def style_properties : Array(StyleProp)
       StyleProps.textlike + StyleProps.sizable +
-        [StyleProp.new("padding", :box)]
+        [StyleProp.new("padding", :box),
+         StyleProp.new("text_align", :string)]
     end
 
     def inspector_label : String?
@@ -108,6 +130,10 @@ module Egui
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, weight, @rich.bold?)
       run_bold = weight.nil? ? nil : face_bold
+      # Horizontal placement: the #align parameter or the `text_align`
+      # style key — resolved once, before sizing (an aligned label in
+      # a vertical layout stretches, see below).
+      align = self.align || parse_align(class_vars.str?("text_align"))
       if (preset = @preset_runs)
         # Preset runs (syntax-highlighted code): colors already baked
         # in — the no-mono-stack retint would erase them.
@@ -164,6 +190,14 @@ module Egui
       galley = fonts.layout(runs, max_width, resolve, @line_height)
 
       size = galley.size + Vec2.new(pad.horizontal, pad.vertical)
+      # A :center/:right label is BLOCK-LEVEL in a vertical layout
+      # (CSS `text-align` semantics): it stretches to the available
+      # width so the alignment has room to act — hugging its content
+      # there would make center/right a silent no-op. Horizontal rows
+      # keep the hugging size (the row cell already sizes it).
+      if (align == :center || align == :right) && ui.layout.vertical?
+        size = Vec2.new({size.x, available}.max, size.y)
+      end
       # Responsive size keys are the last word on each axis (width
       # overrides the wrapped galley width; text centers in the rect).
       size = styled_size(size, class_vars, ui, id)
@@ -188,14 +222,25 @@ module Egui
       else
         text_top = rect.center.y - galley.size.y / 2.0
       end
+      # Horizontal placement (#align, or the `text_align` style key):
+      # the galley shifts by the free slack of the content box — a
+      # label stretched by a width key (or sharing a row with taller
+      # widgets) centers/right-aligns inside the rect it was given.
+      slack_x = {rect.width - pad.horizontal - galley.size.x, 0.0}.max
+      slack_x = case align
+                when :center then slack_x / 2.0
+                when :right  then slack_x
+                else              0.0
+                end
       content = Rect.from_min_size(
-        Pos2.new(rect.min.x + pad.left, text_top), galley.size)
+        Pos2.new(rect.min.x + pad.left + slack_x, text_top), galley.size)
       if @userselect
         paint_selectable(ui, response, id, content, galley, fonts,
-          face_family, style)
+          face_family, style, align)
       else
         ui.painter.paint_galley(content.min, galley, fonts,
-          style.visuals.text_color, face_family, resolve)
+          style.visuals.text_color, face_family, resolve, nil, nil,
+          align)
       end
 
       response
@@ -210,7 +255,8 @@ module Egui
     private def paint_selectable(ui : Ui, response : Response, id : Id,
                                  rect : Rect, galley : Galley,
                                  fonts : Fonts, face_family : String?,
-                                 style : Style) : Nil
+                                 style : Style,
+                                 align : Symbol? = nil) : Nil
       ctx = ui.ctx
       # Run stacks for caret/selection geometry: x_at must measure
       # each run's slice through ITS stack (code blocks draw mono
@@ -255,19 +301,19 @@ module Egui
          (pos = ctx.input.pointer_pos)
         if response.double_clicked?
           cursor, anchor = word_range(flat,
-            cursor_at(galley, row_starts, rect, pos, fonts, resolve))
+            cursor_at(galley, row_starts, rect, pos, fonts, resolve, align))
         else
-          cursor = anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
+          cursor = anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
         end
       end
       # Drag-select: the anchor stays where the press put it, the
       # caret follows the pointer (a drag with no prior press anchors
       # here).
       if response.drag_started? && (pos = ctx.input.pointer_pos) && anchor == -1
-        anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
+        anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
       end
       if response.dragged? && (pos = ctx.input.pointer_pos)
-        cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve)
+        cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
       end
 
       # Ctrl/Cmd+C copies the selection (upstream `Modifiers::command`)
@@ -328,14 +374,15 @@ module Egui
         sel = segs unless segs.empty?
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, resolve, sel, visuals.selection_fill)
+        face_family, resolve, sel, visuals.selection_fill, align)
     end
 
     # Byte index of the pointer inside the flattened row text: the row
     # under the pointer (y), then the nearest x boundary within it.
     private def cursor_at(galley : Galley, row_starts : Array(Int32),
                           rect : Rect, pos : Pos2, fonts : Fonts,
-                          resolve : (String?, Bool, Bool) -> Fonts) : Int32
+                          resolve : (String?, Bool, Bool) -> Fonts,
+                          align : Symbol? = nil) : Int32
       return 0 if galley.rows.empty?
       local_x = pos.x - rect.left
       local_y = pos.y - rect.top
@@ -346,6 +393,15 @@ module Egui
       end
       row = galley.rows[row_index]
       text = row.text
+      # Aligned rows paint shifted by their slack (paint_galley's
+      # row_align) — undo the shift before mapping the pointer onto
+      # the row's galley coordinates.
+      dx = case align
+           when :center then {galley.size.x - row.width, 0.0}.max / 2.0
+           when :right  then {galley.size.x - row.width, 0.0}.max
+           else              0.0
+           end
+      local_x -= dx
       return row_starts[row_index] + text.size if local_x >= row.width
       best = text.size
       text.size.times do |i|

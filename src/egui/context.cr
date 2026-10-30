@@ -933,6 +933,12 @@ module Egui
     # contents, back-fill the frame, title.
     WINDOW_MIN_SIZE = Vec2.new(120.0, 80.0)
 
+    # The Win11 embedded-window caption band in the DARK palette — a
+    # step BELOW the #202020 body (WindowFrame::Windows::BG), so the
+    # frame is always darker than the window it frames (the light
+    # palette gets that from #D6D6D6 over #F3F3F3 already).
+    CAPTION_DARK = Color32.new(0x16, 0x16, 0x16, 255) # #161616
+
     # Upstream `Area` defaults to `constrain: true`: floating regions
     # never exceed the screen and are shifted back inside it
     # (`Context::constrain_window_rect_to_area`, area.rs). The width is
@@ -1341,10 +1347,10 @@ module Egui
 
     # An embedded window — a MODAL window with chrome: what #modal is for
     # content dialogs, this is for an app's dialog WINDOWS (Settings,
-    # Theme…): it dims the screen and blocks interaction below the
-    # Foreground layer (Memory#mark_modal) while floating as a titled,
-    # DRAGGABLE window with a ✕ — the caller keeps the open flag and
-    # drops it when this returns true.
+    # Theme…): it blocks interaction below the Foreground layer
+    # (Memory#mark_modal) while floating as a titled, DRAGGABLE window
+    # with a ✕ — the caller keeps the open flag and drops it when this
+    # returns true.
     #
     # Centered on the measured size every frame until the user drags the
     # window (the very first frame of a session uses a height estimate,
@@ -1355,13 +1361,20 @@ module Egui
     # pins at the top). `title:` nil drops the title bar down to a slim
     # drag handle.
     #
-    # Returns true the frame the user asked to close it: the ✕, the
-    # scrim (when `close_on_scrim:`, the dimmed area IS the dismiss
-    # target) or Escape (`close_on_escape:`).
+    # Unlike #modal there is NO scrim: the background behind the window
+    # is neither dimmed nor a click target. Returns true the frame the
+    # user asked to close it — the ✕ ONLY (no scrim click, no Escape).
+    #
+    # `frame: :win11` swaps the chrome to a MINIATURE of the app's own
+    # Windows 11 window (WindowFrame::Windows), 1:1: the #202020 dark /
+    # #D6D6D6-over-#F3F3F3 light palettes, a 32pt caption with a 14pt
+    # title at the 16pt inset, a 46×32 close button flush to the
+    # corner with the Segoe-Fluent 1px glyph and the system-red hover
+    # (#C42B1C) / press (#B3271E), and the 1px rim (#3A3A3A / #BEBEBE)
+    # at 8px rounding. What Egui::EmbeddedWindow uses.
     def embedded_window(id : String, title : String? = nil,
                         width : Float64 = 460.0,
-                        close_on_escape : Bool = true,
-                        close_on_scrim : Bool = true,
+                        frame : Symbol = :classic,
                         &block : Ui ->) : Bool
       @memory.mark_modal
       win_id = Id.from("embedded/#{id}")
@@ -1369,29 +1382,29 @@ module Egui
       screen = @input.screen_rect
       v = style.visuals
       pad = style.spacing.window_padding
-      title_size = style.font_size * 1.25
-      title_h = title ? title_size + pad.y : 8.0
+      win11 = frame == :win11
+      # The Win11 frame is a MINIATURE of the app's own chrome
+      # (WindowFrame::Windows) — same palette, caption geometry and
+      # glyph shapes, 1:1, only the window is small. Everything the
+      # branch paints comes from that class's constants.
+            if win11
+        title_size = WindowFrame::Windows::TITLE_PT
+        title_h = title ? WindowFrame::Windows::CAPTION_H : 8.0
+      else
+        title_size = style.font_size * 1.25
+        title_h = title ? title_size + pad.y : 8.0
+      end
 
       # Never wider than the screen (upstream `Area` constrain).
       width = {width, screen.width}.min if screen.width > 0.0
 
-      # Keyboard dismiss first, so a focused child widget's own Escape
-      # handling still wins by consuming the key earlier in the frame.
-      close = close_on_escape && @input.consume_key(KeyCode::Escape)
+      # Closed by the ✕ only — no Escape, no click-outside dismiss.
+      close = false
 
-      # Dim everything below (same scrim as #modal).
+      # No scrim (unlike #modal): the background behind the window stays
+      # fully visible and interactive-blocking comes from mark_modal.
       @painter.layer = Order::Foreground
       @painter.clip = screen
-      @painter.rect(screen, 0.0, v.modal_dim)
-
-      # The scrim as a click target ("click outside to dismiss"),
-      # declared BEFORE the card so the card's widgets hit-test above
-      # it in the same Foreground layer.
-      if close_on_scrim
-        scrim = interact(Id.from("embedded/#{id}/scrim"), screen,
-          Sense::Click, layer, screen)
-        close = true if scrim.clicked?
-      end
 
       # Size: last frame's measured size. Until the user drags the
       # window it re-centers on that measured size every frame; after a
@@ -1407,8 +1420,8 @@ module Egui
         WINDOW_MIN_SIZE.x, constrain_y: true)
       @memory.areas.set_pos(win_id, pos)
 
-      # A click on blank card space dies on the card (registered after
-      # the scrim, so it wins over "click outside to dismiss").
+      # A click on blank card space dies on the card (never falls
+      # through to the app below the modal layer).
       card_rect = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
       interact(Id.from("embedded/#{id}/card"), card_rect,
         Sense::Click, layer, card_rect)
@@ -1439,19 +1452,52 @@ module Egui
       @painter.clip = clip
 
       if title
-        # ✕ in the title bar's right corner.
-        close_size = title_h
-        close_rect = Rect.from_min_size(
-          Pos2.new(pos.x + size.x - close_size, pos.y),
-          Vec2.new(close_size, title_h))
+        # The close target: the Win11 caption button (46×32, FLUSH to
+        # the top-right corner, exactly like the app window's) or the
+        # classic full-height square.
+        close_rect = win11 ?
+          Rect.from_min_size(
+            Pos2.new(pos.x + size.x - WindowFrame::Windows::BTN_W, pos.y),
+            Vec2.new(WindowFrame::Windows::BTN_W, WindowFrame::Windows::CAPTION_H)) :
+          Rect.from_min_size(
+            Pos2.new(pos.x + size.x - title_h, pos.y),
+            Vec2.new(title_h, title_h))
         close_resp = interact(Id.from("embedded/#{id}/close"), close_rect,
           Sense::Click, layer, close_rect)
         close = true if close_resp.clicked?
 
-        @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
-          title, title_size, v.title_color)
-        @painter.text(Pos2.new(close_rect.center.x, close_rect.center.y),
-          "✕", title_size, v.title_color)
+        if win11
+          dark = v.dark
+          fg = dark ? WindowFrame::Windows::FG : WindowFrame::Windows::FG_LIGHT
+          # The caption button: the Win11 overlay states — #2E2E2E /
+          # #CACACA hover on a plain button, the system reds on close,
+          # solid colors exactly as the app window paints them.
+          fill = if close_resp.active? && close_resp.hovered?
+            WindowFrame::Windows::CLOSE_PRESSED
+          elsif close_resp.hovered?
+            WindowFrame::Windows::CLOSE_HOVER
+          end
+          @painter.rect(close_rect, 0.0, fill, nil, 0.0) if fill
+          # Segoe-Fluent close glyph: two 1px strokes through a 10×10
+          # box (same shape as WindowFrame::Windows#glyph).
+          glyph_color = close_resp.hovered? || close_resp.active? ?
+            WindowFrame::Windows::GLYPH_ON_RED : fg
+          c = close_rect.center
+          g = WindowFrame::Windows::GLYPH / 2.0
+          @painter.line(Pos2.new(c.x - g, c.y - g), Pos2.new(c.x + g, c.y + g),
+            1.0, glyph_color)
+          @painter.line(Pos2.new(c.x + g, c.y - g), Pos2.new(c.x - g, c.y + g),
+            1.0, glyph_color)
+          # Caption title: 14pt at the 16pt inset, theme-following fg.
+          @painter.text(
+            Pos2.new(pos.x + WindowFrame::Windows::TITLE_PAD, pos.y + title_h / 2.0),
+            title, title_size, fg)
+        else
+          @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
+            title, title_size, v.title_color)
+          @painter.text(Pos2.new(close_rect.center.x, close_rect.center.y),
+            "✕", title_size, v.title_color)
+        end
       end
 
       content_min = pos + Vec2.new(pad.x, title_h + pad.y)
@@ -1472,13 +1518,30 @@ module Egui
           ui.min_rect.bottom + pad.y))
       @memory.layer_sizes[win_id] = outer.size
       @painter.clip = outer
+      # Shell: the Win11 frame is the app window's own look scaled
+      # down — card #202020 (dark, caption merges into the body) or
+      # #F3F3F3 with a #D6D6D6 caption band (light, the Notepad
+      # hierarchy), a crisp 1px rim (#3A3A3A / #BEBEBE) at 8px
+      # rounding. The classic look keeps the theme fill + band.
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, v.window_rounding, v.window_fill,
-          Color32.rgba(v.window_stroke.r, v.window_stroke.g,
-            v.window_stroke.b, 90), 1.0))
-      @painter.set(band_index,
-        RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
-          v.window_rounding, v.title_bar_fill, nil, 0.0)) if band_index
+        RectCmd.new(outer, outer,
+          win11 ? 8.0 : v.window_rounding,
+          win11 ? (v.dark ? WindowFrame::Windows::BG : Color32.new(0xF3, 0xF3, 0xF3, 255))
+                : v.window_fill,
+          win11 ? (v.dark ? WindowFrame::BORDER_DARK : WindowFrame::BORDER_LIGHT)
+                : Color32.rgba(v.window_stroke.r, v.window_stroke.g,
+                  v.window_stroke.b, 90), 1.0))
+      if band_index
+        # The caption band is ALWAYS darker than the window body — the
+        # light palette carries that already (#D6D6D6 over #F3F3F3);
+        # the dark one drops a step below the #202020 body so the
+        # frame reads as a frame, never as body.
+        band_fill = win11 ? (v.dark ? CAPTION_DARK : WindowFrame::Windows::BG_LIGHT)
+                          : v.title_bar_fill
+        @painter.set(band_index,
+          RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
+            win11 ? 8.0 : v.window_rounding, band_fill, nil, 0.0))
+      end
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       close
