@@ -27,9 +27,12 @@ module Egui
     # selection that existed BEFORE the press (Android: long-press #1
     # selects the word, long-press #2 menus). nil keeps the legacy
     # ungated long-press for widgets without touch selection semantics.
+    #
+    # `readonly`: a read-only view (ScrolledLabel) offers Copy / Select
+    # all only — no Cut, no Paste.
     def self.show(ui : Ui, id : Id, response : Response,
                   text : String, cursor : Int32, anchor : Int32,
-                  touch_sel : Bool? = nil) : Nil
+                  touch_sel : Bool? = nil, readonly : Bool = false) : Nil
       ctx = ui.ctx
       cmd_id = id.child(CMD_SALT)
       ctx.memory.use_id(cmd_id)
@@ -55,13 +58,17 @@ module Egui
           m.menu_item("Copy", nil, :copy, "Ctrl+C") do
             ctx.memory.data.set_string(cmd_id, "copy")
           end
-          m.menu_item("Cut", nil, nil, "Ctrl+X") do
-            ctx.memory.data.set_string(cmd_id, "cut")
+          unless readonly
+            m.menu_item("Cut", nil, nil, "Ctrl+X") do
+              ctx.memory.data.set_string(cmd_id, "cut")
+            end
           end
         end
-        menu.enabled(can_paste) do |m|
-          m.menu_item("Paste", nil, :paste, "Ctrl+V") do
-            ctx.memory.data.set_string(cmd_id, "paste")
+        unless readonly
+          menu.enabled(can_paste) do |m|
+            m.menu_item("Paste", nil, :paste, "Ctrl+V") do
+              ctx.memory.data.set_string(cmd_id, "paste")
+            end
           end
         end
         menu.enabled(!text.empty?) do |m|

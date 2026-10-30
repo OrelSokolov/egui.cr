@@ -125,19 +125,28 @@ module Egui
       # stack (`fonts` above — a real cut face when one matched).
       resolve = ->(family : String?, bold : Bool, italic : Bool) { ui.ctx.fonts_for(family, bold, italic) }
       # Default (nil): wrap where the label owns the rest of the line
-      # — a vertical layout (upstream `TextWrapMode::Wrap`); a label
-      # inside a horizontal row stays inline (`Extend`) unless even a
-      # FRESH line cannot hold it (unwrapped text wider than the whole
-      # row) — then it wraps against the row width instead of painting
-      # past the screen edge (mobile-safe default). A zero remaining
-      # width would char-break every glyph onto its own row — treat it
-      # as unbounded instead.
+      # — a vertical layout (upstream `TextWrapMode::Wrap`), the same
+      # rule a TextArea wraps by (against the region width). In a
+      # WRAP-CAPABLE horizontal row (#horizontal / wrap strips) a
+      # label stays inline (`Extend`) unless even a FRESH line cannot
+      # hold it (unwrapped text wider than the whole row) — then it
+      # wraps against the row width and the row machinery breaks it
+      # onto a full line of its own. In a single-line row
+      # (`wrap: false`) there is NO fresh line to break to: the
+      # default extends (clipped at the region edge, like upstream)
+      # — wrapping there meant wrapping against the end-of-row
+      # sliver, char-breaking the text into a one-glyph-wide column.
+      # A zero remaining width would char-break every glyph onto its
+      # own row — treat it as unbounded instead.
       wrap = @wrap
       if wrap.nil?
-        wrap = ui.layout.vertical?
-        unless wrap
+        if ui.layout.vertical?
+          wrap = true
+        elsif ui.wrap_x
           natural = fonts.layout(runs, nil, resolve, @line_height).size.x
           wrap = natural + pad.horizontal > ui.max_rect.width
+        else
+          wrap = false
         end
       end
       available = ui.available_width
@@ -145,7 +154,9 @@ module Egui
       # WRAP-CAPABLE horizontal row (#horizontal / wrap strips) a
       # label that outgrows the remainder moves to a fresh FULL line —
       # wrap against that, never against the sliver (a room of one
-      # glyph char-breaks the text into a vertical column).
+      # glyph char-breaks the text into a vertical column). In a
+      # single-line row only an EXPLICIT `wrap: true` ever wraps, and
+      # the sliver is the space the label owns there.
       wrap_base = ui.layout.horizontal? && ui.wrap_x ? ui.max_rect.width
                                                       : available
       room = (wrap ? wrap_base : available) - pad.horizontal

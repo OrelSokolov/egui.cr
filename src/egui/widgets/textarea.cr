@@ -19,6 +19,10 @@
 # per source line, no soft wrap (long lines clip at the right edge,
 # like less). Wrapping a multi-megabyte file at open would freeze the
 # frame for seconds; the window rebuilds on scroll for pocket change.
+#
+# `readonly: true` turns the widget into a scrolling text VIEW (what
+# ScrolledLabel builds on): no caret, no keyboard pass, no IME/soft
+# keyboard; click-drag selection, Copy and Select all keep working.
 
 module Egui
   class TextArea
@@ -38,7 +42,8 @@ module Egui
     def initialize(@text : String, @hint : String? = nil, @rows : Int32 = 8,
                    @frame : Bool = true, @focus_id : String? = nil,
                    @cursor_style : Symbol = :line,
-                   @cursor_blinks : Bool = true)
+                   @cursor_blinks : Bool = true,
+                   @readonly : Bool = false)
     end
 
     # Cross-frame state for the virtual big-text mode: TextArea widgets
@@ -319,7 +324,7 @@ module Egui
                  (lpos = memory.long_press_pos) &&
                  rect.contains?(lpos) ? true : false
       if response.pressed? || response.clicked? || lp_fired
-        response.request_focus
+        response.request_focus unless @readonly
         if (pos = input.pointer_pos)
           caret = caret_at(galley, row_starts, fonts, inner, offset, pos)
           if lp_fired && touch && had_sel
@@ -378,7 +383,10 @@ module Egui
         end
       end
 
-      if response.has_focus?
+      # Readonly (ScrolledLabel): no keyboard pass, no caret, no IME —
+      # the field never holds focus, so this block only ever runs for
+      # a real editor.
+      if response.has_focus? && !@readonly
         ui.ctx.memory.focus.lock_arrows(horizontal: true, vertical: true)
         ui.ctx.memory.focus.text_input! # raises the on-screen keyboard
         new_text, cursor, anchor, changed =
@@ -638,13 +646,16 @@ module Egui
       # rule; the first long-press just selects + shows the handles),
       # secondary press on the mouse.
       TextEditMenu.show(ui, id, response, new_text, cursor, anchor,
-        touch_sel: touch ? had_sel : nil)
+        touch_sel: touch ? had_sel : nil, readonly: @readonly)
       # Soft-keyboard profile + editor mirror: multiline mode, Enter =
       # newline; the focused field's text/cursor feed the IME's editor
       # queries (registered AFTER the keyboard pass so this frame's
-      # edits are already reflected).
-      memory.register_text_input(id, TextInputKind::Multiline,
-        TextInputAction::None, new_text, cursor, anchor)
+      # edits are already reflected). A readonly field raises no
+      # keyboard and mirrors nothing.
+      unless @readonly
+        memory.register_text_input(id, TextInputKind::Multiline,
+          TextInputAction::None, new_text, cursor, anchor)
+      end
       response
     end
 

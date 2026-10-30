@@ -121,4 +121,40 @@ describe "horizontal row wrap" do
     rect.width.should be > 350.0    # the full row, not a sliver
     rect.height.should be <= 60.0   # a couple of lines, not a column
   end
+
+  it "a long label in a single-line row extends instead of char-breaking" do
+    # Regression: in a `wrap: false` row a label longer than the whole
+    # row used to wrap against the end-of-row sliver — rendering as a
+    # one-glyph-wide vertical column. Without a fresh line to break to
+    # the default must extend (clipped at the region edge, upstream
+    # behavior); only an explicit `wrap: true` wraps against the sliver.
+    ctx = Egui::Context.new
+    r = nil
+    wrap_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.horizontal(wrap: false) do |row|
+          row.button("кнопка")
+          r = row.label("очень длинный текст, который не влезает в " \
+                        "остаток строки и в саму строку целиком").rect
+        end
+      end
+    end
+    r.not_nil!.height.should be <= 25.0 # one line, not a glyph column
+  end
+
+  it "a label that cannot fit even a fresh line wraps against the row width" do
+    ctx = Egui::Context.new
+    r = nil
+    wrap_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.horizontal do |row|
+          row.button("кнопка")
+          r = row.label("очень длинный текст, который не влезает в " \
+                        "остаток строки и в саму строку целиком").rect
+        end
+      end
+    end
+    r.not_nil!.height.should be > 25.0        # wrapped to several rows
+    r.not_nil!.width.should be <= 402.0 + 0.01
+  end
 end

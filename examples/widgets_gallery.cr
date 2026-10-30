@@ -582,13 +582,52 @@ class GalleryApp < Egui::App
       label: "Select option") { |opt| @combo = opt }
   end
 
+  # The Text tab: rich text, links, the label wrap modes and the
+  # ScrolledLabel (a read-only scrolling label built on the textarea
+  # wrap engine — the two always break lines identically).
   private def text_gallery(ui : Egui::Ui) : Nil
     ui.rich(Egui::RichText.new("rich underlined")
       .color(Egui::Color32.rgb(255, 96, 96)).underline)
     ui.hyperlink_to("egui on GitHub", "https://github.com/emilk/egui")
     ui.label("Hover me").on_hover_text("Tooltips work!")
-    ui.label("This long paragraph wraps because the label asked for it — resize the window and watch it reflow.", wrap: true)
+    ui.separator
+
+    ui.label("Label wrapping — by the same rule a textarea wraps " \
+             "(against the region width, word by word with a " \
+             "per-character fallback for сверхдлинноеслово):")
+    ui.label(WRAP_DEMO_TEXT)
+    ui.label("wrap: false never wraps — one line, clipped at the edge:")
+    ui.label(WRAP_DEMO_TEXT, wrap: false)
+    ui.separator
+
+    ui.label("In a wrapping row a long label takes a full line of its own:")
+    ui.horizontal do |row|
+      row.button("btn")
+      row.label(WRAP_DEMO_TEXT)
+    end
+    ui.label("In a single-line row (wrap: false) it extends instead of " \
+             "collapsing into a one-glyph column:")
+    ui.horizontal(wrap: false) do |row|
+      row.button("btn")
+      row.label(WRAP_DEMO_TEXT)
+    end
+    ui.separator
+
+    ui.label("ScrolledLabel — a read-only textarea: identical wrapping, " \
+             "click-drag selection and Copy work, editing doesn't; " \
+             "grows with its content:")
+    ui.scrolledlabel(WRAP_DEMO_TEXT, id: "gallery_scrolled_grow")
+    ui.label("…and with max_height: 120 it scrolls " \
+             "(wheel, touch drag, scrollbar):")
+    ui.scrolledlabel(WRAP_DEMO_TEXT * 3, max_height: 120.0,
+      id: "gallery_scrolled_fixed")
   end
+
+  # Shared demo paragraph for the wrap/ScrolledLabel blocks above.
+  WRAP_DEMO_TEXT = "The quick brown fox jumps over the lazy dog — " \
+                   "сюда и русская строка, чтобы переносы по словам " \
+                   "были видны и в кириллице; текст намеренно длинный, " \
+                   "чтобы он не влезал ни в одну строку панели"
 
   # HTML <textarea>: soft wrap, kinetic wheel scrolling when the text
   # outgrows the box, per-line selection, Enter/arrows/Home/End.

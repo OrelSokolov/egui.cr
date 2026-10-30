@@ -354,6 +354,14 @@ module Egui
       add(Label.new(text, wrap: wrap, userselect: userselect))
     end
 
+    # A label that scrolls: wraps exactly like a TextArea, grows with
+    # its content up to `max_height`, then scrolls (wheel / touch /
+    # scrollbar). Read-only — selection and Copy work, editing doesn't.
+    def scrolledlabel(text : String, max_height : Float64? = nil,
+                      id : String? = nil) : Response
+      add(ScrolledLabel.new(text, max_height, id))
+    end
+
     def heading(text : String) : Response
       rich(RichText.new(text).heading(style.font_size))
     end
