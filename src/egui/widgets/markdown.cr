@@ -25,14 +25,17 @@ module Egui
     # HTML-ish heading scale over the style's font size; all bold.
     # h1/h2 are GitHub's 2em/1.5em — 32/24px at the default 16px body.
     HEADING_SCALES = {2.0, 1.5, 1.15, 1.0, 0.9, 0.85}
-    # Fenced-code background (non-inline blocks; the inline chip is
-    # RichLabel::INLINE_CODE_BG).
-    CODE_BG = Color32.rgba(0xF0, 0xF1, 0xF3, 255)
+    # Fenced-code background per theme (non-inline blocks; the inline
+    # chip is RichLabel::INLINE_CODE_BG): GitHub's light tint and its
+    # dark counterpart.
+    CODE_BG       = Color32.rgba(0xF0, 0xF1, 0xF3, 255)
+    CODE_BG_DARK  = Color32.rgba(0x16, 0x1B, 0x22, 255)
     # Horizontal rules carry at least this much breathing room above
     # and below the line.
     HR_PAD = 5.0
-    # Horizontal rule stroke: soft gray, ~70% opacity.
-    HR_COLOR = Color32.rgba(0xD1, 0xD9, 0xE0, 0xB3)
+    # Horizontal rule stroke per theme: soft gray, ~70% opacity.
+    HR_COLOR      = Color32.rgba(0xD1, 0xD9, 0xE0, 0xB3)
+    HR_COLOR_DARK = Color32.rgba(0x30, 0x36, 0x3D, 0xB3)
     # Default horizontal reading padding (the text never touches the
     # window edges); override per widget with `pad_x:`.
     DEFAULT_PAD_X = 10.0
@@ -43,9 +46,12 @@ module Egui
     # Headings keep it tighter (GitHub h1/h2 ≈ 1.25) — the large type
     # already carries enough air.
     HEADING_LINE_H = 1.25
-    # Default page background — white, a reader page. nil via
-    # `background: nil` disables it (transparent over the panel).
-    DEFAULT_BG = Color32.rgba(255, 255, 255, 255)
+    # Reader-page background per theme: a white page on light themes,
+    # GitHub's dark canvas on dark ones — the page always contrasts
+    # with the theme's text color. `#background` starts nil = follow
+    # the theme; an explicit color always wins.
+    PAGE_BG       = Color32.rgba(255, 255, 255, 255)
+    PAGE_BG_DARK  = Color32.rgba(0x0D, 0x11, 0x17, 255)
 
     # One parsed block. `text` carries the STRIPPED content (markers
     # removed); heading `level` is 1-6, list items keep their number
@@ -85,12 +91,14 @@ module Egui
 
     # Root relative image paths resolve against (nil = paths stay as
     # written — cwd-relative).
-    # Page background behind the rendered blocks (nil = transparent).
+    # Page background behind the rendered blocks (nil = the theme's
+    # page: white on light themes, the dark canvas on dark ones; an
+    # explicit color always wins).
     property background : Color32?
 
     def initialize(@source : String, base_dir : String? = nil,
                    id : String? = nil, pad_x : Float64 = DEFAULT_PAD_X,
-                   @background : Color32? = DEFAULT_BG)
+                   @background : Color32? = nil)
       @base_dir = base_dir
       @id_name = id
       @pad_x = pad_x
@@ -113,10 +121,11 @@ module Egui
       # edges (10px each side, overridable per widget).
       origin = ui.cursor
       width = ui.available_width
-      # White page background, reserved up front and back-patched
+      # Themed page background, reserved up front and back-patched
       # once the content extent is known (Painter#set) so it lands
-      # UNDER every block command. nil = no background.
-      bg_index = ui.painter.add_noop if @background
+      # UNDER every block command.
+      bg = @background || (style.visuals.dark ? PAGE_BG_DARK : PAGE_BG)
+      bg_index = ui.painter.add_noop
       body = ui.child_ui(
         Rect.from_min_size(Pos2.new(origin.x + @pad_x, origin.y),
           Vec2.new({width - @pad_x * 2.0, 1.0}.max, 1e6)), id)
@@ -124,7 +133,7 @@ module Egui
 
       ui.min_rect = ui.min_rect.union(body.min_rect)
       ui.cursor = Pos2.new(origin.x, body.cursor.y)
-      if (bg = @background) && bg_index
+      if bg_index
         ui.painter.set(bg_index, RectCmd.new(
           clip: ui.clip,
           rect: Rect.from_min_size(origin,
@@ -549,7 +558,8 @@ module Egui
         Vec2.new(ui.available_width, HR_PAD * 2.0 + 1.0))
       y = {y, rect.top + HR_PAD}.max
       ui.painter.line(Pos2.new(rect.left, y),
-        Pos2.new(rect.right, y), 1.0, HR_COLOR)
+        Pos2.new(rect.right, y), 1.0,
+        style.visuals.dark ? HR_COLOR_DARK : HR_COLOR)
     end
 
     # A list item hangs: the bullet sits in its own left column, the
@@ -629,7 +639,8 @@ module Egui
       pad = 8.0
       size = Vec2.new(galley.size.x + pad * 2.0, galley.size.y + pad * 2.0)
       rect = ui.allocate_at_least(size)
-      ui.painter.rect(rect, 4.0, CODE_BG)
+      ui.painter.rect(rect, 4.0,
+        style.visuals.dark ? CODE_BG_DARK : CODE_BG)
       inner = ui.child_ui(Rect.from_min_size(
         Pos2.new(rect.left + pad, rect.top + pad), galley.size))
       inner.add(Label.new(rich, wrap: false, preset_runs: preset))

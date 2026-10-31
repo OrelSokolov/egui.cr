@@ -52,7 +52,7 @@ module Egui
           runs = rich.styled_runs(style.font_size, visuals.text_color,
             visuals.hyperlink_color)
           runs = RichText.fade_code_runs(runs, visuals) if ctx.mono_fonts.nil?
-          RichLabel.apply_code_chips(runs)
+          RichLabel.apply_code_chips(runs, visuals.dark)
         end
       end
 

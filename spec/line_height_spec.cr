@@ -138,7 +138,7 @@ describe "line height" do
     end
 
     chip = ctx.painter.commands.select(Egui::RectCmd)
-      .find { |r| r.fill == Egui::RichLabel::INLINE_CODE_BG }
+      .find { |r| r.fill == Egui::RichLabel::INLINE_CODE_BG_DARK }
     chip.should_not be_nil
     # 15px mono × 1.4 = 21 tall, inside the 16px × 1.5 = 24px row box
     # — with half-leading the chip hugs the text, not the row edges
@@ -174,7 +174,7 @@ describe "line height" do
 
     cmds = ctx.painter.commands
     chip_i = cmds.index { |c|
-      c.is_a?(Egui::RectCmd) && c.fill == Egui::RichLabel::INLINE_CODE_BG }
+      c.is_a?(Egui::RectCmd) && c.fill == Egui::RichLabel::INLINE_CODE_BG_DARK }
     sel_i = cmds.index { |c|
       c.is_a?(Egui::RectCmd) && c.fill == ctx.style.visuals.selection_fill }
     code_i = cmds.index { |c|

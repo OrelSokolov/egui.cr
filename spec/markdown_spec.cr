@@ -173,8 +173,8 @@ describe "Markdown widget" do
     texts.map(&.color).uniq.size.should be >= 2
 
     rects = ctx.painter.commands.select(Egui::RectCmd)
-    rects.count(&.fill.==(Egui::Markdown::CODE_BG))
-      .should eq(1) # the code block background
+    rects.count(&.fill.==(Egui::Markdown::CODE_BG_DARK))
+      .should eq(1) # the code block background (dark default theme)
   end
 
   it "renders headings bold and scaled, rules as separator lines" do
@@ -277,7 +277,7 @@ describe "Markdown widget" do
     text.pos.x.should be >= Egui::Markdown::DEFAULT_PAD_X
   end
 
-  it "paints a white page background under the blocks" do
+  it "paints the themed page background under the blocks" do
     ctx = Egui::Context.new
     md_frame(ctx) do |c|
       c.central_panel do |ui|
@@ -286,11 +286,36 @@ describe "Markdown widget" do
     end
     cmds = ctx.painter.commands
     bg_at = cmds.index { |c|
-      c.is_a?(Egui::RectCmd) && c.fill == Egui::Markdown::DEFAULT_BG
+      c.is_a?(Egui::RectCmd) && c.fill == Egui::Markdown::PAGE_BG_DARK
     }
     text_at = cmds.index { |c| c.is_a?(Egui::TextCmd) }
     bg_at.should_not be_nil
     bg_at.not_nil!.should be < text_at.not_nil!
+  end
+
+  it "follows light/dark themes: page, code blocks, rules and chips" do
+    {Egui::Theme.light => {bg: Egui::Markdown::PAGE_BG,
+                           code: Egui::Markdown::CODE_BG,
+                           hr: Egui::Markdown::HR_COLOR,
+                           chip: Egui::RichLabel::INLINE_CODE_BG},
+     Egui::Theme.dark => {bg: Egui::Markdown::PAGE_BG_DARK,
+                          code: Egui::Markdown::CODE_BG_DARK,
+                          hr: Egui::Markdown::HR_COLOR_DARK,
+                          chip: Egui::RichLabel::INLINE_CODE_BG_DARK}}.each do |theme, colors|
+      ctx = Egui::Context.new
+      md_frame(ctx) do |c|
+        c.theme = theme
+        c.central_panel do |ui|
+          ui.markdown("use `map` here\n\n```crystal\nputs 1\n```\n\n---")
+        end
+      end
+      fills = ctx.painter.commands.select(Egui::RectCmd).map(&.fill)
+      fills.should contain(colors[:bg])
+      fills.should contain(colors[:code])
+      fills.should contain(colors[:chip])
+      ctx.painter.commands.select(Egui::LineCmd)
+        .any?(&.color.==(colors[:hr])).should be_true
+    end
   end
 
   it "gives H1 20px of top padding" do    y_of = [] of Float64
@@ -338,7 +363,7 @@ describe "Markdown widget" do
     texts = ctx.painter.commands.select(Egui::TextCmd)
     code = texts.find(&.text.==("map")).not_nil!
     chip = ctx.painter.commands.select(Egui::RectCmd)
-      .find(&.fill.==(Egui::RichLabel::INLINE_CODE_BG)).not_nil!
+      .find(&.fill.==(Egui::RichLabel::INLINE_CODE_BG_DARK)).not_nil!
     chip.rounding.should be > 0.0
     # GitHub's chip: padding 0.2em 0.4em around the glyphs — the
     # rect extends past the run on every side, proportional to the
@@ -364,7 +389,7 @@ describe "Markdown widget" do
     rule = ctx.painter.commands.select(Egui::LineCmd)
       .find { |l| l.p1.y == l.p2.y }.not_nil!
     (rule.p1.y - text_bottom).should be >= 5.0
-    rule.color.should eq(Egui::Markdown::HR_COLOR)
+    rule.color.should eq(Egui::Markdown::HR_COLOR_DARK)
   end
 
   it "renders tables as aligned columns with a header rule" do

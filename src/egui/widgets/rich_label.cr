@@ -18,20 +18,23 @@ module Egui
     include Widget
 
     # Inline-code chip: a soft gray rounded rect behind `code` spans
-    # (GitHub-light tint), painted by `paint_galley` from the run's
-    # `background`.
-    INLINE_CODE_BG = Color32.rgba(0xE9, 0xED, 0xF0, 255)
+    # (GitHub's light tint and its dark counterpart), painted by
+    # `paint_galley` from the run's `background`.
+    INLINE_CODE_BG      = Color32.rgba(0xE9, 0xED, 0xF0, 255)
+    INLINE_CODE_BG_DARK = Color32.rgba(0x29, 0x30, 0x38, 255)
 
     # Mark monospace runs as inline-code chips (the backgrounded runs
     # `paint_galley` draws). Shared with the measurement side of
     # TableTextRenderer: its reserved heights must match what THIS
     # widget lays out, backgrounds included — a chip's layout-reserved
     # side margins change where cells wrap.
-    def self.apply_code_chips(runs : Array(TextRun)) : Array(TextRun)
+    def self.apply_code_chips(runs : Array(TextRun),
+                              dark : Bool = false) : Array(TextRun)
+      chip = dark ? INLINE_CODE_BG_DARK : INLINE_CODE_BG
       runs.map do |r|
         if r.family == "monospace"
           TextRun.new(r.text, r.size, r.color, r.underline?, r.family,
-            r.bold?, r.italic?, r.strikethrough?, INLINE_CODE_BG)
+            r.bold?, r.italic?, r.strikethrough?, chip)
         else
           r
         end
@@ -101,7 +104,7 @@ module Egui
       # Inline code = monospace runs in a rounded chip; without a
       # mono stack they also retint weaker (the font alone can't
       # distinguish them).
-      runs = RichLabel.apply_code_chips(runs)
+      runs = RichLabel.apply_code_chips(runs, visuals.dark)
       runs = RichText.fade_code_runs(runs, visuals) if ui.ctx.mono_fonts.nil?
       links = @rich.link_spans
 
