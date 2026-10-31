@@ -31,6 +31,30 @@
 #   @open = false if @open && win.show(ctx)   # while @open
 
 module Egui
+  # The StyledPart behind the `Context#embedded_window` shell (see
+  # widgets/styled_part.cr): the chrome is paint-in-place (painter
+  # calls straight from the context, not through `Ui#add`), so without
+  # a part the inspector records no meta for its interacts — the frame
+  # was unpickable and its colors/geometry (the Win11 constants) were
+  # unreachable from the cascade. The part gives the shell the
+  # "embedded_window" class and declares the keys #embedded_window
+  # reads; every hard-coded Win11 value stays as the per-key fallback,
+  # so an unstyled frame paints exactly as before.
+  class EmbeddedWindowPart < StyledPart
+    def initialize(label : String?)
+      super("Window", "embedded_window", [
+        StyleProp.new("background", :color, label: "fill"),
+        StyleProp.new("stroke", :color, label: "border"),
+        StyleProp.new("rounding", :number, min: 0.0, fallback: 8.0),
+        StyleProp.new("caption_fill", :color),
+        StyleProp.new("title_color", :color),
+        StyleProp.new("title_font_size", :number, min: 0.0),
+        StyleProp.new("caption_height", :number, min: 0.0),
+        StyleProp.new("close_background", :color, states: true),
+      ], label)
+    end
+  end
+
   class EmbeddedWindow
     # The icon's MINIMUM height: stretched to the content height, but
     # never smaller than this (the big-logo look).

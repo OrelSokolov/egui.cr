@@ -1378,21 +1378,36 @@ module Egui
                         &block : Ui ->) : Bool
       @memory.mark_modal
       win_id = Id.from("embedded/#{id}")
+      card_id = Id.from("embedded/#{id}/card")
+      close_id = Id.from("embedded/#{id}/close")
+      title_id = win_id.child(0_u64)
       layer = LayerId.new(Order::Foreground, win_id)
       screen = @input.screen_rect
       v = style.visuals
       pad = style.spacing.window_padding
       win11 = frame == :win11
-      # The Win11 frame is a MINIATURE of the app's own chrome
+      # The shell is a StyledPart (EmbeddedWindowPart): its interacts
+      # record inspector meta and its look reads the "embedded_window"
+      # cascade (class rules + per-element inspector overrides). The
+      # Win11 values below stay as the per-key FALLBACKS, so an
+      # unstyled frame is still the MINIATURE of the app's own chrome
       # (WindowFrame::Windows) — same palette, caption geometry and
-      # glyph shapes, 1:1, only the window is small. Everything the
-      # branch paints comes from that class's constants.
-            if win11
-        title_size = WindowFrame::Windows::TITLE_PT
-        title_h = title ? WindowFrame::Windows::CAPTION_H : 8.0
+      # glyph shapes, 1:1, only the window is small. Shell keys
+      # (fill/border/rounding/caption band) resolve on the card id,
+      # title keys on the title-bar id, close keys on the close id —
+      # the piece the user picked is the piece an element edit
+      # restyles.
+      part = EmbeddedWindowPart.new(title)
+      shell_vars = part.vars(self, card_id)
+      title_vars = part.vars(self, title_id)
+      if win11
+        title_size = title_vars.f64("title_font_size",
+          WindowFrame::Windows::TITLE_PT)
+        title_h = title ?
+          title_vars.f64("caption_height", WindowFrame::Windows::CAPTION_H) : 8.0
       else
-        title_size = style.font_size * 1.25
-        title_h = title ? title_size + pad.y : 8.0
+        title_size = title_vars.f64("title_font_size", style.font_size * 1.25)
+        title_h = title ? title_vars.f64("caption_height", title_size + pad.y) : 8.0
       end
 
       # Never wider than the screen (upstream `Area` constrain).
@@ -1423,14 +1438,15 @@ module Egui
       # A click on blank card space dies on the card (never falls
       # through to the app below the modal layer).
       card_rect = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
-      interact(Id.from("embedded/#{id}/card"), card_rect,
-        Sense::Click, layer, card_rect)
+      with_inspector_widget(part) do
+        interact(card_id, card_rect, Sense::Click, layer, card_rect)
+      end
 
       # Title bar: drag moves the window (Areas state), like #window.
       if title
         title_rect = Rect.from_min_size(pos, Vec2.new(size.x, title_h))
-        title_resp = interact(win_id.child(0_u64), title_rect,
-          Sense.click_and_drag, layer)
+        title_resp = with_inspector_widget(part) {
+          interact(title_id, title_rect, Sense.click_and_drag, layer) }
         if title_resp.dragged?
           @memory.areas.move_by(win_id, title_resp.drag_delta)
           pos = @memory.areas.pos_for(win_id, default_pos)
@@ -1458,24 +1474,28 @@ module Egui
         close_rect = win11 ?
           Rect.from_min_size(
             Pos2.new(pos.x + size.x - WindowFrame::Windows::BTN_W, pos.y),
-            Vec2.new(WindowFrame::Windows::BTN_W, WindowFrame::Windows::CAPTION_H)) :
+            Vec2.new(WindowFrame::Windows::BTN_W, title_h)) :
           Rect.from_min_size(
             Pos2.new(pos.x + size.x - title_h, pos.y),
             Vec2.new(title_h, title_h))
-        close_resp = interact(Id.from("embedded/#{id}/close"), close_rect,
-          Sense::Click, layer, close_rect)
+        close_resp = with_inspector_widget(part) {
+          interact(close_id, close_rect, Sense::Click, layer, close_rect) }
         close = true if close_resp.clicked?
 
         if win11
           dark = v.dark
-          fg = dark ? WindowFrame::Windows::FG : WindowFrame::Windows::FG_LIGHT
-          # The caption button: the Win11 overlay states — #2E2E2E /
-          # #CACACA hover on a plain button, the system reds on close,
-          # solid colors exactly as the app window paints them.
+          fg = title_vars.color("title_color",
+            dark ? WindowFrame::Windows::FG : WindowFrame::Windows::FG_LIGHT)
+          # The caption button: the Win11 overlay states — the system
+          # reds on close, solid colors exactly as the app window
+          # paints them — restyled through the close id's
+          # `close_background` (:hover/:active state overlays).
           fill = if close_resp.active? && close_resp.hovered?
-            WindowFrame::Windows::CLOSE_PRESSED
+            part.vars(self, close_id, "active")
+              .color("close_background", WindowFrame::Windows::CLOSE_PRESSED)
           elsif close_resp.hovered?
-            WindowFrame::Windows::CLOSE_HOVER
+            part.vars(self, close_id, "hover")
+              .color("close_background", WindowFrame::Windows::CLOSE_HOVER)
           end
           @painter.rect(close_rect, 0.0, fill, nil, 0.0) if fill
           # Segoe-Fluent close glyph: two 1px strokes through a 10×10
@@ -1493,10 +1513,11 @@ module Egui
             Pos2.new(pos.x + WindowFrame::Windows::TITLE_PAD, pos.y + title_h / 2.0),
             title, title_size, fg)
         else
+          tc = title_vars.color("title_color", v.title_color)
           @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
-            title, title_size, v.title_color)
+            title, title_size, tc)
           @painter.text(Pos2.new(close_rect.center.x, close_rect.center.y),
-            "✕", title_size, v.title_color)
+            "✕", title_size, tc)
         end
       end
 
@@ -1522,22 +1543,27 @@ module Egui
       # down — card #202020 (dark, caption merges into the body) or
       # #F3F3F3 with a #D6D6D6 caption band (light, the Notepad
       # hierarchy), a crisp 1px rim (#3A3A3A / #BEBEBE) at 8px
-      # rounding. The classic look keeps the theme fill + band.
+      # rounding. The classic look keeps the theme fill + band. Every
+      # value reads the "embedded_window" cascade first (see
+      # EmbeddedWindowPart) — the constants are the fallbacks.
       @painter.set(bg_index,
         RectCmd.new(outer, outer,
-          win11 ? 8.0 : v.window_rounding,
-          win11 ? (v.dark ? WindowFrame::Windows::BG : Color32.new(0xF3, 0xF3, 0xF3, 255))
-                : v.window_fill,
-          win11 ? (v.dark ? WindowFrame::BORDER_DARK : WindowFrame::BORDER_LIGHT)
-                : Color32.rgba(v.window_stroke.r, v.window_stroke.g,
-                  v.window_stroke.b, 90), 1.0))
+          shell_vars.f64("rounding", win11 ? 8.0 : v.window_rounding),
+          shell_vars.color("background",
+            win11 ? (v.dark ? WindowFrame::Windows::BG : Color32.new(0xF3, 0xF3, 0xF3, 255))
+                  : v.window_fill),
+          shell_vars.color("stroke",
+            win11 ? (v.dark ? WindowFrame::BORDER_DARK : WindowFrame::BORDER_LIGHT)
+                  : Color32.rgba(v.window_stroke.r, v.window_stroke.g,
+                    v.window_stroke.b, 90)), 1.0))
       if band_index
         # The caption band is ALWAYS darker than the window body — the
         # light palette carries that already (#D6D6D6 over #F3F3F3);
         # the dark one drops a step below the #202020 body so the
         # frame reads as a frame, never as body.
-        band_fill = win11 ? (v.dark ? CAPTION_DARK : WindowFrame::Windows::BG_LIGHT)
-                          : v.title_bar_fill
+        band_fill = shell_vars.color("caption_fill",
+          win11 ? (v.dark ? CAPTION_DARK : WindowFrame::Windows::BG_LIGHT)
+                : v.title_bar_fill)
         @painter.set(band_index,
           RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
             win11 ? 8.0 : v.window_rounding, band_fill, nil, 0.0))

@@ -258,4 +258,53 @@ describe "Context#embedded_window" do
     band.should_not be_nil
     band.not_nil!.should be < title.not_nil!
   end
+
+  # The shell is a StyledPart (Egui::EmbeddedWindowPart, class
+  # "embedded_window"): its interacts record inspector meta and its
+  # colors/geometry read the cascade — class rules + per-element
+  # inspector overrides — with the hard-coded look as the fallbacks.
+  it "styles the shell through the embedded_window class (inspector part)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events: events, time: time)
+      ctx.embedded_window("d", title: "Settings", frame: :win11) do |ui|
+        ui.label("body")
+      end
+      ctx.end_frame
+    end
+
+    2.times { |i| draw.call([] of Egui::Event, 0.016 * (i + 1)) }
+
+    # the shell's interacts record meta: pickable, with the declared keys
+    metas = ctx.inspector.meta_values.select(&.kind.==("Window"))
+    metas.should_not be_empty
+    metas.each do |m|
+      m.display_class.should eq("embedded_window")
+      m.props.any? { |p| p.key == "background" }.should be_true
+    end
+
+    # a class rule repaints the shell fill
+    red = Egui::Color32.rgb(255, 0, 0)
+    ctx.stylesheet.rule("embedded_window", Egui::StyleVars{"background" => red})
+    draw.call([] of Egui::Event, 0.032)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == red }.should be_true
+
+    # a caption_height rule reflows the chrome: the close button grows
+    # with the styled caption (46×32 by default)
+    close_id = Egui::Id.from("embedded/d/close")
+    ctx.stylesheet.rule("embedded_window", Egui::StyleVars{"caption_height" => 48.0})
+    draw.call([] of Egui::Event, 0.048)
+    ctx.memory.widget_rects[close_id]?.not_nil!.height.should be_close(48.0, 0.5)
+
+    # a per-element :hover override on the close id recolors its hover
+    # fill — the inspector's Element-tab edit, live
+    lime = Egui::Color32.rgb(0, 255, 100)
+    ctx.set_id_style(close_id, "close_background", lime, "hover")
+    center = ctx.memory.widget_rects[close_id]?.not_nil!.center
+    draw.call([Egui::Event.pointer_moved(center)], 0.064)
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |c| c.fill == lime }.should be_true
+  end
 end
