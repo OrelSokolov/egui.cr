@@ -155,6 +155,17 @@ module Egui
         "underline_width" => 2.0,
       })
 
+      # wizard — the Windows-wizard chrome (banner + footer buttons)
+      sheet.rule("wizard.header", StyleVars{
+        "background"     => v.window_fill.lerp(v.text_color, 0.05),
+        "subtitle_color" => v.text_color.lerp(v.window_fill, 0.35),
+      })
+
+      # side_image — the wizard watermark strip's column fill
+      sheet.rule("side_image", StyleVars{
+        "background" => v.window_fill.lerp(v.text_color, 0.05),
+      })
+
       # expander — Win11 accordion (header row + content reveal). The
       # header carries a permanent subtle fill (weaker than :hover) and
       # the content a fainter one, so the two regions read apart at

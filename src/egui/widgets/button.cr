@@ -26,6 +26,7 @@ module Egui
     @image_texture : UInt64?
     @cursor : CursorIcon?
     @vertical = false
+    @icon_trailing = false
     @icon_size : Float64?
 
     def initialize(@text : String, id : String? = nil)
@@ -115,6 +116,14 @@ module Egui
     # vector icon, below a raster texture.
     def icon(svg : Svg) : self
       @icon_svg = svg
+      self
+    end
+
+    # An SVG icon drawn RIGHT of the text — the trailing-arrow idiom
+    # ("Next ›"). Overrides `#icon`'s leading icon.
+    def icon_trailing(svg : Svg) : self
+      @icon_svg = svg
+      @icon_trailing = true
       self
     end
 
@@ -286,12 +295,21 @@ module Egui
         else
           rect.left + (rect.width - block_w) / 2.0
         end
-        if has_icon
+        if has_icon && @icon_trailing
+          # Trailing icon: label first, the glyph after it.
           icon_box = Rect.from_min_size(
-            Pos2.new(block_left, rect.center.y - icon_h / 2.0),
+            Pos2.new(block_left + label_size.x + gap,
+              rect.center.y - icon_h / 2.0),
             Vec2.new(icon_h, icon_h))
+          pos = Pos2.new(block_left, rect.center.y)
+        else
+          if has_icon
+            icon_box = Rect.from_min_size(
+              Pos2.new(block_left, rect.center.y - icon_h / 2.0),
+              Vec2.new(icon_h, icon_h))
+          end
+          pos = Pos2.new(block_left + icon_h + gap, rect.center.y)
         end
-        pos = Pos2.new(block_left + icon_h + gap, rect.center.y)
       end
       if (b = icon_box) && (tex = @image_texture) && !tex.zero?
         ui.painter.image(b, tex)

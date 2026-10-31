@@ -57,6 +57,13 @@ module Egui
       new(File.read(path), size)
     end
 
+    # Intrinsic size in user units (viewBox applied) — the aspect
+    # source for manual fits (SideImage measures, then hands Svg the
+    # fitted box).
+    def intrinsic_size : Vec2
+      Vec2.new(@width, @height)
+    end
+
     def ui(ui : Ui) : Response
       rect = ui.allocate_at_least(@size)
       paint(ui, rect)
