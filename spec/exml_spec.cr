@@ -222,6 +222,41 @@ describe Egui::Exml do
     rt.strings["name"].should eq("abc")
   end
 
+  it "central panel content scrolls by default (overflow → bar + wheel)" do
+    rows = 40.times.map { |i| %(<label text="row #{i}"/>) }.join
+    doc = Egui::Exml.parse(%(
+      <exml><page id="root/root"><central>#{rows}</central></page></exml>
+    ))
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    screen = Egui::Rect.from_min_size(Egui::Pos2.zero,
+      Egui::Vec2.new(300.0, 200.0))
+    step = ->(events : Array(Egui::Event), t : Float64) do
+      ctx.begin_frame(Egui::RawInput.new(screen, events, t))
+      renderer.render_routes(ctx, doc, rt)
+      ctx.end_frame
+      ctx.painter.commands
+    end
+
+    # pointer inside the panel so its viewport owns the wheel
+    step.call([Egui::Event.pointer_moved(Egui::Pos2.new(150.0, 100.0))] of Egui::Event, 0.016)
+    step.call([] of Egui::Event, 0.032)
+    # overflow: the ScrollArea paints its bar, "row 39" stays clipped
+    bar_w = Egui::ScrollArea::BAR_W
+    ctx.painter.commands.select(Egui::RectCmd)
+      .any? { |cmd| cmd.rect.width == bar_w }.should be_true
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("row 0")
+    texts.should_not contain("row 39")
+
+    # wheel down → the later rows scroll into view
+    scrolled = step.call([Egui::Event.scroll(Egui::Vec2.new(0.0, 400.0))] of Egui::Event, 0.048)
+      .select(Egui::TextCmd).map(&.text)
+    scrolled.should contain("row 39")
+    scrolled.should_not contain("row 0")
+  end
+
   it "hot-reloads when the file's mtime moves" do
     path = "/tmp/exml_spec_#{Process.pid}.exml"
     File.write(path, %(<page id="p"><label text="one"/></page>))

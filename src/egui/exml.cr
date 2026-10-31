@@ -1042,7 +1042,15 @@ module Egui
             ctx.menu_bar { |bar| render_menu_bar(child, bar, ctx, rt) }
           when .central?
             ctx.central_panel(child.panel_id) do |panel|
-              render_children_of(child, panel, ctx, rt)
+              # Scrollable by default: a page's markup lists content
+              # top-down and must stay reachable when the window runs
+              # short — the ScrollArea reserves its strip up front and
+              # shows the bar only when the content actually overflows
+              # (inner scroll sinks — textareas — still take the wheel
+              # first; see ScrollArea).
+              panel.scroll_area do |scroll|
+                render_children_of(child, scroll, ctx, rt)
+              end
             end
           when .statusbar?
             ctx.bottom_panel(child.panel_id) do |panel|
