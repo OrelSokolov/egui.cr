@@ -93,8 +93,10 @@ class GalleryApp < Egui::App
   @text_menu : Egui::ContextMenu?
   @input_menu : Egui::ContextMenu?
   @button_menu : Egui::ContextMenu?
-  # The Firefox-style About as a window-inside-window (Help menu) —
-  # see Egui::EmbeddedWindow.
+  # About dialog (Help menu): a wide modal with a markdown body —
+  # see Egui::AboutModal. @about_win is the Firefox-style About as a
+  # window-inside-window — see Egui::EmbeddedWindow.
+  @about_open = false
   @about_win_open = false
   @about_win : Egui::EmbeddedWindow?
   # System-style presets (Ubuntu / Windows XP / Windows 11 / macOS),
@@ -201,6 +203,7 @@ class GalleryApp < Egui::App
           ACTION_THEME)
       end
       bar.menu_button("Help") do |menu|
+        menu.menu_item("About egui.cr…") { @about_open = true }
         menu.menu_item("About egui.cr (window)…") { @about_win_open = true }
       end
     end
@@ -265,6 +268,11 @@ class GalleryApp < Egui::App
       end
       @modal_open = false if clicked == "Close"
     end
+
+    # Help → About: the wide AboutModal with a markdown body. Its
+    # #show returns true the frame the user closed it (Close button
+    # or a scrim click).
+    @about_open = false if @about_open && ABOUT.show(ctx)
 
     # Help → About (window): the Firefox-style About as a real dialog
     # window inside the app (Egui::EmbeddedWindow).
@@ -642,6 +650,42 @@ class GalleryApp < Egui::App
                    "сюда и русская строка, чтобы переносы по словам " \
                    "были видны и в кириллице; текст намеренно длинный, " \
                    "чтобы он не влезал ни в одну строку панели"
+
+  # Help → About dialog body: markdown, rendered by Egui::AboutModal
+  # in a scroll area (headings, emphasis, lists, links, code spans).
+  ABOUT_MARKDOWN = <<-MD
+    **egui.cr** — an immediate-mode GUI for [Crystal](https://crystal-lang.org),
+    a from-scratch port of [egui](https://github.com/emilk/egui) ideas
+    on a custom `sokol` backend.
+
+    - **Widgets** — buttons, text fields, textareas, sliders, tables,
+      plots, markdown, terminal, lottie…
+    - **Containers** — windows, panels, sidebars, tabs, grids,
+      scroll areas, modals
+    - **Styling** — themes, CSS-like classes with `:hover`/`:active`
+      states, live stylesheet rules
+    - **Platforms** — Linux, Windows, macOS, Android
+
+    ## Version
+
+    0.3.0 — label wrapping now matches the textarea engine; new
+    `ScrolledLabel` widget; `readonly` textareas.
+
+    ## Wrapping demo
+
+    A paragraph with a `code span`, **bold** and *italic* text — it
+    wraps through the same engine as the Text tab's labels and never
+    disagrees with a textarea about where lines break.
+    And a long Russian sentence, чтобы переносы по словам были видны
+    и в кириллице — потому что именно здесь баги переносов и жили.
+
+    ## Links
+
+    - [egui on GitHub](https://github.com/emilk/egui)
+    - [Crystal language](https://crystal-lang.org)
+  MD
+
+  ABOUT = Egui::AboutModal.new("About egui.cr", ABOUT_MARKDOWN)
 
   # HTML <textarea>: soft wrap, kinetic wheel scrolling when the text
   # outgrows the box, per-line selection, Enter/arrows/Home/End.
