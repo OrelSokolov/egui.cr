@@ -45,3 +45,5 @@ tmp/
 
 # rlottie full CMake tree (LOTTIE=1 builds) — populated by `rake download:rlottie`, not vendored in git
 /vendor/rlottie/
+
+.carat/
