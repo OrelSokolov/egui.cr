@@ -1,0 +1,18 @@
+<!-- OvalProgress — a pill-shaped progress bar of TWO strips: the
+     full-width track and the gradient fill nested inside it. One
+     rounding rule for both strips: radius = strip height / 2, so
+     every cap is a perfect half-circle at any height (the math lives
+     in the oval_strip handler, examples/oval_progress_components/
+     oval_progress.cr).
+     Use-site props (all optional):
+       frac   progress, 0..1                        (default 0)
+       height track height in px                    (default 12)
+       pad    fill inset from the track, all sides (default 2)
+       track  track color (default: theme-matched gray)
+       from   fill gradient top                     (default #7fd0f9)
+       to     fill gradient bottom                  (default #1667d9)
+     e.g. <oval_progress frac="{download}" height="14"/> -->
+<oval_strip width="100%" height="{height}" color="{track}">
+  <oval_strip width="{pct}%" height="{fill}" pad="{pad}"
+              from="{from}" to="{to}"/>
+</oval_strip>
