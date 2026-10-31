@@ -45,154 +45,51 @@ development_dependencies:
     version: ">= 1.1.0"
 
 # carat delivery contract: binaries this shard ships (the Rakefile EXAMPLES
-# list; `lottie` is behind LOTTIE=1 and not listed). One anchor carries the
-# shared spec — native prebuild + per-OS link flags; entries override main:.
+# list; `lottie` is behind LOTTIE=1 and not listed). `all:` carries the
+# shared spec — the native prebuild (runs ONCE per section, before any
+# binary is built) and the per-OS link flags; entries only override main:.
 binaries:
-  hello: &egui_binary
-    main: examples/hello.cr
+  all:
     prebuild: rake build:native
-    link_flags: &egui_link_flags
+    link_flags:
       "*": [-Llib]
       linux: [lib/libegui_cr_sokol.a, -Llib, -Llib/minaudio/lib]
       darwin: [-framework Cocoa, -framework OpenGL, -framework QuartzCore, -framework AVFoundation, -framework CoreMedia, -framework IOKit]
       windows: [/LIBPATH:lib]
 
-  widgets_gallery:
-    <<: *egui_binary
-    main: examples/widgets_gallery.cr
-
-  openfiledialog:
-    <<: *egui_binary
-    main: examples/openfiledialog.cr
-
-  fontpreview:
-    <<: *egui_binary
-    main: examples/fontpreview.cr
-
-  fontbrowser:
-    <<: *egui_binary
-    main: examples/fontbrowser.cr
-
-  logos:
-    <<: *egui_binary
-    main: examples/logos.cr
-
-  counter_reactive:
-    <<: *egui_binary
-    main: examples/counter_reactive.cr
-
-  notepad:
-    <<: *egui_binary
-    main: examples/notepad.cr
-
-  notepad_with_exml:
-    <<: *egui_binary
-    main: examples/notepad_with_exml.cr
-
-  borderless:
-    <<: *egui_binary
-    main: examples/borderless.cr
-
-  splash:
-    <<: *egui_binary
-    main: examples/splash.cr
-
-  terminal:
-    <<: *egui_binary
-    main: examples/terminal.cr
-
-  win_properties_demo:
-    <<: *egui_binary
-    main: examples/win_properties_demo.cr
-
-  box_shadow:
-    <<: *egui_binary
-    main: examples/box_shadow.cr
-
-  video:
-    <<: *egui_binary
-    main: examples/video.cr
-
-  inspector_demo:
-    <<: *egui_binary
-    main: examples/inspector_demo.cr
-
-  icons_browser:
-    <<: *egui_binary
-    main: examples/icons_browser.cr
-
-  svg_rasterizer:
-    <<: *egui_binary
-    main: examples/svg_rasterizer.cr
-
-  paint:
-    <<: *egui_binary
-    main: examples/paint.cr
-
-  system_monitor:
-    <<: *egui_binary
-    main: examples/system_monitor.cr
-
-  markdown:
-    <<: *egui_binary
-    main: examples/markdown.cr
-
-  mdvsfonts:
-    <<: *egui_binary
-    main: examples/mdvsfonts.cr
-
-  formulas:
-    <<: *egui_binary
-    main: examples/formulas.cr
-
-  crystal3d:
-    <<: *egui_binary
-    main: examples/crystal3d.cr
-
-  rounded_window:
-    <<: *egui_binary
-    main: examples/rounded_window.cr
-
-  tableview:
-    <<: *egui_binary
-    main: examples/tableview.cr
-
-  text_input:
-    <<: *egui_binary
-    main: examples/text_input.cr
-
-  ios_demo:
-    <<: *egui_binary
-    main: examples/ios_demo.cr
-
-  multitouch_demo:
-    <<: *egui_binary
-    main: examples/multitouch_demo.cr
-
-  responsive_demo:
-    <<: *egui_binary
-    main: examples/responsive_demo.cr
-
-  camera:
-    <<: *egui_binary
-    main: examples/camera.cr
-
-  device_api:
-    <<: *egui_binary
-    main: examples/device_api.cr
-
-  audio:
-    <<: *egui_binary
-    main: examples/audio.cr
-
-  remote_image:
-    <<: *egui_binary
-    main: examples/remote_image.cr
-
-  tray:
-    <<: *egui_binary
-    main: examples/tray.cr
-
-  voice_echo:
-    <<: *egui_binary
-    main: examples/voice_echo.cr
+  hello:               {main: examples/hello.cr}
+  widgets_gallery:     {main: examples/widgets_gallery.cr}
+  openfiledialog:      {main: examples/openfiledialog.cr}
+  fontpreview:         {main: examples/fontpreview.cr}
+  fontbrowser:         {main: examples/fontbrowser.cr}
+  logos:               {main: examples/logos.cr}
+  counter_reactive:    {main: examples/counter_reactive.cr}
+  notepad:             {main: examples/notepad.cr}
+  notepad_with_exml:   {main: examples/notepad_with_exml.cr}
+  borderless:          {main: examples/borderless.cr}
+  splash:              {main: examples/splash.cr}
+  terminal:            {main: examples/terminal.cr}
+  win_properties_demo: {main: examples/win_properties_demo.cr}
+  box_shadow:          {main: examples/box_shadow.cr}
+  video:               {main: examples/video.cr}
+  inspector_demo:      {main: examples/inspector_demo.cr}
+  icons_browser:       {main: examples/icons_browser.cr}
+  svg_rasterizer:      {main: examples/svg_rasterizer.cr}
+  paint:               {main: examples/paint.cr}
+  system_monitor:      {main: examples/system_monitor.cr}
+  markdown:            {main: examples/markdown.cr}
+  mdvsfonts:           {main: examples/mdvsfonts.cr}
+  formulas:            {main: examples/formulas.cr}
+  crystal3d:           {main: examples/crystal3d.cr}
+  rounded_window:      {main: examples/rounded_window.cr}
+  tableview:           {main: examples/tableview.cr}
+  text_input:          {main: examples/text_input.cr}
+  ios_demo:            {main: examples/ios_demo.cr}
+  multitouch_demo:     {main: examples/multitouch_demo.cr}
+  responsive_demo:     {main: examples/responsive_demo.cr}
+  camera:              {main: examples/camera.cr}
+  device_api:          {main: examples/device_api.cr}
+  audio:               {main: examples/audio.cr}
+  remote_image:        {main: examples/remote_image.cr}
+  tray:                {main: examples/tray.cr}
+  voice_echo:          {main: examples/voice_echo.cr}
