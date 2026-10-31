@@ -1650,6 +1650,16 @@ module Egui
         # paint commands — the visuals are identical, the CPU cost is
         # not. Any input, resize or dialog callback switches right back
         # to a full frame.
+        # ANDROID EXCEPTION: no re-emit at all. Replaying the packet on
+        # every vsync (144 Hz on a tablet) keeps the choreographer/looper
+        # thread saturated, and ALooper_pollOnce stops servicing the
+        # AInputQueue fd — the input dispatcher then flags the window
+        # "not responding (waited 10000ms for MotionEvent UP)" and touch
+        # events never reach the app (observed on MIUI/Android 14). The
+        # compositor retains the last presented buffer, so skipping the
+        # paint leaves the screen unchanged; a fresh surface (resume)
+        # always produces RESUMED/FOCUSED events, which force a full
+        # frame before this branch can run.
         # IME records queued by the Java InputConnection (UI thread) —
         # must land in @@events BEFORE the idle check so typing always
         # forces a full frame.
@@ -1661,7 +1671,9 @@ module Egui
            !app.ctx.textures.pending_destroys? &&
            fb_w == @@last_fb_w && fb_h == @@last_fb_h
           dbg_frame("idle", "moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?}")
-          paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
+          {% unless flag?(:android) %}
+            paint_frame(app.ctx, fb_w, fb_h, cache, touch_fonts: false)
+          {% end %}
           return
         end
         dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?} delivered=#{delivered}")

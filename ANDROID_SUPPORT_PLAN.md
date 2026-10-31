@@ -150,7 +150,8 @@ Bootstrap-трюк: `__crystal_main(argc, argv)` объявляется чере
   Если у API-34 образа нет трансляции — скачать
   `system-images;android-30;google_apis;x86_64` (там трансляция точно есть).
 - API ≥ 28 (ограничение Crystal-таргета).
-- libevent — только пиннед-коммит; OpenSSL нет → TLS вне скоупа.
+- libevent — только пиннед-коммит; TLS из сырых тредов — через шард
+  `openssl-shim` (см. «Сеть из сырых тредов» ниже).
 - terminal/pty-виджет на Android невозможен (нет fork в app-процессах).
 - GC консервативный (Boehm), куча невидима для Android-менеджмента памяти —
   на `on_low_memory` подчищать вручную (п.7).
@@ -368,6 +369,33 @@ Bootstrap-трюк: `__crystal_main(argc, argv)` объявляется чере
       слайдеры/выделение текста/холсты рисования перехватывают жест,
       кнопки и лейблы прокручивают, как в мобильных списках). Работает и
       мышью (тест на десктопе). Спек: spec/scroll_drag_spec.cr.
+
+## Сеть из сырых тредов (шард openssl-shim)
+
+Любой Crystal-сокет из сырого треда (frame-цикл sokol, worker-треды без
+планировщика) падает: `NilAssertionError "Thread#scheduler cannot be nil"`.
+Решение вынесено из perevodilka в отдельный шард
+`~/myshards/openssl-shim.cr` (`Openssl::HTTPS.get`): блокирующий HTTPS GET
+через OpenSSL C API — DNS → TCP → TLS → GET → read-to-EOF, полностью на
+голых syscalls, с декодированием chunked-ответов и таймаутами
+SO_RCVTIMEO/SO_SNDTIMEO.
+
+- **десктоп**: `ext/libhttps_shim.so` грузится dlopen'ом при первом
+  вызове (нет link-зависимости у потребителя);
+- **Android**: `ext/https_shim.c` компилируется NDK-клэном против
+  статического OpenSSL и линкуется в app-`.so` (см. perevodilka
+  `android/build_android.sh`), Crystal-сторона биндит extern-символы
+  напрямую;
+- **тесты**: локальный TLS-оракул (python3 `http.server` + `ssl` на
+  `127.0.0.1`, самоподписанный сертификат на лету) — реальные
+  хендшейки: верификация/без, chunked, не-2xx, ~1 МБ, DNS-ошибки,
+  oversized path, таймауты. Плюс опциональный `rake test:net` против
+  реального интернета (MyMemory).
+
+Внимание: шард называется `openssl-shim`, а не `openssl` — шард с именем
+`openssl` затеняет stdlib для транзитивных голых `require "openssl"`
+(например, из `http/client.cr`) и ломает TLS у `HTTP::Client` во всём
+приложении.
 
 ## Приёмка
 

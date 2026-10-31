@@ -6166,27 +6166,8 @@ void egui_cr_cam_perm_request(void) {
     (*env)->CallStaticVoidMethod(env, cls, m);
 }
 
-// Microphone permission gate for SystemPorts::Microphone (backend/
-// audio.cr MicRunner) — the same poll-request pattern as the camera.
-int egui_cr_mic_perm(void) {
-    JNIEnv* env = sh_sys_env();
-    if (!env) return -1;
-    jclass cls = sh_act_class(env);
-    if (!cls) return -1;
-    jmethodID m = (*env)->GetStaticMethodID(env, cls, "hasMicPermission", "()Z");
-    if (!m) return -1;
-    return (*env)->CallStaticBooleanMethod(env, cls, m) ? 1 : 0;
-}
-
-void egui_cr_mic_perm_request(void) {
-    JNIEnv* env = sh_sys_env();
-    if (!env) return;
-    jclass cls = sh_act_class(env);
-    if (!cls) return;
-    jmethodID m = (*env)->GetStaticMethodID(env, cls, "requestMicPermission", "()V");
-    if (!m) return;
-    (*env)->CallStaticVoidMethod(env, cls, m);
-}
+// egui_cr_mic_perm / egui_cr_mic_perm_request для Android живут ниже,
+// в платформенном блоке mic-permissions (иначе — redefinition).
 
 int egui_cr_cam_devices(void) {
     if (!sh_cam_mgr) sh_cam_mgr = ACameraManager_create();
