@@ -5912,33 +5912,9 @@ void egui_cr_cam_perm_request(void) {
         completionHandler:^(BOOL granted) { (void)granted; }];
 }
 
-// Microphone TCC gate (SystemPorts::Microphone via backend/audio.cr):
-// the same poll-request pattern as the camera, for AVMediaTypeAudio.
-// CoreAudio delivers digital silence to processes without mic
-// authorization, so the runner checks first and pops the system dialog
-// from a bundled app. Bare (non-bundle) executables get no dialog —
-// requestAccess there would make TCC abort the process (see
-// sh_cam_bundled), so the request is a no-op and the runner surfaces
-// the bundle hint instead.
-int egui_cr_mic_perm(void) {
-    switch ([AVCaptureDevice authorizationStatusForMediaType:AVMediaTypeAudio]) {
-        case AVAuthorizationStatusAuthorized: return 1;
-        case AVAuthorizationStatusNotDetermined: return 0;
-        default: return -1;
-    }
-}
-
-static int sh_mic_bundled(void) {
-    NSBundle* b = [NSBundle mainBundle];
-    return [[b bundlePath] hasSuffix:@".app"] &&
-           [b objectForInfoDictionaryKey:@"NSMicrophoneUsageDescription"] != nil;
-}
-
-void egui_cr_mic_perm_request(void) {
-    if (!sh_mic_bundled()) return;
-    [AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio
-        completionHandler:^(BOOL granted) { (void)granted; }];
-}
+// egui_cr_mic_perm / sh_mic_bundled / egui_cr_mic_perm_request для macOS
+// НЕ живут здесь: их определяет платформенный блок mic-permissions ниже
+// (дубль здесь ломал macOS-сборку redefinition'ом).
 
 // Device list: static slots refreshed by egui_cr_cam_devices (read right
 // after it; the pointers stay valid until the next refresh).
