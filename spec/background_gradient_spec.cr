@@ -63,17 +63,32 @@ describe "gradient background (background2)" do
     grad_rect(ctx, top, bot).should_not be_nil
   end
 
-  it "an explicit background recolors only the top stop of a built-in #gradient" do
+  it "a per-widget background recolors only the top stop of a built-in #gradient" do
     ctx = Egui::Context.new
     gtop = Egui::Color32.rgb(60, 150, 90)
     gbot = Egui::Color32.rgb(24, 80, 48)
     red = Egui::Color32.rgb(255, 0, 0)
-    ctx.stylesheet.rule("button", Egui::StyleVars{"background" => red})
+    ctx.set_id_style(Egui::Id.from("g"), "background", red)
+    grad_frame(ctx) do |c|
+      c.window("w") { |ui| ui.add(Egui::Button.new("G", id: "g").gradient(gtop, gbot)) }
+    end
+    # the element override wins the top, the built-in bottom survives
+    grad_rect(ctx, red, gbot).should_not be_nil
+    grad_rect(ctx, gtop, gbot).should be_nil
+  end
+
+  it "the user-agent class background does not wash out a built-in #gradient" do
+    # The theme's own `button { background: button_weak }` (translucent
+    # in dark themes) must not beat the built-in stops — the top stop
+    # would render translucent grey instead of the declared color.
+    ctx = Egui::Context.new
+    gtop = Egui::Color32.rgb(60, 150, 90)
+    gbot = Egui::Color32.rgb(24, 80, 48)
+    weak = ctx.style.visuals.button_weak
     grad_frame(ctx) do |c|
       c.window("w") { |ui| ui.add(Egui::Button.new("G").gradient(gtop, gbot)) }
     end
-    # the class rule wins the top, the built-in bottom survives
-    grad_rect(ctx, red, gbot).should_not be_nil
-    grad_rect(ctx, gtop, gbot).should be_nil
+    grad_rect(ctx, gtop, gbot).should_not be_nil
+    grad_rect(ctx, weak, gbot).should be_nil
   end
 end

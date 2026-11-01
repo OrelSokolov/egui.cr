@@ -249,15 +249,22 @@ module Egui
       #   inspector override, per state like `background`): the fill
       #   becomes the vertical gradient `background` → `background2` —
       #   this is the inspector's way into a gradient background;
-      # * the built-in `#gradient(c1, c2)`: its stops are the DEFAULTS,
-      #   so an explicit cascade `background` recolors the top stop
-      #   instead of being silently ignored; it yields to the plain
-      #   state fill while pressed (existing behavior).
+      # * the built-in `#gradient(c1, c2)`: its stops are the DEFAULTS.
+      #   Only a per-widget value (inspector element override or inline
+      #   `#style`) recolors the top — a class rule must NOT, because
+      #   the user-agent theme itself sets `button { background }`, and
+      #   honoring it here washes the top stop out (button_weak is
+      #   translucent) for EVERY gradient button. The built-in
+      #   gradient still yields to the plain state fill while pressed
+      #   (existing behavior).
       if (bg2 = state_vars.color?("background2"))
         ui.painter.rect(rect, rounding: rounding, fill: fill, fill2: bg2,
           stroke_color: stroke_color, stroke_width: 1.0)
       elsif (grad = @gradient) && !response.active?
-        top = cascade_color?("background", ui, id, state) ? fill : grad[0]
+        own = ui.ctx.id_style_state_vars(id, state)
+          .try(&.color?("background")) ||
+          @style_override.try(&.background)
+        top = own ? fill : grad[0]
         ui.painter.rect(rect, rounding: rounding, fill: top, fill2: grad[1],
           stroke_color: stroke_color, stroke_width: 1.0)
       elsif bevel_light && bevel_dark

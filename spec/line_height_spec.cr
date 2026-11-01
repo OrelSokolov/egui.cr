@@ -115,6 +115,22 @@ describe "line height" do
     row.ascent.should be_close(row.height / 2.0 + (16.0 + -4.8) / 2.0, 1e-9)
   end
 
+  it "keeps the union em-box on a single-word wrap row (the last line)" do
+    fonts = Egui::MonospaceFonts.new
+    # 12 mono chars = 115.2px: the first word fills the row exactly, so
+    # "bbb" wrap-breaks alone onto the final row. The word's metrics
+    # used to land BEFORE the wrap-flush: emit_row zeroed them closing
+    # the previous row, the new row was emitted with an empty em-box
+    # (ascent = height/2) and its glyphs drew |desc| too high — the
+    # launcher About label's drifting last line.
+    galley = fonts.layout([Egui::TextRun.new("xxxxxxxxxxxx bbb", 16.0)], 115.2)
+    galley.rows.size.should eq(2)
+    last = galley.rows.last
+    last.text.should eq("bbb")
+    last.ascent.should be_close(16.0 * 1.3 / 2.0 + (16.0 + -4.8) / 2.0, 1e-9)
+    last.ascent.should be_close(galley.rows.first.ascent, 1e-9)
+  end
+
   it "splits an explicit line_height's leading half above / half below" do
     fonts = Egui::MonospaceFonts.new
     galley = fonts.layout([Egui::TextRun.new("hi", 16.0)], nil, nil, 1.5)

@@ -282,15 +282,21 @@ module Egui
       end
 
       def add_word(word : String, run : TextRun) : Nil
-        @height = {@height, run.size}.max
         stack = stack_for(run.family, run.bold?, run.italic?)
-        asc, desc = stack.metrics_at(run.size)
-        @asc = {@asc, asc}.max
-        @desc = {@desc, desc}.min
         w = stack.measure(word, run.size).x
         if (mw = @max_width) && !@tokens.empty? && @width + w > mw
           flush
         end
+        # Metrics land AFTER the wrap-flush: emit_row zeroed the union
+        # em-box when it closed the previous row, and the flushed word
+        # belongs to the NEW one. Setting them before the flush fed the
+        # old row this word's metrics and left the new row's box empty —
+        # a single-word wrap row (the last line breaking alone) then
+        # emitted ascent = height/2 and drew its glyphs |desc| too high.
+        @height = {@height, run.size}.max
+        asc, desc = stack.metrics_at(run.size)
+        @asc = {@asc, asc}.max
+        @desc = {@desc, desc}.min
         if (mw = @max_width) && w > mw
           # hard-break a word longer than the whole width
           word.each_char do |ch|
