@@ -58,7 +58,7 @@ module Egui
     # and 3D-bevel/shadow extras (see `default_theme.cr` for the
     # defaults). Declared here — the inspector renders what it's told.
     def style_properties : Array(StyleProp)
-      StyleProps.buttonlike + StyleProps.sizable + [
+      props = StyleProps.buttonlike + StyleProps.sizable + [
         StyleProp.new("padding", :box),
         StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
         StyleProp.new("bevel_light", :color, states: true),
@@ -69,6 +69,20 @@ module Egui
         StyleProp.new("shadow.y", :number),
         StyleProp.new("shadow.inset", :bool, states: true),
       ]
+      # A built-in `#gradient` is the live default of BOTH stops: the
+      # inspector shows (and seeds edits from) the colors actually
+      # painted while the cascade leaves the keys unset — the fallback
+      # beats the generic theme slot.
+      if (g = @gradient)
+        props = props.map do |p|
+          case p.key
+          when "background"  then p.with_fallback(g[0])
+          when "background2" then p.with_fallback(g[1])
+          else                    p
+          end
+        end
+      end
+      props
     end
 
     def inspector_label : String?
@@ -230,8 +244,21 @@ module Egui
       end
       bevel_light = state_vars.color?("bevel_light")
       bevel_dark = state_vars.color?("bevel_dark")
-      if (grad = @gradient) && !response.active?
-        ui.painter.rect(rect, rounding: rounding, fill: grad[0], fill2: grad[1],
+      # Gradient fill — the second stop has two sources:
+      # * an explicit `background2` in the state bag (class rule or
+      #   inspector override, per state like `background`): the fill
+      #   becomes the vertical gradient `background` → `background2` —
+      #   this is the inspector's way into a gradient background;
+      # * the built-in `#gradient(c1, c2)`: its stops are the DEFAULTS,
+      #   so an explicit cascade `background` recolors the top stop
+      #   instead of being silently ignored; it yields to the plain
+      #   state fill while pressed (existing behavior).
+      if (bg2 = state_vars.color?("background2"))
+        ui.painter.rect(rect, rounding: rounding, fill: fill, fill2: bg2,
+          stroke_color: stroke_color, stroke_width: 1.0)
+      elsif (grad = @gradient) && !response.active?
+        top = cascade_color?("background", ui, id, state) ? fill : grad[0]
+        ui.painter.rect(rect, rounding: rounding, fill: top, fill2: grad[1],
           stroke_color: stroke_color, stroke_width: 1.0)
       elsif bevel_light && bevel_dark
         ui.painter.rect(rect, rounding: rounding, fill: fill)

@@ -267,24 +267,32 @@ module Egui
     #      scoped path beats the base class;
     #   4. the theme's state slots (`Visuals#button_fill`) — the
     #      user-agent default with built-in per-state colors.
+    # The cascade's explicit value for `key` at this state — per-element
+    # inspector override → inline `#style` (the `background` slot) →
+    # class-chain rules. nil when only the theme slot applies.
+    # `#background_color` adds the theme fallback and the `transition`
+    # animation on top of this for the `background` key.
+    protected def cascade_color?(key : String, ui : Ui, id : Id,
+                                 state : String?) : Color32?
+      if (oc = ui.ctx.id_style_state_vars(id, state).try(&.color?(key)))
+        oc
+      elsif key == "background" && (ic = @style_override.try(&.background))
+        ic
+      else
+        paths = class_paths(ui.style_scope)
+        paths.empty? ? nil :
+          ui.ctx.stylesheet.resolve_chain(paths, state).color?(key)
+      end
+    end
+
     protected def background_color(ui : Ui, id : Id, state : String?,
                                    hovered : Bool, active : Bool) : Color32
-      paths = class_paths(ui.style_scope)
-      c = if (oc = ui.ctx.id_style_state_vars(id, state).try(&.color?("background")))
-        oc
-      elsif (ic = @style_override.try(&.background))
-        ic
-      elsif !paths.empty? &&
-           (cc = ui.ctx.stylesheet.resolve_chain(paths, state).color?("background"))
-        cc
-      else
-        nil
-      end
+      c = cascade_color?("background", ui, id, state)
       target = c || ui.style.visuals.button_fill(hovered, active)
       # `transition`/`transition.background` animates the fill towards
       # its new cascade target (duration in ms; absent = snap). The
       # duration rides the same state-aware bags the value came from.
-      if c && !paths.empty?
+      if c && !(paths = class_paths(ui.style_scope)).empty?
         vars = ui.ctx.stylesheet.resolve_chain(paths, state)
         if (ov = ui.ctx.id_style_state_vars(id, state))
           merged = StyleVars.new

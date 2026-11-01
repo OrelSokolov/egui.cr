@@ -231,6 +231,13 @@ module Egui
                    @options : Array(String)? = nil)
       @label = label || @key
     end
+
+    # Same declaration with a different fallback — how a widget seeds
+    # its live painted values as the display default (a built-in
+    # `Button#gradient` fills both stops' fallbacks).
+    def with_fallback(v : StyleValue) : StyleProp
+      StyleProp.new(@key, @kind, @label, @states, v, @min, @options)
+    end
   end
 
   # Ready-made declaration sets shared by several widgets (widgets
@@ -254,6 +261,11 @@ module Egui
     def self.buttonlike : Array(StyleProp)
       textlike + [
         StyleProp.new("background", :color, states: true),
+        # The second stop of a vertical gradient fill (`background` is
+        # the top, this the bottom); unset = the solid `background`
+        # fill. Editable per state like `background` itself.
+        StyleProp.new("background2", :color, states: true,
+          label: "background 2 (gradient)"),
         StyleProp.new("stroke", :color, states: true),
       ]
     end
@@ -380,10 +392,11 @@ module Egui
 
     # Apply this bag onto a copy of `base` (the same key vocabulary
     # `WidgetStyle#merge_over` uses), mapping keys onto their `Style`
-    # slots. `background` is deliberately NOT mapped here: it is
-    # state-scoped, so state-painted widgets read it from the
-    # state-merged bag through `Widget#background_color` instead of a
-    # flat Style slot. Skips cloning for empty bags.
+    # slots. `background` and `background2` are deliberately NOT mapped
+    # here: they are state-scoped, so state-painted widgets read them
+    # from the state-merged bag through `Widget#background_color` (and
+    # the widget's own `background2` lookup) instead of a flat Style
+    # slot. Skips cloning for empty bags.
     def apply_over(base : Style) : Style
       return base if empty?
       merged = base.clone
