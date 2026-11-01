@@ -687,13 +687,15 @@ module Egui
       end
     end
 
-    # The "Base / Hover / Active" switch shared by both tabs — the
-    # element layer stores per-state bags exactly like class rules.
+    # The "Base / Hover / Selected / Active" switch shared by both
+    # tabs — the element layer stores per-state bags exactly like
+    # class rules.
     private def render_state_switch(ui : Ui, current : String?,
                                     &set : String? ->) : Nil
       ui.horizontal do |row|
         row.label("State:")
-        {"Base" => nil, "Hover" => "hover", "Active" => "active"}.each do |label, st|
+        {"Base" => nil, "Hover" => "hover", "Selected" => "selected",
+         "Active" => "active"}.each do |label, st|
           row.selectable(current == st, label) { |_| set.call(st) }
         end
       end
@@ -1142,9 +1144,10 @@ module Egui
       case key
       when "background"
         case state
-        when "hover"  then v.button_hovered
-        when "active" then v.button_active
-        else               v.button_weak
+        when "hover"    then v.button_hovered
+        when "selected" then v.selection_fill
+        when "active"   then v.button_active
+        else                 v.button_weak
         end
       when "text_color"       then v.text_color
       when "stroke"           then v.button_stroke

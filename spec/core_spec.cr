@@ -2390,6 +2390,26 @@ describe "hsv conversions (phase 6)" do
     color.b.should eq(0)
     color.a.should be < 60 # nearly fully transparent
   end
+
+  it "shows the color name, hex and rgba readout below the swatch" do
+    ctx = Egui::Context.new
+    color = Egui::Color32.rgb(255, 0, 0)
+
+    raw_frame(ctx)
+    widget_ui(ctx).color_edit32(color) { |c| color = c }
+    ctx.end_frame
+
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Red")           # exact table match
+    texts.should contain("#FF0000")
+    texts.should contain("rgba(255, 0, 0, 255)")
+  end
+
+  it "names off-table colors by nearest CSS match" do
+    Egui::ColorPicker.color_name(Egui::Color32.rgb(250, 5, 10)).should eq("Red")
+    Egui::ColorPicker.color_name(Egui::Color32.rgb(70, 140, 200)).should eq("Steel Blue")
+    Egui::ColorPicker.color_name(Egui::Color32.rgb(250, 250, 250)).should eq("Mint Cream")
+  end
 end
 
 describe "interaction clipping (overflowing widgets)" do
