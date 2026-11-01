@@ -27,9 +27,11 @@ dependencies:
     github: OrelSokolov/highlight.cr
   # Звук SystemPorts::Audio: vendored miniaudio за идиоматичным API
   # (Engine/Sound/Decoder). Нужен только приложениям, которые требуют
-  # "egui/backend/audio".
+  # "egui/backend/audio". https-шорткат (как у остальных): git@ SSH-URL
+  # в shard.lock ломает `shards install` на машинах без ключа — CI-раннеры
+  # kodkod падали на клоне.
   minaudio:
-    git: git@github.com:OrelSokolov/minaudio.cr.git
+    github: OrelSokolov/minaudio.cr
 
 # Demos only (examples/ + spec/) — never pulled in when egui-cr is
 # used as a library. examples/system_monitor.cr reads RAM, CPU and
