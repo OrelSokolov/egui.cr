@@ -20,7 +20,18 @@ module Egui
       # A parsed Bodymovin animation (the shard is long-lived and
       # immutable once parsed — nothing to free).
       class Animation < Lottie::Renderer
+        # Frame cache: the animation is immutable and the shard's
+        # rasterizer deterministic, so frame N at size W×H renders to
+        # the same pixels every time — and looping players re-ask for
+        # the same frames forever. A hit is a memcpy instead of a
+        # full re-raster (~1 ms/frame in pure Crystal vs ~0.1 ms for
+        # the C shim). Bounded: when the cache passes MAX_CACHE_BYTES
+        # it drops everything and refills (loop restart rebuilds it).
+        MAX_CACHE_BYTES = 8 * 1024 * 1024
+
         def initialize(@anim : ::Lottie::Animation)
+          @frame_cache = {} of Int32 => NamedTuple(w: Int32, h: Int32, data: Bytes)
+          @cache_bytes = 0
         end
 
         # Parse (or fetch the memoized) animation for a JSON source;
@@ -35,9 +46,6 @@ module Egui
           anim
         end
 
-        # The shard's viewport is Float64 (Bodymovin allows fractional
-        # w/h); the seam reports whole pixels (the rlottie shim's
-        # size_t contract).
         def width : Int32
           @anim.width.to_i32
         end
@@ -56,7 +64,22 @@ module Egui
 
         def render(frame : Int32, buf : Bytes,
                    w : Int32, h : Int32) : Bool
-          @anim.render(frame, buf, w, h)
+          if (c = @frame_cache[frame]?)
+            if c[:w] == w && c[:h] == h
+              c[:data].copy_to(buf)
+              return true
+            end
+          end
+          return false unless @anim.render(frame, buf, w, h)
+          if @cache_bytes + buf.size > MAX_CACHE_BYTES
+            @frame_cache.clear
+            @cache_bytes = 0
+          end
+          data = Bytes.new(buf.size)
+          buf.copy_to(data)
+          @frame_cache[frame] = {w: w, h: h, data: data}
+          @cache_bytes += buf.size
+          true
         end
 
         @@animations = {} of String => Animation

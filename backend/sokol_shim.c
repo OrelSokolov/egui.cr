@@ -1870,6 +1870,26 @@ static bool sh_gl_ok(void) {
 static bool sh_gl_ok(void) { return true; }
 #endif
 
+// Lazy sokol resource creation (samplers, white texture, pipelines)
+// can run from TWO threads at once: AppKit's update-cycle thread may
+// run a whole drawRect while the main loop is mid-frame (macOS 26 —
+// see sh_gl_ok above). sokol's resource pools are not thread-safe —
+// two racing sg_make_* calls hand out the same pool slot and assert
+// (slot state != ALLOC, observed as a launch-time abort in the
+// lottie demos). One mutex serializes the lazy creators; creation
+// also requires a current GL context on the calling thread (defer
+// otherwise — that frame's pass is dropped anyway). Other platforms
+// run every frame callback on one thread: no lock needed.
+#if defined(__APPLE__) && !defined(SH_IOS)
+#include <pthread.h>
+static pthread_mutex_t g_lazy_lock = PTHREAD_MUTEX_INITIALIZER;
+#define SH_LAZY_LOCK()   pthread_mutex_lock(&g_lazy_lock)
+#define SH_LAZY_UNLOCK() pthread_mutex_unlock(&g_lazy_lock)
+#else
+#define SH_LAZY_LOCK()   do {} while (0)
+#define SH_LAZY_UNLOCK() do {} while (0)
+#endif
+
 // The backend's pixels_per_point source. Desktop: sokol's own dpi
 // scale. Android: sapp_dpi_scale() is hardcoded to 1.0 there, so the
 // AConfiguration density probe (sh_android_init_ppp) owns the value.
@@ -2136,6 +2156,13 @@ static sgl_pipeline g_pip_3d;
 static sgl_pipeline g_pip_3d_blend;
 
 static void sh_ensure_pipelines(void) {
+    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id) return;
+    SH_LAZY_LOCK();
+    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id) {
+        SH_LAZY_UNLOCK();
+        return;
+    }
+    if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; }
     if (!g_alpha_pip.id)   g_alpha_pip = sh_make_blend_pip("egui-cr-alpha-pip");
     if (!g_text_pip.id)    g_text_pip = sh_make_blend_pip("egui-cr-text-pip");
     if (!g_pip_3d.id) {
@@ -2176,6 +2203,7 @@ static void sh_ensure_pipelines(void) {
             .label = "egui-cr-replace-pip",
         });
     }
+    SH_LAZY_UNLOCK();
 }
 
 void egui_cr_alpha_pipeline_push(void) {
@@ -2255,10 +2283,13 @@ static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
 
 static sg_sampler g_linear_sampler;
 static void sh_sampler_ensure(void) {
-    if (!g_linear_sampler.id) {
+    if (g_linear_sampler.id) return;
+    SH_LAZY_LOCK();
+    if (!g_linear_sampler.id && sh_gl_ok()) {
         g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
             .min_filter = SG_FILTER_LINEAR, .mag_filter = SG_FILTER_LINEAR });
     }
+    SH_LAZY_UNLOCK();
 }
 // Point-sampled twin for pixel-art surfaces (the Paint canvas): created
 // lazily by egui_cr_sgl_texture_nearest.
@@ -2402,10 +2433,14 @@ void egui_cr_sgl_texture(uint32_t view_id) {
 void egui_cr_sgl_texture_nearest(uint32_t view_id) {
     if (!sh_run_direct()) { egui_cr_pkt_tex(view_id, 1); return; }
     if (!g_nearest_sampler.id) {
-        g_nearest_sampler = sg_make_sampler(&(sg_sampler_desc){
-            .min_filter = SG_FILTER_NEAREST,
-            .mag_filter = SG_FILTER_NEAREST,
-        });
+        SH_LAZY_LOCK();
+        if (!g_nearest_sampler.id && sh_gl_ok()) {
+            g_nearest_sampler = sg_make_sampler(&(sg_sampler_desc){
+                .min_filter = SG_FILTER_NEAREST,
+                .mag_filter = SG_FILTER_NEAREST,
+            });
+        }
+        SH_LAZY_UNLOCK();
     }
     sg_view view = {.id = view_id};
     sgl_texture(view, g_nearest_sampler);
@@ -4841,14 +4876,18 @@ static sh_tex_t* sh_tex_find(uint32_t id) {
 
 static void sh_white_tex_ensure(void) {
     if (g_white_tex.img.id) return;
-    unsigned char px[4] = { 255, 255, 255, 255 };
-    g_white_tex.img = sg_make_image(&(sg_image_desc){
-        .width = 1, .height = 1, .usage = {.immutable = true},
-        .data = {.mip_levels[0] = {.ptr = px, .size = 4}},
-    });
-    g_white_tex.view = sg_make_view(&(sg_view_desc){
-        .texture = {.image = g_white_tex.img} });
-    g_white_tex.id = 0xFFFFFFFF;
+    SH_LAZY_LOCK();
+    if (!g_white_tex.img.id && sh_gl_ok()) {
+        unsigned char px[4] = { 255, 255, 255, 255 };
+        g_white_tex.img = sg_make_image(&(sg_image_desc){
+            .width = 1, .height = 1, .usage = {.immutable = true},
+            .data = {.mip_levels[0] = {.ptr = px, .size = 4}},
+        });
+        g_white_tex.view = sg_make_view(&(sg_view_desc){
+            .texture = {.image = g_white_tex.img} });
+        g_white_tex.id = 0xFFFFFFFF;
+    }
+    SH_LAZY_UNLOCK();
 }
 
 static void sh_tex_upload(sh_tex_t* t, const void* data, size_t size) {
