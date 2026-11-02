@@ -152,7 +152,12 @@ module Egui
                            atlas : GlyphAtlas? = nil) : FreetypeFonts?
         paths.each do |path|
           next unless File.exists?(path)
-          font = new(File.read(path), atlas)
+          # raw_read (not File.read): a blocking-IO pool read here would
+          # resume this fiber — mid-[NSApp run], inside on_init — on a
+          # pool thread and crash AppKit (see Fonts.raw_read).
+          data = Egui::SystemPorts::Fonts.raw_read(path)
+          next if data.nil?
+          font = new(data, atlas)
           if font.loaded?
             font.source_path = path
             return font

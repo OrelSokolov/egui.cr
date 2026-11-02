@@ -109,66 +109,139 @@ module Egui
         end
       end
 
+      # Whole-file read through read(2), never through IO::FileDescriptor:
+      # Crystal runs blocking IO reads on a thread pool and resumes the
+      # fiber on whichever pool thread finished the read — a fiber that
+      # is inside a C event loop (sokol's [NSApp run] on macOS must stay
+      # on the process main thread) would carry its whole C stack onto a
+      # pool thread and crash AppKit at the next autorelease-pool pop.
+      # Used for every font-file read during backend init; stat/read(2)
+      # never suspend the fiber. nil = missing or unreadable.
+      def self.raw_read(path : String) : String?
+        {% if flag?(:win32) %}
+          begin
+            File.read(path)
+          rescue File::Error | IO::Error
+            nil
+          end
+        {% else %}
+          return nil unless (size = File.info?(path).try &.size)
+          fd = LibC.open(path.check_no_null_byte.to_unsafe, 0) # 0 = O_RDONLY
+          return nil if fd < 0
+          begin
+            buf = Bytes.new(size)
+            got = 0
+            while got < size
+              r = LibC.read(fd, buf.to_unsafe + got, size - got)
+              break if r <= 0
+              got += r
+            end
+            got.zero? ? nil : String.new(buf[0, got])
+          ensure
+            LibC.close(fd)
+          end
+        {% end %}
+      end
+
       # Family name (SFNT `name` table, nameID 1) read straight off
       # the file: 12-byte header → table records → the `name` table's
       # own header + records, then only the winning string's bytes.
       # A handful of small reads per file, no glyph data touched.
       # Public so apps that group fonts beyond #installed_families'
       # one-representative-per-family view (a specimen browser listing
-      # every style file) can reuse the same cheap reader.
+      # every style file) can reuse the same cheap reader. Reads go
+      # through a raw fd — see #raw_read for why no IO::FileDescriptor.
       def self.family_name(path : String) : String?
-        File.open(path) do |io|
-          head = read_bytes(io, 12) || return nil
-          version = be_u32(head, 0)
-          # 0x00010000 = TrueType outlines ('true' is the legacy tag);
-          # 'ttcf' collections and 'OTTO' CFF faces are not loadable.
-          return nil unless version == 0x0001_0000 || version == 0x7472_7565
-          num_tables = be_u16(head, 4)
-          return nil if num_tables.zero? || num_tables > 256
-          records = read_bytes(io, num_tables * 16) || return nil
-          name_off = 0_u32
-          num_tables.times do |i|
-            off = i * 16
-            if records[off, 4] == NAME_TAG
-              name_off = be_u32(records, off + 8)
-              break
-            end
+        {% if flag?(:win32) %}
+          File.open(path) do |io|
+            family_name_io(io)
           end
-          return nil if name_off.zero?
-          io.seek(name_off)
-          hdr = read_bytes(io, 6) || return nil
-          count = be_u16(hdr, 2)
-          str_off = be_u16(hdr, 4)
-          return nil if count > 4096
-          recs = read_bytes(io, count * 12) || return nil
-          best = nil
-          best_pref = 0
-          count.times do |i|
-            off = i * 12
-            platform = be_u16(recs, off)
-            next unless be_u16(recs, off + 6) == 1 # nameID 1: family
-            pref = case platform
-                   when 3 then 4       # Windows (UTF-16BE)
-                   when 0 then 3       # Unicode (UTF-16BE)
-                   when 1 then 2       # Macintosh (Roman)
-                   else next
-                   end
-            pref += 1 if platform == 3 && be_u16(recs, off + 4) == 0x0409
-            next unless pref > best_pref
-            length = be_u16(recs, off + 8)
-            next if length.zero? || length > 512
-            io.seek(name_off + str_off + be_u16(recs, off + 10))
-            bytes = read_bytes(io, length) || next
-            best = decode_name(bytes, platform)
-            best_pref = pref unless best.nil?
+        {% else %}
+          fd = LibC.open(path.check_no_null_byte.to_unsafe, 0) # 0 = O_RDONLY
+          return nil if fd < 0
+          begin
+            family_name_io(RawFd.new(fd))
+          ensure
+            LibC.close(fd)
           end
-          best
-        end
+        {% end %}
       rescue IO::Error | File::Error | ArgumentError
         nil # a broken/corrupt file is skipped, not fatal
       end
 
       NAME_TAG = "name".to_slice # the SFNT table tag compared as bytes
+
+      # The name-table reader over an IO-like (see RawFd — seek +
+      # read_fully is all it needs; win32 family_name passes a File).
+      private def self.family_name_io(io) : String?
+        head = read_bytes(io, 12) || return nil
+        version = be_u32(head, 0)
+        # 0x00010000 = TrueType outlines ('true' is the legacy tag);
+        # 'ttcf' collections and 'OTTO' CFF faces are not loadable.
+        return nil unless version == 0x0001_0000 || version == 0x7472_7565
+        num_tables = be_u16(head, 4)
+        return nil if num_tables.zero? || num_tables > 256
+        records = read_bytes(io, num_tables * 16) || return nil
+        name_off = 0_u32
+        num_tables.times do |i|
+          off = i * 16
+          if records[off, 4] == NAME_TAG
+            name_off = be_u32(records, off + 8)
+            break
+          end
+        end
+        return nil if name_off.zero?
+        io.seek(name_off)
+        hdr = read_bytes(io, 6) || return nil
+        count = be_u16(hdr, 2)
+        str_off = be_u16(hdr, 4)
+        return nil if count > 4096
+        recs = read_bytes(io, count * 12) || return nil
+        best = nil
+        best_pref = 0
+        count.times do |i|
+          off = i * 12
+          platform = be_u16(recs, off)
+          next unless be_u16(recs, off + 6) == 1 # nameID 1: family
+          pref = case platform
+                 when 3 then 4       # Windows (UTF-16BE)
+                 when 0 then 3       # Unicode (UTF-16BE)
+                 when 1 then 2       # Macintosh (Roman)
+                 else next
+                 end
+          pref += 1 if platform == 3 && be_u16(recs, off + 4) == 0x0409
+          next unless pref > best_pref
+          length = be_u16(recs, off + 8)
+          next if length.zero? || length > 512
+          io.seek(name_off + str_off + be_u16(recs, off + 10))
+          bytes = read_bytes(io, length) || next
+          best = decode_name(bytes, platform)
+          best_pref = pref unless best.nil?
+        end
+        best
+      end
+
+      # A seek-and-read duck type over a raw fd so family_name_io can
+      # run identically over read(2)/lseek(2) (never suspends the fiber
+      # — see #raw_read) and over a regular IO on Windows.
+      struct RawFd
+        def initialize(@fd : Int32)
+        end
+
+        def seek(off : Int) : Nil
+          LibC.lseek(@fd, off.to_i64, 0) # 0 = SEEK_SET
+        end
+
+        def read_fully(buf : Bytes) : Bool
+          got = 0
+          while got < buf.size
+            r = LibC.read(@fd, buf.to_unsafe + got, buf.size - got)
+            return false if r <= 0
+            got += r
+          end
+          true
+        end
+      end
 
       # name-table strings: UTF-16BE on the Unicode/Windows platforms,
       # Mac Roman read as Latin-1 (family names are ASCII in practice).
@@ -189,14 +262,13 @@ module Egui
         cleaned.empty? ? nil : cleaned
       end
 
-      private def self.read_bytes(io : IO, n : Int32) : Bytes?
+      private def self.read_bytes(io, n : Int32) : Bytes?
         buf = Bytes.new(n)
         io.read_fully(buf)
         buf
       rescue IO::Error
         nil
       end
-
       private def self.be_u16(buf : Bytes, off : Int32) : Int32
         buf[off].to_i32 << 8 | buf[off + 1]
       end

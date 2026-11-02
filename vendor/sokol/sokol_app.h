@@ -6191,6 +6191,22 @@ _SOKOL_PRIVATE void _sapp_macos_set_icon(const sapp_icon_desc* icon_desc, int nu
 }
 
 _SOKOL_PRIVATE void _sapp_macos_frame(void) {
+    #if defined(_SAPP_ANY_GL)
+    /* egui-cr patch (macOS 26): if any Crystal code inside a frame or
+       init callback suspends the fiber (blocking IO runs on a thread
+       pool there), the scheduler may resume it — together with this
+       whole [NSApp run] C stack — on a pool thread. AppKit/GL then run
+       off the process main thread and crash in objc_autoreleasePoolPop
+       at frame exit (intermittent, ~25% of launches before the font
+       reads went raw — see Egui::SystemPorts::Fonts.raw_read). This
+       guard drops such frames instead: on the GL path the only
+       legitimate frame driver is drawRect on the main thread (the
+       NSTimer from _sapp_macos_gl_init_state). Metal/WGPU frames are
+       driven by CVDisplayLink off-main and must NOT be skipped. */
+    if (![NSThread isMainThread]) {
+        return;
+    }
+    #endif
     _sapp_timing_update(&_sapp.timing, 0.0);
     #if defined(SOKOL_METAL)
     _sapp_macos_mtl_timing_update();
@@ -6198,13 +6214,17 @@ _SOKOL_PRIVATE void _sapp_macos_frame(void) {
     #if defined(_SAPP_ANY_GL)
     /* egui-cr patch (macOS 26): NSOpenGLView is force layer-backed, so
        _NSOpenGLViewBackingLayer may invoke drawRect — and thus this
-       frame function — on a CoreAnimation GCD thread, where the GL
-       context is not current (prepareOpenGL made it current on the
-       main thread only). The GL call below would dereference a NULL
-       TLS context (nondeterministic EXC_BAD_ACCESS at startup). Bind
-       the context on whichever thread runs the frame; AppKit serializes
-       display, so this is race-free. */
-    [[_sapp.macos.view openGLContext] makeCurrentContext];
+       frame function — while AppKit's launch/window activity owns the
+       GL context. Re-binding it here (makeCurrentContext from under
+       AppKit's feet) corrupted the context state — objc autorelease-pool
+       crashes at frame exit, ~2 of 5 launches — and it also defeated
+       the shim's sh_gl_ok() guard, which checks for a nil current
+       context AFTER this point. Skip the frame instead: dropping is
+       benign (the NSTimer keeps firing), and prepareOpenGL re-binds
+       the context on the main thread for later frames. */
+    if ([NSOpenGLContext currentContext] != [_sapp.macos.view openGLContext]) {
+        return;
+    }
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&_sapp.gl.framebuffer);
     #endif
     @autoreleasepool {

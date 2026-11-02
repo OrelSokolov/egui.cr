@@ -57,6 +57,7 @@ class LottieNativeApp < Egui::App
 
   @players : Array(Egui::Lottie::Player)
   @speed : Float64 = 1.0
+  @renders_mark = 0
 
   def initialize
     super()
@@ -70,10 +71,27 @@ class LottieNativeApp < Egui::App
     end
   end
 
+  @@ui_frames = 0
+  @@fps_window_start = Time.instant
+  @@ui_fps = 0.0
+  @@renders_per_sec = 0.0
+
   def update(ctx : Egui::Context) : Nil
     # Playing animations need continuous repaints — on-demand mode
     # would freeze the clocks between interactions.
     ctx.request_repaint if @players.any?(&.playing?)
+
+    now = Time.instant
+    @@ui_frames += 1
+    if (now - @@fps_window_start).total_seconds >= 1.0
+      dt = (now - @@fps_window_start).total_seconds
+      @@ui_fps = @@ui_frames / dt
+      renders = Egui::Bench.counters.fetch("lottie.render", 0)
+      @@renders_per_sec = (renders - @renders_mark) / dt
+      @renders_mark = renders
+      @@ui_frames = 0
+      @@fps_window_start = now
+    end
 
     ctx.window("Lottie — chat emoji", Egui::Pos2.new(40.0, 40.0), width: 640.0) do |ui|
       ui.horizontal do |h|
@@ -93,6 +111,8 @@ class LottieNativeApp < Egui::App
       end
       ui.label("rlottie (C shim) — #{"%.1f" % @players.first.renderer.fps} fps, " \
                "#{"%.2f" % Timed.ms_per_frame} ms/frame avg, " \
+               "#{"%.0f" % @@ui_fps} UI fps, " \
+               "#{"%.0f" % @@renders_per_sec} renders/s, " \
                "#{@players.map(&.renderer.frame_count).sum} frames total")
     end
   end

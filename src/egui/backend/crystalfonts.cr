@@ -47,8 +47,11 @@ module Egui
         loaded = [] of String
         paths.each do |path|
           next unless File.exists?(path)
-          data = File.read(path)
-          next if data.size.zero?
+          # raw_read (not File.read): a blocking-IO pool read here would
+          # resume this fiber — mid-[NSApp run], inside on_init — on a
+          # pool thread and crash AppKit (see Fonts.raw_read).
+          data = Egui::SystemPorts::Fonts.raw_read(path)
+          next if data.nil? || data.size.zero?
           datas << data
           loaded << path
         end
