@@ -251,6 +251,52 @@ describe "Wizard sizing + SideImage" do
   end
 end
 
+describe "Wizard footer width estimate" do
+  it "follows themed button padding: the last button is never squeezed below BTN_W" do
+    ctx = Egui::Context.new
+    # An app sheet rule widening buttons beyond Spacing's button_padding
+    # (the xr-launcher theme does exactly this): the footer's slack
+    # estimate must resolve the same cascade the buttons do. A
+    # spacing-based estimate undercounts every button, the reserved
+    # slack eats the difference, and the row's LAST button pays with
+    # its own width — squeezed below the 75pt Win32 min, its label
+    # truncated to what fits.
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "padding.left"  => 14.0,
+      "padding.right" => 14.0,
+    })
+    wizard = Egui::Wizard.new("Setup", [
+      Egui::WizardStep.new("One", "") { |ui| ui.label("x") },
+      Egui::WizardStep.new("Two", "") { |ui| ui.label("y") },
+    ])
+    draw = ->(time : Float64) do
+      raw_frame(ctx, time: time)
+      wizard.show(ctx)
+      ctx.end_frame
+    end
+    2.times { |i| draw.call(0.016 * (i + 1)) }
+    wizard.next! # the LAST step: Back | Finish | Cancel — the widest row
+    2.times { |i| draw.call(0.016 * (i + 3)) }
+
+    back = ctx.memory.widget_rects[Egui::Id.from("wizard_back")].not_nil!
+    finish = ctx.memory.widget_rects[Egui::Id.from("wizard_finish")].not_nil!
+    cancel = ctx.memory.widget_rects[Egui::Id.from("wizard_cancel")].not_nil!
+    [back, finish, cancel].each do |r|
+      r.width.should be >= Egui::Wizard::BTN_W
+    end
+    # no gaps between the row's buttons and the row must not overflow:
+    # each next button starts one item spacing after the previous end
+    gap = finish.left - back.right
+    gap.should be_close(ctx.style.spacing.item_spacing.x, 6.0)
+    gap = cancel.left - finish.right
+    gap.should be_close(ctx.style.spacing.item_spacing.x, 6.0)
+    # the labels paint in full — no truncation to the squeezed cell
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Cancel")
+    texts.should contain("Finish")
+  end
+end
+
 describe "Wizard proportional resize" do
   it "keeps the card ~90% of the host window on BOTH axes, whatever the content" do
     ctx = Egui::Context.new

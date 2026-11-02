@@ -282,13 +282,27 @@ module Egui
         # the chevron buttons, floored at the 75pt Win32 min) — any
         # per-button guesswork would move the row's right edge with
         # the step's button COUNT, and the buttons would "swim"
-        # between steps.
-        fs = row.style.font_size
-        bp = row.style.spacing.button_padding
-        icon_gap = row.style.spacing.icon_spacing
+        # between steps. The padding and the font resolve through the
+        # SAME cascade the buttons themselves use (the "button" class
+        # chain): an app sheet rule like `button { padding.left: 14 }`
+        # widens every real button while a spacing-based estimate
+        # keeps the old width, the slack eats the difference, and the
+        # row's LAST button pays with its own width — squeezed below
+        # BTN_W, its label truncated to what fits.
+        style = row.style
+        paths = row.style_scope.try { |s| ["button", "#{s}.button"] of String } ||
+                ["button"] of String
+        vars = row.ctx.stylesheet.resolve_chain(paths, nil)
+        fs = vars.f64?("font_size") || style.font_size
+        fonts, _ff, _fb = row.ctx.fonts_for_weight(
+          vars.str?("font_family") || style.font_family,
+          vars.f64?("font_weight") || style.font_weight, false)
+        bp = style.spacing.button_padding
+        pad = vars.box?("padding") || StyleBox.new(bp.y, bp.x, bp.y, bp.x)
+        icon_gap = style.spacing.icon_spacing
         total = btns.sum do |b|
-          text_size = row.fonts.measure_cached(label_for(step, b), fs)
-          w = text_size.x + 2 * bp.x
+          text_size = fonts.measure_cached(label_for(step, b), fs)
+          w = text_size.x + pad.left + pad.right
           w += text_size.y + icon_gap if chevroned?(b)
           {w, BTN_W}.max
         end
