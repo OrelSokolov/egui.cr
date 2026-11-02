@@ -22,14 +22,15 @@ VULKAN     = BACKEND == "vulkan"
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
 PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
-# Lottie (rlottie) feature flag — OFF by default: without it the build is
-# exactly the pre-Lottie one (no cmake, no vendored C++ tree, no C++
-# standard library on the link line). `LOTTIE=1` turns on the rlottie
-# shim + archive, adds the `lottie` example and its link flags. The
-# vendor tree itself lands via `rake download:rlottie` (network, once).
+# Lottie examples — a live A/B PAIR running the same chat-emoji demo:
+# `lottie_crystal` (the pure lottie.cr shard — no flag, no C code, the
+# default ui.lottie backend) and `lottie_native` (the rlottie C shim,
+# the reference half — needs `LOTTIE=1`). Run both binaries side by
+# side; the flag is dev-only: it builds the rlottie shim + archive
+# (the vendor tree lands via `rake download:rlottie`, network, once).
 LOTTIE_FEATURE = ENV["LOTTIE"] == "1"
-EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "notepad_with_exml", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "oval_progress", "camera", "device_api", "audio", "remote_image", "tray", "voice_echo", "wizard"] +
-             (LOTTIE_FEATURE ? ["lottie"] : [])
+EXAMPLES   = ["hello", "widgets_gallery", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "notepad", "notepad_with_exml", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "oval_progress", "camera", "device_api", "audio", "remote_image", "tray", "voice_echo", "wizard", "lottie_crystal"] +
+             (LOTTIE_FEATURE ? ["lottie_native"] : [])
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the

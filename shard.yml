@@ -15,6 +15,12 @@ license: AGPL-3.0
 dependencies:
   nanosvg:
     github: OrelSokolov/nanosvg.cr
+  # Pure-Crystal Lottie player — a twin of rlottie's evaluation model
+  # (verified against its render-tree dumps). The default backend for
+  # `ui.lottie` (backend/lottie_cr.cr); the rlottie C shim remains in
+  # the tree as the dev A/B reference.
+  lottie:
+    github: OrelSokolov/lottie.cr
   # The Crystal port of FreeType (rasterizer + TrueType bytecode hinter)
   # — the release font backend (backend/crystalfonts.cr). Pure Crystal:
   # no libfreetype dependency in shipped binaries.

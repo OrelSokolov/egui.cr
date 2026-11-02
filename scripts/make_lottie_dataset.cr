@@ -41,8 +41,12 @@ def build_key(str : String) : String
 end
 
 # (name, path) — spinner first: the hand-crafted minimal contract, then
-# the real Noto emoji (assets/lottie/emoji/README.md for provenance).
+# the phase-D feature assets (trim/polystar/repeater), then the real
+# Noto emoji (assets/lottie/emoji/README.md for provenance).
 ASSETS = [{"spinner", "assets/lottie/spinner.json"}] +
+         Dir["assets/lottie/handcrafted/*.json"].sort.map do |p|
+           {"handcrafted/#{File.basename(p, ".json")}", p}
+         end +
          Dir["assets/lottie/emoji/*.json"].sort.map do |p|
            {"emoji/#{File.basename(p, ".json")}", p}
          end
