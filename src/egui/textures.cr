@@ -30,6 +30,15 @@ module Egui
     abstract def update(id : UInt64, width : Int32, height : Int32,
                         data : Bytes) : Nil
 
+    # Pixel backup of a live texture: `{width, height, rgba}` straight
+    # from-the-upload bytes, or nil when the registry keeps no copy
+    # (the GPU backend) / the id is unknown. The headless registry
+    # keeps one so the Capybara raster can composite ImageCmds for
+    # real (see capybara/images.cr).
+    def pixels(id : UInt64) : {Int32, Int32, Bytes}?
+      nil
+    end
+
     # Release a texture from #register_rgba, #load or #create_stream.
     abstract def destroy(id : UInt64) : Nil
 
@@ -55,15 +64,19 @@ module Egui
   end
 
   # Headless registry: hands out deterministic incrementing ids so
-  # specs can assert ImageCmd flow without a GPU.
+  # specs can assert ImageCmd flow without a GPU. Keeps the uploaded
+  # RGBA bytes (see #pixels) so the Capybara raster can composite
+  # ImageCmds into screenshots (capybara/images.cr).
   class DummyTextureRegistry < TextureRegistry
     @next_id : UInt64 = 1_u64
     @alive = Set(UInt64).new
+    @data = {} of UInt64 => {Int32, Int32, Bytes}
 
     def register_rgba(width : Int32, height : Int32, data : Bytes) : UInt64
       id = @next_id
       @next_id += 1
       @alive << id
+      @data[id] = {width, height, data.dup}
       id
     end
 
@@ -73,11 +86,21 @@ module Egui
 
     def update(id : UInt64, width : Int32, height : Int32,
                data : Bytes) : Nil
-      # headless: nothing to push
+      # headless: nothing to push to a GPU, but keep the pixels so
+      # screenshots show the latest frame
+      @data[id] = {width, height, data.dup} if @alive.includes?(id)
+    end
+
+    def pixels(id : UInt64) : {Int32, Int32, Bytes}?
+      return nil unless @alive.includes?(id)
+      if (d = @data[id]?) && d[2].size == d[0] * d[1] * 4
+        d
+      end
     end
 
     def destroy(id : UInt64) : Nil
       @alive.delete(id)
+      @data.delete(id)
     end
   end
 end

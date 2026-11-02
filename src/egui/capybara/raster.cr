@@ -8,9 +8,10 @@
 # backend: shapes render with analytic SDF antialiasing, gradients and
 # replace-blend match, box-shadows are approximated with a linear SDF
 # falloff (the backend approximates them too, just with Gouraud bands),
-# Mesh3D is a no-op and textured ImageCmds draw a checker placeholder
-# (the headless texture registry carries no pixels). Text goes through a
-# pluggable renderer — the core alone only knows metrics stubs, so
+# Mesh3D is a no-op and textured ImageCmds draw a checker placeholder —
+# unless an image renderer is installed (capybara/images.cr composites
+# the registry's pixel backup). Text goes through a pluggable renderer —
+# the core alone only knows metrics stubs, so
 # `capybara/fonts.cr` (CrystalFonts + glyph atlas) installs the real one;
 # without it text draws as outlined boxes that still show the text's
 # extents.
@@ -22,6 +23,11 @@ module Egui
       # capybara/fonts.cr (which knows Backend::AtlasFonts); the core
       # keeps no backend types.
       class_property text_renderer : (TextCmd, Raster -> Nil)?
+
+      # Image rasterization hook: `(cmd, raster) -> Nil`. Installed by
+      # capybara/images.cr (which knows the Context's TextureRegistry);
+      # without it ImageCmds draw the checker placeholder.
+      class_property image_renderer : (ImageCmd, Raster -> Nil)?
 
       getter width : Int32
       getter height : Int32
@@ -274,11 +280,22 @@ module Egui
       end
 
       private def image_cmd(cmd : ImageCmd) : Nil
+        if (hook = self.class.image_renderer)
+          hook.call(cmd, self)
+        else
+          placeholder_image(cmd)
+        end
+      end
+
+      # The no-texture fallback: a light checker under the tint marks
+      # the image spot. Public only for capybara/images.cr's fallback
+      # path — not part of the Raster API.
+      def placeholder_image(cmd : ImageCmd) : Nil
         r = cmd.rect
         (r.top.to_i...r.bottom.to_i).each do |y|
           (r.left.to_i...r.right.to_i).each do |x|
-            # placeholder: a light checker under the tint marks the image
-            # spot; headless textures carry no real pixels
+            # placeholder: a light checker under the tint marks the
+            # image spot when no pixels are available
             checker = ((x // 8) + (y // 8)).even?
             base = checker ? 45.0 : 70.0
             c = Color32.rgba(
@@ -370,11 +387,13 @@ module Egui
       end
 
       private def lerp_color(a : Color32, b : Color32, t : Float64) : Color32
+        # Int32 math: channel deltas go BOTH ways and UInt8 - UInt8
+        # underflows on a descending gradient.
         Color32.rgba(
-          (a.r + (b.r - a.r) * t).round.to_i,
-          (a.g + (b.g - a.g) * t).round.to_i,
-          (a.b + (b.b - a.b) * t).round.to_i,
-          (a.a + (b.a - a.a) * t).round.to_i)
+          (a.r.to_i32 + (b.r.to_i32 - a.r.to_i32) * t).round.to_i,
+          (a.g.to_i32 + (b.g.to_i32 - a.g.to_i32) * t).round.to_i,
+          (a.b.to_i32 + (b.b.to_i32 - a.b.to_i32) * t).round.to_i,
+          (a.a.to_i32 + (b.a.to_i32 - a.a.to_i32) * t).round.to_i)
       end
 
       private def fill_rect_color(c : Color32) : Nil
