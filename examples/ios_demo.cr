@@ -6,10 +6,9 @@
 # fall back to their desktop implementations, which keeps the non-iOS
 # branches honest.
 #
-# Build (host):  crystal build --cross-compile --target=aarch64-apple-darwin \
-#                 -o ios_demo.o examples/ios_demo.cr \
-#                 --link-flags "tmp/ios/phase3/libegui_cr_sokol_ios.a"
-# App bundle:    tmp/ios/phase4/build_demo.sh <dir>/ios_demo.o
+# Run:           rake run:ios:ios_demo
+#                 (cross-compile → .app bundle → simulator install +
+#                 launch; the manual path is tmp/ios/phase4/build_demo.sh)
 
 require "../src/egui/backend_selector"
 

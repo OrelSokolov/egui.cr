@@ -165,9 +165,21 @@ user directories. Canvas drag-to-scroll follows the finger (upstream
 egui touch semantics).
 
 ```bash
-ANDROID_PLATFORM=33 crystal build --cross-compile \
-  --target=aarch64-linux-android -o android_demo.o examples/android_demo.cr
-tmp/android/build_apk.sh android_demo.o     # APK + install + launch
+rake run:android:android_demo   # cross-compile → APK → adb install → launch
+rake run:android                # list the examples with an Android pipeline
+```
+
+The manual path (what the task runs): cross-compile with the host
+Crystal, pack the APK with the vendor shim objects, install and launch
+on a connected device/emulator —
+
+```bash
+crystal build --cross-compile --target=aarch64-linux-android \
+  -Duse_pcre2 -Dwithout_openssl -o android_demo.o examples/android_demo.cr
+tmp/android/build_apk.sh android_demo.o \
+  tmp/android/obj/sokol_shim_android.o tmp/android/obj/nanosvg_shim.o
+adb install -r tmp/android/app.apk
+adb shell am start -n com.egui_cr.hello/com.eguicr.ime.EguiCrActivity
 ```
 
 `examples/android_demo.cr` exercises every port on one scrollable
@@ -190,7 +202,8 @@ foreground), UIApplication URL opening, and the sandbox user dirs.
 
 ```bash
 # simulator app bundle (cr.egui.iosdemo) — build, install, launch
-tmp/ios/phase4/build_demo.sh
+rake run:ios:ios_demo           # or tmp/ios/phase4/build_demo.sh directly
+rake run:ios                    # list the examples with an iOS pipeline
 ```
 
 `examples/ios_demo.cr` mirrors the Android demo section by section.

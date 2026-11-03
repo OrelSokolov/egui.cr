@@ -385,6 +385,105 @@ task "build:release", [:name] => ["build:native"] do |_, args|
   build_examples(example_names_for(args), "--release ", "")
 end
 
+# --- Mobile run: examples with dedicated iOS/Android pipelines ---
+#
+# The mobile builds live outside the desktop toolchain: Android
+# cross-compiles through the NDK and packs an APK (tmp/android/
+# build_apk.sh), iOS goes through the patched iOS Crystal
+# (tmp/crystal-ios) + the phase-3 native libs and runs in the
+# simulator. Full stories: ANDROID_SUPPORT_PLAN.md, plans/IOS_SUPPORT_PLAN.md.
+#
+#   rake run:android:android_demo   # cross-compile → APK → install → launch
+#   rake run:ios:ios_demo           # cross-compile → .app → install → launch
+
+# iOS: one build script per example (each bundles its own Info.plist:
+# bundle id, usage descriptions, scene manifest). A script cross-compiles
+# when stale, links, installs into the booted "iPhone 17 Pro" simulator
+# and launches.
+IOS_RUN_SCRIPTS = {
+  "hello"           => "tmp/ios/phase4/build.sh",
+  "ios_demo"        => "tmp/ios/phase4/build_demo.sh",
+  "text_input"      => "tmp/ios/phase4/build_text.sh",
+  "multitouch_demo" => "tmp/ios/multitouch/build.sh",
+  "responsive_demo" => "tmp/ios/responsive/build.sh",
+  "camera"          => "tmp/ios/camera/build.sh",
+  "device_api"      => "tmp/ios/device_api/build.sh",
+}.freeze
+
+# Android examples run through the shared APK pipeline; the ones that
+# require "egui/backend/audio" additionally link the shard's Android
+# object (lib/minaudio, `rake build:android` there — see its README).
+ANDROID_RUN_EXAMPLES   = %w[android_demo multitouch_demo camera device_api audio voice_echo].freeze
+ANDROID_AUDIO_EXAMPLES = %w[device_api audio voice_echo].freeze
+# Vendor objects every APK link needs: the sokol shim built for GLES3
+# (on Android it owns ANativeActivity_onCreate itself — sokol_app's
+# native_app_glue is vendored inside, a separate glue .o duplicates the
+# symbol) and the nanosvg shim. From the Android port, see
+# ANDROID_SUPPORT_PLAN.md «Сборочный конвейер».
+ANDROID_SHIM_OBJS = %w[
+  tmp/android/obj/sokol_shim_android.o
+  tmp/android/obj/nanosvg_shim.o
+].freeze
+# The fixed APK identity (tmp/android/AndroidManifest.xml) — one package
+# and launcher activity for every example APK.
+ANDROID_APK_PACKAGE  = "com.egui_cr.hello"
+ANDROID_APK_ACTIVITY = "com.eguicr.ime.EguiCrActivity"
+
+def android_sdk_dir
+  [ENV["ANDROID_SDK"], File.expand_path("~/android-sdk"),
+   File.expand_path("~/Library/Android/sdk")]
+    .compact.find { |d| Dir.exist?(d) } ||
+    raise("Android SDK not found — set ANDROID_SDK (same lookup as tmp/android/build_apk.sh)")
+end
+
+namespace "run" do
+  desc "List the examples with a dedicated iOS pipeline (rake run:ios:<name>)"
+  task "ios" do
+    puts "iOS examples: #{IOS_RUN_SCRIPTS.keys.sort.join(', ')}"
+  end
+  namespace "ios" do
+    IOS_RUN_SCRIPTS.each do |name, script|
+      desc "Build, install and launch examples/#{name}.cr in the iOS simulator"
+      task name do
+        raise "#{script} not found — see plans/IOS_SUPPORT_PLAN.md" unless File.exist?(script)
+        sh "zsh #{script}"
+      end
+    end
+  end
+
+  desc "List the examples with a dedicated Android pipeline (rake run:android:<name>)"
+  task "android" do
+    puts "Android examples: #{ANDROID_RUN_EXAMPLES.sort.join(', ')}"
+  end
+  namespace "android" do
+    ANDROID_RUN_EXAMPLES.each do |name|
+      desc "Cross-compile, pack, install and launch examples/#{name}.cr on Android"
+      task name do
+        missing = ANDROID_SHIM_OBJS.reject { |o| File.exist?(o) }
+        raise "missing shim objects: #{missing.join(', ')} — see ANDROID_SUPPORT_PLAN.md" unless missing.empty?
+        extras = ANDROID_SHIM_OBJS.dup
+        if ANDROID_AUDIO_EXAMPLES.include?(name)
+          ma = "lib/minaudio/ext/miniaudio_android.o"
+          sh "cd lib/minaudio && rake build:android" unless File.exist?(ma)
+          extras << ma
+        end
+        # -Dwithout_openssl: src/egui.cr requires ./egui/http (since the
+        # RemoteImage landing), which drags the stdlib OpenSSL bindings
+        # into every app object — the APK link has no libssl, and dlopen
+        # would fail on the first BIO_* symbol. None of the mobile demos
+        # use TLS; the flag degrades HTTP honestly instead.
+        sh "crystal build --cross-compile --target=aarch64-linux-android " \
+           "-Duse_pcre2 -Dwithout_openssl -o tmp/android/obj/#{name}.o examples/#{name}.cr"
+        sh "tmp/android/build_apk.sh tmp/android/obj/#{name}.o #{extras.join(' ')}"
+        adb = File.join(android_sdk_dir, "platform-tools", "adb")
+        adb = "adb" unless File.exist?(adb)
+        sh "#{adb} install -r tmp/android/app.apk"
+        sh "#{adb} shell am start -n #{ANDROID_APK_PACKAGE}/#{ANDROID_APK_ACTIVITY}"
+      end
+    end
+  end
+end
+
 desc "Vendor rlottie (Samsung, MIT — animated vector/Lottie player) for LOTTIE=1 builds"
 task "download:rlottie" do
   src = "/tmp/rlottie-src"

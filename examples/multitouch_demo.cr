@@ -8,16 +8,11 @@
 # logic lives in the widget (widgets/image_view.cr) — this demo is the
 # thin usage reference.
 #
-# Build (host):  ANDROID_PLATFORM=33 crystal build --cross-compile \
-#                 --target=aarch64-linux-android -o multitouch_demo.o \
-#                 examples/multitouch_demo.cr
-# APK:           tmp/android/build_apk.sh <dir>/multitouch_demo.o
-# iOS:           crystal build --cross-compile \
-#                 --target=aarch64-apple-darwin \
-#                 -o multitouch_demo.o examples/multitouch_demo.cr \
-#                 --link-flags "tmp/ios/phase3/libegui_cr_sokol_ios.a"
-# App bundle:    tmp/ios/phase4/build_demo.sh <dir>/multitouch_demo.o
-#   (swap demo.o for multitouch_demo.o in that script)
+# Android:       rake run:android:multitouch_demo
+# iOS:           rake run:ios:multitouch_demo
+#                 (per-example cross-compile + pack/install/launch
+#                 pipelines; the manual paths are in README → Android /
+#                 → iOS and plans/IOS_SUPPORT_PLAN.md)
 
 require "../src/egui/backend_selector"
 

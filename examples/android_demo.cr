@@ -5,10 +5,13 @@
 # that test). Runs on the desktop too: the ports fall back to their
 # desktop implementations, which keeps the non-Android branches honest.
 #
-# Build (host):  ANDROID_PLATFORM=33 crystal build --cross-compile \
-#                 --target=aarch64-linux-android -o android_demo.o \
+# Build (host):  crystal build --cross-compile \
+#                 --target=aarch64-linux-android -Duse_pcre2 \
+#                 -Dwithout_openssl -o android_demo.o \
 #                 examples/android_demo.cr
-# APK:           tmp/android/build_apk.sh <dir>/android_demo.o
+# Run:           rake run:android:android_demo
+#                 (cross-compile → APK → install → launch; the manual
+#                 APK path is in README → Android)
 
 require "../src/egui/backend_selector"
 
