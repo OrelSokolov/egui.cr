@@ -5857,16 +5857,18 @@ int egui_cr_ios_msgbox_take(void) {
 
 // ===========================================================================
 // Camera capture (src/egui/camera.cr — the Camera seam). One C API for
-// every platform with a native stack: AVFoundation on macOS, camera2 NDK
-// on Android, V4L2 on Linux. iOS and Windows keep the core default
-// "not implemented" answer.
+// every platform with a native stack: AVFoundation on macOS AND iOS
+// (device = the phone's cameras; simulator = the virtual camera of e.g.
+// dautovri/SimulatorCamera injected via DYLD_INSERT_LIBRARIES — plain
+// AVFoundation either way), camera2 NDK on Android, V4L2 on Linux.
+// Windows keeps the core default "not implemented" answer.
 // Frames arrive on the capture stack's OWN threads into a locked
 // latest-frame slot; egui_cr_cam_frame runs on sokol's frame thread,
 // converts to RGBA in place and hands Crystal a buffer owned by the
 // session (valid until the next frame/close call). It returns 1 only
 // when a NEW frame arrived since the previous call — no new frame, no
 // texture update (sokol: one sg_update_image per image and frame).
-#if defined(__APPLE__) && !defined(SH_IOS)
+#if defined(__APPLE__)
 #import <AVFoundation/AVFoundation.h>
 #import <CoreMedia/CoreMedia.h>
 #import <dispatch/dispatch.h>
@@ -5962,9 +5964,9 @@ static char sh_cam_ids[SH_CAM_MAX][64];
 static char sh_cam_names[SH_CAM_MAX][96];
 static int sh_cam_facing[SH_CAM_MAX];
 
-// External webcams: the constant was renamed in macOS 14 — the old name
-// still works but warns; pick by SDK.
-#if defined(__MAC_14_0)
+// External webcams: the constant was renamed in macOS 14 / iOS 17 — the
+// old name still works but warns; pick by SDK.
+#if defined(__MAC_14_0) || defined(__IPHONE_17_0)
 #define SH_CAM_EXTERNAL AVCaptureDeviceTypeExternal
 #else
 #define SH_CAM_EXTERNAL AVCaptureDeviceTypeExternalUnknown
@@ -5986,6 +5988,19 @@ int egui_cr_cam_devices(void) {
         strncpy(sh_cam_names[n], d.localizedName.UTF8String, 95);
         sh_cam_facing[n] = 0; // desktop webcams have no facing
         n++;
+    }
+    // SimulatorCamera's injected virtual camera answers
+    // AVCaptureDevice.default(for:) but may leave discovery sessions empty
+    // (Xcode 26/27 simulators list no native cameras at all) — fall back to
+    // the default device so the device picker still shows something.
+    if (n == 0) {
+        AVCaptureDevice* d = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
+        if (d) {
+            strncpy(sh_cam_ids[0], d.uniqueID.UTF8String, 63);
+            strncpy(sh_cam_names[0], d.localizedName.UTF8String, 95);
+            sh_cam_facing[0] = 0;
+            n = 1;
+        }
     }
     return n;
 }
@@ -6018,6 +6033,8 @@ void* egui_cr_cam_open(const char* devid, int w, int h) {
         dev = [AVCaptureDevice deviceWithUniqueID:
                [NSString stringWithUTF8String:devid]];
     if (nil == dev) dev = sh_cam_discover().firstObject;
+    if (nil == dev) // same discovery-vs-default fallback as egui_cr_cam_devices
+        dev = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeVideo];
     if (nil == dev) {
         snprintf(sh_cam_err, sizeof sh_cam_err, "no camera device");
         return NULL;
@@ -6086,6 +6103,7 @@ int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
                         }
                         uint8_t* o = s->rgba + ((size_t)oy * ow + ox) * 4;
                         o[0] = in[2]; o[1] = in[1]; o[2] = in[0]; o[3] = 255; // BGRA → RGBA
+                        in += 4;
                     }
                 }
                 CVPixelBufferUnlockBaseAddress(pb, kCVPixelBufferLock_ReadOnly);

@@ -1,12 +1,14 @@
 # Native camera implementations for the sokol backend: AVFoundation on
-# macOS, camera2 NDK on Android (backend/sokol_shim.c, camera capture
+# macOS and iOS (in the Simulator the virtual camera of e.g.
+# dautovri/SimulatorCamera arrives through the same AVFoundation calls),
+# camera2 NDK on Android (backend/sokol_shim.c, camera capture
 # section), V4L2 on Linux — the stacks share one C API, so one
-# implementation class covers them; iOS and Windows keep the core default
+# implementation class covers them; Windows keeps the core default
 # "not implemented" answer, and this file compiles to nothing there.
 
 module Egui
   module Backend
-    {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:android) || flag?(:linux) %}
+    {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
       @[Link("egui_cr_sokol")]
       {% if flag?(:darwin) %}
         @[Link(framework: "AVFoundation")]
