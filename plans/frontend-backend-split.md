@@ -23,7 +23,8 @@
 | **Frontend** | view: страницы, EXML-компоненты, виджеты, роутер окна | egui: `widgets/`, `containers/`, `router.cr`, `exml.cr` |
 | **Backend приложения** | вся логика: Router, контроллеры, ресурсы, CRUD, стор, джобы, модель | positron: `http_router.cr` и др. — уже написан |
 | **Driver** | отрисовка: окно, цикл кадров, GPU, ввод | egui: `backend/sokol.cr` (переименовать); positron: `Host` + EventLoop + WebView (переименовать) |
-| **Системные порты** | clipboard, dialogs, tray, camera, ... | egui: `system_ports/`; positron: 16 плагинов — одно и то же, криво названо |
+| **Tentacles** | монорепа ВСЕГО общего: contracts + core + system_ports | создаётся; вбирает `system_ports/` egui + 16 плагинов positron + Router positron |
+| **Системные порты** | clipboard, filesystem, camera, notifications, ... | полка `system_ports/` внутри tentacles (имя сохранено) |
 | **Transport** | единственная дыра между frontend и backend приложения | нет; вводится |
 
 Бывший `backend/` в egui.cr перестаёт называться бэкендом — он
@@ -53,7 +54,7 @@
 │ Model — внешний ORM-шард, фреймворку безразличен   │
 └───────────────┬────────────────────────────────────┘
 ┌───────────────┴────────────────────────────────────┐
-│ СИСТЕМНЫЕ ПОРТЫ — общий шард (1:1 с positron)      │
+│ СИСТЕМНЫЕ ПОРТЫ — полка внутри tentacles (см. 3.1) │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -62,10 +63,98 @@
 `request`. Граница существует в типах, видна глазом и физически не
 обходится, хотя передача виртуальная (в памяти, нулевая цена).
 
+Следствие: после слияния у фронтенда egui не остаётся ни сети, ни
+файлов, ни диалогов — только `StateView` и `request`. Всё «как
+достать» уезжает за границу.
+
+### 3.1 Tentacles — монорепа всего общего
+
+Всё, что обязано совпадать у egui и positron, живёт в одной монорепе
+**tentacles**. Оба проекта её требуют и реализуют её контракты;
+внутри tentacles слов «egui» и «positron» нет.
+
+```
+tentacles/
+├── contracts/            # ИНТЕРФЕЙСЫ — каждый проект обязан реализовать
+│   ├── driver.cr         #   run/stop/wake/run_on_main/gui_context?
+│   │                     #   + Driver.current (локатор, ставится при старте)
+│   ├── transport.cr      #   call(Request, &on_done)
+│   ├── state_view.cr     #   [] / subscribe
+│   ├── stream.cr         #   FrameStream: конвейерный latest-wins
+│   │                     #   (push/poll/each_new/active?) + Frame;
+│   │                     #   см. §4.1
+│   ├── window.cr         #   capability драйвера: окно/трей/quit —
+│   │                     #   опциональный контракт (драйвер может не уметь)
+│   └── testing.cr        #   ScriptedTransport, HeadlessDriver,
+│                         #   in-memory дефолты портов
+├── core/                 # ГОТОВЫЙ КОД бэкенда — оба используют как есть
+│   ├── router.cr         #   Router, Request/Response, Controller
+│   ├── state.cr          #   State: dispatch / [] / subscribe
+│   └── async.cr          #   AsyncJob + UIAdapter поверх общего
+│                         #   шарда active_job_cr (контракт джоб —
+│                         #   в ЗАПИСИ: pause/cancel/progress/status;
+│                         #   проекция в State + Driver.wake; §6.1)
+└── system_ports/         # ЩУПАЛЬЦА на системы: контракт + 5 платформ
+    ├── clipboard/        #   (богатый набор positron + egui-only:
+    ├── filesystem/       #    audio, haptics, wake_lock, badge, share...)
+    ├── camera/
+    ├── http_client/      #   сеть как порт: Http.fetcher умирает,
+    ├── system_theme/     #   детект темы ОС (тема виджетов — фронтенд!)
+    ├── notifications/
+    └── ...               #   deep_links, permissions, lifecycle,
+                          #   preferences, keyboard, dialogs, ...
+```
+
+Правило зависимостей — одностороннее: `contracts ← core ← проекты`;
+адаптеры портов не зависят ни от чего. `require "tentacles"` даёт
+contracts+core; порты подключаются по одному
+(`require "tentacles/system_ports/camera"`), чтобы мобильные бинарники
+не тянули всё. У tentacles свои спеки (router/state/async/контракты) —
+самый нижний уровень тест-пирамиды.
+
+После этого проекты тощают:
+
+```
+egui.cr   = фронтенд (EXML/виджеты/страницы)
+         + Driver::Sokol + InProcessTransport (реализации контрактов)
+         + разводка Egui.run (StateView во фронт, State в контроллеры)
+
+positron = JS-фронт + фасад
+         + Driver::WebView (бывш. Host) + BridgeTransport (JSON-мост)
+         + мост State → JS-зеркало
+```
+
+**Что в tentacles СОЗНАТЕЛЬНО не входит:**
+
+| Что | Почему |
+|---|---|
+| EventBus, CommandRegistry | удаляются: обязанности поглощаются Router и State (ниже) |
+| Model / ORM / sqlite | внешний слой приложения, не фреймворка |
+| EXML, компоненты, виджеты | фронтенд egui, только его |
+| шрифты, lottie, тесселяция | кухня драйвера sokol, только его |
+| инспектор / time-travel UI | фронтенд egui; но лог dispatch варится в core/state — инспектор его читает |
+| JS-фасад, генерация манифестов | клей positron'а к BridgeTransport |
+| окно / трей / quit | capability драйвера (`contracts/window.cr`), не порт |
+
+**EventBus и CommandRegistry — удаляются, обязанности поглощаются:**
+
+```
+было:   JS → CommandRegistry["clipboard.read_text"] → обработчик
+стало:  JS → request "GET /system/clipboard" → Router → SystemController
+        (словарь-диспетчер рядом с роутером не нужен;
+         команды плагинов становятся роутами)
+
+было:   StateManager.set → EventBus.emit("state.changed") → мост → JS
+стало:  State.dispatch → State.subscribe → мост патчит JS-зеркало
+        (шина рассылки ради одного слушателя не нужна)
+```
+
 ## 4. Правило данных
 
 Всё состояние, которое переживает кадр, — это данные. Данные живут в
 backend. Виджет — экранка и кнопки: рендерит store, шлёт request.
+Бинарные потоки (камера, видео) — тоже бэкенд: источник живёт на
+щупальце, фронт только засасывает (§4.1).
 Без исключений, поэтому один паттерн покрывает оба типа приложений:
 
 | Приложение | Данные (backend) | Виджет (frontend) |
@@ -76,6 +165,172 @@ backend. Виджет — экранка и кнопки: рендерит store
 
 «Фабрика фич» из positron переносится целиком: сложное data-приложение
 с джобами собирается по той же схеме, что и блокнот.
+
+### 4.1 Три класса данных (стриминг — отдельный канал)
+
+Не всё течёт через транспорт и State. Классы данных — три, и у каждого
+свой канал:
+
+| Класс | Частота | Канал | Примеры |
+|---|---|---|---|
+| Намерения | десятки/мин | **Transport** (request/response) | «открой камеру», «сохрани документ» |
+| Состояние | по событиям | **State / StateView** | документ, реестр задач, список устройств |
+| Потоки | 30–60 fps, тяжёлый бинарь | **Стрим-канал порта**: latest-wins буфер, МИМО транспорта и State | кадры камеры, декодируемое видео |
+
+Кадр в State класть нельзя: 3.7 МБ × 30 fps через dispatch/подписки —
+абсурд. Оба проекта уже решили это локально и ОДИНАКОВО, независимо
+друг от друга:
+
+- **positron** (`plugins/camera/`): управление — обычные команды
+  (start/stop/devices); кадры — фронт тянет по custom URI scheme,
+  scheme-handler зовёт `adapter.latest_frame` и отдаёт бинарь
+  (заголовок PRFA + width/height + RGBA). Через JSON-мост кадры не
+  проходят вообще. Причина: на iOS getUserMedia живёт в XPC-процессах
+  WKWebView — захват в процессе хоста, фронт тянет сам.
+- **egui** (`camera.cr`): управление — порт; кадры — `Session#poll`
+  («новый кадр с прошлого poll?», nil если нет — дисциплина sokol
+  «одна заливка текстуры на кадр») → stream texture (`create_stream`/
+  `#update`, конвейер видео-плеера).
+
+Общий контракт — **latest-wins**: буфер последнего значения на
+щупальце, старое молча выбрасывается, очередь/истории нет, буфер
+валиден до следующего чтения. Стрим — ОДИН класс, читать и писать
+может любой держатель: конвейер обработки — легитимный сценарий
+(источник → обработчик-компонент → рендер), промежуточное звено
+обязано уметь и poll, и push. Разделения на намерения нет:
+
+```crystal
+# ═══ contracts/stream.cr — конвейерный стрим ═══
+# Паттерн: tokio watch / Kotlin conflated channel: одна ячейка
+# latest-wins, push перезаписывает непрочитанное, poll отдаёт
+# только новое. Потокобезопасен: push может идти из нативного
+# треда, poll — из фрейм-файбера или джобы.
+# Без генерика сознательно: полезная нагрузка сегодня одна — кадр.
+# Появится второй реальный тип (аудио-чанки, сенсор) — отдельный
+# класс рядом; генерализация от трёх типов, не от одного.
+class FrameStream
+  def push(frame : Frame) : Nil   # писатель: нативный стек ИЛИ
+                                  # предыдущее звено конвейера
+  def poll : Frame?               # НОВОЕ с прошлого poll или nil;
+                                  # повторной выдачи не бывает
+  def each_new(& : Frame ->) : Nil # добрать всё накопленное (сахар
+                                  # конвейеру: while f = poll; yield)
+  def active? : Bool              # жив ли источник (смерть — тут)
+  def close : Nil                 # пометить мёртвым; железо отпускает
+                                  # только Session (ниже)
+end
+```
+
+Конвейер собирается в лоб, обработка — на Crystal-стороне egui
+(в positron то же живёт внутри фреймворка, в JS не вылезает):
+
+```crystal
+src       = state_view["camera/session"].as(FrameStream) # источник
+smoothed  = FrameStream.new                              # своё звено
+
+src.each_new { |f| smoothed.push(denoise(f)) }  # дёшево — в update
+                                                 # между кадрами; тяжело
+                                                 # (ML) — в джобе Async:
+                                                 # класс потокобезопасен
+if f = smoothed.poll                            # виджет-потребитель
+  texture.update(f.bytes)
+end
+```
+
+`close` своего звена безвреден: оно держит только ячейку, не
+железо. Почему без read-only замка, в отличие от State: State —
+дисциплина одного писателя (запись = событие приложения), стрим —
+поток данных без истории, перезапись = норма. Разные звери,
+разные правила.
+
+`Frame` — не контракт, а тип полезной нагрузки видео-подобных
+щупалец (камера/видео):
+
+```crystal
+struct Frame
+  getter format : Symbol      # :rgba (расширение — новый символ)
+  getter width : Int32
+  getter height : Int32
+  getter bytes : Bytes        # владелец — щупальце; валиден до
+                              # следующего poll (zero-copy)
+  getter timestamp : Float64? # секунды; nil = не знаем
+end
+```
+
+Камера — источник с железом, поверх стрима:
+
+```crystal
+abstract class Session < FrameStream           # КОНТРОЛЬ — держит
+  abstract def rotation=(degrees : Int32)    #   контроллер
+  abstract def video_mode=(video : Bool)
+  def close                                  # пометиться мёртвым +
+    super                                    # отпустить железо
+    release_native_session
+  end
+end                                          # фронт держит тот же
+                                             # объект как FrameStream
+
+abstract class Camera < Port
+  abstract def available? : Bool
+  def unavailable_reason : String?; end
+  abstract def permission : Symbol          # :granted/:denied/:not_asked
+  abstract def request_permission! : Nil    # ответ асинхронный, polled
+  abstract def devices : Array(Device)      # {id, name, facing}
+  abstract def open(device_id : String?, width : Int32,
+                    height : Int32) : Session?   # nil → смотри last_error
+  abstract def last_error : String?
+end
+```
+
+**Жизненный цикл сессии = контрольная плоскость.** Открытие через
+контроллер (`POST /camera/start` → `port.open`) — закрытие
+симметрично: `POST /camera/stop` → контроллер → `session.close`
+(отпускание железа — только здесь; close своего конвейерного звена
+железа не касается). Нативная смерть (камеру выдернули, permission
+отозван): адаптер сам отпускает железо и помечает `active? =
+false` — переход состояния, не метод; читатель наблюдает.
+Сиротская сессия (фронт исчез без stop): смена роута страницы
+гарантированно шлёт stop (каркас, не приложение); счётчик живых
+сессий в инспекторе; v2 — idle-таймаут по отсутствию poll'ов.
+
+Семантика poll — «новое значение с прошлого чтения, иначе nil»:
+у egui нет дублей заливки текстуры, fetch-цикл positron совместим.
+Второй тип полезной нагрузки (аудио-чанки, сенсор) — отдельный
+класс по той же форме, не генерализация с одного типа.
+
+Стрим — **поток данных, направление свободное** внутри конвейера
+(источник может быть только нативным — камера, декодер, микрофон, —
+но обрабатывать и перенаправлять может кто угодно на Crystal-
+стороне). Данные, которые производит юзер (клики, ввод, жесты) —
+человеческой скорости, им хватает транспорта.
+
+Цепочка: нативный тред щупальца (AVFoundation-колбэк, camera2-
+листенер, декодер) → `push` в любой момент; потребитель → `poll`
+в СВОЁМ ритме, между кадрами или из джобы. Перепроизводство не
+наказывается — непрочитанное затирается. Сегодня это размазано
+по бэкендам вручную (`NativeCam.poll_frame` / `latest_frame` читают
+буфер, который навалил нативный колбэк) — контракт даёт паре имя
+и тип.
+
+Засасывание — per-frontend, и это правильное различие реализаций:
+
+```
+egui:     poll между кадрами → stream texture → GPU
+positron: fetch по URI scheme → PRFA-бинарь → img/canvas в WebView
+```
+
+Формат провода positron (PRFA magic + u32 LE width + u32 LE height +
+RGBA) — деталь его моста, НЕ часть общего контракта.
+
+В tentacles: контракт `system_ports/camera` = superset обоих (у egui
+богаче управление: rotation, video_mode, 3-state permission, facing;
+у positron — fallback на getUserMedia там, где WebView умеет сам),
+со `latest_frame`-выходом. Аналогично video. Аудио — мимо: его кадры
+в UI не попадают, minaudio жуёт сам.
+
+Проверка на чистоту: терминал — НЕ стрим. Скроллбэк меняется со
+скоростью юзера, редактируется, ищется, переживает кадр — это State.
+Стрим — только где последнее значение важнее истории и бинарь тяжёлый.
 
 ## 5. Transport — интерфейс и протокол
 
@@ -120,8 +375,9 @@ end
 ```
 
 Транспорт несёт **только намерения** (клики, сабмиты — десятки раз в
-минуту; JSON-налог ничтожен). Потоковые данные кадра (скроллбэк
-терминала, текст документа) идут через store — это бесплатно.
+минуту; JSON-налог ничтожен). Структурированное состояние идёт через
+store (бесплатно), тяжёлые бинарные потоки — по стрим-каналу порта,
+мимо транспорта (см. §4.1).
 
 Сознательно НЕТ в транспорте:
 - **событий backend→frontend** — уведомления это работа стора
@@ -148,6 +404,100 @@ EXML-компоненты: экшены (`on_click="save"`) после мигр�
 только через request — сегодня механизм тот же, но стреляет кодом
 приложения напрямую.
 
+### 6.1 Jobs — общий контракт с crails ActiveJob
+
+В egui.cr ( AsyncWork positron'а) и в crails (`active_job_cr`,
+сейчас в `bench/crails_jobs`) джобы уже есть — но это два зверя:
+запись с ретраями/очередями против живого файбера с cancel.
+Унификация: **один контракт целиком**, слоями.
+
+```
+active_job_cr (общий шард, UI-агностик; crails и tentacles
+               оба зависят от него):
+  Job(Base): perform + DSL (queue_as/retry_on/discard_on/
+             callbacks/set), serialize/deserialize, compile-time
+             registry, JobAdapter: abstract enqueue(record)
+  AsyncAdapter (fiber pool), TestAdapter, Cron
+
+контракт джобы (единый для десктопа и сервера):
+  контроль:    pause! / resume! / cancel!
+  кооперация:  checkpoint! / sleep / progress   ← внутри perform
+  наблюдение:  status (:queued/:running/:paused/:done/:failed/
+               :cancelled), progress, detail, result, error
+
+tentacles core/async (над общим шардом):
+  AsyncJob < Job, UIAdapter — проекция записи в State "jobs/<id>"
+  + Driver.wake; фронт: прогресс-бар, кнопки паузы/отмена
+
+crails (сервер): SolidQueue / RedisQueue — адаптеры того же шва,
+  та же запись в БД — админке видны те же статус/прогресс/кнопки
+```
+
+Ключевое решение: **пауза/прогресс/отмена — часть самого
+контракта, и живут они в ЗАПИСИ джобы** (сериализуются вместе с
+ней). Серверные джобы бывают долгими (экспорт, видео, ML-батч) —
+им пауза и прогресс нужны так же, как десктопным; разница текущих
+Rails — условность коротких джоб, не закон. Отсюда следствия:
+
+- пауза/прогресс **переживают рестарт**: запись `:paused,
+  progress: 0.4` лежит в БД, следующий воркер поднимет (с начала
+  текущего шага — кооперативная семантика);
+- адаптеры отличаются только **носителем записи и латентностью
+  сигналов**, не семантикой: fiber-pool — флаги мгновенно,
+  solid_queue — воркер сверяет флаги записи на checkpoint/heartbeat
+  (секунды), redis — pubsub. Отмена неподнятой джобы — точная
+  всегда.
+
+Механика (переносится из AsyncWork positron'а):
+
+```crystal
+class AnalyzeJob < AsyncJob
+  queue_as :cpu
+  retry_on TimeoutError, attempts: 3, wait: 5.seconds
+
+  def perform(doc_id : Int64)
+    each_chunk(doc_id) do |chunk|
+      checkpoint!                    # pause → парковка файбера
+                                     # (сон 20мс-циклами), cancel →
+                                     # raise Cancelled
+      progress(done.fdiv(total))     # latest-wins + троттлинг ~10Гц
+      process(chunk)
+    end
+    "found #{n} issues"              # скаляр → result записи
+  end
+end
+
+# контроллер:              # фронт:
+job = AnalyzeJob.perform_later(id)
+job.pause!                 # state_view["jobs/<id>"] →
+job.resume!                #   {status, progress, result, error}
+job.cancel!                # кнопки → POST /jobs/<id>/pause|cancel
+```
+
+Правила:
+
+- токен — ivar от исполнителя, НЕ аргумент (аргументы
+  сериализуются в запись; `Cancelled` исключён из retry_on
+  навсегда — отмена не сбой);
+- `sleep` внутри perform — срезами по 25мс, чтобы пауза/отмена
+  срабатывали внутри ожиданий;
+- статусы/`result`/`error` пишет адаптер (переходы жизненного
+  цикла), джоба пишет только `progress`/`detail` — фронтворк не
+  даёт джобе врать о собственном статусе;
+- `.value` (блокирующее ожидание из AsyncWork) умирает — результат
+  приходит в State, ждать некому; гвард не нужен;
+- защита от двойного запуска (§7): срез `jobs/<id>` + `executions`;
+  повторный `POST /jobs/x` при `running` → 409;
+- спящая джоба держит слот файбер-пула — для десктопа норм (пул
+  8–16); continuable jobs (deserialized-парковка) — v2;
+- `queue_as :cpu` / heavy — Parallel-пул как ещё один адаптер.
+
+Что куда едет: `active_job_cr` остаётся у crails как отдельный шард
+(он уже написан, UI-агностик); tentacles требует его и добавляет
+`core/async` (AsyncJob + UIAdapter + проекция в State). crails со
+своей стороны добавляет SolidQueue/RedisQueue. Один API джоб для
+десктоп-приложения и сервера.
+
 ## 7. State — хранилище состояния (кандидат, детали на проработке)
 
 Что есть сейчас — три механизма на спектре «предсказуемость ↔ простота»:
@@ -158,18 +508,18 @@ EXML-компоненты: экшены (`on_click="save"`) после мигр�
 | positron StateManager | плоский словарь + EventBus-уведомление | присваивание + письмо в шину |
 | сигналы egui (`reactive.cr`) | типизированные ячейки + auto-подписка | присваивание в сигнал |
 
-Имена зафиксированы:
+Имена зафиксированы (интерфейс = намерение, класс = реализация,
+которая намерение включает; см. §4.1):
 
 ```crystal
-class State                    # бэкенд: dispatch / [] / subscribe
-  def dispatch(action : String, payload) : Nil  # ЗАПИСЬ = событие
-  def [](key : String) : StateValue
-  def subscribe(key : String, &)
-end
-
-abstract class StateView       # фронтенд: [] / subscribe — и всё
+module StateView                 # намерение: «читать состояние»
   abstract def [](key : String) : StateValue
   abstract def subscribe(key : String, &) : Nil
+end
+
+class State                      # реализация: включает чтение,
+  include StateView              #   запись — своя, не часть намерения
+  def dispatch(action : String, payload) : Nil  # ЗАПИСЬ = событие
 end
 ```
 
@@ -234,12 +584,13 @@ read-only: пишет в него только мост патчами с Crysta
 **Защита границы «фронт не пишет в State»** — три уровня:
 
 1. Разводка: `State` — не глобальный синглтон; его раздаёт `Egui.run`
-   адресно — контроллерам и джобам State, вьюхе StateView. Чтобы
-   нарушить, надо протащить State во фронт руками — видно в диффе.
-2. Композиция, НЕ наследование: `StateView` — отдельный объект,
-   держащий `@state` без геттера; `State` не наследует `StateView`,
-   иначе `view.as(State).dispatch` сработал бы. Наружу торчат ровно
-   `[]` и `subscribe`.
+   адресно — контроллерам и джобам State (целиком, с `dispatch`),
+   вьюхе — тем же объектом, но типом `StateView`. Чтобы нарушить,
+   надо протащить State во фронт руками — видно в диффе.
+2. Include-модель: `StateView` — модуль-намерение, `State` включает
+   его и добавляет `dispatch` СВОИМ методом (не частью намерения).
+   У фронта в руках `StateView` — `dispatch` в нём отсутствует,
+   автодополнение предлагает только `[]` и `subscribe`.
 3. Процессная стена (только positron): у JS-фронта нет
    кристалловских объектов — там защита абсолютная. В egui —
    «заметная», не «абсолютная»: честная цена нулевой сериализации.
@@ -296,6 +647,9 @@ app.label("Пост 1").should be_visible
 
 Режим 3 — самый ценный: полный прогон приложения на реальном шве.
 В egui.cr для этого есть Capybara; доучить его подменять транспорт.
+`ScriptedTransport`, `HeadlessDriver` и in-memory дефолты портов —
+полка `contracts/testing` в tentacles: оба проекта тестируют фронт
+одними и теми же фейками.
 
 ## 10. Порядок миграции (egui.cr)
 
@@ -313,9 +667,13 @@ app.label("Пост 1").should be_visible
    для остальных.
 5. **State.** Проработка §7: интерфейс State/StateView/dispatch,
    посадка сигналов внутрь, подписчик positron'а снаружи.
-6. **Вынос общих шардов.** Router+Transport+State+Async и системные
-   порты — в отдельные shard'ы; positron переезжает на них, своим
-   оставляя JS-фронт, webview-драйвер и JSON-мост.
+6. **Вынос в монорепу tentacles.** contracts + core (Router/State/
+   Async/Transport) + system_ports — единая монорепа со своими
+   спеками; egui.cr и positron садятся на неё, своими оставляя фронт,
+   драйвер и клей (мост/фасад). Порядок внутри: сначала contracts и
+   core (фазы 1–5 уже на них), потом слияние system_ports обоих
+   проектов (адаптеры positron богаче — база; мобильные мосты egui
+   сводятся руками; window/tray/quit уходят в contracts/window).
 
 ## 11. Чего НЕ делаем
 
