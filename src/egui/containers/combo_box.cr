@@ -296,17 +296,17 @@ module Egui
             list.cursor = list.layout.advance(list.cursor,
               Vec2.new(row_w, height), Vec2.zero)
             item_resp = list.interact(item_rect, item_id, Sense.click)
-            # Band priority (SelectBox's): the hover band beats the
-            # Enter candidate (the pointer is explicit intent), the
-            # Enter candidate beats the current selection (it is what a
-            # confirm would apply). The placeholder zero row never
-            # counts as "selected": an empty selection highlights
-            # nothing.
-            if item_resp.hovered?
-              list.painter.rect(item_rect, 3.0, visuals.button_hovered)
-            elsif !value.empty? && value == enter_value
+            # Band priority: the Enter candidate and the current
+            # selection KEEP their band under the pointer (a hovered
+            # selected row must not lose its color); hover only lights
+            # rows with nothing stronger to show. The placeholder zero
+            # row never counts as "selected": an empty selection
+            # highlights nothing.
+            if !value.empty? && value == enter_value
               list.painter.rect(item_rect, 3.0, visuals.selection_fill)
             elsif !value.empty? && value == @selected
+              list.painter.rect(item_rect, 3.0, visuals.button_hovered)
+            elsif item_resp.hovered?
               list.painter.rect(item_rect, 3.0, visuals.button_hovered)
             end
             row_color = value.empty? ? visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color

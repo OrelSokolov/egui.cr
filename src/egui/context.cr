@@ -1105,6 +1105,11 @@ module Egui
       probe_resp = interact(area_id.child(0_u64), probe, Sense.click, layer)
       @memory.areas.bring_to_top(layer) if probe_resp.hovered? || probe_resp.pressed?
 
+      # Like #popup: borrow the painter, restore the caller's layer/clip
+      # on exit (an area declared inside another floating layer must not
+      # demote the content painted after it).
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = Order::Middle
       @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
       ui = Ui.new(self, area_id,
@@ -1112,8 +1117,8 @@ module Egui
       ui.layer = layer
       yield ui
 
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
     end
 
     # egui popup (containers/popup.rs): rides the Foreground layer,
@@ -1163,6 +1168,14 @@ module Egui
       layer = LayerId.new(Order::Foreground, pop_id)
       pad ||= style.spacing.window_padding
 
+      # The popup borrows the painter: save the caller's layer/clip and
+      # restore them on exit. Hardcoding Background here dropped
+      # everything painted AFTER the popup in the same host (a wizard's
+      # footer inside an embedded_window rides Foreground) below the
+      # host's own fill — and the infinite clip let later content
+      # (shadows, overflow) paint past the host's viewport.
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = Order::Foreground
       bg_index = @painter.add_noop
       @painter.clip = Rect.from_min_size(anchor, Vec2.new(width, 1e6))
@@ -1181,8 +1194,8 @@ module Egui
       @painter.set(bg_index,
         RectCmd.new(outer, outer, 4.0, style.visuals.window_fill,
           style.visuals.window_stroke, 1.0))
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
     end
 
     def popup_open?(id : String) : Bool
