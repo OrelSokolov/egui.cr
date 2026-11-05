@@ -496,7 +496,11 @@ job.cancel!                # кнопки → POST /jobs/<id>/pause|cancel
 (он уже написан, UI-агностик); tentacles требует его и добавляет
 `core/async` (AsyncJob + UIAdapter + проекция в State). crails со
 своей стороны добавляет SolidQueue/RedisQueue. Один API джоб для
-десктоп-приложения и сервера.
+десктоп-приложения и сервера. Отдельный тип адаптера —
+**subprocess-изоляция** (kodkod'овский IndexWorker: тяжёлая работа в
+отдельном процессе из-за Boehm-GC STW-пауз) — законный адаптер
+контракта, не костыль: line-JSON по stdin/stdout, те же
+статусы/прогресс/checkpoint.
 
 ## 7. State — хранилище состояния (кандидат, детали на проработке)
 
@@ -661,10 +665,16 @@ app.label("Пост 1").should be_visible
    между кадрами, `Egui.request`. Гард на фрейм-файбере.
 3. **Переименование `backend/` → драйвер.** `Backend::Sokol` →
    `Driver::Sokol`, `runtime.cr` → интерфейс `Driver`. Чистый рефакторинг.
-4. **Миграция приложений-примеров на MVC.** notepad, terminal,
-   таблицы: состояние переезжает в контроллеры+стор, `update` тончает
-   до «читай store, шли request». Миграция одного примера = шаблон
-   для остальных.
+4. **Миграция приложений-примеров на MVC.** Порядок подтверждён
+   анализом (plans/mvc-examples-analysis.md), каждый пример
+   обкатывает один слой каркаса: tableview (CRUD+resources,
+   ListStore = view-модель) → notepad (документы, диалоги, квит) →
+   terminal (сессии, State-поток) → system_monitor (джобы) →
+   paint (история, кодеки). Миграция одного примера = шаблон для
+   остальных. kodkod — приёмочный тест (после notepad): давит на
+   всё сразу (IndexJob с прогрессом, fswatch-события, поиск по
+   индексу, subprocess-адаптер). `update` тончает до «читай State,
+   шли request».
 5. **State.** Проработка §7: интерфейс State/StateView/dispatch,
    посадка сигналов внутрь, подписчик positron'а снаружи.
 6. **Вынос в монорепу tentacles.** contracts + core (Router/State/
@@ -686,3 +696,46 @@ app.label("Пост 1").should be_visible
   (`{% if flag? %}`), как в positron.
 - Не тащим чистые редьюсеры, если не докажем пользу.
 - Не сводим драйверы к одному коду — общий только интерфейс из 5 методов.
+
+## 12. Каркас приложений и следующие шаги (одобрено)
+
+Статус: эксперименты; фиксировано направление, не обязательность.
+
+**Каркасные контроллеры** — скелет, повторяющийся во всех примерах
+вручную (см. plans/mvc-examples-analysis.md), egui-слой над tentacles:
+
+```crystal
+class Egui::DocumentsController < Controller  # вкладки, selection,
+  # confirm-close-цепочка, quit-флоу, dirty, save/save_as
+class Egui::SettingsController < Controller   # AppConfig-персист
+# + статус-слайс "app/status", дефолтные хоткей-биндинги
+```
+
+Оценка: −30–40% кода в notepad/kodkod. Это конвенции уровня
+Rails' ApplicationController, не новая абстракция.
+
+**Эфемерное редактирование + коммит** — правило для
+высокочастотных правок (штрих в paint, набор текста):
+
+```
+набор/штрих → эфемерное виджетное состояние (Memory по Id)
+коммит: pointer-up / debounce ~100мс / blur → ОДИН request
+```
+
+Транспорт никогда не несёт 60fps-правок; виджет копит, коммитит
+атомарно. Дебаунс — паттерн приложения, не транспортного слоя.
+
+**Порядок контрактов на проработку** (инвентаризация):
+
+1. системные события — событие = запись `{type, ts, payload}` +
+   счётчик в State; закрывает fswatch/reload (kodkod доказал
+   потребность), deep links, file drop, tray-клики
+2. App API / разводка `Egui.run` — без него каркасные контроллеры
+   не написать; включая hook «смена роута → stop-запросы» (сироты §4.1)
+3. Window capability (`contracts/window.cr`) — superset
+   SystemPorts::Window и window-плагина positron; трей/quit сюда
+4. модель ошибок, permission-порт, http_client — по мере надобности
+
+Генераторы скаффолдов — не сейчас: пусть дозреют до railties crails
+(там уже есть job_generator, унифицируем потом). i18n — приложение,
+не фреймворк (kodkod'овский I18n остаётся при нём).
