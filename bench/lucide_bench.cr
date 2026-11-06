@@ -13,7 +13,7 @@
 # LUCIDE_NO_CULL=1 stress mode is honored like in the example.
 
 require "../src/egui"
-require "../src/egui/backend/sokol"
+require "../src/egui/driver/sokol"
 
 class LucideIconsApp < Egui::App
   CELL_W = 116.0
@@ -133,7 +133,7 @@ end
 # Real font stack, like Sokol#on_init picks one — forced to the pure
 # Crystal backends: the bench measures the shipped (release) stack.
 paths = Egui::SystemPorts::Fonts.search_paths
-font = Egui::Backend::CrystalFonts.from_system(paths)
+font = Egui::Driver::CrystalFonts.from_system(paths)
 if font
   puts "fonts: #{font.class.name}"
 else

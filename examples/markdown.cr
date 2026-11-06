@@ -7,7 +7,7 @@
 # (highlight_cr — the fence's info string names the language, a
 # missing or unknown one falls back to autodetect).
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 
@@ -21,17 +21,17 @@ REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 def pick_fonts : Nil
   fonts_dir = File.join(REPO_ROOT, "assets", "fonts")
 
-  noto = Egui::Backend::Sokol.fonts_from_system([
+  noto = Egui::Driver::Sokol.fonts_from_system([
     File.join(fonts_dir, "NotoSans-Regular.ttf"),
   ])
   if noto
-    bold = Egui::Backend::Sokol.fonts_from_system(
+    bold = Egui::Driver::Sokol.fonts_from_system(
       [File.join(fonts_dir, "NotoSans-SemiBold.ttf")])
-    italic = Egui::Backend::Sokol.fonts_from_system(
+    italic = Egui::Driver::Sokol.fonts_from_system(
       [File.join(fonts_dir, "NotoSans-Italic.ttf")])
-    bold_italic = Egui::Backend::Sokol.fonts_from_system(
+    bold_italic = Egui::Driver::Sokol.fonts_from_system(
       [File.join(fonts_dir, "NotoSans-SemiBoldItalic.ttf")])
-    Egui::Backend::Sokol.select_fonts(noto,
+    Egui::Driver::Sokol.select_fonts(noto,
       bold: bold, italic: italic, bold_italic: bold_italic)
   else
     STDERR.puts "markdown demo: NotoSans-Regular.ttf not found — system font"
@@ -55,8 +55,8 @@ def pick_fonts : Nil
       "/System/Library/Fonts/SFNSMono.ttf",
     ]
   {% end %}
-  mono = Egui::Backend::Sokol.fonts_from_system(mono_candidates)
-  Egui::Backend::Sokol.register_font("monospace", mono) if mono
+  mono = Egui::Driver::Sokol.fonts_from_system(mono_candidates)
+  Egui::Driver::Sokol.register_font("monospace", mono) if mono
 end
 
 pick_fonts

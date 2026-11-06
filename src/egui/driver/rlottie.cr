@@ -1,7 +1,7 @@
 # rlottie C shim binding (backend/rlottie_shim.c + the CMake-built
 # librlottie.a) — the Renderer seam implementation for Lottie::Player.
 #
-# OPT-IN: apps require this file explicitly ("egui/backend/rlottie"),
+# OPT-IN: apps require this file explicitly ("egui/driver/rlottie"),
 # the pty/audio pattern — everything else links neither the archive
 # nor the C++ runtime. Builds need LOTTIE=1 (see Rakefile and
 # .env.example): `rake download:rlottie` once, then `LOTTIE=1 rake
@@ -30,7 +30,7 @@ lib LibRlottie
 end
 
 module Egui
-  module Backend
+  module Driver
     module Rlottie
       # A parsed Bodymovin animation behind the C shim. The handle is
       # never freed (see the memoization note above).

@@ -6,7 +6,7 @@
 # clicking "Ping" bumps the counter, the checkable item toggles, the
 # submenu item reports which branch fired.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class TrayApp < Egui::App
   ITEM_PING     = 1

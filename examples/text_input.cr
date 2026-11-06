@@ -15,7 +15,7 @@
 # The keyboard overlays the bottom of the screen — fields sit near the
 # top.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class TextInputApp < Egui::App
   @plain = ""

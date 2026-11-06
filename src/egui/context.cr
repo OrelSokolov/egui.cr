@@ -762,10 +762,10 @@ module Egui
       @repaint_outstanding = 2
       # Between frames (a PTY reader fiber, an async dialog completing)
       # the request must also WAKE the backend loop — see
-      # Egui::Runtime.wake. Inside a frame the driving loop re-checks
+      # Egui::Driver::Base.current.wake. Inside a frame the driving loop re-checks
       # needs_repaint? on its own, so the doorbell is skipped.
       unless @in_frame
-        Egui::Runtime.wake.try &.call
+        Egui::Driver::Base.current.try &.wake
       end
     end
 

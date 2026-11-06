@@ -1,6 +1,6 @@
 # backend/audio.cr — installs the SystemPorts::Audio and Microphone
 # runners on top of the minaudio shard (OrelSokolov/minaudio.cr,
-# vendored miniaudio). Opt-in: `require "egui/backend/audio"` — apps
+# vendored miniaudio). Opt-in: `require "egui/driver/audio"` — apps
 # without it keep the headless no-op ports and link no audio code.
 #
 # Works everywhere miniaudio does: macOS/Windows/Linux desktops
@@ -11,7 +11,7 @@
 require "minaudio"
 
 module Egui
-  module Backend
+  module Driver
     # One shared engine: opening a playback device per sound would
     # exhaust the device quickly. Lazy: the engine opens the default
     # device on first play. On Android OpenSL ES is pinned first and
@@ -374,7 +374,7 @@ module Egui
       # only when the sokol backend is part of the program, so headless
       # audio consumers (no window, no shim) still link; Android always
       # links the shim with the APK.
-      {% if flag?(:android) || (flag?(:darwin) && !flag?(:ios) && @top_level.has_constant?("Egui::Backend::Sokol")) %}
+      {% if flag?(:android) || (flag?(:darwin) && !flag?(:ios) && @top_level.has_constant?("Egui::Driver::Sokol")) %}
         lib LibMicPerm
           fun perm = egui_cr_mic_perm : Int32
           fun perm_request = egui_cr_mic_perm_request : Void
@@ -388,7 +388,7 @@ module Egui
       # abort the process — and the status carries the make_audio_app.sh
       # hint instead.
       private def permission_ok? : Bool
-        {% if flag?(:android) || (flag?(:darwin) && !flag?(:ios) && @top_level.has_constant?("Egui::Backend::Sokol")) %}
+        {% if flag?(:android) || (flag?(:darwin) && !flag?(:ios) && @top_level.has_constant?("Egui::Driver::Sokol")) %}
           case LibMicPerm.perm
           when 1
             true

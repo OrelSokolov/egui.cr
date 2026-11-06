@@ -6,7 +6,7 @@
 # scrolling, copy/paste).
 #
 # Usage: `ui.terminal(session)` where session is a Terminal::Backend
-# (a Terminal::Session from egui/backend/pty).
+# (a Terminal::Session from egui/driver/pty).
 
 module Egui
   module Terminal
@@ -136,7 +136,7 @@ module Egui
           Sense::Click | Sense::Drag | Sense::Focusable)
 
         # Drain newly arrived bytes into the emulator. The frame
-        # loop's scheduler pass (Egui::Runtime.frame_scheduler_pass,
+        # loop's scheduler pass (Egui::Driver::Base.frame_scheduler_pass,
         # installed by backend/pty) already woke the reader fibers
         # before begin_frame, so data that arrived since the last
         # frame reaches the emulator this same frame.

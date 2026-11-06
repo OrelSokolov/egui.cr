@@ -27,7 +27,7 @@ examples/terminal.cr          tabbed terminal app
 The core (`theme`…`keymap` + `widget`) is platform-pure and required
 from `src/egui.cr`; `pty.cr` calls into the native library (whose
 `-l` flag `backend/sokol.cr` declares), so apps require it explicitly:
-`require "egui/backend/pty"`.
+`require "egui/driver/pty"`.
 
 ## PTY, per platform
 
@@ -47,7 +47,7 @@ widget each frame) drains the channel / a non-blocking ring, and
 coming. On Unix the scheduler pass that wakes the reader fibers is
 `Session.evented_pass` (a class method): ONE ~1 ms pass per frame,
 called by the backend frame loop before `begin_frame` through
-`Egui::Runtime.frame_scheduler_pass` (installed by `backend/pty` at
+`Egui::Driver::Base.frame_scheduler_pass` (installed by `driver/pty` at
 require time) and shared by every session in the process, so the frame
 cost stays flat as tabs grow. Under the detached render loop it is a
 no-op — the scheduler runs naturally between frames.
@@ -96,7 +96,7 @@ no mouse motion reporting in "any" mode without a held button.
 
 ```crystal
 require "egui"
-require "egui/backend/pty"
+require "egui/driver/pty"
 
 session = Egui::Terminal::Session.new(
   shell: ENV["SHELL"]?, cwd: Dir.current,

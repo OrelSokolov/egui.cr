@@ -19,7 +19,7 @@
 # the next starts below it. Toggle the checkbox to compare with the
 # default `:carousel` (one scrolling row) on the same tab set.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 module Win95
   SILVER = Egui::Color32.rgb(192, 192, 192)

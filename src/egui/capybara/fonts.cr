@@ -11,7 +11,7 @@
 #   require "egui/capybara/fonts"
 #   Egui::Capybara::Fonts.install!(ctx)
 
-require "../backend/crystalfonts"
+require "../driver/crystalfonts"
 
 module Egui
   module Capybara
@@ -30,10 +30,10 @@ module Egui
                         paths : Array(String)? = nil,
                         mono_paths : Array(String)? = nil) : Nil
         paths ||= bundled_paths
-        font = Egui::Backend::CrystalFonts.from_system(paths)
+        font = Egui::Driver::CrystalFonts.from_system(paths)
         ctx.fonts = font if font
         if mono_paths
-          mono = Egui::Backend::CrystalFonts.from_system(mono_paths)
+          mono = Egui::Driver::CrystalFonts.from_system(mono_paths)
           ctx.mono_fonts = mono if mono
         end
 
@@ -52,13 +52,13 @@ module Egui
 end
 
 # The atlas compositor, re-opened onto Raster (kept out of the core
-# rasterizer: Backend::AtlasFonts only exists when a font backend is
+# rasterizer: Driver::AtlasFonts only exists when a font backend is
 # required).
 class Egui::Capybara::Raster
   def draw_atlas_text(cmd : Egui::TextCmd, ctx : Egui::Context) : Nil
     fonts = ctx.fonts_for(cmd.family, cmd.bold?, cmd.italic?)
-    return unless fonts.is_a?(Egui::Backend::AtlasFonts) && fonts.loaded?
-    af = fonts.as(Egui::Backend::AtlasFonts)
+    return unless fonts.is_a?(Egui::Driver::AtlasFonts) && fonts.loaded?
+    af = fonts.as(Egui::Driver::AtlasFonts)
 
     # Same anchoring as the sokol backend (paint_text) at 1×: pos is the
     # left-center of the text box, baseline via ascender/descender,

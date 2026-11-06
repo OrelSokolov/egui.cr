@@ -7,10 +7,10 @@
 # what you preview is what gets committed. Works in every build mode.
 
 class PaintText
-  @fonts : Egui::Backend::AtlasFonts?
+  @fonts : Egui::Driver::AtlasFonts?
 
   def initialize
-    @fonts = Egui::Backend::Sokol.fonts_from_system(
+    @fonts = Egui::Driver::Sokol.fonts_from_system(
       Egui::SystemPorts::Fonts.search_paths)
   end
 

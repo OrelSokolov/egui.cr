@@ -6,8 +6,8 @@
 # The demo sound is generated at startup (a soft chime), so no binary
 # assets ship with the example.
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/audio"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/audio"
 
 class DeviceApiApp < Egui::App
   # On Android write into the app's cache dir through the sysport —

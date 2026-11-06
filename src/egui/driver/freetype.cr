@@ -137,7 +137,7 @@ lib LibFreetype
 end
 
 module Egui
-  module Backend
+  module Driver
     # Coerce through the FT_Long alias вЂ” same call sites on both ABIs.
     def self.ft_long(v : Int | Float64) : LibFreetype::Long
       {% if flag?(:win32) %}
@@ -187,8 +187,8 @@ module Egui
           # outlive the face (instance field, so it does).
           face = uninitialized LibFreetype::FaceRec*
           if LibFreetype.new_memory_face(@library, @font_data.to_unsafe,
-                                         Backend.ft_long(@font_data.bytesize),
-                                         Backend.ft_long(0), pointerof(face)) == 0
+                                         Driver.ft_long(@font_data.bytesize),
+                                         Driver.ft_long(0), pointerof(face)) == 0
             @face = face
           end
         end
@@ -287,7 +287,7 @@ module Egui
         req = LibFreetype::SizeRequestRec.new
         req.type = LibFreetype::FT_SIZE_REQUEST_TYPE_NOMINAL
         req.width = 0_i64
-        req.height = Backend.ft_long(size * 64.0) # 26.6; NOMINAL = EM ppem
+        req.height = Driver.ft_long(size * 64.0) # 26.6; NOMINAL = EM ppem
         req.hori_resolution = 0_u32 # 0 = default 72 dpi в†’ pixels
         req.vert_resolution = 0_u32
         LibFreetype.request_size(@face, pointerof(req))

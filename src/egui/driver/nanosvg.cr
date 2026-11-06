@@ -30,7 +30,7 @@ lib LibNanoSvg
 end
 
 module Egui
-  module Backend
+  module Driver
     module NanoSvg
       DPI = 96.0_f32
 

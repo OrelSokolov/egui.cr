@@ -53,12 +53,12 @@ require "./camera"
 # regardless of Crystal's flags. Enabled per-backend by C_EXTENSIONS
 # (USE_C_EXTENSIONS=1 in .env); release builds stay pure Crystal
 # (byte-identical output, so dev and release render the same).
-{% if Egui::Backend::C_EXTENSIONS %}
+{% if Egui::Driver::C_EXTENSIONS %}
   # Fonts: system libfreetype through the C FFI (backend/freetype.cr).
   require "./freetype"
   # SVG: the C NanoSVG shim (backend/nanosvg.cr).
   require "./nanosvg"
-  rasterizer = ->Egui::Backend::NanoSvg.rasterize(String, Egui::Color32, Int32, Int32)
+  rasterizer = ->Egui::Driver::NanoSvg.rasterize(String, Egui::Color32, Int32, Int32)
   Egui::Svg.external_rasterizer = rasterizer
 {% end %}
 
@@ -310,26 +310,86 @@ lib LibEguiCr
 end
 
 module Egui
-  module Backend
+  module Driver
     # The sokol_gfx rendering backend (eframe/glow_integration role).
     module Sokol
       class_getter app : Egui::App?
       @@events = [] of Egui::Event
+      # Detached-loop fact for the Driver::Base contract: true while
+      # this thread owns the Crystal scheduler (fibers run on their
+      # own between frames — no per-frame scheduler crutches needed).
+      @@natural_scheduler = false
+      # True while on_frame runs (Driver::Base#gui_context? guard).
+      @@in_frame = false
+      # Driver::Base#run_on_main queue — drained at frame start, on the
+      # drawing thread, before any pump.
+      @@main_queue = [] of ->
+
+      def self.in_frame? : Bool
+        @@in_frame
+      end
+
+      def self.natural_scheduler? : Bool
+        @@natural_scheduler
+      end
+
+      # Driver::Base#run_on_main entry point (Handle#run_on_main): the
+      # queue is drained at frame start, on the drawing thread.
+      def self.queue_on_main(block : ->) : Nil
+        @@main_queue << block
+      end
+
+      # The Driver::Base handle registered at #run: the five-method
+      # contract over Sokol's class-level machinery. The legacy loop
+      # ticks every vsync by itself, so its #wake is a no-op; the
+      # detached loop forwards to the render-thread doorbell.
+      class Handle < Egui::Driver::Base
+        def run : Nil
+          Sokol.run(Sokol.app.not_nil!)
+        end
+
+        def stop : Nil
+          LibEguiCr.request_quit
+        end
+
+        def wake : Nil
+          # The doorbell only exists in the detached-loop builds
+          # (Linux/Win32 — see run_detached); elsewhere the loop ticks
+          # every vsync on its own and wake is a no-op.
+          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
+            LibEguiCr.wake_main if Sokol.natural_scheduler?
+          {% end %}
+        end
+
+        def gui_context? : Bool
+          Sokol.in_frame?
+        end
+
+        def run_on_main(&block : ->) : Nil
+          Sokol.queue_on_main(block)
+          wake
+        end
+
+        def natural_scheduler? : Bool
+          Sokol.natural_scheduler?
+        end
+      end
+
       # On-screen keyboard state (iOS): text focus → show/hide, edge-
       # triggered so sapp_show_keyboard is only called on transitions.
       @@kb_shown = false
       # Last soft-keyboard profile pushed to the shim ({kind, action}).
       @@kb_profile = {TextInputKind::Plain, TextInputAction::Done}
-      @@fonts : Egui::Backend::AtlasFonts?
+      @@fonts : Egui::Driver::AtlasFonts?
       # The monospace stack (TextCmd family "monospace"); nil = primary only.
-      @@mono_fonts : Egui::Backend::AtlasFonts? = nil
+      @@mono_fonts : Egui::Driver::AtlasFonts? = nil
       # Real variant faces of the PRIMARY stack (TextCmd bold/italic
       # flags): registered via select_fonts(bold:/italic:/bold_italic:).
       # nil = that variant isn't installed — the text draws through the
       # base stack's real glyphs (never an emulated variant).
-      @@bold_fonts : Egui::Backend::AtlasFonts? = nil
-      @@italic_fonts : Egui::Backend::AtlasFonts? = nil
-      @@bold_italic_fonts : Egui::Backend::AtlasFonts? = nil
+      @@bold_fonts : Egui::Driver::AtlasFonts? = nil
+      @@italic_fonts : Egui::Driver::AtlasFonts? = nil
+      @@bold_italic_fonts : Egui::Driver::AtlasFonts? = nil
       # THE glyph atlas every stack the backend itself creates bakes
       # into (primary/mono chains + materialized deferred families): one
       # GPU texture, one CPU buffer, regardless of how many font
@@ -340,7 +400,7 @@ module Egui
       # Extra named stacks (`Sokol.register_font`) — what a widget group
       # draws through when its style sets `font_family` (see
       # `Context#font_families` / `Fonts` resolution in #fonts_for_cmd).
-      @@named_fonts = {} of String => Egui::Backend::AtlasFonts
+      @@named_fonts = {} of String => Egui::Driver::AtlasFonts
       # System-scan families not yet loaded (`register_deferred_font`):
       # name → font file paths, materialized on first use. Names came
       # cheap (name-table read only); the parse is paid per pick.
@@ -352,11 +412,11 @@ module Egui
       # Capped by LRU eviction (see #evict_stale_stacks): a font
       # selector walking 1500 families must not accumulate 1500 stacks
       # of .ttf data + glyph caches.
-      @@materialized = {} of String => Egui::Backend::AtlasFonts?
+      @@materialized = {} of String => Egui::Driver::AtlasFonts?
       # LRU bookkeeping for the materialized stacks: frame counter and
       # the frame each stack last drew in (see #evict_stale_stacks).
       @@frame_counter = 0_u64
-      @@stack_frames = {} of Egui::Backend::AtlasFonts => UInt64
+      @@stack_frames = {} of Egui::Driver::AtlasFonts => UInt64
       @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
       # On-demand repaint: the last painted command list (re-emitted
       # verbatim on idle frames) and the framebuffer size it matched.
@@ -584,8 +644,8 @@ module Egui
         # until the next real click — inject a synthetic release into
         # the next frame's input to close the interaction cleanly.
         private def hand_off_release : Nil
-          pos = Egui::Backend::Sokol.last_pointer_pos
-          Egui::Backend::Sokol.inject_event(
+          pos = Egui::Driver::Sokol.last_pointer_pos
+          Egui::Driver::Sokol.inject_event(
             Egui::Event.pointer_released(pos))
         end
 
@@ -766,7 +826,7 @@ module Egui
         {% if flag?(:darwin) && !flag?(:ios) %}
           # System tray: NSStatusItem surface (backend/tray_darwin.cr);
           # other platforms keep the port's no-op default.
-          Egui::SystemPorts::Tray.use(Backend::DarwinTray.new)
+          Egui::SystemPorts::Tray.use(Driver::DarwinTray.new)
         {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
         {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
@@ -774,7 +834,7 @@ module Egui
           # camera2 NDK / V4L2 — backend/camera.cr); Windows and the
           # desktops without a shim keep the core default "not
           # implemented" implementation.
-          Egui::Camera.use(Backend::NativeCam.new)
+          Egui::Camera.use(Driver::NativeCam.new)
         {% end %}
         {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:win32) %}
           # Desktop native WakeLock/Badge (IOPMAssertion +
@@ -838,6 +898,11 @@ module Egui
         # Keep proc objects referenced (GC) and enter the sapp loop.
         @@cbs = {init, frame, event, cleanup}
 
+        # Register the Driver contract handle (both loop flavors enter
+        # below): core fibers (Http, MVC transport, dialogs) get their
+        # wake doorbell through Egui::Driver::Base.current.
+        Egui::Driver::Base.current = Handle.new
+
         # Linux/Win32: the detached render loop (loop_redesign.md) —
         # sokol's window/GL/swap cycle runs on a C thread while THIS
         # thread keeps the Crystal scheduler, producing FramePackets.
@@ -900,8 +965,10 @@ module Egui
             return if handle < 0
             pipe = IO::FileDescriptor.new(handle.to_i32)
           {% end %}
-          Egui::Runtime.natural_scheduler = true
-          Egui::Runtime.wake = ->{ LibEguiCr.wake_main }
+          # Detached loop: the Crystal scheduler runs naturally on this
+          # thread (the Driver::Base#wake doorbell forwards to the
+          # render-thread doorbell — see Handle#wake).
+          @@natural_scheduler = true
           doorbell = Bytes.new(256)
           records = Pointer(LibEguiCr::EventRecord).malloc(64)
 
@@ -1246,7 +1313,7 @@ module Egui
       # default — bakes into a private atlas: specs, standalone tools).
       def self.fonts_from_system(paths : Array(String),
                                  atlas : GlyphAtlas? = nil) : AtlasFonts?
-        {% if Egui::Backend::C_EXTENSIONS %}
+        {% if Egui::Driver::C_EXTENSIONS %}
           FreetypeFonts.from_system(paths, atlas) ||
             CrystalFonts.from_system(paths, atlas)
         {% else %}
@@ -1265,7 +1332,7 @@ module Egui
       # the app-registered named stacks and every materialized deferred
       # family. What the registry-level atlas reset and the per-frame
       # scale sync iterate.
-      private def self.all_stacks : Array(Egui::Backend::AtlasFonts)
+      private def self.all_stacks : Array(Egui::Driver::AtlasFonts)
         ([@@fonts, @@mono_fonts, @@bold_fonts, @@italic_fonts,
           @@bold_italic_fonts].concat(@@named_fonts.values)
           .concat(@@materialized.values.compact)).compact
@@ -1324,7 +1391,7 @@ module Egui
       # backend chain, memoized per file (see @@materialized) and baked
       # into the registry's shared glyph atlas. Evictable by LRU (see
       # #evict_stale_stacks) — a re-pick simply re-parses the file.
-      private def self.materialize_font(paths : Array(String)) : Egui::Backend::AtlasFonts?
+      private def self.materialize_font(paths : Array(String)) : Egui::Driver::AtlasFonts?
         key = paths.first? || return nil
         unless @@materialized.has_key?(key)
           @@materialized[key] = fonts_from_system(paths, shared_atlas)
@@ -1592,7 +1659,25 @@ module Egui
         end
       end
 
+      # Frame entry (sapp's frame_cb / the detached produce path): the
+      # @@in_frame guard behind Driver::Base#gui_context? wraps the
+      # whole frame, full or idle.
       protected def self.on_frame : Nil
+        @@in_frame = true
+        begin
+          on_frame_inner
+        ensure
+          @@in_frame = false
+        end
+      end
+
+      protected def self.on_frame_inner : Nil
+        # Driver::Base#run_on_main deliveries — the drawing thread, so
+        # GPU/GL context work is legal here. Before every pump: a
+        # queued block may itself enqueue repaints.
+        until @@main_queue.empty?
+          @@main_queue.shift.call
+        end
         # Advance async system ports (file dialogs) — one bounded
         # scheduler pass, then deliver completed requests. Must run
         # before begin_frame so callbacks land in a stable frame state.
@@ -1612,12 +1697,17 @@ module Egui
         # — no-op with nothing in flight, and never needed under the
         # detached loop where the scheduler runs naturally.
         Egui::Http.pump_pass
+        # Same contract for the app-backend request fibers (MVC
+        # transport — plans/frontend-backend-split.md §5); no-op with
+        # nothing in flight.
+        Egui::Mvc.pump_pass
         # Same slot for native reader fibers (PTY sessions) — nil (a
         # no-op) unless backend/pty was required, and a no-op under the
         # detached loop where the scheduler runs naturally.
-        Egui::Runtime.frame_scheduler_pass.try &.call
+        Egui::Driver::Base.frame_scheduler_pass.try &.call
         delivered = Egui::SystemPorts::AsyncDialogs.take_delivered +
-                    Egui::Http.take_delivered
+                    Egui::Http.take_delivered +
+                    Egui::Mvc.take_delivered
 
         if @@frame_debug
           # Wall-clock gap between on_frame entries: anything way over
@@ -1896,7 +1986,7 @@ module Egui
         # first use materializes — the family of every command anyway).
         if touch_fonts
           @@frame_counter += 1
-          by_stack = {} of Egui::Backend::AtlasFonts => Array(Egui::TextCmd)
+          by_stack = {} of Egui::Driver::AtlasFonts => Array(Egui::TextCmd)
           commands.each do |cmd|
             next unless cmd.is_a?(Egui::TextCmd)
             next unless stack = fonts_for_cmd(cmd)

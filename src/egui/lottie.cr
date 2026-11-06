@@ -3,7 +3,7 @@
 # video. Platform-pure: NO FFI here, so `crystal spec` and headless
 # builds stay dependency-free; the pixels come from a Renderer seam
 # (backend/rlottie.cr installs the C shim twin behind `require
-# "egui/backend/rlottie"`; a pure-Crystal interpreter is the planned
+# "egui/driver/rlottie"`; a pure-Crystal interpreter is the planned
 # phase-2 twin, the NanoSvgCr pattern).
 #
 # The Player is app-owned and long-lived (like VideoPlayer): it drives

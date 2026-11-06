@@ -10,7 +10,7 @@
 #   bin/formulas   # GUI: a handful of formulas + a size slider
 
 require "mathjax"
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 # One typeset formula: the v3 SVG is produced once; the Svg widget
 # caches rasters per pixel size, so the slider only rebakes.

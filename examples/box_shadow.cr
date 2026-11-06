@@ -12,7 +12,7 @@
 # (`button:active { shadow.inset }` is the pressed look, no custom
 # painting involved).
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 # Bootstrap 2.0.4 button palette: gradient stops (top/bottom) plus the
 # label color. Hover darkens the stops ~7%, active ~18% (the v2

@@ -10,7 +10,7 @@
 #                 (cross-compile → .app bundle → simulator install +
 #                 launch; the manual path is tmp/ios/phase4/build_demo.sh)
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class IosDemoApp < Egui::App
   # Text input (soft keyboard).

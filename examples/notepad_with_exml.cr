@@ -32,7 +32,7 @@ require "./notepad_components/fps_meter"
 # Embedded builds (EGUI_EMBEDDED=1 at COMPILE time — Capybara screenshot
 # / suite scripts require this file as a library) skip the backend
 # entirely: a headless test binary links no sokol, no X11.
-{% unless env("EGUI_EMBEDDED") %}require "../src/egui/backend_selector"{% end %}
+{% unless env("EGUI_EMBEDDED") %}require "../src/egui/driver_selector"{% end %}
 
 class NotepadExmlApp < Egui::App
   # Debug builds keep the inspector's style edits in a `.ecss` diff file

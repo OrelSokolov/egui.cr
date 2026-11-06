@@ -3,10 +3,10 @@
 # overflows, reset + re-bake (like sokol.cr's touch loop). At the end,
 # after a final reset, every letter must render again (no cached blanks).
 
-require "../src/egui/backend/sokol"
+require "../src/egui/driver/sokol"
 
 paths = Egui::SystemPorts::Fonts.search_paths
-fonts = Egui::Backend::Sokol.fonts_from_system(paths)
+fonts = Egui::Driver::Sokol.fonts_from_system(paths)
 abort "no system font" unless fonts
 puts "backend: #{fonts.class}"
 

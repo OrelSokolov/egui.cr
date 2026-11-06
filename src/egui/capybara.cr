@@ -87,6 +87,11 @@ module Egui
       def step(events : Array(Event) | Nil = nil,
                dt : Float64 = DEFAULT_DT) : Nil
         @time += dt
+        # MVC transport delivery window (the sokol loop's on_frame
+        # contract): one scheduler pass BEFORE begin_frame so request
+        # callbacks land between frames, never mid-frame. No-op when
+        # nothing is in flight.
+        Egui::Mvc.pump_pass
         raw = RawInput.new(@screen, events || [] of Event, @time)
         @ctx.begin_frame(raw)
         @before_update.try &.call(@ctx)

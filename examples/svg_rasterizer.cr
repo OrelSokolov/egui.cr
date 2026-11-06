@@ -13,11 +13,11 @@
 # Bootstrap Icons (MIT) live in icons/bootstrap, Lucide (ISC) in
 # icons/lucide — Rakefile download:bootstrap refreshes them.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 # The C twin — the ONLY consumer of backend/nanosvg.cr: requiring it
 # here links the nanosvg_shim object out of libegui_cr_sokol.a; all
 # other apps bake through the Crystal port alone.
-require "../src/egui/backend/nanosvg"
+require "../src/egui/driver/nanosvg"
 require "./icon"
 
 ICONS = [
@@ -110,7 +110,7 @@ module SvgCompare
 
       c = nil
       c_ms = SvgCompare.best_ms do
-        c = Egui::Backend::NanoSvg.rasterize(@source, TINT, size, size)
+        c = Egui::Driver::NanoSvg.rasterize(@source, TINT, size, size)
       end
       cr = nil
       cr_ms = SvgCompare.best_ms do

@@ -7,8 +7,8 @@
 # inspector's smart selector resolve through; this example is a pure
 # view over it.
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/crystalfonts"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/crystalfonts"
 
 class FontBrowserApp < Egui::App
   # Dropdown presets alongside the free slider (both write @size).

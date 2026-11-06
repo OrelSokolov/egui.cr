@@ -8,7 +8,7 @@
 #      -framework QuartzCore -framework AVFoundation -framework \
 #      CoreMedia -framework IOKit"
 require "../src/egui"
-require "../src/egui/backend/audio"
+require "../src/egui/driver/audio"
 
 A = Egui::SystemPorts::Audio
 M = Egui::SystemPorts::Microphone

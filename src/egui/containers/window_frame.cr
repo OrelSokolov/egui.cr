@@ -1,6 +1,6 @@
 # egui.cr-native container (no upstream counterpart): a client-side
 # window frame drawn after the platform chrome of your choice — the
-# default borderless look of `Egui::Backend::Sokol.run(decorations:
+# default borderless look of `Egui::Driver::Sokol.run(decorations:
 # false)` (see the `chrome:`/`chrome_style:` options there).
 #
 # Four styles (WindowFrame::Style):

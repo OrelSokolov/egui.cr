@@ -25,7 +25,7 @@ egui-cr equivalents:
 | epaint (subset: paint list) | `src/egui/painter.cr` (RectCmd/TextCmd/NoopCmd) |
 | epaint Fonts/Galley | `src/egui/fonts.cr` + backend `CrystalFonts` (primary; `FreetypeFonts` dev accelerator) |
 | egui core | `src/egui/{id,sense,input,memory,response,layout,style,ui,context,app}.cr`, `src/egui/widgets/*` |
-| egui-winit + renderer | `backend/sokol_shim.c` + `src/egui/backend/sokol.cr` (sokol_app events, sokol_gfx/sokol_gl rendering, fontstash text) |
+| egui-winit + renderer | `backend/sokol_shim.c` + `src/egui/driver/sokol.cr` (sokol_app events, sokol_gfx/sokol_gl rendering, fontstash text) |
 | eframe | `Egui::App` + `Egui::Backend::Sokol.run` |
 
 ## 2. The frame loop (upstream `Context::begin_pass`/`end_pass`)
@@ -201,7 +201,7 @@ eframe/winit integration, adapted to sokol:
   `Button#cursor(icon)` overrides per widget. Hyperlink → pointer,
   TextEdit → text, DragValue → ew-resize, window resize grip →
   nwse-resize.
-- Backend (`backend/sokol_shim.c`, `src/egui/backend/sokol.cr`): the
+- Backend (`backend/sokol_shim.c`, `src/egui/driver/sokol.cr`): the
   eframe→winit role. Crystal applies `ctx.cursor_icon` when it
   changes; the shim's `egui_cr_set_cursor(css_name)` is the
   cross-platform adapter — X11: `XcursorLibraryLoadCursor` by CSS
@@ -295,14 +295,14 @@ look blurry (measured: every glyph edge carried a ~1px gray shoulder,
 fontstash with a Crystal-side text stack — fontstash/fons are gone from
 the runtime path. Three backends share it:
 
-- `src/egui/backend/crystalfonts.cr` (`CrystalFonts`) — **primary**: the
+- `src/egui/driver/crystalfonts.cr` (`CrystalFonts`) — **primary**: the
   freetype-cr GitHub shard (OrelSokolov/freetype.cr) — a pure-Crystal
   SFNT loader, TrueType bytecode hinter (ttinterp) and ftgrays
   rasterizer, no libfreetype involved. Produces the same hinted 8-bit
   coverage bitmaps the C library does; `spec/crystalfonts_smoke.cr`
   diff-proves the parity per glyph/kerning/metric. This is what every
   build runs on by default and the ONLY one release binaries carry.
-- `src/egui/backend/freetype.cr` (`FreetypeFonts`) — **dev-build
+- `src/egui/driver/freetype.cr` (`FreetypeFonts`) — **dev-build
   accelerator** (behind `C_EXTENSIONS`, i.e. `USE_C_EXTENSIONS=1` in
   `.env`; never in `--release`): a
   direct Crystal binding of FreeType (`libfreetype`), rasterizing

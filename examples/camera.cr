@@ -7,7 +7,7 @@
 # player uses. Device picker, runtime permission (mobile) and start/stop;
 # platforms without a native stack get the honest message instead.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class CameraApp < Egui::App
   @devices = [] of Egui::Camera::Device

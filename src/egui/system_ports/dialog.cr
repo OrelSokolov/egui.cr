@@ -117,7 +117,7 @@ module Egui
     # bumps a delivered counter that the backend consumes as a
     # produce-a-frame trigger (`take_delivered`). With the detached
     # backend the scheduler runs fibers naturally, so completion also
-    # knocks on the backend doorbell via `Egui::Runtime.wake`; with the
+    # knocks on the backend doorbell via `Egui::Driver::Base.current.wake`; with the
     # legacy single-thread backend (`sapp_run` never yields), the
     # backend gives the scheduler one bounded pass per frame
     # (`pump_pass`) — completions land during that pass and are counted
@@ -150,7 +150,7 @@ module Egui
           @@pending.delete(req)
           @@delivered += 1
           req.complete
-          Egui::Runtime.wake.try &.call
+          Egui::Driver::Base.current.try &.wake
         end
         req
       end

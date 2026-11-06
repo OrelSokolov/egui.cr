@@ -3,7 +3,7 @@
 # copy it to. The chosen paths arrive in the on_done callbacks a few
 # frames later — the app state updates and the UI reflects it.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class OpenFileDialogApp < Egui::App
   @picked : String? = nil

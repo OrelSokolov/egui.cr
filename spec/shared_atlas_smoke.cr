@@ -8,7 +8,7 @@
 # Run: crystal run spec/shared_atlas_smoke.cr
 
 require "../src/egui"
-require "../src/egui/backend/crystalfonts"
+require "../src/egui/driver/crystalfonts"
 
 SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
@@ -23,10 +23,10 @@ unless File.exists?(SANS) && File.exists?(MONO)
   exit 0
 end
 
-atlas = Egui::Backend::GlyphAtlas.new(Egui::Backend::ATLAS_SIZE)
-a = Egui::Backend::CrystalFonts.from_system([SANS], atlas).not_nil!
-b = Egui::Backend::CrystalFonts.from_system([MONO], atlas).not_nil!
-own = Egui::Backend::CrystalFonts.from_system([MONO]).not_nil!
+atlas = Egui::Driver::GlyphAtlas.new(Egui::Driver::ATLAS_SIZE)
+a = Egui::Driver::CrystalFonts.from_system([SANS], atlas).not_nil!
+b = Egui::Driver::CrystalFonts.from_system([MONO], atlas).not_nil!
+own = Egui::Driver::CrystalFonts.from_system([MONO]).not_nil!
 
 check(a.atlas.same?(atlas) && b.atlas.same?(atlas), "stacks share the given atlas")
 check(!own.atlas.same?(atlas), "a nil atlas means a private one")

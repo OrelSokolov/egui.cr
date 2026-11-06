@@ -5,7 +5,7 @@
 # component's three color parameters through the store).
 # Run from the repo root: crystal run examples/oval_progress.cr
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 require "./oval_progress_components/oval_progress"
 
 DEMO_EXML = <<-EXML

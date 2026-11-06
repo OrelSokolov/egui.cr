@@ -15,7 +15,7 @@
 require "lottie"
 
 module Egui
-  module Backend
+  module Driver
     module LottieCr
       # A parsed Bodymovin animation (the shard is long-lived and
       # immutable once parsed — nothing to free).

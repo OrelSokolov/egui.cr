@@ -5,7 +5,7 @@
 # Run: crystal run spec/font_chain_smoke.cr
 
 require "../src/egui"
-require "../src/egui/backend/crystalfonts"
+require "../src/egui/driver/crystalfonts"
 
 SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
@@ -20,11 +20,11 @@ unless File.exists?(SANS) && File.exists?(MONO)
   exit 0
 end
 
-fonts = Egui::Backend::CrystalFonts.from_system([SANS, MONO, "/nonexistent.ttf"])
+fonts = Egui::Driver::CrystalFonts.from_system([SANS, MONO, "/nonexistent.ttf"])
 check(!fonts.nil? && fonts.not_nil!.loaded?, "chain loads (missing files skipped)")
 
 if fonts
-  stride = Egui::Backend::CrystalFonts::STRIDE
+  stride = Egui::Driver::CrystalFonts::STRIDE
 
   m = fonts.glyph_index('M'.ord)
   check(m > 0 && m < stride, "Latin resolves in the primary face (gid #{m})")
@@ -38,7 +38,7 @@ if fonts
   g = fonts.glyph(star, 16.0)
   check(g.w > 0 && g.h > 0, "a fallback glyph bakes into the atlas")
 
-  single = Egui::Backend::CrystalFonts.from_system([SANS]).not_nil!
+  single = Egui::Driver::CrystalFonts.from_system([SANS]).not_nil!
   check(fonts.metrics_at(14.0) == single.metrics_at(14.0),
     "metrics come from the primary face")
   check(fonts.measure("hello", 14.0) == single.measure("hello", 14.0),

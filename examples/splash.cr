@@ -14,7 +14,7 @@
 # Cross-platform: X11 depth-32 ARGB visual + compositor, Win32 DWM
 # blur-behind, macOS non-opaque NSWindow.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class SplashApp < Egui::App
   SIZE = 256
@@ -40,7 +40,7 @@ class SplashApp < Egui::App
     # where it composites (macOS).
     if @texture.zero?
       @texture = ctx.load_image(SPLASH_PNG)
-      if (m = Egui::Backend::Sokol.image_alpha_mask(SPLASH_PNG))
+      if (m = Egui::Driver::Sokol.image_alpha_mask(SPLASH_PNG))
         Egui::SystemPorts::Window.set_shape(m[:mask], m[:width], m[:height])
       end
     end

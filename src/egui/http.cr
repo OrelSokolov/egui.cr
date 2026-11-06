@@ -9,7 +9,7 @@
 #     scheduler yields — on_frame pumps it before begin_frame);
 #   * completion bumps a delivered counter the backend consumes as a
 #     produce-a-frame trigger (`take_delivered`) and knocks on the
-#     backend doorbell via `Egui::Runtime.wake` (detached loop);
+#     backend doorbell via `Egui::Driver::Base.current.wake` (detached loop);
 #   * `pump_pass` is the legacy single-thread crutch (one bounded
 #     scheduler pass per frame, like `AsyncDialogs.pump_pass`).
 #
@@ -68,7 +68,7 @@ module Egui
         @@pending -= 1
         @@delivered += 1
         on_done.call(result)
-        Egui::Runtime.wake.try &.call
+        Egui::Driver::Base.current.try &.wake
       end
     end
 

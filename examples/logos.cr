@@ -2,7 +2,7 @@
 # The SVG source is parsed and painted as vectors, so one slider
 # rescales every logo live with no rasterization.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 require "./icon"
 require "./logo_variants"
 

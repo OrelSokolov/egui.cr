@@ -6,8 +6,8 @@
 # Build (the rlottie shim is dev-only, behind the LOTTIE flag):
 #   LOTTIE=1 rake build:dev[lottie_native]
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/rlottie"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/rlottie"
 
 class LottieNativeApp < Egui::App
   EMOJI = [{"1f600", "grinning"}, {"1f602", "tears of joy"},
@@ -62,7 +62,7 @@ class LottieNativeApp < Egui::App
   def initialize
     super()
     @players = EMOJI.map do |codepoint, _name|
-      anim = Egui::Backend::Rlottie::Animation
+      anim = Egui::Driver::Rlottie::Animation
         .from_json(File.read("assets/lottie/emoji/#{codepoint}.json"))
       raise "rlottie rejected #{codepoint}" unless anim
       player = Egui::Lottie::Player.new(Timed.new(anim))

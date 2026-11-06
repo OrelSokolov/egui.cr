@@ -2,18 +2,18 @@
 # punctuation at a range of sizes — the visual test bed for the Crystal
 # text stack. Two switcher rows: the backend (FreeType C library with
 # real hinting vs the Crystal port of it — backend/crystalfonts.cr, no
-# libfreetype; see src/egui/backend/{freetype,crystalfonts,text}.cr) and
+# libfreetype; see src/egui/driver/{freetype,crystalfonts,text}.cr) and
 # the font cut (Regular / Bold / Italic / Bold Italic of the active
 # family, each loaded from its own file through the ACTIVE backend).
 # Look for: solid crossbars (e, A, Б), consistent baselines, even
 # spacing, stem weight parity between the tabs.
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/crystalfonts"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/crystalfonts"
 # The C-FFI tab is part of the A/B toolset — fontpreview links
 # libfreetype unconditionally, even in release builds (it is the
 # diagnostic app; shipped apps don't).
-require "../src/egui/backend/freetype"
+require "../src/egui/driver/freetype"
 
 class FontPreviewApp < Egui::App
   GROUPS = {
@@ -52,14 +52,14 @@ class FontPreviewApp < Egui::App
 
   @tab = 0
   @cut = 0
-  @freetype : Egui::Backend::AtlasFonts?
-  @crystal : Egui::Backend::AtlasFonts?
+  @freetype : Egui::Driver::AtlasFonts?
+  @crystal : Egui::Driver::AtlasFonts?
 
   # Style-cut stacks of the active tab, registered as named stacks
   # ("preview-<cut>") the whole window can be routed through. Rebuilt
   # on a tab switch — the old tab's stacks (and their atlases) are
   # dropped with them.
-  @style_stacks = {} of String => Egui::Backend::AtlasFonts
+  @style_stacks = {} of String => Egui::Driver::AtlasFonts
   @style_paths = {} of String => String
   @styles_tab = -1
 
@@ -72,9 +72,9 @@ class FontPreviewApp < Egui::App
   def update(ctx : Egui::Context) : Nil
     # Both backends loaded once, then toggled live via Sokol.select_fonts:
     # each has its own atlas; the pipeline rebinds on the next frame.
-    @freetype ||= Egui::Backend::FreetypeFonts.from_system(
+    @freetype ||= Egui::Driver::FreetypeFonts.from_system(
       Egui::SystemPorts::Fonts.search_paths)
-    @crystal ||= Egui::Backend::CrystalFonts.from_system(
+    @crystal ||= Egui::Driver::CrystalFonts.from_system(
       Egui::SystemPorts::Fonts.search_paths)
 
     # Automation hook: the sapp C loop pumps frames but never yields
@@ -92,7 +92,7 @@ class FontPreviewApp < Egui::App
 
     font = @tab.zero? ? @freetype : @crystal
     if font && font.loaded?
-      Egui::Backend::Sokol.select_fonts(font)
+      Egui::Driver::Sokol.select_fonts(font)
     end
     rebuild_style_stacks_if_needed
 
@@ -156,11 +156,11 @@ class FontPreviewApp < Egui::App
     @style_paths = discover_cut_paths
     @style_paths.each do |key, path|
       next if key == "regular"
-      stack = @tab.zero? ? Egui::Backend::FreetypeFonts.from_system([path])
-                         : Egui::Backend::CrystalFonts.from_system([path])
+      stack = @tab.zero? ? Egui::Driver::FreetypeFonts.from_system([path])
+                         : Egui::Driver::CrystalFonts.from_system([path])
       next unless stack && stack.loaded?
       @style_stacks[key] = stack
-      Egui::Backend::Sokol.register_font("preview-#{key}", stack)
+      Egui::Driver::Sokol.register_font("preview-#{key}", stack)
     end
     @cut = 0 unless @cut == 0 || @style_stacks.has_key?(CUTS.keys[@cut])
   end

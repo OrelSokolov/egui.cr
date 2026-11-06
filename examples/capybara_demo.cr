@@ -15,7 +15,7 @@
 require "../src/egui"
 require "../src/egui/capybara"
 require "../src/egui/capybara/fonts"
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class NotesApp < Egui::App
   property notes = ["buy milk", "write egui.cr docs"]

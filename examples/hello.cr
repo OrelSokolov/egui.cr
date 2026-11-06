@@ -10,7 +10,7 @@
 #       ui.label(format!("count: {}", count));
 #   });
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class HelloApp < Egui::App
   @count = 0

@@ -13,7 +13,7 @@
 #                 (cross-compile → APK → install → launch; the manual
 #                 APK path is in README → Android)
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class AndroidDemoApp < Egui::App
   # Text input (the old ime test).

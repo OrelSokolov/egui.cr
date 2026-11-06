@@ -21,7 +21,7 @@
 # once both tanks the frame rate and loses geometry — watch Debug →
 # Show FPS while scrolling.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class LucideIconsApp < Egui::App
   # Catalog cell: a large icon-only button (the icon box is

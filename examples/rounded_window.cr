@@ -16,7 +16,7 @@
 # ↑/↓ move the selection, ↵ flashes a fake launch, Esc clears the
 # query (and quits when it is already empty), drag anywhere to move.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class RoundedWindowApp < Egui::App
   # The fixed OS-window surface; the rounded card lives inside it.

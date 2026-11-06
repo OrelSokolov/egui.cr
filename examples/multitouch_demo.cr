@@ -14,7 +14,7 @@
 #                 pipelines; the manual paths are in README → Android /
 #                 → iOS and plans/IOS_SUPPORT_PLAN.md)
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class MultitouchDemoApp < Egui::App
   # Inline artwork (no File.read — an APK/.app bundle ships no assets

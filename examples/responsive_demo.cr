@@ -18,7 +18,7 @@
 # же, что читает .ecss-файлы инспектора) и скоуп "demo": каждая
 # кнопка адресуется как "demo.<part>".
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class ResponsiveApp < Egui::App
   @styled = false

@@ -14,7 +14,7 @@
 #   wheel   — zoom
 #   select  — smoothing: off / shading / shading + edges
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 # Crystal silhouette (example-local): world-space triangles and edges
 # of a hexagonal prism with pyramidal caps, slightly oblique at the

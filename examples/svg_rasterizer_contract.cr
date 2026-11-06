@@ -14,11 +14,11 @@
 # icons/lucide — Rakefile download:bootstrap refreshes them.
 
 require "../../egcr-demo/contract/egui"
-require "../../egcr-demo/contract/egui/backend/sokol"
+require "../../egcr-demo/contract/egui/driver/sokol"
 # The C twin — the ONLY consumer of backend/nanosvg.cr: requiring it
 # here links the nanosvg_shim object out of libegui_cr_sokol.a; all
 # other apps bake through the Crystal port alone.
-require "../../egcr-demo/contract/egui/backend/nanosvg"
+require "../../egcr-demo/contract/egui/driver/nanosvg"
 require "./icon"
 
 ICONS = [
@@ -111,7 +111,7 @@ module SvgCompare
 
       c = nil
       c_ms = SvgCompare.best_ms do
-        c = Egui::Backend::NanoSvg.rasterize(@source, TINT, size, size)
+        c = Egui::Driver::NanoSvg.rasterize(@source, TINT, size, size)
       end
       cr = nil
       cr_ms = SvgCompare.best_ms do
@@ -257,7 +257,7 @@ if ARGV.includes?("--headless")
   exit 0
 end
 
-Egui::Backend::Sokol.run(SvgRasterizerApp.new,
+Egui::Driver::Sokol.run(SvgRasterizerApp.new,
   title: "egui-cr — SVG rasterizer comparison",
   width: 760, height: 860,
   icon: {rgba: ICON_64_RGBA, width: 64, height: 64}, inspector: :hidden)

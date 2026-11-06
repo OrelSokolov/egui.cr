@@ -1,7 +1,7 @@
 # backend/voice_recorder.cr — installs the VoiceRecorder implementation
 # on top of the minaudio shard (capture) and the permission gate in
 # backend/sokol_shim.c (`egui_cr_mic_*`). Opt-in: `require
-# "egui/backend/voice_recorder"` — apps without it keep the headless
+# "egui/driver/voice_recorder"` — apps without it keep the headless
 # "not implemented" port and link no audio-capture code. iOS keeps the
 # core default answer (AVAudioSession wiring is a separate step, see
 # plans/voice-recording.md Phase 6).
@@ -9,9 +9,13 @@
 require "minaudio"
 
 module Egui
-  module Backend
+  module Driver
     {% unless flag?(:ios) %}
-      @[Link("egui_cr_sokol")]
+      # No @[Link("egui_cr_sokol")] — the egui_cr_mic_* symbols live in
+      # the sokol shim archive, and every consumer of this file requires
+      # the sokol driver too (driver/sokol.cr declares the link flag once
+      # for the whole program); a repeat would only draw an ld
+      # "duplicate libraries" warning.
       lib LibEguiMic
         # 1 granted / 0 not asked / -1 denied
         fun perm = egui_cr_mic_perm : Int32

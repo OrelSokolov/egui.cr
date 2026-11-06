@@ -7,9 +7,9 @@
 # live RMS level meter, and Play → Wav.encode → Audio.play of what was
 # just recorded — the echo test.
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/audio"
-require "../src/egui/backend/voice_recorder"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/audio"
+require "../src/egui/driver/voice_recorder"
 
 class VoiceEchoApp < Egui::App
   SAMPLE_RATE = 16000

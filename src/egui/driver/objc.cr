@@ -24,7 +24,7 @@
 #     returns via `getReturnValue:`.
 
 module Egui
-  module Backend
+  module Driver
     module ObjC
       extend self
 
@@ -223,8 +223,10 @@ module Egui
 
       # The single objc_msgSend declaration (see module docs). Pointer,
       # integer and bool arguments are all register-compatible; unused
-      # trailing arguments must be NULL.
-      @[Link("objc")]
+      # trailing arguments must be NULL. No @[Link("objc")] here — link
+      # flags are program-global, LibObjC's annotation already puts
+      # -lobjc on the linker command line (a repeat would only draw an
+      # ld "duplicate libraries" warning).
       lib LibMsg
         fun msg = objc_msgSend(recv : Void*, cmd : Void*, a1 : Void*, a2 : Void*, a3 : Void*, a4 : Void*) : Void*
       end
@@ -232,8 +234,8 @@ module Egui
       # Dispatch path for NSSize-by-value methods (`setSize:` family)
       # via objc_msgSendSuper with a typed NSSize parameter. The super
       # struct names the receiver's own class, so the method lookup
-      # behaves like a normal send.
-      @[Link("objc")]
+      # behaves like a normal send. Same as LibMsg: no own @[Link],
+      # LibObjC carries -lobjc for the whole program.
       lib LibSuper
         struct ObjCSuper
           receiver : Void*

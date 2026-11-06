@@ -22,7 +22,7 @@
 # frame. `chrome: false` in #run would opt out for fully hand-rolled
 # chrome (see git history for the old manual version).
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class BorderlessApp < Egui::App
   STYLES = {Egui::WindowFrame::Style::Windows,
@@ -67,7 +67,7 @@ class BorderlessApp < Egui::App
 
       ui.segmented(@style_index, STYLE_LABELS) do |i|
         @style_index = i
-        Egui::Backend::Sokol.chrome_style = STYLES[i]
+        Egui::Driver::Sokol.chrome_style = STYLES[i]
       end
 
       ui.label("Drag the caption to move, double-click it to maximize, " \

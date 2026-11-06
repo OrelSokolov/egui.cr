@@ -7,9 +7,13 @@
 # "not implemented" answer, and this file compiles to nothing there.
 
 module Egui
-  module Backend
+  module Driver
     {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
-      @[Link("egui_cr_sokol")]
+      # No @[Link("egui_cr_sokol")] — this file is only reachable via
+      # driver/sokol.cr (require "./camera"), whose LibEguiCr already
+      # puts -legui_cr_sokol on the linker command line for the whole
+      # program; a repeat would only draw an ld "duplicate libraries"
+      # warning.
       {% if flag?(:darwin) %}
         @[Link(framework: "AVFoundation")]
         @[Link(framework: "CoreMedia")]

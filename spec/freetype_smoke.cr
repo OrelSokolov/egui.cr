@@ -2,13 +2,13 @@
 # FreetypeFonts, print metrics, rasterize sample glyphs. (FreetypeFonts
 # always renders hinted 8-bit coverage bitmaps — there is no smooth
 # mode toggle.)
-require "../src/egui/backend/sokol"
+require "../src/egui/driver/sokol"
 # FreetypeFonts is the C-FFI dev accelerator — only linked into sokol
 # under C_EXTENSIONS, so the smoke spec requires it directly.
-require "../src/egui/backend/freetype"
+require "../src/egui/driver/freetype"
 
 paths = Egui::SystemPorts::Fonts.search_paths
-font = Egui::Backend::FreetypeFonts.from_system(paths)
+font = Egui::Driver::FreetypeFonts.from_system(paths)
 unless font
   puts "FAIL: FreetypeFonts did not load any of #{paths}"
   exit 1

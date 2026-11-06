@@ -20,7 +20,7 @@ module Egui
   module Capybara
     class Raster
       # Text rasterization hook: `(cmd, raster) -> Nil`. Installed by
-      # capybara/fonts.cr (which knows Backend::AtlasFonts); the core
+      # capybara/fonts.cr (which knows Driver::AtlasFonts); the core
       # keeps no backend types.
       class_property text_renderer : (TextCmd, Raster -> Nil)?
 

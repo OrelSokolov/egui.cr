@@ -97,7 +97,7 @@ SHIM_HEADERS = {
 
 # LOTTIE=1: the rlottie C shim (needs the vendored upstream tree). Its
 # archive is separate — like the PTY lib, so apps that never require
-# "egui/backend/rlottie" link no C++ runtime.
+# "egui/driver/rlottie" link no C++ runtime.
 if LOTTIE_FEATURE
   SHIM_HEADERS["rlottie_shim"] = %w[
     vendor/rlottie/inc/rlottie_capi.h
@@ -148,7 +148,7 @@ end
 # lives in the minaudio shard (lib/minaudio after `shards install`) —
 # see the build:minaudio task below.
 # The rlottie shim archive (LOTTIE=1): its own library so embedders
-# that never require "egui/backend/rlottie" link no C++ runtime — the
+# that never require "egui/driver/rlottie" link no C++ runtime — the
 # egui_cr_pty split applied to Lottie.
 RLOTTIE_LIB = WINDOWS ? "lib/egui_cr_rlottie.lib" : "lib/libegui_cr_rlottie.a"
 ARCHIVES = {
@@ -159,7 +159,7 @@ ARCHIVES[RLOTTIE_LIB] = %w[rlottie_shim] if LOTTIE_FEATURE
 
 # minaudio.cr's static library (SystemPorts::Audio). Built by the
 # shard's own Rakefile from its vendored single-header C; apps opt in
-# with require "egui/backend/audio", the @[Link] attributes live in
+# with require "egui/driver/audio", the @[Link] attributes live in
 # the shard. Plain `rake` there is incremental, so this is cheap.
 MINAUDIO_LIB = "lib/minaudio/lib/libminaudio.a"
 file MINAUDIO_LIB do
@@ -280,7 +280,7 @@ def build_examples(names, opt_flags, label)
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.
   # lib/minaudio/lib: the audio shard's static lib (only pulled in when
-  # an example requires "egui/backend/audio" — its @[Link] does the rest).
+  # an example requires "egui/driver/audio" — its @[Link] does the rest).
   ma_dir = File.join(libdir, "minaudio", "lib")
   lib_flag = WINDOWS ? "/LIBPATH:#{libdir} /LIBPATH:#{ma_dir}" : "-L#{libdir} -L#{ma_dir}"
   # GNU ld.bfd resolves a static archive's undefined symbols (X11, GL,
@@ -411,7 +411,7 @@ IOS_RUN_SCRIPTS = {
 }.freeze
 
 # Android examples run through the shared APK pipeline; the ones that
-# require "egui/backend/audio" additionally link the shard's Android
+# require "egui/driver/audio" additionally link the shard's Android
 # object (lib/minaudio, `rake build:android` there — see its README).
 ANDROID_RUN_EXAMPLES   = %w[android_demo multitouch_demo camera device_api audio voice_echo].freeze
 ANDROID_AUDIO_EXAMPLES = %w[device_api audio voice_echo].freeze

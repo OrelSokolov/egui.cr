@@ -3,7 +3,7 @@
 # hosts the sidebar, and the central panel shows the gallery for the
 # selected tab (top menu bar and bottom status bar around it).
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 require "./icon"
 require "./logo_variants"
 

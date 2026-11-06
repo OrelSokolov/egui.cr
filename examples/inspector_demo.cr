@@ -9,7 +9,7 @@
 # F12 toggles the panel. The Spinner at the bottom is the honest
 # "no stylable properties" case.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class InspectorDemoApp < Egui::App
   @speed = 0.4

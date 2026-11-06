@@ -33,7 +33,7 @@ dependencies:
     github: OrelSokolov/highlight.cr
   # Звук SystemPorts::Audio: vendored miniaudio за идиоматичным API
   # (Engine/Sound/Decoder). Нужен только приложениям, которые требуют
-  # "egui/backend/audio". https-шорткат (как у остальных): git@ SSH-URL
+  # "egui/driver/audio". https-шорткат (как у остальных): git@ SSH-URL
   # в shard.lock ломает `shards install` на машинах без ключа — CI-раннеры
   # kodkod падали на клоне.
   minaudio:

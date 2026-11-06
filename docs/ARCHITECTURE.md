@@ -9,21 +9,25 @@ they drift.
 ## Layering as designed
 
 ```
-app (examples/)            requires src/egui + a backend file
+app (examples/)            requires src/egui + a driver file
   └─ core src/egui/*       platform-pure, headless-testable
-       ├─ Runtime hooks    natural_scheduler?, wake   (runtime.cr)
+       ├─ Driver contract  Egui::Driver::Base: current, wake, …  (driver/base.cr)
        ├─ Fonts seam       abstract Fonts + MonospaceFonts
        ├─ Texture seam     TextureRegistry + Dummy
        ├─ SystemPorts      installable Implementations
+       ├─ MVC backend      Router/Controller/Transport (mvc/)
        └─ Terminal seam    abstract Terminal::Backend
-  └─ backend/              sokol.cr (2k lines), text.cr, crystalfonts.cr, …
+  └─ driver/               sokol.cr (2k lines), text.cr, crystalfonts.cr, …
        └─ backend/*.c      shims linked into libegui_cr_sokol.a
 ```
 
 ## What is already clean (keep these, extend by example)
 
-- `Egui::Runtime` (runtime.cr) — two class-level hooks, set by the
-  backend, read by the core. Minimal, explicit. This is the model.
+- `Egui::Driver::Base` (driver/base.cr) — the driver contract (was
+  `Egui::Runtime`: two class-level hooks set by the backend). The
+  driver registers `Driver::Base.current` at startup; the core reads
+  wake/natural_scheduler through it. Minimal, explicit. This is the
+  model.
 - `TextureRegistry` / `DummyTextureRegistry` (textures.cr) — GPU
   resources behind opaque `UInt64` ids; specs run headless.
 - `Fonts` abstract base (fonts.cr) — layout/wrap logic is a template
@@ -31,7 +35,7 @@ app (examples/)            requires src/egui + a backend file
 - `SystemPorts` installable implementations (window/screen/clipboard/
   quit) — `.use(impl)` pattern, default no-op. Audio (samples, streams,
   buses) and Microphone (pull-model capture) follow the same pattern:
-  headless no-ops, `egui/backend/audio.cr` installs the minaudio
+  headless no-ops, `egui/driver/audio.cr` installs the minaudio
   runners (system_ports/audio.cr, microphone.cr).
 - `Egui::Svg.external_rasterizer` — inversion of dependency for the
   dev-only C NanoSVG accelerator.
@@ -60,13 +64,13 @@ thing today.
 **Fix — `Egui.run` facade.** One file, no behavior change:
 
 ```crystal
-# src/egui/backend_selector.cr (required by src/egui.cr)
+# src/egui/driver_selector.cr (required by src/egui.cr)
 module Egui
   def self.run(app : App, **opts) : Nil
     {% if flag?(:egui_no_backend) %}
       raise "no backend compiled in"
     {% else %}
-      require "./egui/backend/sokol"   # default; overridable per-target
+      require "./egui/driver/sokol"   # default; overridable per-target
       Backend::Sokol.run(app, **opts)
     {% end %}
   end
@@ -307,14 +311,14 @@ Status at the sweep of steps 1/4/6: ✅ done, the rest pending.
 | 6 | ✅ Retire `evented_pass` into the host tick | B4 | small | simpler Terminal seam |
 | 7 | Doc sweep of backend names in core | C1 | small, rides along with 1-2 | — |
 
-Step 1 landed as `src/egui/backend_selector.cr`: apps `require
-"egui/backend_selector"` and call `Egui.run(…)`; the headless core
+Step 1 landed as `src/egui/driver_selector.cr`: apps `require
+"egui/driver_selector"` and call `Egui.run(…)`; the headless core
 (`require "egui"`) stays backend-free, and `Backend::Sokol` remains
 public for sokol-specific knobs.
 
 Step 4 landed as `libegui_cr_pty.a` (Rakefile `ARCHIVES`): the pty
 shim has its own archive and `@[Link("egui_cr_pty")]`;
-`pty.cr` moved to `src/egui/backend/pty.cr`. nanosvg stays in the
+`pty.cr` moved to `src/egui/driver/pty.cr`. nanosvg stays in the
 sokol archive deliberately — `sokol.cr` itself requires it for the
 dev-only C rasterizer.
 

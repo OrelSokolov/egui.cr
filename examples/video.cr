@@ -5,7 +5,7 @@
 # sokol shim's SG_USAGE_STREAM images). Demo side: FFmpeg bindings +
 # decoder/player + this UI. See videoplayer.md for the full plan.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 require "./video/ffmpeg"
 require "./video/player"

@@ -7,13 +7,13 @@
 # Run: crystal run --release spec/crystalfonts_smoke.cr [-- <font.ttf> ...]
 
 require "../src/egui"
-require "../src/egui/backend/freetype"
-require "../src/egui/backend/crystalfonts"
+require "../src/egui/driver/freetype"
+require "../src/egui/driver/crystalfonts"
 
 paths = ARGV.empty? ? Egui::SystemPorts::Fonts.search_paths : ARGV
 
-ft = Egui::Backend::FreetypeFonts.from_system(paths)
-mine = Egui::Backend::CrystalFonts.from_system(paths)
+ft = Egui::Driver::FreetypeFonts.from_system(paths)
+mine = Egui::Driver::CrystalFonts.from_system(paths)
 unless ft && mine
   puts "FAIL: backends did not load (ft=#{!!ft} mine=#{!!mine})"
   exit 1

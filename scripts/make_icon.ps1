@@ -4,7 +4,7 @@
 #   assets/icon.ico   multi-size (16..256, PNG-packed) for packaging/EXE
 #   assets/icon.png   512x512 master (visual reference)
 #   examples/icon.cr  64x64 RGBA, Base64-embedded, for the gallery's
-#                     runtime window icon (Egui::Backend::Sokol.run icon:)
+#                     runtime window icon (Egui::Driver::Sokol.run icon:)
 #
 # Run from anywhere: powershell -File scripts\make_icon.ps1
 Add-Type -AssemblyName System.Drawing

@@ -1,5 +1,5 @@
 # Headless rlottie C smoke test: exercises the shim —
-# backend/rlottie_shim.c through Egui::Backend::Rlottie::Animation —
+# backend/rlottie_shim.c through Egui::Driver::Rlottie::Animation —
 # against the handcrafted assets/lottie/spinner.json (a rounded
 # square rotating 360° over 60 frames @ 60 fps). Not part of
 # `crystal spec` (it links the LOTTIE=1 archives, which a fresh clone
@@ -15,7 +15,7 @@
 # sokol_shim.o, whose camera section references them — same link set
 # the Rakefile adds for every example.)
 require "../src/egui"
-require "../src/egui/backend/rlottie"
+require "../src/egui/driver/rlottie"
 
 ASSET = File.read("#{__DIR__}/../assets/lottie/spinner.json")
 
@@ -32,7 +32,7 @@ end
 fails = 0
 
 # 1. Metadata: viewport, frame count, fps.
-anim = Egui::Backend::Rlottie::Animation.from_json(ASSET)
+anim = Egui::Driver::Rlottie::Animation.from_json(ASSET)
 if anim.nil?
   puts "FAIL: rlottie rejected the asset"
   abort
@@ -94,7 +94,7 @@ if pixel_diff(f0, f0b) != 0
 end
 
 # 5. Memoization: same source parses to the same instance.
-if !Egui::Backend::Rlottie::Animation.from_json(ASSET).same?(anim)
+if !Egui::Driver::Rlottie::Animation.from_json(ASSET).same?(anim)
   puts "FAIL: from_json not memoized"
   fails += 1
 end

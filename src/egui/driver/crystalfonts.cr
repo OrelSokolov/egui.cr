@@ -30,7 +30,7 @@ require "freetype-cr"
 require "./text"
 
 module Egui
-  module Backend
+  module Driver
     class CrystalFonts < AtlasFonts
       # Composite gid packing: gid = face_index * STRIDE + local_gid.
       # Local gids never exceed the glyph count of a sane font (< 2^20

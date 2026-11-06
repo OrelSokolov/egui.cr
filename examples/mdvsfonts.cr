@@ -7,21 +7,21 @@
 #   4. *italic* through the real Italic file.
 # Rows 1 and 2 must be metric twins: same letter pitches, same edges.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 REPO_ROOT = File.expand_path(File.join(__DIR__, ".."))
 TEXT = "egui.cr — Crossplatform UI in pure Crystal"
 
 # The markdown-demo font setup: Regular primary + real variant faces.
 fonts_dir = File.join(REPO_ROOT, "assets", "fonts")
-noto = Egui::Backend::Sokol.fonts_from_system(
+noto = Egui::Driver::Sokol.fonts_from_system(
   [File.join(fonts_dir, "NotoSans-Regular.ttf")])
-semibold = Egui::Backend::Sokol.fonts_from_system(
+semibold = Egui::Driver::Sokol.fonts_from_system(
   [File.join(fonts_dir, "NotoSans-SemiBold.ttf")])
-italic = Egui::Backend::Sokol.fonts_from_system(
+italic = Egui::Driver::Sokol.fonts_from_system(
   [File.join(fonts_dir, "NotoSans-Italic.ttf")])
 if noto && semibold
-  Egui::Backend::Sokol.select_fonts(noto, bold: semibold, italic: italic)
+  Egui::Driver::Sokol.select_fonts(noto, bold: semibold, italic: italic)
 else
   STDERR.puts "mdvsfonts: assets fonts missing (#{noto ? "semibold" : "regular"})"
 end
@@ -29,7 +29,7 @@ end
 # The fontbrowser path: the SYSTEM file behind a deferred stack name.
 SYS_SEMI = Dir["/usr/share/fonts/truetype/noto/NotoSans-SemiBold.ttf"].first?
 if (sys_semi = SYS_SEMI)
-  Egui::Backend::Sokol.register_deferred_font("spec600", [sys_semi])
+  Egui::Driver::Sokol.register_deferred_font("spec600", [sys_semi])
 else
   STDERR.puts "mdvsfonts: no system NotoSans-SemiBold.ttf"
 end

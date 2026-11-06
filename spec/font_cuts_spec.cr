@@ -84,8 +84,7 @@ describe "Context#fonts_for_weight" do
   end
 
   it "routes a weighted family through the real cut stack" do
-    skip_if = Egui::FontCuts.axis("Noto Sans").empty?
-    pending "Noto Sans not installed" if skip_if
+    pending! "Noto Sans not installed" if Egui::FontCuts.axis("Noto Sans").empty?
 
     ctx = Egui::Context.new
     fonts, family, bold = ctx.fonts_for_weight("Noto Sans", 100.0, false)
@@ -111,8 +110,7 @@ end
 
 describe "inspector smart weight selector" do
   it "offers the family's REAL cuts from the element tab" do
-    pending "Noto Sans not installed" if Egui::FontCuts.axis("Noto Sans").empty?
-
+    pending! "Noto Sans not installed" if Egui::FontCuts.axis("Noto Sans").empty?
     ctx = Egui::Context.new
     ctx.inspector_enabled = true
     # the label under inspection: family Noto Sans, weight 700 already
@@ -169,8 +167,7 @@ end
 
 describe "label weight axis integration" do
   it "a family+weight rule draws through the real cut stack" do
-    pending "Noto Sans not installed" if Egui::FontCuts.axis("Noto Sans").empty?
-
+    pending! "Noto Sans not installed" if Egui::FontCuts.axis("Noto Sans").empty?
     ctx = Egui::Context.new
     ctx.stylesheet.rule("label", Egui::StyleVars{
       "font_family" => "Noto Sans",

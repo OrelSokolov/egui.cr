@@ -24,7 +24,7 @@
 require "./objc"
 
 module Egui
-  module Backend
+  module Driver
     class DarwinTray < Egui::SystemPorts::Tray::Implementation
       NS_VARIABLE_STATUS_ITEM_LENGTH = -1.0
       ACTION_SELECTOR                = "eguiCrTrayAction:"

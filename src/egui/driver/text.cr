@@ -17,7 +17,7 @@
 # alpha = 2c - c^2 (FontColorTransferFunction::TwoCoverageMinusCoverageSq).
 
 module Egui
-  module Backend
+  module Driver
     # C-accelerators (C-FFI FreeType, the C NanoSVG shim): a dev-only
     # convenience, off by default — a fresh clone builds a self-contained
     # pure-Crystal UI with no libfreetype. Enabled by `USE_C_EXTENSIONS=1`

@@ -5,7 +5,7 @@
 #
 # Build: rake build:dev[lottie_crystal]
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class LottieCrystalApp < Egui::App
   EMOJI = [{"1f600", "grinning"}, {"1f602", "tears of joy"},
@@ -59,7 +59,7 @@ class LottieCrystalApp < Egui::App
   def initialize
     super()
     @players = EMOJI.map do |codepoint, _name|
-      anim = Egui::Backend::LottieCr::Animation
+      anim = Egui::Driver::LottieCr::Animation
         .from_json(File.read("assets/lottie/emoji/#{codepoint}.json"))
       raise "lottie.cr rejected #{codepoint}" unless anim
       player = Egui::Lottie::Player.new(Timed.new(anim))

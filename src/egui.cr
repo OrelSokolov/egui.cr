@@ -6,13 +6,13 @@
 #   Context#end_frame → paint commands → backend (sokol_gfx)
 #
 # The core (this file tree, minus backend/) is platform-pure and
-# headless-testable; only src/egui/backend touches native code.
+# headless-testable; only src/egui/driver touches native code.
 
 require "set"
 
 require "./egui/math"
 require "./egui/math3d"
-require "./egui/runtime"
+require "./egui/driver/base"
 require "./egui/color"
 require "./egui/smart_aim"
 require "./egui/history"
@@ -21,6 +21,10 @@ require "./egui/rich_text"
 require "./egui/textures"
 require "./egui/image_codec"
 require "./egui/http"
+require "./egui/mvc/router"
+require "./egui/mvc/transport"
+require "./egui/mvc/state"
+require "./egui/mvc/async"
 require "./egui/camera"
 require "./egui/voice_recorder"
 require "./egui/layer"
@@ -73,7 +77,7 @@ require "./egui/widgets/canvas"
 require "./egui/widgets/viewport3d"
 require "./egui/nanosvg_cr"
 require "./egui/lottie"
-require "./egui/backend/lottie_cr"
+require "./egui/driver/lottie_cr"
 require "./egui/widgets/svg"
 require "./egui/widgets/side_image"
 require "./egui/widgets/lottie"

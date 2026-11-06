@@ -4,7 +4,7 @@
 #
 #   bin/wizard
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class WizardApp < Egui::App
   @open = true

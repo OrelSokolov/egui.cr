@@ -1,7 +1,7 @@
 # System port Audio: sound playback. The port API stays headless —
 # the actual playback lives in the minaudio shard (OrelSokolov/
 # minaudio.cr) and is installed as a runner by `require
-# "egui/backend/audio"`, so apps that never play a sound link no
+# "egui/driver/audio"`, so apps that never play a sound link no
 # audio code at all (the Notification.use_native pattern).
 #
 # Three playback flavors (the raylib Sound-vs-Music split):

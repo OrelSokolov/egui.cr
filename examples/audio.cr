@@ -12,8 +12,8 @@
 # example. Everything degrades honestly: on a headless/no-device box
 # the labels say so instead of crashing the frame loop.
 
-require "../src/egui/backend_selector"
-require "../src/egui/backend/audio"
+require "../src/egui/driver_selector"
+require "../src/egui/driver/audio"
 
 class AudioApp < Egui::App
   @wav_path : String = ""

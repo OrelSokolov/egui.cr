@@ -13,7 +13,7 @@
 #             Sokol's legacy frame loop never yields to the
 #             scheduler (sapp_run is a blocking C call), so the frame
 #             loop gives the process ONE bounded pass per frame
-#             (Egui::Runtime.frame_scheduler_pass, installed below) to
+#             (Egui::Driver::Base.frame_scheduler_pass, installed below) to
 #             deliver pending PTY data to all reader fibers (same trick
 #             as AsyncDialogs.pump) — keep the per-frame repaint while
 #             a session is alive (TermView does).
@@ -96,7 +96,7 @@ module Egui
       @@sessions = [] of Session
 
       # EGUI_FRAME_DEBUG also gates PTY-side logging (reader wakeups,
-      # evented-pass cost, session teardown) — see Backend::Sokol.
+      # evented-pass cost, session teardown) — see Driver::Sokol.
       def self.debug? : Bool
         ENV["EGUI_FRAME_DEBUG"]? != nil
       end
@@ -183,13 +183,13 @@ module Egui
       # session's reader fibers. Only needed by the LEGACY single-thread
       # backend (sapp_run never yields, so PTY reader fibers would never
       # run); with the detached render loop the scheduler is alive
-      # between frames and this is a no-op (Egui::Runtime.
+      # between frames and this is a no-op (Egui::Driver::Base.
       # natural_scheduler?). Called once per frame by the backend frame
-      # loop through Egui::Runtime.frame_scheduler_pass — before
+      # loop through Egui::Driver::Base.frame_scheduler_pass — before
       # begin_frame, not from the widget.
       def self.evented_pass : Nil
         {% unless flag?(:win32) %}
-          return if Egui::Runtime.natural_scheduler?
+          return if Egui::Driver::Base.natural_scheduler?
           return if @@sessions.empty?
           t0 = Time.instant if Session.debug?
           select
@@ -321,6 +321,6 @@ end
 
 # The frame loop's per-frame scheduler pass (legacy loop only — see
 # Session.evented_pass). Installed at require time so the backend never
-# depends on this file: sokol.cr calls Egui::Runtime.frame_scheduler_pass,
+# depends on this file: sokol.cr calls Egui::Driver::Base.frame_scheduler_pass,
 # which stays nil (a no-op) for apps without a terminal.
-Egui::Runtime.frame_scheduler_pass = ->{ Egui::Terminal::Session.evented_pass }
+Egui::Driver::Base.frame_scheduler_pass = ->{ Egui::Terminal::Session.evented_pass }

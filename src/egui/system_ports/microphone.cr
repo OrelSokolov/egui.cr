@@ -1,7 +1,7 @@
 # System port Microphone: capture. The port API stays headless — the
 # native capture lives in the minaudio shard (ma_device + a C ring
 # buffer; the audio-thread callback never enters Crystal) and is
-# installed as a runner by `require "egui/backend/audio"`.
+# installed as a runner by `require "egui/driver/audio"`.
 #
 # Pull model: call #read once per frame from `update` — the ring drops
 # the newest frames when the app reads slower than the mic delivers,

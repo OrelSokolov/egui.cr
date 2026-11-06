@@ -1,5 +1,5 @@
 # Headless NanoSVG C smoke test: exercises the C shim —
-# backend/nanosvg_shim.c through Egui::Backend::NanoSvg.rasterize —
+# backend/nanosvg_shim.c through Egui::Driver::NanoSvg.rasterize —
 # against lucide-style strokes, polygon fills, gradients and
 # currentColor tinting. The C twin is comparison-only now (see
 # examples/svg_rasterizer.cr); this script checks it still matches
@@ -9,7 +9,7 @@
 #   rake build:native
 #   crystal run spec/nanosvg_smoke.cr --link-flags "-Llib -legui_cr_sokol"
 require "../src/egui"
-require "../src/egui/backend/nanosvg"
+require "../src/egui/driver/nanosvg"
 
 def px(buf : Bytes, w : Int32, x : Int32, y : Int32) : UInt8
   buf[(y * w + x) * 4 + 3]
@@ -24,7 +24,7 @@ fails = 0
 
 # 1. Lucide-style stroked path (root-inherited paint, currentColor).
 src = %(<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2z"/></svg>)
-buf = Egui::Backend::NanoSvg.rasterize(src, Egui::Color32.rgb(200, 30, 30), 48, 48)
+buf = Egui::Driver::NanoSvg.rasterize(src, Egui::Color32.rgb(200, 30, 30), 48, 48)
 if buf.nil? || coverage(buf.not_nil!) < 0.1 || coverage(buf.not_nil!) > 0.6
   puts "FAIL: lucide stroke coverage out of band: #{buf && coverage(buf.not_nil!)}"
   fails += 1
@@ -42,7 +42,7 @@ end
 # 2. Filled polygon — the real fill the built-in fallback cannot do
 # (it degrades to a stroked outline, leaving the interior empty).
 tri = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><polygon points="10,90 90,90 50,10" fill="#00AA00"/></svg>)
-buf = Egui::Backend::NanoSvg.rasterize(tri, Egui::Color32.rgb(0, 0, 0), 100, 100).not_nil!
+buf = Egui::Driver::NanoSvg.rasterize(tri, Egui::Color32.rgb(0, 0, 0), 100, 100).not_nil!
 if px(buf, 100, 50, 60) != 255
   puts "FAIL: polygon interior not filled (alpha=#{px(buf, 100, 50, 60)})"
   fails += 1
@@ -52,7 +52,7 @@ end
 
 # 3. Vertical gradient across a rect (top stop ≠ bottom stop).
 grad = %(<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#0000FF"/></linearGradient></defs><rect x="0" y="0" width="10" height="10" fill="url(#g)"/></svg>)
-buf = Egui::Backend::NanoSvg.rasterize(grad, Egui::Color32.rgb(0, 0, 0), 20, 20).not_nil!
+buf = Egui::Driver::NanoSvg.rasterize(grad, Egui::Color32.rgb(0, 0, 0), 20, 20).not_nil!
 top = buf[(2 * 20 + 10) * 4, 4]      # near-white
 bottom = buf[(17 * 20 + 10) * 4, 4]  # blue
 puts "gradient: top=#{top.map(&.to_s(16).rjust(2, '0')).join} bottom=#{bottom.map(&.to_s(16).rjust(2, '0')).join}"
@@ -62,14 +62,14 @@ if top[0] < 200 || bottom[0] > 60 || bottom[2] < 200
 end
 
 # 4. Unparseable source → nil (the built-in fallback takes over).
-if Egui::Backend::NanoSvg.rasterize("this is not svg at all", Egui::Color32.rgb(0, 0, 0), 8, 8) != nil
+if Egui::Driver::NanoSvg.rasterize("this is not svg at all", Egui::Color32.rgb(0, 0, 0), 8, 8) != nil
   puts "FAIL: garbage source should return nil"
   fails += 1
 end
 
 # 5. The real asset bakes clean.
 if File.exists?("assets/icon.svg")
-  buf = Egui::Backend::NanoSvg.rasterize(File.read("assets/icon.svg"),
+  buf = Egui::Driver::NanoSvg.rasterize(File.read("assets/icon.svg"),
     Egui::Color32.rgb(0, 0, 0), 128, 128).not_nil!
   puts "assets/icon.svg: coverage=#{coverage(buf).round(3)}"
 end

@@ -4,7 +4,7 @@
 # each URL fetched ONCE per Context, shared by every widget showing
 # it) and a direct Egui::Http.get demo row. Needs network access.
 
-require "../src/egui/backend_selector"
+require "../src/egui/driver_selector"
 
 class RemoteImageApp < Egui::App
   # (picked to be reachable without a browser fingerprint — picsum
