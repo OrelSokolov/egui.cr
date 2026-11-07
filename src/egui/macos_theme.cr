@@ -22,6 +22,11 @@ module Egui
         v.panel_fill = Color32.rgb(236, 236, 236) # windowBackgroundColor
         v.text_color = Color32.rgb(6, 6, 6)       # labelColor
         v.window_fill = Color32.rgb(246, 246, 246)
+        # DefaultTheme bakes title_bar_fill from the BASE light fill
+        # (#FCFCFC) before this block runs — a theme overriding
+        # window_fill must carry the caption along or the title band
+        # paints as a lighter strip over the window (a "sticker").
+        v.title_bar_fill = v.window_fill
         v.window_stroke = Color32.rgb(209, 209, 209)
         # Shared bezel: popups, segmented container, progress track
         # (buttons/text fields override through their class rules).

@@ -3483,8 +3483,11 @@ describe "classic skin keys (bevels, title bar)" do
     bar = ctx.painter.commands.select(Egui::RectCmd).find { |c|
       c.fill == navy
     }.not_nil!
-    # the bar spans the window's full width at the very top
-    bar.rect.min.y.should be_close(24.0, 0.5)
+    # the bar spans the window's width INSET INSIDE the frame's stroke
+    # ring (the stroke draws inward from the window edge) so the
+    # caption never covers the top border — min.y is the window top
+    # plus the 1pt stroke, not the edge itself.
+    bar.rect.min.y.should be_close(25.0, 0.5)
     bar.rect.height.should be > 15.0
   end
 end

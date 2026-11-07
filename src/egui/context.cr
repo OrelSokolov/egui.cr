@@ -1068,9 +1068,15 @@ module Egui
           style.visuals.window_stroke, 1.0))
       # Title bar: by default the window fill itself (a flat bar); a
       # themed fill (classic navy Win95 bar) paints over it, still
-      # under the title text.
-      @painter.rect(Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
-        rounding: style.visuals.window_rounding,
+      # under the title text. Inset INSIDE the frame's stroke ring
+      # (the stroke draws inward from the window edge) so the band
+      # never covers the border — without this the caption wiped the
+      # top rim and read as a separate area pasted over the frame.
+      band_stroke = 1.0 # the frame RectCmd's stroke width above
+      @painter.rect(Rect.from_min_size(
+        Pos2.new(pos.x + band_stroke, pos.y + band_stroke),
+        Vec2.new(outer.width - 2 * band_stroke, title_h - band_stroke)),
+        rounding: {style.visuals.window_rounding - band_stroke, 0.0}.max,
         fill: style.visuals.title_bar_fill)
       @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
         title, title_size, style.visuals.title_color)
