@@ -16,6 +16,10 @@ require "../src/egui/capybara/fonts"
 SHEET_W = 480
 SHEET_H = 160
 
+# NSSearchField lens — the native sheet's placeholder-gray glyph.
+LENS = Egui::Icon.from_file(:lucide, :search,
+  tint: Egui::Color32.rgb(110, 110, 115))
+
 SHEETS = %w[
   button checkbox radio switch text_field search_field
   slider segmented popup progress stepper label
@@ -92,7 +96,7 @@ class MacOsOracleApp < Egui::App
       ui.text_edit_singleline(@text, width: 200.0) { |t| @text = t }
     when "search_field"
       ui.text_edit_singleline(@search, hint: "Search",
-        width: 222.0) { |t| @search = t }
+        width: 222.0, leading_icon: LENS) { |t| @search = t }
     when "slider"
       ui.slider(@slider, 0.0..1.0) { |v| @slider = v }
     when "segmented"

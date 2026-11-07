@@ -643,6 +643,8 @@ module Egui
     # egui `ui.text_edit_singleline(&mut String, hint)`: the block fires
     # with the new buffer whenever it changed this frame. `password:
     # true` masks the display with circles (one per character).
+    # `leading_icon` draws an SVG inside the field's left padding (a
+    # search lens).
     def text_edit_singleline(buffer : String, hint : String? = nil,
                              password : Bool = false,
                              focus_id : String? = nil,
@@ -650,9 +652,10 @@ module Egui
                              cursor_style : Symbol = :line,
                              cursor_blinks : Bool = true,
                              width : Float64? = nil,
+                             leading_icon : Svg? = nil,
                              &on_change : String ->) : Response
       edit = TextEdit.new(buffer, hint, password, focus_id, frame,
-        cursor_style, cursor_blinks)
+        cursor_style, cursor_blinks, width, leading_icon)
       edit.width(width) if width
       response = add(edit)
       if response.changed? && (text = response.widget_text)

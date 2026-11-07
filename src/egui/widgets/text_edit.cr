@@ -42,7 +42,8 @@ module Egui
                    @frame : Bool = true,
                    @cursor_style : Symbol = :line,
                    @cursor_blinks : Bool = true,
-                   @width : Float64? = nil)
+                   @width : Float64? = nil,
+                   @leading_icon : Svg? = nil)
     end
 
     # Fixed field width (points): native-style forms set it so the
@@ -50,6 +51,14 @@ module Egui
     # nil = content-sized, clamped to the region width.
     def width(w : Float64) : self
       @width = w
+      self
+    end
+
+    # An SVG drawn INSIDE the field's left padding zone (an
+    # NSSearchField lens — `Icon.from_file(:lucide, :search, …)`); the
+    # text inset grows past the glyph so content never overlaps it.
+    def leading_icon(svg : Svg) : self
+      @leading_icon = svg
       self
     end
 
@@ -139,7 +148,11 @@ module Egui
       # start past it (upstream expands the frame inner_margin the same
       # way). Reserved at the focused width so focusing doesn't jitter.
       border = 2.0
-      inset = Vec2.new(pad.left + border, pad.bottom + border)
+      # Leading icon: a font-size square in the left padding zone, the
+      # text inset advances past it (icon + the standard icon gap).
+      icon_side = @leading_icon ? font_size : 0.0
+      icon_w = @leading_icon ? icon_side + style.spacing.icon_spacing : 0.0
+      inset = Vec2.new(pad.left + border + icon_w, pad.bottom + border)
       # An empty field with no hint lays out to a zero-height galley
       # (no rows) — fall back to the line height, the same one the
       # caret uses, so the field keeps its height before the first
@@ -240,6 +253,16 @@ module Egui
       end
 
       inner = rect.min + inset
+
+      # Leading icon before the content pass: vertically centered in
+      # the field, left of the text inset (its zone is outside the
+      # content clip set below, so it paints under the outer clip).
+      if (lens = @leading_icon)
+        lens.paint(ui, Rect.from_min_size(
+          Pos2.new(rect.min.x + pad.left + border,
+            rect.center.y - icon_side / 2.0),
+          Vec2.new(icon_side, icon_side)))
+      end
       # The content row centers in the field's inner box (rect minus
       # the border + padding inset). A host may clamp the rect below
       # the natural height (the max-size rule at a region edge — the

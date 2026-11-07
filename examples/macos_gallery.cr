@@ -27,6 +27,9 @@ class MacOsGalleryApp < Egui::App
   @progress = 0.45_f64
   @sf_installed = false
 
+  # NSSearchField lens — the same placeholder gray as the hint.
+  @lens : Egui::Svg = Egui::Icon.from_file(:lucide, :search, tint: SECONDARY)
+
   SECONDARY = Egui::Color32.rgb(110, 110, 115)
 
   def initialize
@@ -88,7 +91,7 @@ row.add(Egui::ToggleButton.new(@sw_off))
 
         section(win, "search_field") do |row|
           row.text_edit_singleline(@search, hint: "Search",
-            width: 222.0) { |t| @search = t }
+            width: 222.0, leading_icon: @lens) { |t| @search = t }
         end
 
         section(win, "slider") do |row|
