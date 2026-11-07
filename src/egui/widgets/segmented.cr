@@ -13,22 +13,48 @@ module Egui
     def initialize(@selected : Int32, @labels : Array(String))
     end
 
+    # Styled through the `segmented` class: `padding`, `rounding`,
+    # `background` (container), `selection_fill` (selected segment).
+    def style_class : String?
+      "segmented"
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.sizable + [
+        StyleProp.new("padding", :box),
+        StyleProp.new("rounding", :number, fallback: 6.0, min: 0.0),
+        StyleProp.new("background", :color),
+        StyleProp.new("selection_fill", :color),
+      ]
+    end
+
     def ui(ui : Ui) : Response
       style = effective_style(ui)
       visuals = style.visuals
       font_size = style.font_size
-      pad = style.spacing.button_padding
+      id = ui.next_widget_id
+      class_vars = style_vars(ui, id)
 
       sizes = @labels.map { |l| ui.ctx.fonts_for(style.font_family).measure(l, font_size) }
-      height = {sizes.map(&.y).max + 2 * pad.y,
+      bp = style.spacing.button_padding
+      pad = class_vars.box?("padding") ||
+            StyleBox.new(bp.y, bp.x, bp.y, bp.x)
+      height = {sizes.map(&.y).max + pad.vertical,
         style.spacing.interact_size.y}.max
 
       # The joined look: one cell per label, no gap between them, every
       # cell as wide as the widest label so segments are even.
-      cell_w = sizes.map(&.x).max + 2 * pad.x
+      cell_w = sizes.map(&.x).max + pad.horizontal
       rect = ui.allocate_at_least(
         Vec2.new(cell_w * @labels.size, height))
-      id = ui.next_widget_id
+      rounding = class_vars.f64("rounding", 6.0)
+
+      # Container capsule behind the cells (macOS paints one bezel; a
+      # plain panel-colored host leaves the unselected half invisible).
+      ui.painter.rect(rect, rounding,
+        class_vars.color("background",
+          visuals.button_fill(false, false)),
+        visuals.button_stroke, 1.0)
 
       result : Response? = nil
       @labels.each_with_index do |label, i|
@@ -40,15 +66,27 @@ module Egui
 
         selected = i == @selected
         if selected
-          ui.painter.rect(cell, 4.0, visuals.selection_fill)
+          # Selected segment: accent-filled, inset a hair inside the
+          # container so the capsule's outer rounding stays visible.
+          inset = 2.0
+          seg = Rect.from_min_size(
+            Pos2.new(cell.left + (i == 0 ? inset : 0.0), cell.top + inset),
+            Vec2.new(cell.width - (i == 0 ? inset : 0.0) -
+                     (i == @labels.size - 1 ? inset : 0.0),
+                     height - 2.0 * inset))
+          ui.painter.rect(seg, {rounding - inset, 0.0}.max,
+            class_vars.color("selection_fill", visuals.selection_fill))
         elsif response.hovered?
-          ui.painter.rect(cell, 4.0,
-            visuals.fade_color(visuals.selection_fill, 0.4))
+          ui.painter.rect(cell, rounding,
+            visuals.fade_color(visuals.button_fill(false, false), 0.4))
         end
         text_size = sizes[i]
         ui.painter.text(
           Pos2.new(cell.left + (cell_w - text_size.x) / 2.0, cell.center.y),
-          label, font_size, visuals.text_color, family: style.font_family)
+          label, font_size,
+          selected && class_vars.color?("selection_fill") ?
+            Color32.rgb(255, 255, 255) : visuals.text_color,
+          family: style.font_family)
 
         if response.clicked?
           response.widget_value = i.to_f64

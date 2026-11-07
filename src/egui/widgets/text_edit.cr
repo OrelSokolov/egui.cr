@@ -41,7 +41,29 @@ module Egui
                    @password : Bool = false, @focus_id : String? = nil,
                    @frame : Bool = true,
                    @cursor_style : Symbol = :line,
-                   @cursor_blinks : Bool = true)
+                   @cursor_blinks : Bool = true,
+                   @width : Float64? = nil)
+    end
+
+    # Fixed field width (points): native-style forms set it so the
+    # field doesn't hug its text (macOS fields have a set width).
+    # nil = content-sized, clamped to the region width.
+    def width(w : Float64) : self
+      @width = w
+      self
+    end
+
+    # Styled through the `text_edit` class: `fill`, `stroke`, `rounding`
+    # keys (unset keys keep the Visuals slots — see default_theme.cr).
+    def style_class : String?
+      "text_edit"
+    end
+
+    def style_properties : Array(StyleProp)
+      [StyleProp.new("fill", :color),
+       StyleProp.new("stroke", :color, states: true),
+       StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
+       StyleProp.new("padding", :box)]
     end
 
     def ui(ui : Ui) : Response
@@ -106,13 +128,18 @@ module Egui
       shown = new_text.empty? && (hint = @hint) ? hint : display
       galley = fonts.layout([TextRun.new(shown, font_size)])
 
-      pad = style.spacing.button_padding
+      # `padding` class box (falls back to Spacing#button_padding) —
+      # a platform theme sets tight macOS metrics (26pt field, ~8pt
+      # text inset) without moving the default.
+      bp = style.spacing.button_padding
+      pad = style_vars(ui, id).box?("padding") ||
+            StyleBox.new(bp.y, bp.x, bp.y, bp.x)
       # The border stroke is drawn INSIDE the rect (backend inset), so
       # the layout reserves it on every side: text, selection and caret
       # start past it (upstream expands the frame inner_margin the same
       # way). Reserved at the focused width so focusing doesn't jitter.
       border = 2.0
-      inset = Vec2.new(pad.x + border, pad.y + border)
+      inset = Vec2.new(pad.left + border, pad.bottom + border)
       # An empty field with no hint lays out to a zero-height galley
       # (no rows) — fall back to the line height, the same one the
       # caret uses, so the field keeps its height before the first
@@ -123,7 +150,7 @@ module Egui
       # right edge, long text scrolls inside instead.
       natural_w = {galley.size.x, style.spacing.interact_size.x}.max +
                   inset.x * 2.0
-      size = Vec2.new({natural_w, ui.available_width}.min,
+      size = Vec2.new(@width || {natural_w, ui.available_width}.min,
         {line_h, style.spacing.interact_size.y}.max + inset.y * 2.0)
       size = styled_size(size, style_vars(ui, id), ui, id)
       rect = ui.allocate_at_least(size)
@@ -192,7 +219,12 @@ module Egui
       ui.ctx.memory.data.set_f64(scroll_id, scroll)
 
       visuals = style.visuals
-      bg = response.has_focus? ? visuals.button_active : visuals.button_weak
+      # `text_edit` class keys (fill/stroke/rounding) fall back to the
+      # Visuals slots — a platform theme makes the field white with a
+      # gray border (macOS) without touching the default look.
+      te_vars = style_vars(ui, id)
+      bg = te_vars.color?("fill") ||
+           (response.has_focus? ? visuals.button_active : visuals.button_weak)
       # Upstream: the focused field paints its own border in the
       # selection stroke color (upstream `visuals.selection.stroke`),
       # not a ring outside the frame — an outside ring both escapes the
@@ -200,9 +232,11 @@ module Egui
       # `frame: false` (an embedded field — SelectBox's search entry):
       # the host owns the frame, the edit draws content only.
       if @frame
-        stroke_color = response.has_focus? ? visuals.selection_fill : visuals.button_stroke
+        stroke_color = te_vars.color?("stroke") ||
+                       (response.has_focus? ? visuals.selection_fill : visuals.button_stroke)
         stroke_w = response.has_focus? ? border : 1.0
-        ui.painter.rect(rect, 4.0, bg, stroke_color, stroke_w)
+        ui.painter.rect(rect, te_vars.f64("rounding", 4.0),
+          bg, stroke_color, stroke_w)
       end
 
       inner = rect.min + inset

@@ -109,10 +109,16 @@ module Egui
       end
     end
 
+    def style_class : String?
+      "slider"
+    end
+
     def style_properties : Array(StyleProp)
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (handle)"),
         StyleProp.new("stroke", :color, label: "rail stroke"),
+        StyleProp.new("handle_size", :number, label: "handle radius",
+          min: 0.0),
       ]
     end
 
@@ -179,6 +185,7 @@ module Egui
 
       # Paint: rail + handle circle at the value position.
       visuals = style.visuals
+      class_vars = style_vars(ui, id)
       rail_y = rect.center.y
       rail = Rect.from_min_size(
         Pos2.new(rect.left, rail_y - sp.slider_rail_width / 2.0),
@@ -187,12 +194,14 @@ module Egui
       # noninteractive background, but light themes set button_weak ≈
       # panel_fill (macOS #FFF on #FFF) — the stroke color keeps the
       # rail visible in every preset.
-      ui.painter.rect(rail, rail.height / 2.0, visuals.button_stroke)
+      ui.painter.rect(rail, rail.height / 2.0,
+        class_vars.color?("stroke") || visuals.button_stroke)
 
-      handle_r = HANDLE_R
+      handle_r = class_vars.f64("handle_size", HANDLE_R)
       t = normalized(new_value)
       handle_x = rect.left + handle_r + t * (rect.width - 2 * handle_r)
-      handle_color = visuals.selection_fill
+      handle_color = class_vars.color?("selection_fill") ||
+                     visuals.selection_fill
       handle_color = visuals.fade_color(handle_color, 0.85) if response.hovered?
       paint_handle(ui.painter, @handle,
         Pos2.new(handle_x, rail_y), handle_r, handle_color)

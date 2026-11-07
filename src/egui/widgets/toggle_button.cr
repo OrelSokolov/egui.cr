@@ -36,8 +36,11 @@ module Egui
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (on)"),
         StyleProp.new("stroke", :color, label: "track stroke"),
+        StyleProp.new("knob_color", :color),
+        StyleProp.new("knob_stroke", :color, label: "knob stroke"),
         StyleProp.new("sync_with_text", :bool, fallback: true),
         StyleProp.new("tumbler_size", :number),
+        StyleProp.new("track_width", :number),
       ]
     end
 
@@ -65,7 +68,7 @@ module Egui
         tumbler_h = class_vars.f64("tumbler_size", icon)
       end
       knob = tumbler_h
-      track_w = 2.0 * knob
+      track_w = class_vars.f64("track_width", 2.0 * knob)
       track_h = knob
       height = {track_h, text_size.y, style.spacing.interact_size.y * 0.7}.max
       total_w = track_w + (@text ? style.spacing.icon_spacing + text_size.x : 0.0)
@@ -84,15 +87,26 @@ module Egui
       anim_t = ui.ctx.animate_value_with_time(id, @checked ? 1.0 : 0.0, 0.15)
       track_fill = visuals.button_stroke.lerp(visuals.selection_fill, anim_t)
       track_fill = visuals.button_active if response.active? && @checked
-      ui.painter.rect(track, track_h / 2.0, track_fill)
+      # `stroke` rule key — the track's own 1px border (macOS NSSwitch
+      # carries a visible rim on both states).
+      track_stroke = class_vars.color?("stroke")
+      if track_stroke
+        ui.painter.rect(track, track_h / 2.0, track_fill, track_stroke, 1.0)
+      else
+        ui.painter.rect(track, track_h / 2.0, track_fill)
+      end
 
       # Knob slides between the track's ends; a hair of inset so it
-      # never touches the rounded ends.
+      # never touches the rounded ends. `knob_color`/`knob_stroke` rule
+      # keys — a platform theme paints the knob white with a subtle
+      # rim (macOS NSSwitch).
       inset = 2.0
       travel = track_w - knob - 2.0 * inset
       knob_x = track.left + inset + anim_t * travel
       ui.painter.circle(Pos2.new(knob_x + knob / 2.0, track.center.y),
-        knob / 2.0 - inset / 2.0, visuals.text_color)
+        knob / 2.0 - inset / 2.0,
+        class_vars.color("knob_color", visuals.text_color),
+        class_vars.color?("knob_stroke"), 1.0)
 
       if (text = @text)
         ui.painter.text(

@@ -36,8 +36,11 @@ module Egui
         visuals.button_stroke, 1.0)
 
       if @selected
+        # `radio:selected` rule layer (dot_fill) — a platform theme
+        # paints the dot in the accent color (macOS) instead of text.
         ui.painter.circle_filled(center, sp.icon_width_inner / 2.0,
-          visuals.text_color)
+          style_vars(ui, id, "selected").color("dot_fill",
+            visuals.text_color))
       end
 
       # A clamped host squeezes the rect below the natural size:

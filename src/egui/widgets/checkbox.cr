@@ -25,6 +25,7 @@ module Egui
         StyleProp.new("box_fill", :color, states: true),
         StyleProp.new("box_stroke", :color),
         StyleProp.new("check_color", :color),
+        StyleProp.new("check_width", :number, fallback: 2.0, min: 0.5),
         StyleProp.new("rounding", :number, fallback: 3.0),
       ]
     end
@@ -60,24 +61,36 @@ module Egui
       # the fallback is the theme's state slots.
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
       state_vars = style_vars(ui, id, state)
-      ui.painter.rect(icon_rect,
-        class_vars.f64("rounding", 3.0),
-        state_vars.color("box_fill",
-          visuals.button_fill(response.hovered?, response.active?)),
-        class_vars.color("box_stroke", visuals.button_stroke), 1.0)
-
       if @checked
         # A two-segment checkmark (upstream draws a font glyph; we use
-        # the phase-0 line primitive).
+        # the phase-0 line primitive). A `checkbox:checked` rule layer
+        # (box_fill/check_color) lets a platform theme repaint the
+        # checked box — macOS fills it with the accent color.
+        checked_vars = style_vars(ui, id, "checked")
+        box_fill = checked_vars.color?("box_fill") ||
+                   state_vars.color("box_fill",
+                     visuals.button_fill(response.hovered?, response.active?))
+        ui.painter.rect(icon_rect,
+          class_vars.f64("rounding", 3.0),
+          box_fill,
+          class_vars.color("box_stroke", visuals.button_stroke), 1.0)
         c = icon_rect.min
         w = icon_rect.width
         h = icon_rect.height
         corner = Pos2.new(c.x + 0.26 * w, c.y + 0.52 * h)
         elbow = Pos2.new(c.x + 0.45 * w, c.y + 0.72 * h)
         tip = Pos2.new(c.x + 0.78 * w, c.y + 0.26 * h)
-        check_color = class_vars.color("check_color", visuals.text_color)
-        ui.painter.line(corner, elbow, 2.0, check_color)
-        ui.painter.line(elbow, tip, 2.0, check_color)
+        check_color = checked_vars.color?("check_color") ||
+                      class_vars.color("check_color", visuals.text_color)
+        check_w = class_vars.f64("check_width", 2.0)
+        ui.painter.line(corner, elbow, check_w, check_color)
+        ui.painter.line(elbow, tip, check_w, check_color)
+      else
+        ui.painter.rect(icon_rect,
+          class_vars.f64("rounding", 3.0),
+          state_vars.color("box_fill",
+            visuals.button_fill(response.hovered?, response.active?)),
+          class_vars.color("box_stroke", visuals.button_stroke), 1.0)
       end
 
       # A clamped host squeezes the rect below the natural size:

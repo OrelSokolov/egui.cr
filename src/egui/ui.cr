@@ -649,9 +649,12 @@ module Egui
                              frame : Bool = true,
                              cursor_style : Symbol = :line,
                              cursor_blinks : Bool = true,
+                             width : Float64? = nil,
                              &on_change : String ->) : Response
-      response = add(TextEdit.new(buffer, hint, password, focus_id, frame,
-        cursor_style, cursor_blinks))
+      edit = TextEdit.new(buffer, hint, password, focus_id, frame,
+        cursor_style, cursor_blinks)
+      edit.width(width) if width
+      response = add(edit)
       if response.changed? && (text = response.widget_text)
         on_change.call(text)
       end

@@ -1,0 +1,23 @@
+# Twinshot config for the macOS widget oracle (plans/macos-oracle-gallery.md).
+#
+#   oracle  = native AppKit renders (golden, from render.swift)
+#   current = egui.cr renders of the same flat sheets
+#
+# Run from the repo root:
+#   PATH="/opt/homebrew/bin:$PATH" twinshot compare --no-open -c oracle/twinshot.yml
+# Reports land in oracle/twinshot-report/default/ (diff images, heat
+# overlays, report_for_agent.md).
+
+oracle:
+  path: macos/png
+  generate: make -C macos run
+
+current:
+  path: egui/png
+  generate: sh -c 'cd .. && crystal run scripts/make_macos_oracle_shots.cr'
+
+png:
+  # Flat widget sheets on a solid background: antialiasing aside, the
+  # themes are far apart — the diff images are the deliverable, the
+  # threshold only decides pass/fail.
+  max_diff_ratio: 0.002
