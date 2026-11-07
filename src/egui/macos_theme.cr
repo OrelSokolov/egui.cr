@@ -7,8 +7,9 @@
 #
 #   app.theme = Egui::MacOsTheme.light
 #
-# Default-button look (the accent-filled "OK"): use MacOsTheme.button
-# helper — WidgetStyle has no class layer for a "default" variant yet.
+# Default-button look (the accent-filled "OK"): use the
+# MacOsTheme.default_button helper — WidgetStyle has no class layer
+# for a "default" variant yet.
 
 require "./default_theme"
 
@@ -22,6 +23,12 @@ module Egui
     # measured (0,119,249) on the oracle sheets; push buttons and
     # progress fills keep the brighter ACCENT (0,122,255).
     SELECTION = Color32.rgb(0, 119, 249)
+
+    # The pressed default-button bezel: AppKit darkens the accent
+    # ~10% under the pointer press — measured (0,109,229) off a
+    # highlighted native NSButtonCell (headless probe, the same
+    # machinery as oracle/macos/render.swift).
+    ACCENT_PRESSED = Color32.rgb(0, 109, 229)
 
     def self.light : Theme
       theme = DefaultTheme.build("macos", dark: false) do |v|
@@ -60,8 +67,8 @@ module Egui
       style.title_font_size = 14.0
       sp = style.spacing
       sp.icon_width = 16.0        # checkbox/radio box
-      sp.icon_width_inner = 7.0   # radio dot
-      sp.slider_rail_width = 4.0  # thin macOS rail
+      sp.icon_width_inner = 6.0   # radio dot (native white dot ~6px)
+      sp.slider_rail_width = 5.0  # thin macOS rail (native bar: 6px incl. AA)
       # 26pt text fields: line ~15 + 2*(3.5+2) inset. The y floor is
       # the field's height floor too (max(line, interact.y) + inset).
       sp.button_padding = Vec2.new(12.0, 3.5)
@@ -101,12 +108,14 @@ module Egui
         "stroke"         => Color32.rgb(199, 199, 199),
       }, media: DefaultTheme::MOBILE_MAX)
 
-      # Checkboxes/radios: white 16pt box, gray ring; checked state
-      # fills with the accent + a white mark (the checkbox:checked /
-      # radio:selected rule layers added for this).
+      # Checkboxes/radios: the UNCHECKED box is flat #D5D5D5 (the
+      # native sheet shows no ring — a hard 1px edge to the background,
+      # so stroke = fill); checked state fills with the accent + a
+      # white mark (the checkbox:checked / radio:selected rule layers
+      # added for this).
       sheet.rule("checkbox", StyleVars{
-        "box_fill"    => Color32.rgb(255, 255, 255),
-        "box_stroke"  => Color32.rgb(208, 208, 208),
+        "box_fill"    => Color32.rgb(213, 213, 213),
+        "box_stroke"  => Color32.rgb(213, 213, 213),
         "check_width" => 2.4,
         "rounding"    => 3.5,
       })
@@ -114,8 +123,12 @@ module Egui
         "box_fill"    => SELECTION,
         "check_color" => Color32.rgb(255, 255, 255),
       })
+      sheet.rule("radio", StyleVars{
+        "ring_fill" => Color32.rgb(213, 213, 213),
+      })
       sheet.rule("radio:selected", StyleVars{
-        "dot_fill" => SELECTION,
+        "ring_fill" => SELECTION,
+        "dot_fill"  => Color32.rgb(255, 255, 255),
       })
 
       # Switches (ToggleButton): 54x24 capsule track with a rim; the
@@ -193,6 +206,17 @@ module Egui
         "selection_fill" => SELECTION,
       })
 
+      # Stepper (NumberInput): NSStepper — the value sits straight on
+      # the panel (transparent bezel: no fill, no border, no focus
+      # recolor), only the spin column stands out as one flat #DADADA
+      # bezel with constant arrows (no hover/press highlights).
+      sheet.rule("number_input", StyleVars{
+        "fill"        => Color32.transparent,
+        "stroke"      => Color32.transparent,
+        "rounding"    => 3.0,
+        "button_fill" => Color32.rgb(218, 218, 218),
+      })
+
       theme
     end
 
@@ -201,7 +225,12 @@ module Egui
     # well: class state rules (`button:hover/:active`) sit ABOVE
     # inline styles in the cascade and would gray the bezel on
     # press — the element layer (`ctx.set_id_style`) outranks them,
-    # so the accent + white text survive every state.
+    # so the accent + white text survive every state. The press still
+    # SHOWS: an active-state element key rides on top of the base pin
+    # (see `Context#id_style_state_vars` — base merged, state wins)
+    # and darkens the bezel like AppKit (`ACCENT_PRESSED`), instead of
+    # painting the same blue in every state — a button that never
+    # reacts looks like it doesn't take the click at all.
     def self.default_button(ui : Ui, text : String,
                             id : String? = nil) : Response
       btn = Button.new(text, id: id)
@@ -216,6 +245,10 @@ module Egui
       ctx.set_id_style(response.id, "text_color",
         Color32.rgb(255, 255, 255))
       ctx.set_id_style(response.id, "stroke", ACCENT)
+      ctx.set_id_style(response.id, "background", ACCENT_PRESSED,
+        state: "active")
+      ctx.set_id_style(response.id, "stroke", ACCENT_PRESSED,
+        state: "active")
       response
     end
   end

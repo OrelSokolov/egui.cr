@@ -11,6 +11,11 @@
 # the buffer instead of discarding it. Clicking an arrow steps once on
 # press and then auto-repeats while held; the mouse wheel steps once
 # per scroll event while hovering the control.
+#
+# The default paint is the Windows look; platforms restyle it through
+# the `number_input` class (see MacOsTheme — a `button_fill` rule swaps
+# the beveled arrows for a flat bezel and `fill`/`stroke` can make the
+# field itself borderless).
 
 module Egui
   class NumberInput
@@ -31,6 +36,21 @@ module Egui
     def initialize(@value : Int32, @range : Range(Int32, Int32)? = nil,
                    @step : Int32 = 1, @prefix : String = "",
                    @suffix : String = "", @focus_id : String? = nil)
+    end
+
+    # Styled through the `number_input` class: `fill`/`stroke`/
+    # `rounding` for the field bezel, `button_fill` for the spin
+    # column (a set `button_fill` swaps the Win95 beveled arrows for
+    # one flat platform bezel — macOS NSStepper).
+    def style_class : String?
+      "number_input"
+    end
+
+    def style_properties : Array(StyleProp)
+      [StyleProp.new("fill", :color),
+       StyleProp.new("stroke", :color),
+       StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
+       StyleProp.new("button_fill", :color, label: "spin button fill")]
     end
 
     def ui(ui : Ui) : Response
@@ -151,24 +171,45 @@ module Egui
       # the divider between the two controls.
       # The focused field's focus ring rides OUTSIDE the bezel (see
       # TextEdit — same native NSTextField treatment).
+      # `number_input` class keys override the Visuals slots: a
+      # platform theme can drop the bezel entirely (transparent
+      # fill/stroke — then no ring either) and flatten the spin column
+      # into one constant bezel (NSStepper, see MacOsTheme).
       visuals = style.visuals
       focused = field_resp.has_focus?
-      bg = focused ? visuals.button_active : visuals.button_weak
+      vars = style_vars(ui, id)
+      bg = vars.color?("fill") ||
+           (focused ? visuals.button_active : visuals.button_weak)
       # Focus rides the outside ring alone — the bezel keeps its
       # plain border (native look).
-      stroke_color = visuals.button_stroke
-      if focused
-        ui.painter.rect(field.expand(3.0), 7.0, nil,
+      stroke_color = vars.color?("stroke") || visuals.button_stroke
+      field_round = vars.rounding_px("rounding", field, 4.0)
+      if focused && (bg.a > 0 || stroke_color.a > 0)
+        ui.painter.rect(field.expand(3.0), field_round + 3.0, nil,
           visuals.focus_ring, 3.0)
       end
-      ui.painter.rect(field, 4.0, bg, stroke_color, 1.0)
+      ui.painter.rect(field, field_round, bg.a > 0 ? bg : nil,
+        stroke_color.a > 0 ? stroke_color : nil, 1.0)
 
-      Icons.arrow_button(ui.painter, :up, up_r,
-        visuals.button_fill(up_resp.hovered?, up_resp.pressed?),
-        visuals.text_color, pressed: up_resp.pressed?)
-      Icons.arrow_button(ui.painter, :down, down_r,
-        visuals.button_fill(down_resp.hovered?, down_resp.pressed?),
-        visuals.text_color, pressed: down_resp.pressed?)
+      if (spin_fill = vars.color?("button_fill"))
+        # Flat platform bezel (macOS NSStepper): one rounded column
+        # fill, constant — no bevel, no hover/press recolor.
+        ui.painter.rect(col, vars.rounding_px("rounding", col, 4.0),
+          spin_fill)
+        [{:up, up_r}, {:down, down_r}].each do |name, r|
+          Icons.draw(ui.painter, name, Rect.from_min_size(
+            Pos2.new(r.left + 4.0, r.top + 4.0),
+            Vec2.new(r.width - 8.0, r.height - 8.0)),
+            visuals.text_color, 2.0)
+        end
+      else
+        Icons.arrow_button(ui.painter, :up, up_r,
+          visuals.button_fill(up_resp.hovered?, up_resp.pressed?),
+          visuals.text_color, pressed: up_resp.pressed?)
+        Icons.arrow_button(ui.painter, :down, down_r,
+          visuals.button_fill(down_resp.hovered?, down_resp.pressed?),
+          visuals.text_color, pressed: down_resp.pressed?)
+      end
 
       shown = editing ? buffer : display_text(new_value)
       ui.painter.text(field.left_center + Vec2.new(pad.x + border, 0.0),

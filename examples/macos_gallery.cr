@@ -59,92 +59,115 @@ class MacOsGalleryApp < Egui::App
     end
 
     ctx.central_panel(fill: Egui::Color32.rgb(236, 236, 236)) do |ui|
-      ctx.window("macOS Widget Gallery (egui.cr)",
-        Egui::Pos2.new(40.0, 40.0), width: 520.0) do |win|
-        section(win, "button") do |row|
-          row.button("Button")
-          row.allocate_space(Egui::Vec2.new(28.0, 0.0))
-          Egui::MacOsTheme.default_button(row, "OK")
-        end
+      # No nested egui window: the app's own OS window carries the
+      # title, the content lays out straight in the panel like the
+      # native gallery (margin 16: the panel's 8pt padding + 8 here;
+      # captions at x=12 → the 2pt left indent).
+      ui.allocate_space(Egui::Vec2.new(2.0, 8.0))
 
-        section(win, "checkbox") do |row|
-          row.checkbox(@unchecked, "Check") { |v| @unchecked = v }
-          row.allocate_space(Egui::Vec2.new(28.0, 0.0))
-          row.checkbox(@checked, "Selected") { |v| @checked = v }
-        end
+      section(ui, "button") do |row|
+        second_column(row, row.button("Button"))
+        Egui::MacOsTheme.default_button(row, "OK")
+      end
 
-        section(win, "radio") do |row|
-          row.radio(@radio == 0, "First").clicked? && (@radio = 0)
-          row.allocate_space(Egui::Vec2.new(28.0, 0.0))
-          row.radio(@radio == 1, "Second").clicked? && (@radio = 1)
-        end
+      section(ui, "checkbox") do |row|
+        second_column(row,
+          row.checkbox(@unchecked, "Check") { |v| @unchecked = v })
+        row.checkbox(@checked, "Selected") { |v| @checked = v }
+      end
 
-        section(win, "switch") do |row|
-row.add(Egui::ToggleButton.new(@sw_off))
-          row.allocate_space(Egui::Vec2.new(28.0, 0.0))
-          row.add(Egui::ToggleButton.new(@sw_on))
-        end
+      section(ui, "radio") do |row|
+        first = row.radio(@radio == 0, "First")
+        first.clicked? && (@radio = 0)
+        second_column(row, first)
+        row.radio(@radio == 1, "Second").clicked? && (@radio = 1)
+      end
 
-        section(win, "text_field") do |row|
-          row.text_edit_singleline(@text, width: 200.0) { |t| @text = t }
-        end
+      section(ui, "switch") do |row|
+        second_column(row, row.add(Egui::ToggleButton.new(@sw_off)))
+        row.add(Egui::ToggleButton.new(@sw_on))
+      end
 
-        section(win, "search_field") do |row|
-          # "search" scope → styles under "search.text_edit": the macOS
-          # search field is a full capsule (9999px-style rounding),
-          # unlike the 6pt text field above.
-          row.with_style_scope("search") do |s|
-            s.text_edit_singleline(@search, hint: "Search",
-              width: 222.0, leading_icon: @lens) { |t| @search = t }
-          end
-        end
+      section(ui, "text_field") do |row|
+        row.text_edit_singleline(@text, width: 200.0) { |t| @text = t }
+      end
 
-        section(win, "slider") do |row|
-          row.slider(@slider, 0.0..1.0) { |v| @slider = v }
+      section(ui, "search_field") do |row|
+        # "search" scope → styles under "search.text_edit": the macOS
+        # search field is a full capsule (9999px-style rounding),
+        # unlike the 6pt text field above.
+        row.with_style_scope("search") do |s|
+          s.text_edit_singleline(@search, hint: "Search",
+            width: 222.0, leading_icon: @lens) { |t| @search = t }
         end
+      end
 
-        section(win, "segmented") do |row|
-          row.segmented(@seg, ["One", "Two", "Three"]) { |v| @seg = v }
-        end
+      section(ui, "slider") do |row|
+        row.slider(@slider, 0.0..1.0) { |v| @slider = v }
+      end
 
-        section(win, "popup") do |row|
-          row.combo_box("combo", @combo,
-            ["First", "Second", "Third"], width: 200.0) { |s| @combo = s }
-        end
+      section(ui, "segmented") do |row|
+        row.segmented(@seg, ["One", "Two", "Three"]) { |v| @seg = v }
+      end
 
-        section(win, "progress") do |row|
-          row.progress_bar(@progress)
-          row.allocate_space(Egui::Vec2.new(56.0, 0.0))
-          row.spinner
-        end
+      section(ui, "popup") do |row|
+        row.combo_box("combo", @combo,
+          ["First", "Second", "Third"], width: 200.0) { |s| @combo = s }
+      end
 
-        section(win, "stepper") do |row|
-          row.number_input(@num) { |v| @num = v }
-        end
+      section(ui, "progress") do |row|
+        row.progress_bar(@progress)
+        row.allocate_space(Egui::Vec2.new(56.0, 0.0))
+        row.spinner
+      end
 
-        section(win, "label") do |row|
-          row.label("Label")
-          row.allocate_space(Egui::Vec2.new(28.0, 0.0))
-          row.rich(Egui::RichText.new("Secondary label").color(SECONDARY))
-        end
+      section(ui, "stepper") do |row|
+        row.number_input(@num) { |v| @num = v }
+      end
+
+      section(ui, "label") do |row|
+        second_column(row, row.label("Label"))
+        row.rich(Egui::RichText.new("Secondary label").color(SECONDARY))
       end
     end
   end
 
-  # One sheet row: a small secondary caption + the widgets from the
-  # matching native sheet (oracle/macos/png/<name>.png).
+  # Space the second variant out to a FIXED column, like the native
+  # gallery's x=250 (+150 from the widget column, whatever the first
+  # widget's width). The row layout adds item_spacing on BOTH sides of
+  # the spacer, so two of them must come out of the gap.
+  private def second_column(row : Egui::Ui, first : Egui::Response) : Nil
+    gap = 150.0 - first.rect.width -
+          2.0 * row.style.spacing.item_spacing.x
+    row.allocate_space(Egui::Vec2.new(gap, 0.0)) if gap > 0
+  end
+
+  # One gallery row, compact like the native oracle's live gallery
+  # (render.swift#runGallery): the caption sits LEFT of the widgets
+  # (native: caption at x=12, widget column at x=100 — an 88pt label
+  # gutter), everything on one line, one 40pt pitch per section
+  # (34pt seeded row + item_spacing.y).
   private def section(ui : Egui::Ui, name : String,
                       & : Egui::Ui ->) : Nil
-    ui.rich(Egui::RichText.new(name).color(SECONDARY).size(11.0))
-    ui.allocate_space(Egui::Vec2.new(0.0, 2.0))
-    ui.horizontal(false) { |row| yield row }
-    ui.allocate_space(Egui::Vec2.new(0.0, 8.0))
+    ui.horizontal(false) do |row|
+      row.seed_row_height(40.0 - row.style.spacing.item_spacing.y)
+      cap = row.rich(Egui::RichText.new(name).color(SECONDARY).size(11.0))
+      # Widgets line up in one column across all sections: pad the
+      # caption out to the label gutter. The row layout adds
+      # item_spacing on BOTH sides of the spacer, so two of them come
+      # out of the gutter (scripts/make_macos_oracle_shots.cr does the
+      # same for the second sheet column).
+      gap = 88.0 - cap.rect.width -
+            2.0 * row.style.spacing.item_spacing.x
+      row.allocate_space(Egui::Vec2.new(gap, 0.0)) if gap > 0
+      yield row
+    end
   end
 end
 
 # Executed directly → run the windowed app; required from a probe →
 # just define the class (headless screenshots reuse it).
 if PROGRAM_NAME.ends_with?("macos_gallery")
-  Egui.run(MacOsGalleryApp.new, title: "egui-cr — macOS gallery",
+  Egui.run(MacOsGalleryApp.new, title: "macOS Widget Gallery (egui.cr)",
     inspector: :hidden)
 end
