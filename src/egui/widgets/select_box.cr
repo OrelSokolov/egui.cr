@@ -337,13 +337,16 @@ module Egui
           # Band priority: the Enter candidate and the current selection
           # KEEP their band under the pointer (a hovered selected row
           # must not lose its color); hover only lights rows with
-          # nothing stronger to show.
+          # nothing stronger to show. Native NSMenu-style popovers
+          # highlight every band in the pale text-selection blue — the
+          # dedicated text_selection slot (the saturated accent would
+          # swallow the black row text).
           if !value.empty? && value == enter_value
-            list.painter.rect(item_rect, 3.0, visuals.selection_fill)
+            list.painter.rect(item_rect, 3.0, visuals.text_selection)
           elsif !value.empty? && value == @selected
-            list.painter.rect(item_rect, 3.0, visuals.button_hovered)
+            list.painter.rect(item_rect, 3.0, visuals.text_selection)
           elsif item_resp.hovered?
-            list.painter.rect(item_rect, 3.0, visuals.button_hovered)
+            list.painter.rect(item_rect, 3.0, visuals.text_selection)
           end
           row_color = value.empty? ?
             visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color

@@ -46,7 +46,7 @@ module Egui
 
       if @ctx.popup_open?(menu_id)
         anchor = @ctx.memory.areas.pos_for(pop_id, @rect.min)
-        @ctx.popup(menu_id, anchor) do |menu_ui|
+        @ctx.popup(menu_id, anchor, style_class: "menu.popup") do |menu_ui|
           menu_ui.menu_popup_key = menu_id
           yield menu_ui
           # One-menu rule: a widget gets exactly ONE context menu. While
@@ -72,12 +72,22 @@ module Egui
 
   # The StyledPart stand-ins behind menu rows (see widgets/styled_part.cr):
   # menu sites paint in place, so the part carries the inspector meta
-  # AND the style keys the row reads. Two classes in the sheet:
+  # AND the style keys the row reads. Classes in the sheet:
   #
   #   menu.item   — a dropdown/popup row: background (hover highlight),
-  #                 text_color, font_size, padding (box)
+  #                 text_color, font_size, padding (box); a :disabled
+  #                 state layer restyles rows that are `enabled: false`
+  #                 (or sit inside `Ui#enabled(false)`) — its text_color
+  #                 wins over the built-in 45% text fade
   #   menu.button — a menu-BAR root entry: the same keys, its
   #                 background has :hover AND :active (menu open)
+  #   menu.popup  — the menu popup FRAME itself (dropdown and context
+  #                 menu alike; read directly by Context#popup, no part
+  #                 — the frame is not a pickable widget): background,
+  #                 stroke + stroke_width, rounding, shadow.* (a CSS
+  #                 box-shadow under the frame). Unset keys fall back
+  #                 to the Visuals popup frame (window_fill /
+  #                 window_stroke / 4pt rounding).
   class MenuItemPart < StyledPart
     def initialize(label : String, class_path : String = "menu.item")
       super("MenuItem", class_path, [
@@ -222,7 +232,8 @@ module Egui
         # horizontally to cover the side padding).
         pad_x = ctx.style.spacing.window_padding.x
         ctx.popup(popup_key, ctx.dropdown_anchor(popup_key, rect),
-          width: 180.0, pad: Vec2.new(pad_x, 0.0)) do |menu_ui|
+          width: 180.0, pad: Vec2.new(pad_x, 0.0),
+          style_class: "menu.popup") do |menu_ui|
           menu_ui.menu_popup_key = popup_key
           yield menu_ui
         end
@@ -248,21 +259,27 @@ module Egui
     # open. `hotkey` is a static hint for rows without an action.
     # Without a block a click re-fires the action
     # (`Context#fire_action`) for app-level `#consume_action` handlers.
+    #
+    # `enabled: false` grays the row out (the `menu.item:disabled`
+    # state layer over the built-in text fade) and kills its
+    # interaction: no hover band, no click, no hotkey trigger.
     def menu_item(label : String, action : HotkeyAction? = nil,
                   icon : Symbol? = nil, hotkey : String? = nil,
-                  &on_click : ->) : Nil
-      menu_item_impl(label, action, icon, hotkey) { on_click.call }
+                  enabled : Bool = true, &on_click : ->) : Nil
+      menu_item_impl(label, action, icon, hotkey, enabled) { on_click.call }
     end
 
     def menu_item(label : String, action : HotkeyAction? = nil,
-                  icon : Symbol? = nil, hotkey : String? = nil) : Nil
-      menu_item_impl(label, action, icon, hotkey) do
+                  icon : Symbol? = nil, hotkey : String? = nil,
+                  enabled : Bool = true) : Nil
+      menu_item_impl(label, action, icon, hotkey, enabled) do
         ctx.fire_action(action.not_nil!) if action
       end
     end
 
     private def menu_item_impl(label : String, action : HotkeyAction?,
                                icon : Symbol? = nil, hotkey : String? = nil,
+                               enabled : Bool = true,
                                &on_trigger : ->) : Nil
       part = MenuItemPart.new(label)
       id = next_widget_id
@@ -302,8 +319,15 @@ module Egui
       # Rows stack flush: no item_spacing gap between menu items, so
       # the hover highlight bands are contiguous like a native menu.
       @cursor = @layout.advance(@cursor, Vec2.new(row_w, height), Vec2.zero)
+      # A disabled row (its own `enabled:` flag or a wrapping
+      # `Ui#enabled(false)`) keeps its geometry but reads dead: the
+      # push/pop pair around the interact suppresses hover and click
+      # (same mechanism as `Ui#enabled`).
+      disabled = !enabled || ctx.memory.disabled?
+      ctx.memory.push_disabled if disabled
       response = ctx.with_inspector_widget(part) {
         interact(rect, id, Sense.click) }
+      ctx.memory.pop_disabled if disabled
 
       visuals = style.visuals
       if response.hovered?
@@ -320,10 +344,15 @@ module Egui
         (hl_vars.color?("text_color") || visuals.menu_highlight_text ||
          visuals.text_color) :
         (vars.color?("text_color") || visuals.text_color)
-      # A disabled row (inside `Ui#enabled(false)`) grays out through
-      # its TEXT only — icons and the shortcut hint fade with it; no
-      # scrim (see Ui#enabled).
-      text_color = visuals.fade_color(text_color, 0.45) if ctx.memory.disabled?
+      # A disabled row grays out through its TEXT only — icons and the
+      # shortcut hint fade with it; no scrim (see Ui#enabled). The
+      # `menu.item:disabled` state layer (text_color) restyles it; the
+      # 45% fade of the row's own color is the user-agent default.
+      if disabled
+        dis_vars = part.state_vars(self, id, "disabled")
+        text_color = dis_vars.try(&.color?("text_color")) ||
+                     visuals.fade_color(text_color, 0.45)
+      end
       content_x = rect.left + box.left
       if has_icon
         icon_box = Rect.from_min_size(
@@ -342,8 +371,11 @@ module Egui
 
       # Trigger on click, or on the action firing while this menu is
       # open (a hotkey press — the menu consumes it before the app's
-      # poll, so there is exactly one handler either way).
-      if response.clicked? || (action && ctx.consume_action(action))
+      # poll, so there is exactly one handler either way). A disabled
+      # row never triggers (and leaves its action unconsumed for
+      # whoever else may want it).
+      if !disabled &&
+         (response.clicked? || (action && ctx.consume_action(action)))
         if key = @menu_popup_key
           ctx.close_popup(key)
           ctx.memory.menu_open = nil

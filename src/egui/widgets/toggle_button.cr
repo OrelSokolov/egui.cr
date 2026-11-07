@@ -2,8 +2,13 @@
 # extra the ecosystem keeps asking for — see ToggleSwitch discussions).
 #
 # Semantically a Checkbox (reads `checked`, reports the flip through
-# `Response#changed?`), but painted as an iOS-style track + knob, which
-# reads better for instantaneous settings than a checkbox does.
+# `Response#changed?`), but painted as a switch: a capsule track +
+# a knob, which reads better for instantaneous settings than a
+# checkbox does. The knob is a rounded rect (native NSSwitch paints
+# 30×20 with ~7pt corners): by default `knob_rounding` is 9999 —
+# clamped to half the short side it renders as a pill — and
+# `knob_width` / `knob_rounding` class keys reshape it (macOS sets
+# `knob_width` 30, see `MacOsTheme`).
 #
 # The flip itself is instantaneous in the app's state, but the paint
 # eases over ~150 ms (`Context#animate_value_with_time`, keyed by the
@@ -35,12 +40,19 @@ module Egui
     def style_properties : Array(StyleProp)
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (on)"),
+        StyleProp.new("track_fill", :color, label: "fill (off)"),
         StyleProp.new("stroke", :color, label: "track stroke"),
         StyleProp.new("knob_color", :color),
-        StyleProp.new("knob_stroke", :color, label: "knob stroke"),
         StyleProp.new("sync_with_text", :bool, fallback: true),
         StyleProp.new("tumbler_size", :number),
         StyleProp.new("track_width", :number),
+        # The knob is a rounded rect (macOS NSSwitch: 30×20 with ~7pt
+        # corners inside the 54×24 capsule track — see
+        # oracle/macos/png/switch.png), not a disc. `knob_rounding`
+        # defaults to 9999 — the CSS `border-radius: 9999px` pill
+        # trick; the painter clamps it to half the knob's short side.
+        StyleProp.new("knob_width", :number, min: 0.0),
+        StyleProp.new("knob_rounding", :number, min: 0.0, fallback: 9999.0),
       ]
     end
 
@@ -79,34 +91,55 @@ module Egui
       track = Rect.from_min_size(
         Pos2.new(rect.left, rect.center.y - track_h / 2.0),
         Vec2.new(track_w, track_h))
-      # Unchecked track: button_stroke, not button_weak — light themes
-      # set weak ≈ the panel fill (macOS #FFF on #FFF) and the track
-      # has no border of its own to fall back on (cf. Slider's rail).
-      # `anim_t` eases 0→1 across the flip, driving both the fill
-      # cross-fade and the knob position below.
+      # Unchecked track defaults to button_stroke (light themes set
+      # weak ≈ the panel fill — macOS #FFF on #FFF) unless the
+      # `track_fill` rule key overrides it. `anim_t` eases 0→1 across
+      # the flip, driving the fill cross-fade, the rim and the knob
+      # position below.
       anim_t = ui.ctx.animate_value_with_time(id, @checked ? 1.0 : 0.0, 0.15)
-      track_fill = visuals.button_stroke.lerp(visuals.selection_fill, anim_t)
+      track_fill = class_vars.color("track_fill", visuals.button_stroke)
+        .lerp(visuals.selection_fill, anim_t)
       track_fill = visuals.button_active if response.active? && @checked
-      # `stroke` rule key — the track's own 1px border (macOS NSSwitch
-      # carries a visible rim on both states).
+      # `stroke` rule key — the track's own 1px border. It cross-fades
+      # with the fill: macOS paints a light-gray rim on the off track
+      # but an accent-dark one when on (a gray ring around the blue
+      # capsule reads as a bug — cf. oracle/macos/png/switch.png).
       track_stroke = class_vars.color?("stroke")
+      ui.painter.capsule(track, track_fill)
       if track_stroke
-        ui.painter.rect(track, track_h / 2.0, track_fill, track_stroke, 1.0)
-      else
-        ui.painter.rect(track, track_h / 2.0, track_fill)
+        track_stroke = track_stroke.lerp(visuals.selection_fill, anim_t)
+        # The rim rides fully INSIDE the capsule edge — a centered
+        # stroke band would poke half a pixel outside the track rect
+        # (a 1px halo around the capsule that native does not paint).
+        ui.painter.capsule(track.shrink(0.5), nil, track_stroke, 1.0)
       end
 
-      # Knob slides between the track's ends; a hair of inset so it
-      # never touches the rounded ends. `knob_color`/`knob_stroke` rule
-      # keys — a platform theme paints the knob white with a subtle
-      # rim (macOS NSSwitch).
-      inset = 2.0
-      travel = track_w - knob - 2.0 * inset
+      # Knob slides between the track's ends, 3pt off either end
+      # (native: white 30×20 at x=+3, travel 18 inside the 54×24
+      # track). The knob is a rounded RECT, not a disc — the default
+      # 9999 rounding clamps to half the short side (pill; for the
+      # default square knob that reads as the old circle).
+      # Native NSSwitch casts the knob as a soft shadow onto the
+      # track — a 1pt ring of the track fill slightly darkened just
+      # above/below the knob (light theme gray 213→~200, accent
+      # →~6% darker); left/right it fades to plain AA. A plain
+      # same-rect stroke would also eat into the white and shrink
+      # the knob (28×18 instead of 30×20), so the ring goes on an
+      # EXPANDED rect, under the fill.
+      inset = 3.0                  # end margin: native knob sits +3 off either end
+      knob_h = track_h - 4.0       # 2pt vertical margin (native 24→20)
+      knob_w = class_vars.f64("knob_width", knob_h)
+      travel = track_w - knob_w - 2.0 * inset
       knob_x = track.left + inset + anim_t * travel
-      ui.painter.circle(Pos2.new(knob_x + knob / 2.0, track.center.y),
-        knob / 2.0 - inset / 2.0,
-        class_vars.color("knob_color", visuals.text_color),
-        class_vars.color?("knob_stroke"), 1.0)
+      knob_rect = Rect.from_min_size(
+        Pos2.new(knob_x, track.center.y - knob_h / 2.0),
+        Vec2.new(knob_w, knob_h))
+      knob_rounding = class_vars.rounding_px("knob_rounding", knob_rect,
+        9999.0)
+      ui.painter.rect(knob_rect.expand(1.0), knob_rounding + 1.0,
+        track_fill.mul_color(0.94))
+      ui.painter.rect(knob_rect, knob_rounding,
+        class_vars.color("knob_color", visuals.text_color))
 
       if (text = @text)
         ui.painter.text(

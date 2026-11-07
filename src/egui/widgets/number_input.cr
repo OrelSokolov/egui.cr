@@ -149,12 +149,19 @@ module Egui
       # square Win95-beveled arrow buttons, the same rendering the
       # classic scrollbar uses — the field's right border doubles as
       # the divider between the two controls.
+      # The focused field's focus ring rides OUTSIDE the bezel (see
+      # TextEdit — same native NSTextField treatment).
       visuals = style.visuals
       focused = field_resp.has_focus?
       bg = focused ? visuals.button_active : visuals.button_weak
-      stroke_color = focused ? visuals.selection_fill : visuals.button_stroke
-      stroke_w = focused ? border : 1.0
-      ui.painter.rect(field, 4.0, bg, stroke_color, stroke_w)
+      # Focus rides the outside ring alone — the bezel keeps its
+      # plain border (native look).
+      stroke_color = visuals.button_stroke
+      if focused
+        ui.painter.rect(field.expand(3.0), 7.0, nil,
+          visuals.focus_ring, 3.0)
+      end
+      ui.painter.rect(field, 4.0, bg, stroke_color, 1.0)
 
       Icons.arrow_button(ui.painter, :up, up_r,
         visuals.button_fill(up_resp.hovered?, up_resp.pressed?),

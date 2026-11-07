@@ -21,6 +21,10 @@ module Egui
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill"),
         StyleProp.new("stroke", :color, label: "track stroke"),
+        # Corner rounding of the track (and the fill, capped by the
+        # fill's own height); "capsule" (via ecss) is the macOS shape —
+        # semicircle ends, whatever the bar's width.
+        StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
       ]
     end
 
@@ -41,12 +45,23 @@ module Egui
       fraction = ui.ctx.animate_value_with_time(id, fraction, 0.3) if @animate
 
       visuals = style.visuals
-      ui.painter.rect(rect, 4.0, visuals.button_weak,
-        visuals.button_stroke, 1.0)
+      vars = style_vars(ui, id)
+      track_rounding = vars.rounding_px("rounding", rect, 4.0)
+      stroke = vars.color?("stroke")
+      if stroke
+        ui.painter.rect(rect, track_rounding, visuals.button_weak, stroke, 1.0)
+      else
+        ui.painter.rect(rect, track_rounding, visuals.button_weak,
+          visuals.button_stroke, 1.0)
+      end
       if fraction > 0.0
         fill_rect = Rect.from_min_size(rect.min,
           Vec2.new(fraction * rect.width, rect.height))
-        ui.painter.rect(fill_rect, 4.0, visuals.selection_fill)
+        # The fill rounds with the track, capped by its own height so
+        # a narrow capsule fill keeps its semicircle ends (the backends
+        # clamp to min(w,h)/2 anyway — this just names it).
+        fill_rounding = {track_rounding, fill_rect.height / 2.0}.min
+        ui.painter.rect(fill_rect, fill_rounding, visuals.selection_fill)
       end
 
       if text = @text

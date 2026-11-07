@@ -72,7 +72,9 @@ describe "ecss" do
       #bad-raw { text_color: #0x }
     ECSS
     base = doc.class_vars("button", nil).not_nil!
-    base.has_key?("background").should be_false
+    # Bare identifiers parse as keyword Strings now (CSS vibes:
+    # `rounding: capsule`); they must never leak into typed getters.
+    base.color?("background").should be_nil
     base.color?("stroke").should eq Egui::Color32.rgb(0, 255, 0)
   end
 

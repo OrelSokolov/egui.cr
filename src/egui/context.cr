@@ -966,8 +966,10 @@ module Egui
       win_id = Id.from("window/#{title}")
       layer = LayerId.new(Order::Middle, win_id)
       pad = style.spacing.window_padding
-      title_size = style.font_size * 1.25
-      title_h = title_size + pad.y
+      title_size = style.title_font_size || (style.font_size * 1.1)
+      # Keep the caption on the whole-pixel grid (a fractional band
+      # height pushes every widget inside off the grid too).
+      title_h = (title_size + style.title_padding).round
 
       pos = @memory.areas.pos_for(win_id, default_pos)
       size = @memory.layer_sizes[win_id]? || Vec2.new(width, 160.0)
@@ -1078,7 +1080,16 @@ module Egui
         Vec2.new(outer.width - 2 * band_stroke, title_h - band_stroke)),
         rounding: {style.visuals.window_rounding - band_stroke, 0.0}.max,
         fill: style.visuals.title_bar_fill)
-      @painter.text(Pos2.new(pos.x + pad.x, pos.y + title_h / 2.0),
+      # Title text: centered when the theme asks (the default; a
+      # classic left-inset title sets title_centered = false); the
+      # centered x is floored at the pad inset so a title wider than
+      # the window never slides past the left edge.
+      title_x = pos.x + pad.x
+      if style.title_centered
+        title_w = @fonts.measure(title, title_size).x
+        title_x = pos.x + {(outer.width - title_w) / 2.0, pad.x}.max
+      end
+      @painter.text(Pos2.new(title_x, pos.y + title_h / 2.0),
         title, title_size, style.visuals.title_color)
       # Grip: two small diagonal marks.
       (1..2).each do |i|
@@ -1130,7 +1141,11 @@ module Egui
     # egui popup (containers/popup.rs): rides the Foreground layer,
     # closes when a click lands outside it (Memory#end_frame). `pad`
     # overrides the frame's inner padding (menus pass a zero vertical
-    # pad so the frame hugs the first/last item).
+    # pad so the frame hugs the first/last item). `style_class` names
+    # an ecss class the FRAME reads (menus pass "menu.popup"):
+    # `background`, `stroke` + `stroke_width`, `rounding` and
+    # `shadow.*` (a CSS box-shadow under the frame); nil keeps the
+    # Visuals frame (window_fill/window_stroke, 4pt rounding).
     # Dropdown anchor (upstream `popup::above_or_below`): the popup
     # opens below `button`, but flips above it when the button sits too
     # close to the screen's bottom for the popup's last measured height
@@ -1154,7 +1169,7 @@ module Egui
 
     def popup(id : String, anchor : Pos2, width : Float64 = 220.0,
               pad : Vec2? = nil, min_width : Float64? = nil,
-              &block : Ui ->) : Nil
+              style_class : String? = nil, &block : Ui ->) : Nil
       pop_id = Id.from("popup/#{id}")
       return unless @memory.open_popups.includes?(pop_id)
 
@@ -1183,6 +1198,9 @@ module Egui
       prev_layer = @painter.layer
       prev_clip = @painter.clip
       @painter.layer = Order::Foreground
+      # The shadow slot goes under the frame slot: an outset box-shadow
+      # paints beneath its box (CSS paint order).
+      shadow_index = @painter.add_noop
       bg_index = @painter.add_noop
       @painter.clip = Rect.from_min_size(anchor, Vec2.new(width, 1e6))
       ui = Ui.new(self, pop_id,
@@ -1197,9 +1215,28 @@ module Egui
       @memory.layer_sizes[pop_id] = outer.size
       @memory.popup_rects[pop_id] = outer
       @painter.clip = outer
+      # The frame: class-styled when `style_class` was given (each key
+      # falls back to the Visuals frame, so an unset class renders
+      # exactly the legacy popup), the Visuals frame otherwise.
+      vars = style_class ? stylesheet.resolve(style_class) : nil
+      fill = vars.try(&.color?("background")) || style.visuals.window_fill
+      stroke = vars.try(&.color?("stroke")) || style.visuals.window_stroke
+      stroke_w = vars.try(&.f64?("stroke_width")) || 1.0
+      # stroke_width 0 means NO border (CSS border-width: 0); the
+      # shadow radius follows the frame's.
+      stroke = nil if stroke_w <= 0.0
+      rounding = vars.try(&.rounding_px("rounding", outer, 4.0)) || 4.0
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, 4.0, style.visuals.window_fill,
-          style.visuals.window_stroke, 1.0))
+        RectCmd.new(outer, outer, rounding, fill, stroke, stroke_w))
+      if (spec = vars.try(&.shadow?)) && !spec.inset?
+        # Wide clip: the shadow bleeds past the frame's own rect, and
+        # the popup rides the Foreground layer anyway (no host viewport
+        # to respect).
+        wide = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+        @painter.set(shadow_index,
+          ShadowCmd.new(wide, outer, rounding, spec.blur, spec.spread,
+            spec.offset, spec.color, false))
+      end
       @painter.layer = prev_layer
       @painter.clip = prev_clip
     end
@@ -1425,7 +1462,8 @@ module Egui
         title_h = title ?
           title_vars.f64("caption_height", WindowFrame::Windows::CAPTION_H) : 8.0
       else
-        title_size = title_vars.f64("title_font_size", style.font_size * 1.25)
+        title_size = title_vars.f64("title_font_size",
+          style.title_font_size || style.font_size * 1.1)
         title_h = title ? title_vars.f64("caption_height", title_size + pad.y) : 8.0
       end
 

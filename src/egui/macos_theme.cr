@@ -17,16 +17,22 @@ module Egui
     # systemBlue (multicolor accent), sRGB.
     ACCENT = Color32.rgb(0, 122, 255)
 
+    # The control-accent variant AppKit paints on SELECTION surfaces
+    # (checkbox fill, radio dot, switch track, selected segment) —
+    # measured (0,119,249) on the oracle sheets; push buttons and
+    # progress fills keep the brighter ACCENT (0,122,255).
+    SELECTION = Color32.rgb(0, 119, 249)
+
     def self.light : Theme
       theme = DefaultTheme.build("macos", dark: false) do |v|
         v.panel_fill = Color32.rgb(236, 236, 236) # windowBackgroundColor
         v.text_color = Color32.rgb(6, 6, 6)       # labelColor
         v.window_fill = Color32.rgb(246, 246, 246)
-        # DefaultTheme bakes title_bar_fill from the BASE light fill
-        # (#FCFCFC) before this block runs — a theme overriding
-        # window_fill must carry the caption along or the title band
-        # paints as a lighter strip over the window (a "sticker").
-        v.title_bar_fill = v.window_fill
+        # Native titlebars sit a step DARKER than the window body
+        # (#E9E9E9 — WindowFrame::Macos BG_BOTTOM, measured off the
+        # oracle), so the caption reads as its own band instead of
+        # blending into the content.
+        v.title_bar_fill = Color32.rgb(233, 233, 233)
         v.window_stroke = Color32.rgb(209, 209, 209)
         # Shared bezel: popups, segmented container, progress track
         # (buttons/text fields override through their class rules).
@@ -35,10 +41,23 @@ module Egui
         v.button_active = Color32.rgb(185, 185, 185)
         v.button_stroke = Color32.rgb(209, 209, 209)
         v.selection_fill = ACCENT
+        # Text selections paint their own pale blue (#BED4F9); input
+        # focus rings a stronger one (#8CA9F5) — see TextEdit/Textarea.
+        v.text_selection_fill = Color32.rgb(190, 212, 249)
+        v.focus_ring_fill = Color32.rgb(140, 169, 245)
+        # Menu/context-menu hover bands ride the text-selection tint
+        # (native NSMenu highlight; black label text stays readable).
+        v.menu_highlight_fill = Color32.rgb(190, 212, 249)
       end
 
       style = theme.style
       style.font_size = 13.0 # system font size
+      # Window titles run one step up from the 13pt body (14pt) in a
+      # 28pt caption (the default title_padding); the title band and
+      # centering come from the shared defaults — only the exact
+      # #E9E9E9 (WindowFrame::Macos BG_BOTTOM, measured off the
+      # oracle) is pinned here against this theme's #F6F6F6 body.
+      style.title_font_size = 14.0
       sp = style.spacing
       sp.icon_width = 16.0        # checkbox/radio box
       sp.icon_width_inner = 7.0   # radio dot
@@ -92,24 +111,26 @@ module Egui
         "rounding"    => 3.5,
       })
       sheet.rule("checkbox:checked", StyleVars{
-        "box_fill"    => ACCENT,
+        "box_fill"    => SELECTION,
         "check_color" => Color32.rgb(255, 255, 255),
       })
       sheet.rule("radio:selected", StyleVars{
-        "dot_fill" => ACCENT,
+        "dot_fill" => SELECTION,
       })
 
-      # Switches (ToggleButton): 54x24 capsule with a rim, white knob
-      # with a hair of its own stroke, gray track lerping to accent
-      # (selection_fill) when on.
+      # Switches (ToggleButton): 54x24 capsule track with a rim; the
+      # knob is a 30x20 capsule (default knob_rounding), +3 off the
+      # track ends (oracle/macos/png/switch.png). Gray track lerps to
+      # accent (selection_fill) when on.
       sheet.rule("toggle_button", StyleVars{
         "sync_with_text" => false,
         "tumbler_size"   => 24.0,
         "track_width"    => 54.0,
+        "knob_width"     => 30.0,
         "knob_color"     => Color32.rgb(255, 255, 255),
-        "knob_stroke"    => Color32.rgb(226, 226, 226),
-        "stroke"         => Color32.rgb(198, 198, 198),
-        "selection_fill" => ACCENT,
+        "stroke"         => Color32.rgb(214, 214, 214),
+        "track_fill"     => Color32.rgb(213, 213, 213),
+        "selection_fill" => SELECTION,
       })
 
       # Text fields/search: white 26pt box, gray border, 6pt rounding,
@@ -123,23 +144,40 @@ module Egui
         "padding.left"   => 6.0,
         "padding.right"  => 6.0,
       })
+      # The focused field carries a ~3pt accent ring riding OUTSIDE
+      # the bezel (native NSTextField focus) — the widget paints it on
+      # an expanded rect before the box; the bezel itself never grows
+      # or recolors.
 
-      # Progress: 9pt thin track, accent fill, track-colored stroke
-      # (no visible border — macOS has none).
+      # A search field (a TextEdit under the "search" style scope —
+      # see Ui#with_style_scope) is a CAPSULE: NSSearchStyle rounds to
+      # the full pill (`border-radius: 9999px`; the "capsule" keyword
+      # names the min(w,h)/2 limit), while plain text fields keep the
+      # 6pt corners above.
+      sheet.rule("search.text_edit", StyleVars{
+        "rounding" => "capsule",
+      })
+
+      # Progress: 9pt thin capsule track (semicircle ends at any
+      # width — the "capsule" rounding keyword), accent fill,
+      # track-colored stroke (no visible border — macOS has none).
       sheet.rule("progressbar", StyleVars{
         "width"          => 200.0,
         "height"         => 9.0,
+        "rounding"       => "capsule",
         "selection_fill" => ACCENT,
         "stroke"         => Color32.rgb(222, 222, 222),
       })
 
       # Slider: white circular thumb (selection_fill slot on Slider is
-      # the handle), #B7B7B7 rail, fixed 220pt length, 18pt thumb.
+      # the handle), #B7B7B7 rail with a blue accent fill from the left
+      # end up to the thumb (#007AFF), fixed 220pt length, 18pt thumb.
       sheet.rule("slider", StyleVars{
         "width"          => 220.0,
         "handle_size"    => 9.0,
         "selection_fill" => Color32.rgb(255, 255, 255),
         "stroke"         => Color32.rgb(183, 183, 183),
+        "fill"           => ACCENT,
       })
 
       # Segmented control: one #DADADA capsule, even ~73pt cells
@@ -152,14 +190,18 @@ module Egui
         "padding.bottom" => 4.0,
         "rounding"       => 6.0,
         "background"     => Color32.rgb(218, 218, 218),
-        "selection_fill" => ACCENT,
+        "selection_fill" => SELECTION,
       })
 
       theme
     end
 
     # The accent "default" push button (macOS key-equivalent \r look):
-    # blue bezel, white label.
+    # blue bezel, white label. The colors are pinned per ELEMENT as
+    # well: class state rules (`button:hover/:active`) sit ABOVE
+    # inline styles in the cascade and would gray the bezel on
+    # press — the element layer (`ctx.set_id_style`) outranks them,
+    # so the accent + white text survive every state.
     def self.default_button(ui : Ui, text : String,
                             id : String? = nil) : Response
       btn = Button.new(text, id: id)
@@ -168,7 +210,13 @@ module Egui
         s.text_color = Color32.rgb(255, 255, 255)
         s.stroke = ACCENT
       end
-      ui.add(btn)
+      response = ui.add(btn)
+      ctx = ui.ctx
+      ctx.set_id_style(response.id, "background", ACCENT)
+      ctx.set_id_style(response.id, "text_color",
+        Color32.rgb(255, 255, 255))
+      ctx.set_id_style(response.id, "stroke", ACCENT)
+      response
     end
   end
 end

@@ -245,7 +245,15 @@ module Egui
              fill : Color32? = nil, stroke_color : Color32? = nil,
              stroke_width : Float64 = 1.0,
              fill2 : Color32? = nil) : Nil
-      add(RectCmd.new(@clip, rect, rounding, fill, stroke_color,
+      # CSS `border-radius` semantics: the radius is clamped to half
+      # the rect's short side, so an oversized value renders the
+      # capsule (the classic `border-radius: 9999px` pill trick)
+      # instead of the degenerate geometry the raw radius would give
+      # the stroke path. The style-system spelling of the same thing
+      # is the "capsule" rounding keyword (`StyleVars#rounding_px`).
+      r = {rounding, 0.0}.max
+      r = {r, {rect.width, rect.height}.min / 2.0}.min
+      add(RectCmd.new(@clip, rect, r, fill, stroke_color,
         stroke_width, fill2))
     end
 
@@ -277,6 +285,17 @@ module Egui
                 offset.x.abs < 0.5 && offset.y.abs < 0.5
       add(ShadowCmd.new(@clip, rect, rounding, blur, spread, offset,
         color, inset))
+    end
+
+    # Capsule (stadium): a rect whose ends are semicircles — the
+    # rounding is half the short side (the painter/backends clamp to
+    # exactly that, this only names the intent; the style-system form
+    # is the "capsule" rounding keyword — see `StyleVars#rounding_px`).
+    def capsule(rect : Rect, fill : Color32? = nil,
+                stroke_color : Color32? = nil,
+                stroke_width : Float64 = 1.0) : Nil
+      rect(rect, {rect.width, rect.height}.min / 2.0, fill, stroke_color,
+        stroke_width)
     end
 
     # Vertical gradient fill (top `c1` → bottom `c2`).

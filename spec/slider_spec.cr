@@ -206,6 +206,42 @@ describe Egui::Slider do
     strokes.each { |l| (l.p2.y - l.p1.y).should be_close(9.0, 0.5) }
   end
 
+  it "paints the filled left portion of the rail (fill key, default = rail color)" do
+    ctx = Egui::Context.new
+    rail = nil
+    draw = ->(time : Float64) do
+      slider_frame(ctx, time: time) do |c|
+        c.window("demo") do |ui|
+          rail = ui.slider(0.5, 0.0..1.0, "v") { |_v| }.rect
+        end
+      end
+    end
+    draw.call(0.016)
+    r = rail.not_nil!
+    stroke = ctx.style.visuals.button_stroke
+    half = r.width / 2.0 # value 0.5 → handle at the middle
+
+    # Default: the fill paints the rail's own color (an invisible
+    # second stroke on top of the groove, not an accent band).
+    rects = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |c| c.fill == stroke }
+    rail_cmd = rects.find { |c| (c.rect.width - r.width).abs < 1.0 }
+    rail_cmd.should_not be_nil
+    fill_cmd = rects.find { |c| (c.rect.width - half).abs < 1.0 }
+    fill_cmd.should_not be_nil
+    fill_cmd.not_nil!.rect.left.should be_close(r.left, 0.5)
+    fill_cmd.not_nil!.rect.center.y.should be_close(r.center.y, 0.5)
+
+    # A `slider` fill rule repaints the band in its own color.
+    blue = Egui::Color32.rgb(0, 122, 255)
+    ctx.stylesheet.rule("slider", Egui::StyleVars{"fill" => blue})
+    draw.call(0.032)
+    band = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.fill == blue }.not_nil!
+    band.rect.left.should be_close(r.left, 0.5)
+    band.rect.width.should be_close(half, 1.0)
+  end
+
   it "places :up ticks above the rail and :up_down on both sides" do
     ctx = Egui::Context.new
     values = [0.0, 0.5, 1.0]

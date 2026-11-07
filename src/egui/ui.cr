@@ -972,8 +972,9 @@ module Egui
       @min_rect = @min_rect.union(child.min_rect)
       @cursor = advance_flow_past(child.min_rect)
       return if flag
-      # Menu rows mute their own text when disabled (menu_item_impl):
-      # a panel_fill band over the menu frame reads as a black
+      # Menu rows mute their own text when disabled (menu_item_impl,
+      # restylable via the `menu.item:disabled` state layer): a
+      # panel_fill band over the menu frame reads as a black
       # rectangle, not as "grayed out".
       return if @menu_popup_key
       v = style.visuals

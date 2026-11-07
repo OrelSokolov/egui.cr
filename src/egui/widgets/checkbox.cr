@@ -71,7 +71,7 @@ module Egui
                    state_vars.color("box_fill",
                      visuals.button_fill(response.hovered?, response.active?))
         ui.painter.rect(icon_rect,
-          class_vars.f64("rounding", 3.0),
+          class_vars.rounding_px("rounding", icon_rect, 3.0),
           box_fill,
           class_vars.color("box_stroke", visuals.button_stroke), 1.0)
         c = icon_rect.min
@@ -87,7 +87,7 @@ module Egui
         ui.painter.line(elbow, tip, check_w, check_color)
       else
         ui.painter.rect(icon_rect,
-          class_vars.f64("rounding", 3.0),
+          class_vars.rounding_px("rounding", icon_rect, 3.0),
           state_vars.color("box_fill",
             visuals.button_fill(response.hovered?, response.active?)),
           class_vars.color("box_stroke", visuals.button_stroke), 1.0)

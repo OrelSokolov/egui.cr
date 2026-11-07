@@ -63,9 +63,10 @@ module Egui
   class Visuals
     property window_fill : Color32
     property window_stroke : Color32
-    # Title bar fill (`Context#window`'s drag strip) — defaults to
-    # window_fill (a flat window); classic presets like Win95 paint a
-    # navy bar with a white title.
+    # Title bar fill (`Context#window`'s drag strip) — a step towards
+    # the text color, so the caption reads as its own band over the
+    # window body; classic presets like Win95 paint a navy bar with a
+    # white title.
     property title_bar_fill : Color32
     # Corner rounding of a floating window's frame.
     property window_rounding : Float64
@@ -99,6 +100,15 @@ module Egui
     # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
     # progress bar fill, slider handle, hyperlinks.
     property selection_fill : Color32
+    # Selected-TEXT highlight (macOS `selectedTextBackgroundColor`,
+    # a pale blue — NOT the accent: text selections read washed-out
+    # next to the glyph, state surfaces saturated). nil falls back
+    # to selection_fill (#text_selection).
+    property text_selection_fill : Color32?
+    # Focus-ring color for text inputs (macOS paints the NSTextField
+    # ring in its own blue, distinct from the text-selection tint).
+    # nil falls back to #text_selection.
+    property focus_ring_fill : Color32?
     property hyperlink_color : Color32
     property separator_color : Color32
     # Scrim behind a modal dialog (`Context#modal`) — dim over the
@@ -119,10 +129,12 @@ module Egui
       @dark = true
       @window_fill = Color32.rgba(27, 27, 30, 255)
       @window_stroke = Color32.rgba(80, 80, 80, 255)
-      @title_bar_fill = @window_fill
       @window_rounding = 6.0
       @panel_fill = Color32.rgba(22, 22, 24, 255)
       @text_color = Color32.rgba(235, 235, 235, 255)
+      # A step towards the text color — a distinct caption band (dark
+      # themes lighten it, light themes darken it).
+      @title_bar_fill = @window_fill.lerp(@text_color, 0.08)
       @title_color = Color32.rgba(250, 250, 250, 255)
 
       @button_weak = Color32.rgba(60, 60, 60, 180)
@@ -133,6 +145,20 @@ module Egui
       @hyperlink_color = Color32.rgba(102, 170, 255, 255)
       @separator_color = Color32.rgba(90, 90, 90, 255)
       @modal_dim = Color32.rgba(0, 0, 0, 100)
+    end
+
+    # The selected-text highlight color — the dedicated
+    # #text_selection_fill slot when a theme sets it (macOS), else
+    # selection_fill (the default look).
+    def text_selection : Color32
+      @text_selection_fill || @selection_fill
+    end
+
+    # The input focus-ring color — the dedicated #focus_ring_fill
+    # slot when a theme sets it (macOS), else the text-selection
+    # color.
+    def focus_ring : Color32
+      @focus_ring_fill || text_selection
     end
 
     # egui `Visuals::widget_visuals(interaction)` — pick by state.
@@ -193,6 +219,8 @@ module Egui
       other.menu_highlight_fill = menu_highlight_fill
       other.menu_highlight_text = menu_highlight_text
       other.selection_fill = selection_fill
+      other.text_selection_fill = text_selection_fill
+      other.focus_ring_fill = focus_ring_fill
       other.hyperlink_color = hyperlink_color
       other.separator_color = separator_color
       other.modal_dim = modal_dim
@@ -218,6 +246,17 @@ module Egui
     # `sheet.rule("terminal", StyleVars{"font_family" => "term"})`
     # swaps the font of a whole widget group.
     property font_family : String?
+    # Floating-window title font size (`Context#window`'s caption text).
+    # nil = font_size * 1.25 (the historical default); platform themes
+    # that ship their own title metrics (macOS 13pt) override it.
+    property title_font_size : Float64?
+    # Extra vertical room in a floating window's title band
+    # (`Context#window`'s caption height is title_font_size + this).
+    property title_padding : Float64
+    # Center the window title horizontally (`Context#window`'s caption)
+    # — the default look; themes after the upstream egui left-inset
+    # title set it to false.
+    property title_centered : Bool
     # Wheel scroll speed in pixels per wheel notch. The sokol backend
     # reports ±1.0 per notch, so this multiplies the raw delta
     # (touchpads send small fractional deltas, scaled the same way).
@@ -231,6 +270,9 @@ module Egui
       @font_size = 16.0
       @font_weight = 400.0
       @font_family = nil
+      @title_font_size = nil
+      @title_padding = 14.0
+      @title_centered = true
       @scroll_speed = 60.0
     end
 
@@ -243,6 +285,9 @@ module Egui
       other.font_size = font_size
       other.font_weight = font_weight
       other.font_family = font_family
+      other.title_font_size = title_font_size
+      other.title_padding = title_padding
+      other.title_centered = title_centered
       other.scroll_speed = scroll_speed
       other
     end

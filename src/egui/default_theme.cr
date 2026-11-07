@@ -72,9 +72,11 @@ module Egui
       if dark
         v.window_fill = Color32.rgba(27, 27, 30, 255)
         v.window_stroke = Color32.rgba(80, 80, 80, 255)
-        v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(22, 22, 24, 255)
         v.text_color = Color32.rgba(235, 235, 235, 255)
+        # Title band: a step towards the text color — a distinct
+        # caption over the window body (dark: lighter, light: darker).
+        v.title_bar_fill = v.window_fill.lerp(v.text_color, 0.08)
         v.title_color = Color32.rgba(250, 250, 250, 255)
         v.button_weak = Color32.rgba(60, 60, 60, 180)
         v.button_hovered = Color32.rgba(85, 85, 85, 200)
@@ -87,9 +89,9 @@ module Egui
       else
         v.window_fill = Color32.rgba(252, 252, 252, 255)
         v.window_stroke = Color32.rgba(190, 190, 190, 255)
-        v.title_bar_fill = v.window_fill
         v.panel_fill = Color32.rgba(243, 243, 243, 255)
         v.text_color = Color32.rgba(35, 35, 35, 255)
+        v.title_bar_fill = v.window_fill.lerp(v.text_color, 0.08)
         v.title_color = Color32.rgba(15, 15, 15, 255)
         v.button_weak = Color32.rgba(228, 228, 228, 255)
         v.button_hovered = Color32.rgba(209, 209, 209, 255)

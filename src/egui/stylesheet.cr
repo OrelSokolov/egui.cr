@@ -312,6 +312,24 @@ module Egui
       f64?(key) || fallback
     end
 
+    # A corner-rounding key resolved against the rect being painted
+    # (only there is the size known): a number is points; the string
+    # keyword "capsule" (a bare identifier in ecss — `rounding:
+    # capsule`) resolves to half the rect's short side, i.e. the
+    # stadium shape macOS paints on switch tracks, progress fills and
+    # pill inputs. The backends clamp any radius to min(w,h)/2 anyway,
+    # so the keyword just names that limit instead of hardcoding a px
+    # value that breaks the moment the widget resizes. Any other value
+    # (or none) falls back like #f64.
+    def rounding_px(key : String, rect : Rect, fallback : Float64) : Float64
+      case v = self[key]?
+      when Float64 then v
+      when Int32   then v.to_f64
+      when String  then v == "capsule" ? {rect.width, rect.height}.min / 2.0 : fallback
+      else              fallback
+      end
+    end
+
     # A length key resolved to logical points against the widget's
     # containing `Ui` (see `StyleLength#resolve`): plain numbers pass
     # through (Int32 coerces), `%`/`vw`/`vh`/`vmin`/`vmax`/`rem`

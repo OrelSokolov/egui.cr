@@ -341,7 +341,12 @@ def build_examples(names, opt_flags, label)
 end
 
 def example_names_for(args)
-  names = args[:name] ? [args[:name]] : EXAMPLES
+  # Bracket form (rake build:dev[macos_gallery]) arrives via args; the
+  # space form (rake build:dev macos_gallery) lands in ARGV and is picked
+  # up here — the bare name resolves to the per-example shorthand task
+  # below, so rake doesn't treat it as an unknown task.
+  names = ([args[:name]] + ARGV.select { |a| EXAMPLES.include?(a) }).compact
+  names = EXAMPLES if names.empty?
   unknown = names - EXAMPLES
   raise "unknown example(s): #{unknown.sort.join(', ')}" unless unknown.empty?
   names
@@ -363,6 +368,7 @@ end
 # edits (unlike --release's single-module merge), rebuilds stay ~2s while
 # running only 2-3x slower than release.
 #   rake build:dev[hello]       # one example
+#   rake build:dev hello        # one example (space form)
 #   rake build:dev              # all examples
 #   OPT=-O3 rake build:dev      # optimized iteration
 desc "Build example(s) into bin/ without --release (fast iteration; OPT=-O3 for optimized)"
@@ -383,6 +389,19 @@ end
 desc "Build example(s) into bin/ with --release (shipped binaries)"
 task "build:release", [:name] => ["build:native"] do |_, args|
   build_examples(example_names_for(args), "--release ", "")
+end
+
+# Per-example shorthands: `rake macos_gallery` dev-builds one example,
+# and `rake build:dev macos_gallery` (the space form of
+# `rake build:dev[macos_gallery]`) needs the bare name to resolve to a
+# task — build:dev already did the work via the ARGV scan in
+# example_names_for, so the invoke below is a no-op there (rake tasks
+# run once).
+EXAMPLES.each do |name|
+  desc "Dev-build examples/#{name}.cr into bin/ (rake build:dev[#{name}])"
+  task name => ["build:native"] do
+    Rake::Task["build:dev"].invoke(name)
+  end
 end
 
 # --- Mobile run: examples with dedicated iOS/Android pipelines ---

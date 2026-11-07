@@ -238,18 +238,26 @@ module Egui
       te_vars = style_vars(ui, id)
       bg = te_vars.color?("fill") ||
            (response.has_focus? ? visuals.button_active : visuals.button_weak)
-      # Upstream: the focused field paints its own border in the
-      # selection stroke color (upstream `visuals.selection.stroke`),
-      # not a ring outside the frame — an outside ring both escapes the
-      # widget bounds and gets scissored by the parent clip.
       # `frame: false` (an embedded field — SelectBox's search entry):
       # the host owns the frame, the edit draws content only.
       if @frame
+        # Focus ring, native-style: an accent ring riding OUTSIDE the
+        # bezel on a rect expanded past the box (NSTextField paints it
+        # around the field, not inside it) — painted BEFORE the box so
+        # the bezel's own fill/border stay untouched. A fat INSIDE
+        # stroke is wrong twice: the backends draw a rect stroke
+        # fully inward, and past ~half the corner radius the corner
+        # arcs collapse into the straight bars (a clipped, squarish
+        # ring). 3pt wide, corner radius +3 to hug the box's curve.
+        if response.has_focus?
+          box_round = te_vars.rounding_px("rounding", rect, 4.0)
+          ui.painter.rect(rect.expand(3.0), box_round + 3.0, nil,
+            visuals.focus_ring, 3.0)
+        end
         stroke_color = te_vars.color?("stroke") ||
                        (response.has_focus? ? visuals.selection_fill : visuals.button_stroke)
-        stroke_w = response.has_focus? ? border : 1.0
-        ui.painter.rect(rect, te_vars.f64("rounding", 4.0),
-          bg, stroke_color, stroke_w)
+        ui.painter.rect(rect, te_vars.rounding_px("rounding", rect, 4.0),
+          bg, stroke_color, 1.0)
       end
 
       inner = rect.min + inset
@@ -317,7 +325,7 @@ module Egui
         ui.painter.rect(
           Rect.from_min_size(Pos2.new(inner.x + x0 - scroll, top),
             Vec2.new(x1 - x0, height)),
-          0.0, visuals.selection_fill)
+          0.0, visuals.text_selection)
       end
 
       ui.painter.paint_galley(

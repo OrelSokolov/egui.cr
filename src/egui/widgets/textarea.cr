@@ -459,14 +459,26 @@ module Egui
       memory.data.set_int(anchor_id, anchor)
 
       # --- painting (clipped to the box) -----------------------------
-      # The box never changes with focus (HTML <textarea> semantics:
-      # focus shows itself only through the blinking caret) — unlike
-      # the single-line TextEdit, which paints the accent border
-      # upstream-style. frame: false skips the box entirely.
+      # Focused, the bezel's border drops to zero and the focus rides
+      # an OUTSIDE outline ring (the same NSTextField treatment the
+      # single-line TextEdit gets) — the box fill itself never
+      # changes. `frame: false` skips the box entirely.
       visuals = style.visuals
       if @frame
-        ui.painter.rect(rect, 4.0, visuals.button_weak,
-          visuals.button_stroke, 1.0)
+        if response.has_focus?
+          # The outside ring must escape the widget's own clip (the
+          # layout clamps the painter to the allocated rect) — borrow
+          # 3pt of margin, paint, restore.
+          outer = ui.painter.clip
+          ui.painter.clip = outer.expand(3.0)
+          ui.painter.rect(rect.expand(3.0), 7.0, nil,
+            visuals.focus_ring, 3.0)
+          ui.painter.clip = outer
+          ui.painter.rect(rect, 4.0, visuals.button_weak, nil, 0.0)
+        else
+          ui.painter.rect(rect, 4.0, visuals.button_weak,
+            visuals.button_stroke, 1.0)
+        end
       end
 
       outer_clip = ui.painter.clip
@@ -503,14 +515,14 @@ module Egui
           end
           # Full row pitch (rows stack at exactly y += height): a
           # shrunk rect would leave unhighlighted stripes between
-          # consecutive selected lines. The fill is a faded selection
-          # color (same treatment as hover hints elsewhere) so the
-          # highlight reads pale against the text.
+          # consecutive selected lines. macOS paints the selection
+          # solid #ACDBFF (selectedTextBackgroundColor) — the dedicated
+          # text_selection slot, not the saturated accent.
           ui.painter.rect(
             Rect.from_min_size(
               Pos2.new(inner.min.x + x0, inner.min.y + row.y - offset),
               Vec2.new(x1 - x0, row.height)),
-            0.0, visuals.fade_color(visuals.selection_fill, 0.4))
+            0.0, visuals.text_selection)
         end
       end
 

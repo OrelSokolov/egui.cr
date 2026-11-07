@@ -71,6 +71,29 @@ class MacOsOracleApp < Egui::App
         width: width) do |area_ui|
         area_ui.horizontal(false) { |h| sheet_ui(h) }
       end
+
+      # The panel's window_stroke frames the sheet with a 1px rim the
+      # native renderer has no counterpart for (their sheets are solid
+      # background to the edge — it alone was ~3% of every twinshot
+      # diff). Overpaint the border strips with the sheet background;
+      # nothing is painted there, the strips only cover the rim. This
+      # must run INSIDE the panel block: the panel bg (and its rim) is
+      # back-painted at a reserved index, but anything painted after
+      # update (before the deferral) lands under it.
+      bg = Egui::Color32.rgb(236, 236, 236)
+      p = ctx.painter
+      # The area left the painter clipped to its own rect — the strips
+      # live at the sheet's edges, outside it, so reset the clip first.
+      p.clip = Egui::Rect.from_min_size(Egui::Pos2.zero,
+        Egui::Vec2.new(SHEET_W.to_f, SHEET_H.to_f))
+      p.rect(Egui::Rect.from_min_size(Egui::Pos2.zero,
+        Egui::Vec2.new(SHEET_W.to_f, 2.0)), 0.0, bg)
+      p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(0.0, SHEET_H.to_f - 2.0),
+        Egui::Vec2.new(SHEET_W.to_f, 2.0)), 0.0, bg)
+      p.rect(Egui::Rect.from_min_size(Egui::Pos2.zero,
+        Egui::Vec2.new(2.0, SHEET_H.to_f)), 0.0, bg)
+      p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(SHEET_W.to_f - 2.0, 0.0),
+        Egui::Vec2.new(2.0, SHEET_H.to_f)), 0.0, bg)
     end
   end
 
@@ -95,8 +118,12 @@ class MacOsOracleApp < Egui::App
     when "text_field"
       ui.text_edit_singleline(@text, width: 200.0) { |t| @text = t }
     when "search_field"
-      ui.text_edit_singleline(@search, hint: "Search",
-        width: 222.0, leading_icon: LENS) { |t| @search = t }
+      # "search" scope → "search.text_edit": the NSSearchField capsule
+      # (see MacOsTheme), vs the 6pt text field above.
+      ui.with_style_scope("search") do |s|
+        s.text_edit_singleline(@search, hint: "Search",
+          width: 222.0, leading_icon: LENS) { |t| @search = t }
+      end
     when "slider"
       ui.slider(@slider, 0.0..1.0) { |v| @slider = v }
     when "segmented"
@@ -118,11 +145,13 @@ class MacOsOracleApp < Egui::App
     end
   end
 
-  # Space the second variant out to the native x=250 column (minus
-  # the row's item_spacing, which the layout adds on top).
+  # Space the second variant out to the native x=250 column. The row
+  # layout adds item_spacing on BOTH sides of the spacer (widget→spacer
+  # and spacer→widget), so two spacings must come out of the gap —
+  # subtracting one landed the second column at x=258.
   private def at_second_column(ui : Egui::Ui, first : Egui::Response) : Nil
     gap = 250.0 - 24.0 - first.rect.width -
-         ui.style.spacing.item_spacing.x
+          2.0 * ui.style.spacing.item_spacing.x
     ui.allocate_space(Egui::Vec2.new(gap, 0.0)) if gap > 0
   end
 end

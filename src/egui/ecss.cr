@@ -425,6 +425,10 @@ explicit id to persist element overrides"
             n # px is the default unit — a plain number, back-compat
           elsif (l = StyleLength.parse?(s))
             l
+          elsif (kw = bare_keyword?(s))
+            kw # CSS keywords are bare identifiers (`rounding: capsule`);
+               # quoted strings remain the form for values with spaces
+               # (font families)
           else
             warn "unparseable value \"#{s}\" — ignored"
             nil
@@ -458,6 +462,20 @@ explicit id to persist element overrides"
         end
         inner = s[1...-1]
         inner.gsub("\\\"", "\"").gsub("\\\\", "\\")
+      end
+
+      # A bare identifier value: letters/digits/dashes/underscores,
+      # not starting with a digit (`capsule`, `ease-out`). Numbers,
+      # colors, booleans and lengths are matched earlier, so what
+      # reaches here used to be a warning — now it parses as a String
+      # the typed getters ignore unless the key expects one.
+      private def self.bare_keyword?(s : String) : String?
+        return nil if s.empty? || s[0].number?
+        s.each_char do |c|
+          next if c.ascii_letter? || c.number? || c == '-' || c == '_'
+          return nil
+        end
+        s
       end
 
       private def self.hex_val(c : Char) : Int32?

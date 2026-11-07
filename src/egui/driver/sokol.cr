@@ -96,7 +96,7 @@ lib LibEguiCr
                                   cleanup : CleanupCb, title : UInt8*,
                                   width : Int32, height : Int32,
                                   borderless : Int32, transparent : Int32,
-                                  swap_interval : Int32)
+                                  msaa : Int32, swap_interval : Int32)
   fun gfx_init = egui_cr_gfx_init
   fun begin_pass = egui_cr_begin_pass(w : Int32, h : Int32)
   fun end_pass = egui_cr_end_pass
@@ -112,7 +112,7 @@ lib LibEguiCr
   {% if flag?(:linux) || flag?(:win32) %}
     fun start = egui_cr_start(title : UInt8*, width : Int32, height : Int32,
                               borderless : Int32, transparent : Int32,
-                              swap_interval : Int32) : Int64
+                              msaa : Int32, swap_interval : Int32) : Int64
     fun join = egui_cr_join
     fun wake_main = egui_cr_wake_main
     fun set_ppp = egui_cr_set_ppp(ppp : Float32)
@@ -753,6 +753,12 @@ module Egui
       #   chrome). The backdrop is cleared to fully transparent and UI
       #   quads blend into a premultiplied swapchain; on Linux this also
       #   drops MSAA (the ARGB visuals are single-sample).
+      # * *msaa* — `false` disables the 4x multisampled framebuffer.
+      #   MSAA smooths circle/arc/line edges, but on HighDPI each extra
+      #   sample multiplies the swapchain's graphics memory (~100 MB of
+      #   the process footprint on a retina macOS window) — plain
+      #   UI-heavy apps may prefer it off. Implied off by
+      #   `transparent: true`.
       # * *chrome* — the client-side frame for a borderless window:
       #   `Egui::WindowFrame` drawn by the backend before every app
       #   frame, including edge resize grips. `nil` (default) = on for
@@ -778,6 +784,7 @@ module Egui
                      height: Int32)? = nil,
                    decorations : Bool = true,
                    transparent : Bool = false,
+                   msaa : Bool = true,
                    chrome : Bool? = nil,
                    chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
                    inspector : Symbol = :off,
@@ -917,7 +924,7 @@ module Egui
         {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
             run_detached(title, width, height, decorations, transparent,
-              vsync)
+              msaa, vsync)
             return
           end
         {% end %}
@@ -925,7 +932,7 @@ module Egui
         {% if flag?(:android) %} egui_android_log("run: before sapp_run") {% end %}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
-          vsync ? 1 : 0)
+          msaa ? 1 : 0, vsync ? 1 : 0)
       end
 
       {% if flag?(:linux) || flag?(:win32) %}
@@ -938,7 +945,7 @@ module Egui
         # idle frames need no work here at all.
         private def self.run_detached(title : String, width : Int32,
                                       height : Int32, decorations : Bool,
-                                      transparent : Bool,
+                                      transparent : Bool, msaa : Bool,
                                       vsync : Bool) : Nil
           handle : Int64
           {% if flag?(:win32) %}
@@ -955,13 +962,15 @@ module Egui
             server.close
             LibEguiCr.doorbell_set_peer(@@doorbell_peer.not_nil!.fd.to_i64!)
             handle = LibEguiCr.start(title.to_unsafe, width, height,
-              decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
+              decorations ? 0 : 1, transparent ? 1 : 0, msaa ? 1 : 0,
+              vsync ? 1 : 0)
             return if handle < 0
             # A's end for the C-side non-blocking drains (FIONREAD + recv).
             handle = pipe.fd.to_i64!
           {% else %}
             handle = LibEguiCr.start(title.to_unsafe, width, height,
-              decorations ? 0 : 1, transparent ? 1 : 0, vsync ? 1 : 0)
+              decorations ? 0 : 1, transparent ? 1 : 0, msaa ? 1 : 0,
+              vsync ? 1 : 0)
             return if handle < 0
             pipe = IO::FileDescriptor.new(handle.to_i32)
           {% end %}

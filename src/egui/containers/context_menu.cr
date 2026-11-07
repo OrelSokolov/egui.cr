@@ -28,16 +28,19 @@ module Egui
     # One clickable row. `action`, when set, both supplies the live
     # shortcut hint (whatever `ctx.hotkeys` binds right now) and makes
     # the row trigger on the hotkey while the menu is open; `hotkey`
-    # is a static hint for rows without an action.
+    # is a static hint for rows without an action. `enabled: false`
+    # grays the row out and kills its interaction (see
+    # `Ui#menu_item`).
     class Item
       getter label : String
       getter icon : Symbol?
       getter action : HotkeyAction?
       getter hotkey : String?
+      getter enabled : Bool
       getter handler : (->)?
 
       def initialize(@label : String, @icon : Symbol?, @action : HotkeyAction?,
-                     @hotkey : String?, @handler : (->)?)
+                     @hotkey : String?, @enabled : Bool, @handler : (->)?)
       end
     end
 
@@ -49,16 +52,17 @@ module Egui
     # A row with a click handler.
     def item(label : String, icon : Symbol? = nil,
              action : HotkeyAction? = nil, hotkey : String? = nil,
-             &on_click : ->) : self
-      @items << Item.new(label, icon, action, hotkey, on_click)
+             enabled : Bool = true, &on_click : ->) : self
+      @items << Item.new(label, icon, action, hotkey, enabled, on_click)
       self
     end
 
     # A row without a handler: clicking it re-fires `action` (if any)
     # for app-level `Context#consume_action` handlers, then closes.
     def item(label : String, icon : Symbol? = nil,
-             action : HotkeyAction? = nil, hotkey : String? = nil) : self
-      @items << Item.new(label, icon, action, hotkey, nil)
+             action : HotkeyAction? = nil, hotkey : String? = nil,
+             enabled : Bool = true) : self
+      @items << Item.new(label, icon, action, hotkey, enabled, nil)
       self
     end
 
@@ -78,7 +82,7 @@ module Egui
           ui.separator
         in Item
           ui.menu_item(entry.label, entry.action, entry.icon,
-            entry.hotkey) do
+            entry.hotkey, entry.enabled) do
             if (handler = entry.handler)
               handler.call
             elsif (action = entry.action)

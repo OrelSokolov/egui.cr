@@ -374,7 +374,7 @@ module Egui
         sel = segs unless segs.empty?
       end
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, resolve, sel, visuals.selection_fill, align)
+        face_family, resolve, sel, visuals.text_selection, align)
     end
 
     # Byte index of the pointer inside the flattened row text: the row

@@ -231,12 +231,15 @@ module Egui
       # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
       # keys, read from the SAME state bag as the fill — a
       # `button:active` rule swapping the two colors sinks the box.
-      # The class `rounding` key replaces the hardcoded 4 px default.
+      # The class `rounding` key replaces the hardcoded 4 px default;
+      # the "capsule" keyword (ecss) gives the pill look at any size
+      # (`StyleVars#rounding_px`).
       # The `shadow.*` keys (a CSS box-shadow, `StyleVars#shadow?`) draw
       # through the state overlay too: outset UNDER the fill, inset over
       # it — `button:active { shadow.inset }` is the bootstrap pressed
       # look.
-      rounding = @rounding || class_vars.f64("rounding", 4.0)
+      rounding = @rounding ||
+                 state_vars.rounding_px("rounding", rect, 4.0)
       shadow = state_vars.shadow?
       if shadow && !shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,

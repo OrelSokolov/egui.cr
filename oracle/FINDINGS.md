@@ -11,6 +11,15 @@ cd oracle/macos && ./render gallery      # native AppKit gallery window
 rake build:dev[macos_gallery] && bin/macos_gallery   # egui.cr twin
 ```
 
+**Round 4** (capsule/rounded-rect pass): the switch knob is now a
+rounded RECT measured off the native oracle (30×20, ~7pt corners,
+inside the 54×24 capsule track — `knob_width`/`knob_rounding` style
+keys; the old circle knob was 20×20 in a 48×24 track), and the
+progress bar rounds through the `rounding` class key with the
+"capsule" keyword (semicircle ends at any width; `rounding: 9999`
+works too — CSS border-radius semantics, clamped in `Painter#rect`).
+Switch 3.23%, progress 2.40% (same pixel-differ metric).
+
 **Round 3** (driven by the twinshot diff images, 8× crops): fixed
 the field box to exactly 200×26 (per-widget `text_edit` padding
 class), the switch to 54×24 with a track rim + knob stroke
@@ -19,11 +28,51 @@ white thumb (`Slider` gained `style_class` — its class rules never
 reached the paint before), the checkbox mark to 2.4pt
 (`check_width`), and a sheet-harness bug (one shared area id froze
 every row at the first sheet's y — areas remember positions in
-`ctx.memory`; ids are now per sheet). Latest: label 3.08%, radio
-3.13%, search 3.35%, checkbox 3.60%, progress 3.63%, button 3.47%,
-slider 3.84%, popup 3.89%, text_field 4.08%, stepper 4.35%, switch
-4.73%, segmented 5.31% — everything sits within ~1–2% of the pure-AA
-noise floor (label = text only = 3.08%).
+`ctx.memory`; ids are now per sheet). Round-3 numbers: label 3.08%,
+radio 3.13%, search 3.35%, checkbox 3.60%, progress 3.63%, button
+3.47%, slider 3.84%, popup 3.89%, text_field 4.08%, stepper 4.35%,
+switch 4.73%, segmented 5.31% — everything sat within ~1–2% of the
+pure-AA noise floor (label = text only = 3.08%).
+
+**Round 4** (toggle/capsule parity): the sheet harness painted a 1px
+`window_stroke` rim around every egui sheet (the panel's border —
+native sheets are solid background to the edge; ~1.3% of every diff);
+the twin now overpaints the border strips inside the panel block
+(after `ctx.area` the painter stays clipped to the area rect — reset
+`painter.clip` first). The second sheet column sat at x=258 instead
+of the native 250 (the spacer gap must subtract TWO item_spacings —
+layout adds one on each side of the spacer). The switch itself: knob
+geometry 30×20 at +3 with travel 18 (was inset 2, travel 20 — the
+knob kissed the track's right rim), the knob rim replaced by a 1pt
+shadow ring (`track_fill` darkened 6% on a rect expanded 1pt under
+the fill — native casts the knob as a shadow, and the old centered
+stroke shrank the white to 28×18), the track rim drawn fully INSIDE
+the capsule edge (a centered stroke band pokes half a pixel outside
+the rect — a halo native has not), and the rim cross-fades with the
+fill (a gray ring around the on-track's blue capsule was the
+"capsule bug"). Colors measured honest: selection surfaces (checkbox
+fill, radio dot, switch track, selected segment) are `#0077F9`
+(0,119,249) — `SELECTION` — while push-button bezels and progress
+fills keep the brighter `ACCENT` (0,122,255); the off-track is
+#D5D5D5 via the new `track_fill` key. Round-4 numbers (noise floor
+label = 1.44): button 1.23, radio 1.42, label 1.44, checkbox 1.65,
+switch 1.68, search_field 1.69, slider 2.17, popup 2.23, segmented
+2.34, text_field 2.42, progress 1.97, stepper 2.69.
+
+**Round 4b** (text inputs): the focused field's ring and the selected
+text. First attempt drew the ring as a fat INSIDE stroke on the box —
+wrong twice: the backends draw a rect stroke fully inward (5pt stroke
+= 5pt ring), and once the width nears the corner radius the corner
+arcs collapse into the straight bars (a squarish ring clipped by the
+fill). Native NSTextField paints the ring OUTSIDE the bezel — the
+widget now paints a 3pt accent ring on a rect expanded 3pt past the
+box, BEFORE it, so the bezel's own fill/border stay untouched
+(TextEdit + NumberInput; the `text_edit:focus` state rule is gone).
+Selected text fills `selectedTextBackgroundColor` #ACDBFF
+(172,219,255) — a new `Visuals#text_selection_fill` slot (nil →
+selection_fill), set by MacOsTheme and read by TextEdit, Textarea
+(the old 0.4-faded accent gone) and selectable labels; the saturated
+ACCENT stays on state surfaces.
 
 Measured from `oracle/macos/png` (native AppKit, light aqua, active,
 multicolor accent) vs `oracle/egui/png` (egui.cr, MacOsTheme, 13pt SF
@@ -71,8 +120,10 @@ style-rule-driven, defaults unchanged):
   (native draws a magnifier at ~x=6).
 - **Stepper** — NumberInput is a single 60×29 box; native is a bare
   label + 20×26 up/down capsule. Needs a stepper widget/variant.
-- **Switch 48×24 vs native 54×24** — tumbler size is square
-  (`track_w = 2 × knob`); a non-square knob would close it.
+- **Switch knob shape** — CLOSED in Round 4: the knob is a rounded
+  rect (30×20, ~7pt corners) sized by `knob_width`/`knob_rounding`,
+  riding a 1pt shadow ring (the track fill darkened 6% — native
+  casts the knob as a shadow, no light rim at all).
 - **Text field 29 vs 26 tall** — the SF Pro line box is ~17.7pt;
   a per-widget height override for single-line fields would close it.
 - Sub-pixel AA of SF Pro vs the freetype rasterizer — irreducible

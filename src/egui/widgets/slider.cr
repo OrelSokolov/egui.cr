@@ -20,7 +20,11 @@
 #     `values:`;
 #   * `handle:` — the handle shape: `:circle` (default), `:rect`, or a
 #     pentagon pointing at the tips row: `:pentagon_up` /
-#     `:pentagon_down`.
+#     `:pentagon_down`;
+#   * filled rail — the portion of the rail from the left end to the
+#     handle paints in its own `fill` color (the macOS accent look).
+#     Unset, it falls back to the rail's own color, so the default
+#     state reads as the plain upstream rail.
 
 module Egui
   class Slider
@@ -117,6 +121,7 @@ module Egui
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (handle)"),
         StyleProp.new("stroke", :color, label: "rail stroke"),
+        StyleProp.new("fill", :color, label: "fill (filled rail)"),
         StyleProp.new("handle_size", :number, label: "handle radius",
           min: 0.0),
       ]
@@ -194,19 +199,34 @@ module Egui
       # noninteractive background, but light themes set button_weak ≈
       # panel_fill (macOS #FFF on #FFF) — the stroke color keeps the
       # rail visible in every preset.
-      ui.painter.rect(rail, rail.height / 2.0,
-        class_vars.color?("stroke") || visuals.button_stroke)
+      rail_color = class_vars.color?("stroke") || visuals.button_stroke
+      ui.painter.rect(rail, rail.height / 2.0, rail_color)
 
       handle_r = class_vars.f64("handle_size", HANDLE_R)
       t = normalized(new_value)
       handle_x = rect.left + handle_r + t * (rect.width - 2 * handle_r)
+
+      # Filled rail (macOS NSSlider): the left portion up to the
+      # handle's center paints in its own `fill` color. Unset, it
+      # falls back to the rail color itself — the plain upstream look.
+      fill_w = (handle_x - rail.left).clamp(0.0, rail.width)
+      if fill_w > 0.0
+        ui.painter.rect(
+          Rect.from_min_size(rail.min, Vec2.new(fill_w, rail.height)),
+          rail.height / 2.0,
+          class_vars.color?("fill") || rail_color)
+      end
+
       handle_color = class_vars.color?("selection_fill") ||
                      visuals.selection_fill
       handle_color = visuals.fade_color(handle_color, 0.85) if response.hovered?
       paint_handle(ui.painter, @handle,
         Pos2.new(handle_x, rail_y), handle_r, handle_color)
 
-      response.paint_focus_ring(9.0)
+      # Focus ring as a CAPSULE (the `border-radius: 9999px` pill
+      # idiom — painter.rect clamps to min(w,h)/2): the slider spans
+      # 220pt, a fixed 9pt radius read as a barely-rounded rectangle.
+      response.paint_focus_ring(9999.0)
 
       # macOS stacking under the rail: tick strokes first (pointing at
       # the quants), tip captions below them.

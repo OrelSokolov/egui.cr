@@ -90,8 +90,13 @@ row.add(Egui::ToggleButton.new(@sw_off))
         end
 
         section(win, "search_field") do |row|
-          row.text_edit_singleline(@search, hint: "Search",
-            width: 222.0, leading_icon: @lens) { |t| @search = t }
+          # "search" scope → styles under "search.text_edit": the macOS
+          # search field is a full capsule (9999px-style rounding),
+          # unlike the 6pt text field above.
+          row.with_style_scope("search") do |s|
+            s.text_edit_singleline(@search, hint: "Search",
+              width: 222.0, leading_icon: @lens) { |t| @search = t }
+          end
         end
 
         section(win, "slider") do |row|

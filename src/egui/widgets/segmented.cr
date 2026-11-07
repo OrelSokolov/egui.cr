@@ -47,7 +47,7 @@ module Egui
       cell_w = sizes.map(&.x).max + pad.horizontal
       rect = ui.allocate_at_least(
         Vec2.new(cell_w * @labels.size, height))
-      rounding = class_vars.f64("rounding", 6.0)
+      rounding = class_vars.rounding_px("rounding", rect, 6.0)
 
       # Container capsule behind the cells (macOS paints one bezel; a
       # plain panel-colored host leaves the unselected half invisible).

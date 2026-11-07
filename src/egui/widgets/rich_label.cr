@@ -256,7 +256,7 @@ module Egui
       end
 
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, resolve, sel, visuals.selection_fill)
+        face_family, resolve, sel, visuals.text_selection)
     end
 
     # The link span under `pos`, if any: char index in the flattened

@@ -74,6 +74,26 @@ module Egui
       merge_element_override(ui.ctx, id, state, class_vars)
     end
 
+    # The raw `:state` overlay ALONE (the class's state layer plus the
+    # per-element state override) — no base class keys, unlike #vars.
+    # Sites that must tell "the state was actually styled" from "the
+    # base rule happens to set the key" read this instead: a base
+    # `menu.item { text_color }` must not mask the built-in disabled
+    # fade the way a merged bag would report it.
+    def state_vars(ui : Ui, id : Id, state : String) : StyleVars?
+      bag = if (path = effective_class(ui.style_scope))
+              ui.ctx.stylesheet.state_vars(path, state)
+            end
+      if (ov = ui.ctx.id_style_state_vars(id, state))
+        merged = StyleVars.new
+        merged.merge!(bag) if bag
+        merged.merge!(ov)
+        merged
+      else
+        bag
+      end
+    end
+
     private def effective_class(scope : String?) : String?
       cls = @style_class
       return nil unless cls

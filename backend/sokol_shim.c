@@ -790,6 +790,10 @@ static int g_borderless;
 // swapchain alpha becomes the window alpha — splash screens, custom
 // chrome).
 static int g_transparent;
+// from egui_cr_sapp_run/egui_cr_start: MSAA on the swapchain (4x).
+// Memory-heavy on HighDPI (each sample multiplies the framebuffer), so
+// apps can trade edge smoothness for a ~100 MB smaller footprint.
+static int g_msaa = 1;
 
 // Detached-render-loop routing (see the section at the end of this
 // file): on Linux and Win32, paint/texture/window entry points called
@@ -1516,10 +1520,11 @@ sapp_desc sokol_main(int argc, char* argv[]) {
 void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
                       cr_cleanup_cb cleanup, const char* title,
                       int width, int height, int borderless, int transparent,
-                      int swap_interval) {
+                      int msaa, int swap_interval) {
     g_init = init; g_frame = frame; g_event = event; g_cleanup = cleanup;
     g_borderless = borderless;
     g_transparent = transparent;
+    g_msaa = msaa;
     /* Debug/env override: EGUI_NOVSYNC=1 untethers the loop from the
      * compositor's present feedback (bisects swap stalls under
      * XWayland). */
@@ -1567,7 +1572,10 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         // sample, so with MSAA the chooser falls back to a 24-bit visual
         // and the compositor cannot blend per pixel. Transparent windows
         // trade MSAA for the 32-bit visual (Win32/macOS unaffected).
-        .sample_count = transparent ? 1 : 4,
+        // msaa=0 opts out everywhere: on HighDPI the 4x multisampled
+        // framebuffer costs ~100 MB of graphics memory — a plain app
+        // window may not want to pay that.
+        .sample_count = (transparent || !g_msaa) ? 1 : 4,
         // VSync (1 = on, 0 = off): off trades tear-free presentation
         // for uncapped frame rate — the perf-measuring demos want
         // that (an FPS meter reading vsync is measuring the monitor,
@@ -5218,7 +5226,7 @@ static void* sh_render_thread(void* unused) {
         .height = g_rt_h,
         .window_title = g_rt_title,
         .high_dpi = true,
-        .sample_count = g_transparent ? 1 : 4,
+        .sample_count = (g_transparent || !g_msaa) ? 1 : 4,
         .swap_interval = g_rt_swap,
         .enable_clipboard = true,
         .enable_dragndrop = true,
@@ -5236,11 +5244,12 @@ static void* sh_render_thread(void* unused) {
 // Crystal registers it with its scheduler (an evented read blocks the
 // main fiber only, letting PTY/dialog fibers run).
 intptr_t egui_cr_start(const char* title, int width, int height, int borderless,
-                       int transparent, int swap_interval) {
+                       int transparent, int msaa, int swap_interval) {
     intptr_t a_end = sh_doorbell_open();
     if (a_end < 0) return -1;
     g_borderless = borderless;
     g_transparent = transparent;
+    g_msaa = msaa;
     g_rt_w = width;
     g_rt_h = height;
     g_rt_swap = getenv("EGUI_NOVSYNC") ? 0 : swap_interval;
