@@ -298,6 +298,20 @@ module Egui
         stroke_width)
     end
 
+    # Square off a rounded rect's BOTTOM corners — the caption-band
+    # fixup: the top follows the frame's rounding, the bottom ends in
+    # a straight seam against the window body. RectCmd rounding is
+    # uniform, so this is a flat strip over the bottom radius.
+    def rect_bottom_squared(rect : Rect, rounding : Float64,
+                            fill : Color32) : Nil
+      r = {rounding, 0.0}.max
+      r = {r, rect.height / 2.0}.min
+      return if r <= 0.5
+      rect(Rect.from_min_size(
+        Pos2.new(rect.left, rect.bottom - r), Vec2.new(rect.width, r)),
+        fill: fill)
+    end
+
     # Vertical gradient fill (top `c1` → bottom `c2`).
     def rect_gradient(rect : Rect, rounding : Float64, c1 : Color32,
                       c2 : Color32) : Nil

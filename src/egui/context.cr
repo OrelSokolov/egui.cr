@@ -1075,11 +1075,16 @@ module Egui
       # never covers the border — without this the caption wiped the
       # top rim and read as a separate area pasted over the frame.
       band_stroke = 1.0 # the frame RectCmd's stroke width above
-      @painter.rect(Rect.from_min_size(
+      band_rect = Rect.from_min_size(
         Pos2.new(pos.x + band_stroke, pos.y + band_stroke),
-        Vec2.new(outer.width - 2 * band_stroke, title_h - band_stroke)),
-        rounding: {style.visuals.window_rounding - band_stroke, 0.0}.max,
+        Vec2.new(outer.width - 2 * band_stroke, title_h - band_stroke))
+      band_rounding = {style.visuals.window_rounding - band_stroke, 0.0}.max
+      @painter.rect(band_rect, rounding: band_rounding,
         fill: style.visuals.title_bar_fill)
+      # Only the TOP corners follow the frame's rounding — the band
+      # ends in a square seam against the window body.
+      @painter.rect_bottom_squared(band_rect, band_rounding,
+        style.visuals.title_bar_fill)
       # Title text: centered when the theme asks (the default; a
       # classic left-inset title sets title_centered = false); the
       # centered x is floored at the pad inset so a title wider than
@@ -1521,6 +1526,10 @@ module Egui
       # layer, insertion order == paint order).
       bg_index = @painter.add_noop
       band_index = title ? @painter.add_noop : nil
+      # The square-off strip for the band's bottom corners rides the
+      # same reserved-slot trick — one more slot, set right after the
+      # band so it also stays under the title text.
+      strip_index = title ? @painter.add_noop : nil
       clip = Rect.from_min_size(pos, Vec2.new(size.x, 1e6))
       @painter.clip = clip
 
@@ -1621,9 +1630,21 @@ module Egui
         band_fill = shell_vars.color("caption_fill",
           win11 ? (v.dark ? CAPTION_DARK : WindowFrame::Windows::BG_LIGHT)
                 : v.title_bar_fill)
+        band_rect = Rect.from_min_size(pos, Vec2.new(outer.width, title_h))
+        band_rounding = win11 ? 8.0 : v.window_rounding
         @painter.set(band_index,
-          RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
-            win11 ? 8.0 : v.window_rounding, band_fill, nil, 0.0))
+          RectCmd.new(outer, band_rect, band_rounding, band_fill, nil, 0.0))
+        # Square the band's bottom corners (straight seam against the
+        # body) — only the top follows the frame's rounding. Built as
+        # a raw RectCmd (rounding 0) in the reserved slot instead of
+        # Painter#rect_bottom_squared: an add() here would land AFTER
+        # the title text and the ✕.
+        r = {band_rounding, band_rect.height / 2.0}.min
+        if strip_index && r > 0.5
+          @painter.set(strip_index, RectCmd.new(outer, Rect.from_min_size(
+            Pos2.new(band_rect.left, band_rect.bottom - r),
+            Vec2.new(band_rect.width, r)), 0.0, band_fill, nil, 0.0))
+        end
       end
       @painter.layer = Order::Background
       @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
