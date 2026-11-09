@@ -193,7 +193,8 @@ module Egui
 
       width = ui.available_width
       height = @rows * line_h + inset.y * 2.0
-      sized = styled_size(Vec2.new(width, height), style_vars(ui, id), ui, id)
+      vars = style_vars(ui, id)
+      sized = styled_size(Vec2.new(width, height), vars, ui, id)
       rect = ui.allocate_at_least(sized)
       response = ui.interact(rect, id,
         Sense::Click | Sense::Drag | Sense::Focusable)
@@ -476,8 +477,13 @@ module Egui
           ui.painter.clip = outer
           ui.painter.rect(rect, 4.0, visuals.button_weak, nil, 0.0)
         else
+          # Border styling rides the style bag: `stroke` color, and
+          # per-side `stroke_width.*` overrides (unset keys keep the
+          # Visuals bezel).
+          stroke_color = vars.color?("stroke") || visuals.button_stroke
           ui.painter.rect(rect, 4.0, visuals.button_weak,
-            visuals.button_stroke, 1.0)
+            stroke_color, 1.0,
+            stroke_sides: vars.stroke_sides?(stroke_color, 1.0))
         end
       end
 

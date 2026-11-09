@@ -137,8 +137,16 @@ module Egui
           (x0...x1).each do |x|
             px = x + 0.5
             d = sd_rounded_rect(px, py, r, rounding)
+            # Per-corner rounding applies to the FILL (the inner rect
+            # of the two-rect border algorithm); strokes keep the
+            # uniform `rounding`.
+            fd = if (cs = cmd.corners) && (cmd.fill || cmd.fill2)
+              sd_rounded_corners(px, py, r, cs)
+            else
+              d
+            end
             if (fill = cmd.fill) || (g2 = cmd.fill2)
-              cov = cov_from_sdf(d)
+              cov = cov_from_sdf(fd)
               if cov > 0.0
                 c = fill || cmd.fill2.not_nil!
                 if (g2 = cmd.fill2) && fill
@@ -148,12 +156,80 @@ module Egui
                 blend_px(x, y, c, cov, cmd.clip, cmd.replace?)
               end
             end
-            if (sc = cmd.stroke_color) && cmd.stroke_width > 0.0
-              band = band_cov(d, cmd.stroke_width)
+            if (sides = cmd.stroke_sides)
+              # Per-side borders: each side contributes its own geometry
+              # (a shortened edge segment, plus a corner arc where both
+              # adjacent sides are on — the join takes the wider side's
+              # width/color); the nearest one wins the pixel. The CPU
+              # mirror of sokol's per-side bars + corner rings.
+              if (band = side_band(px, py, r, rounding, sides))
+                blend_px(x, y, band[:side].color,
+                  band_cov(band[:d], band[:side].width), cmd.clip)
+              end
+            elsif (sc = cmd.stroke_color) && cmd.stroke_width > 0.0
+              # Band INSIDE the outline (the CSS two-rect model: the
+              # border lives between the outer edge and the deflated
+              # background rect) — d + w/2 shifts band_cov's centered
+              # window [-w/2, w/2] to the inside window [-w, 0],
+              # matching sokol's edge-inward bars.
+              w = cmd.stroke_width
+              band = band_cov(d + w / 2.0, w)
               blend_px(x, y, sc, band, cmd.clip) if band > 0.0
             end
           end
         end
+      end
+
+      # The nearest per-side border geometry under (px, py), mirroring
+      # the CSS two-rect model as tessellated by sokol: every ON side
+      # offers its straight band sitting INSIDE the edge (centerline
+      # edge + w/2, shortened by the corner radius), every corner
+      # touched by at least one on side offers its ring band
+      # [rad - w, rad] (the join takes the wider side's width/color).
+      # Returns {d, side} — the caller bands with that side's width —
+      # or nil when no side is on at all.
+      private def side_band(px : Float64, py : Float64, r : Rect, rad : Float64,
+                            sides : Egui::StrokeSides) : NamedTuple(d: Float64, side: Egui::SideStroke)?
+        cands = [] of {Float64, Egui::SideStroke}
+        if sides.top.on?
+          y = r.top + sides.top.width / 2.0
+          cands << {sd_segment(px, py, Pos2.new(r.left + rad, y),
+            Pos2.new(r.right - rad, y)), sides.top}
+        end
+        if sides.bottom.on?
+          y = r.bottom - sides.bottom.width / 2.0
+          cands << {sd_segment(px, py, Pos2.new(r.left + rad, y),
+            Pos2.new(r.right - rad, y)), sides.bottom}
+        end
+        if sides.left.on?
+          x = r.left + sides.left.width / 2.0
+          cands << {sd_segment(px, py, Pos2.new(x, r.top + rad),
+            Pos2.new(x, r.bottom - rad)), sides.left}
+        end
+        if sides.right.on?
+          x = r.right - sides.right.width / 2.0
+          cands << {sd_segment(px, py, Pos2.new(x, r.top + rad),
+            Pos2.new(x, r.bottom - rad)), sides.right}
+        end
+        return nil if cands.empty?
+        if rad > 0.0
+          corners = {
+            {sides.top, sides.left, r.left + rad, r.top + rad},
+            {sides.top, sides.right, r.right - rad, r.top + rad},
+            {sides.bottom, sides.right, r.right - rad, r.bottom - rad},
+            {sides.bottom, sides.left, r.left + rad, r.bottom - rad},
+          }
+          corners.each do |a, b, ccx, ccy|
+            j = Egui::StrokeSides.wider(a, b)
+            next unless j.on?
+            # ring band [rad - w, rad]: centerline at rad - w/2
+            arc = Math.sqrt((px - ccx) ** 2 + (py - ccy) ** 2) -
+                  (rad - j.width / 2.0)
+            cands << {arc.abs, j}
+          end
+        end
+        best = cands.min_by { |(d, _)| d }
+        {d: best[0], side: best[1]}
       end
 
       private def circle_cmd(cmd : CircleCmd) : Nil
@@ -333,6 +409,69 @@ module Egui
         outside = Math.sqrt(ax * ax + ay * ay)
         inside = {dx, dy}.max
         outside + (inside < 0.0 ? inside : 0.0) - rad
+      end
+
+      # Signed distance to a rect whose corners each carry their own
+      # radius (CSS `border-radius: a b c d`): min over the four
+      # shortened edge segments and four quarter arcs, signed by
+      # point-in-shape (inside the sharp rect AND inside each corner
+      # arc's square).
+      private def sd_rounded_corners(px : Float64, py : Float64, r : Rect,
+                                     c : CornerRadii) : Float64
+        lim = {r.width, r.height}.min / 2.0
+        tl = {c.top_left, lim}.min
+        tr = {c.top_right, lim}.min
+        br = {c.bottom_right, lim}.min
+        bl = {c.bottom_left, lim}.min
+        inf = 1e9
+        arc = ->(ccx : Float64, ccy : Float64, rad : Float64,
+                 in_sq : Bool) do
+          if in_sq && rad > 0.0
+            dx = px - ccx
+            dy = py - ccy
+            (Math.sqrt(dx * dx + dy * dy) - rad).abs
+          else
+            inf
+          end
+        end
+        best = {
+          sd_segment(px, py, Pos2.new(r.left + tl, r.top),
+            Pos2.new(r.right - tr, r.top)),
+          sd_segment(px, py, Pos2.new(r.left + bl, r.bottom),
+            Pos2.new(r.right - br, r.bottom)),
+          sd_segment(px, py, Pos2.new(r.left, r.top + tl),
+            Pos2.new(r.left, r.bottom - bl)),
+          sd_segment(px, py, Pos2.new(r.right, r.top + tr),
+            Pos2.new(r.right, r.bottom - br)),
+          arc.call(r.left + tl, r.top + tl, tl,
+            px < r.left + tl && py < r.top + tl),
+          arc.call(r.right - tr, r.top + tr, tr,
+            px > r.right - tr && py < r.top + tr),
+          arc.call(r.right - br, r.bottom - br, br,
+            px > r.right - br && py > r.bottom - br),
+          arc.call(r.left + bl, r.bottom - bl, bl,
+            px < r.left + bl && py > r.bottom - bl),
+        }.min
+        inside = px > r.left && px < r.right && py > r.top && py < r.bottom
+        if inside
+          in_arc = ->(ccx : Float64, ccy : Float64, rad : Float64,
+                      in_sq : Bool) do
+            if in_sq
+              (px - ccx) ** 2 + (py - ccy) ** 2 <= rad * rad
+            else
+              true
+            end
+          end
+          inside = in_arc.call(r.left + tl, r.top + tl, tl,
+            px < r.left + tl && py < r.top + tl) &&
+                   in_arc.call(r.right - tr, r.top + tr, tr,
+            px > r.right - tr && py < r.top + tr) &&
+                   in_arc.call(r.right - br, r.bottom - br, br,
+            px > r.right - br && py > r.bottom - br) &&
+                   in_arc.call(r.left + bl, r.bottom - bl, bl,
+            px < r.left + bl && py > r.bottom - bl)
+        end
+        inside ? -best : best
       end
 
       # Signed distance to a segment.

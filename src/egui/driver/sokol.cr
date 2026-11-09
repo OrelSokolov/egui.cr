@@ -2257,7 +2257,11 @@ module Egui
         r = cmd.rect
         round = cmd.rounding
 
-        if (fill = cmd.fill) && (fill2 = cmd.fill2)
+        if (fill = cmd.fill) && (corners = cmd.corners)
+          # Per-corner rounding (the inner rect of the two-rect border
+          # algorithm): each corner arcs with its own radius.
+          rounded_rect_fill_corners(r, corners, fill, cmd.fill2)
+        elsif (fill = cmd.fill) && (fill2 = cmd.fill2)
           # Vertical gradient: per-vertex colors, interpolated by the
           # rasterizer (Gouraud) — top verts c1, bottom verts c2.
           if round > 0.5
@@ -2280,7 +2284,36 @@ module Egui
           end
         end
 
-        if (stroke = cmd.stroke_color) && cmd.stroke_width > 0
+        if (sides = cmd.stroke_sides)
+          if round > 0.5
+            paint_rect_stroke_rounded_sides(r, round, sides, cmd.clip)
+          else
+            LibEguiCr.sgl_begin_quads
+            # top / bottom / left / right bars, each its own width/color
+            # (a side with width 0 — CSS `border-style: none` — draws
+            # nothing).
+            if sides.top.on?
+              bar(Egui::Rect.from_min_size(r.min,
+                Egui::Vec2.new(r.width, sides.top.width)), sides.top.color)
+            end
+            if sides.bottom.on?
+              bar(Egui::Rect.from_min_size(
+                Egui::Pos2.new(r.min.x, r.max.y - sides.bottom.width),
+                Egui::Vec2.new(r.width, sides.bottom.width)),
+                sides.bottom.color)
+            end
+            if sides.left.on?
+              bar(Egui::Rect.from_min_size(r.min,
+                Egui::Vec2.new(sides.left.width, r.height)), sides.left.color)
+            end
+            if sides.right.on?
+              bar(Egui::Rect.from_min_size(
+                Egui::Pos2.new(r.max.x - sides.right.width, r.min.y),
+                Egui::Vec2.new(sides.right.width, r.height)), sides.right.color)
+            end
+            LibEguiCr.sgl_end
+          end
+        elsif (stroke = cmd.stroke_color) && cmd.stroke_width > 0
           w = cmd.stroke_width
           if round > 0.5
             paint_rect_stroke_rounded(r, round, w, stroke, cmd.clip)
@@ -2334,6 +2367,70 @@ module Egui
           rad * 0.5, rad, w, stroke, clip)
       end
 
+      # Rounded-corner stroke with per-side widths/colors — the CSS
+      # border model, tessellated: the border is the region between
+      # the OUTER rounded rect (radius `round`) and the inner one
+      # (rect deflated by the side widths, corner radius `round - w`)
+      # — what a browser paints as two rects (border-color outer +
+      # background inner). Bars sit inside the edges, shortened by
+      # `round`; every corner touched by at least ONE on side takes a
+      # ring band [round - w, round] (the join's width/color = the
+      # wider adjacent side) — a lone top border still sweeps the
+      # rounded corners, like CSS `border-top` with border-radius.
+      def self.paint_rect_stroke_rounded_sides(r : Egui::Rect, round : Float64,
+                                               sides : Egui::StrokeSides,
+                                               clip : Egui::Rect) : Nil
+        LibEguiCr.sgl_begin_quads
+        if sides.top.on?
+          bar(Egui::Rect.from_min_size(
+            Egui::Pos2.new(r.min.x + round, r.min.y),
+            Egui::Vec2.new(r.width - 2 * round, sides.top.width)),
+            sides.top.color)
+        end
+        if sides.bottom.on?
+          bar(Egui::Rect.from_min_size(
+            Egui::Pos2.new(r.min.x + round, r.max.y - sides.bottom.width),
+            Egui::Vec2.new(r.width - 2 * round, sides.bottom.width)),
+            sides.bottom.color)
+        end
+        if sides.left.on?
+          bar(Egui::Rect.from_min_size(
+            Egui::Pos2.new(r.min.x, r.min.y + round),
+            Egui::Vec2.new(sides.left.width, r.height - 2 * round)),
+            sides.left.color)
+        end
+        if sides.right.on?
+          bar(Egui::Rect.from_min_size(
+            Egui::Pos2.new(r.max.x - sides.right.width, r.min.y + round),
+            Egui::Vec2.new(sides.right.width, r.height - 2 * round)),
+            sides.right.color)
+        end
+        LibEguiCr.sgl_end
+
+        rad = Math::PI
+        corner = ->(a : Egui::SideStroke, b : Egui::SideStroke,
+                    cx : Float64, cy : Float64, a0 : Float64) do
+          # The wider adjacent side defines the join; both off = no
+          # corner at all (that side's neighbor is width 0 too).
+          j = Egui::StrokeSides.wider(a, b)
+          if j.on?
+            radius = {round - j.width / 2.0, 0.0}.max
+            paint_ring(Egui::Pos2.new(cx, cy), radius, a0, a0 + rad * 0.5,
+              j.width, j.color, clip)
+          end
+        end
+        # Same clockwise-from-+x quarter angles as above:
+        # π..1.5π TL, 1.5π..2π TR, 0..0.5π BR, 0.5π..π BL.
+        corner.call(sides.top, sides.left,
+          r.min.x + round, r.min.y + round, rad)
+        corner.call(sides.top, sides.right,
+          r.max.x - round, r.min.y + round, rad * 1.5)
+        corner.call(sides.bottom, sides.right,
+          r.max.x - round, r.max.y - round, 0.0)
+        corner.call(sides.bottom, sides.left,
+          r.min.x + round, r.max.y - round, rad * 0.5)
+      end
+
       # Filled rounded rect: perimeter fan (degenerate quads from the
       # center), like a disc but with a rounded-rect rim. When `fill2`
       # is set the fill is a vertical gradient: each vertex color is
@@ -2355,6 +2452,45 @@ module Egui
         corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5) # top-right
         corner.call(r.max.x - round, r.max.y - round, 0.0)            # bottom-right
         corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0) # bottom-left
+
+        center = r.center
+        LibEguiCr.sgl_begin_quads
+        pts.each_with_index do |p, i|
+          q = pts[(i + 1) % pts.size]
+          if fill2
+            quad_pts_grad(center, p, q, fill, fill2, r)
+          else
+            quad_pts(center, center, p, q, fill)
+          end
+        end
+        LibEguiCr.sgl_end
+      end
+
+      # Per-corner rounding: the same perimeter fan, but every corner
+      # arcs with its own radius (CSS `border-radius: a b c d`). Used
+      # by the inner rect of the two-rect border algorithm, whose
+      # corner radius = outer radius − adjacent border width.
+      def self.rounded_rect_fill_corners(r : Egui::Rect, c : Egui::CornerRadii,
+                                         fill : Egui::Color32,
+                                         fill2 : Egui::Color32? = nil) : Nil
+        lim = {r.width, r.height}.min / 2.0
+        tl = {c.top_left, lim}.min
+        tr = {c.top_right, lim}.min
+        br = {c.bottom_right, lim}.min
+        bl = {c.bottom_left, lim}.min
+        pts = [] of Egui::Pos2
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64, rad : Float64) do
+          6.times do |i|
+            a = a0 + (Math::PI / 2.0) * i / 5.0
+            pts << Egui::Pos2.new(cx + rad * Math.cos(a),
+              cy + rad * Math.sin(a))
+          end
+        end
+        rad = Math::PI
+        corner.call(r.min.x + tl, r.min.y + tl, Math::PI, tl)        # top-left
+        corner.call(r.max.x - tr, r.min.y + tr, Math::PI * 1.5, tr)  # top-right
+        corner.call(r.max.x - br, r.max.y - br, 0.0, br)             # bottom-right
+        corner.call(r.min.x + bl, r.max.y - bl, Math::PI / 2.0, bl)  # bottom-left
 
         center = r.center
         LibEguiCr.sgl_begin_quads

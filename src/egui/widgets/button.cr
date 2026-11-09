@@ -228,6 +228,9 @@ module Egui
                      style.visuals.button_stroke
       stroke_color = transition_color("stroke", stroke_color,
         state_vars, ui, id)
+      # Per-side borders (`stroke_width.top: 0`, `stroke.left: 3` …)
+      # from the same state bag; nil keeps the uniform 1px stroke.
+      sides = state_vars.stroke_sides?(stroke_color, 1.0)
       # 3D bevel (Win95-style raised box): `bevel_light`/`bevel_dark`
       # keys, read from the SAME state bag as the fill — a
       # `button:active` rule swapping the two colors sinks the box.
@@ -262,14 +265,16 @@ module Egui
       #   (existing behavior).
       if (bg2 = state_vars.color?("background2"))
         ui.painter.rect(rect, rounding: rounding, fill: fill, fill2: bg2,
-          stroke_color: stroke_color, stroke_width: 1.0)
+          stroke_color: stroke_color, stroke_width: 1.0,
+          stroke_sides: sides)
       elsif (grad = @gradient) && !response.active?
         own = ui.ctx.id_style_state_vars(id, state)
           .try(&.color?("background")) ||
           @style_override.try(&.background)
         top = own ? fill : grad[0]
         ui.painter.rect(rect, rounding: rounding, fill: top, fill2: grad[1],
-          stroke_color: stroke_color, stroke_width: 1.0)
+          stroke_color: stroke_color, stroke_width: 1.0,
+          stroke_sides: sides)
       elsif bevel_light && bevel_dark
         ui.painter.rect(rect, rounding: rounding, fill: fill)
         # Raised bevel: light on the top/left, dark on the bottom/right.
@@ -283,7 +288,8 @@ module Egui
           Pos2.new(rect.max.x, rect.max.y - 0.5), 1.0, bevel_dark)
       else
         ui.painter.rect(rect, rounding: rounding, fill: fill,
-          stroke_color: stroke_color, stroke_width: 1.0)
+          stroke_color: stroke_color, stroke_width: 1.0,
+          stroke_sides: sides)
       end
       if shadow && shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,

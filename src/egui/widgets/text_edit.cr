@@ -71,6 +71,9 @@ module Egui
     def style_properties : Array(StyleProp)
       [StyleProp.new("fill", :color),
        StyleProp.new("stroke", :color, states: true),
+       # Per-side border widths (`stroke_width.top: 0` …) on top of
+       # the shared `stroke` color.
+       StyleProp.new("stroke_width", :box),
        StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
        StyleProp.new("padding", :box)]
     end
@@ -257,7 +260,8 @@ module Egui
         stroke_color = te_vars.color?("stroke") ||
                        (response.has_focus? ? visuals.selection_fill : visuals.button_stroke)
         ui.painter.rect(rect, te_vars.rounding_px("rounding", rect, 4.0),
-          bg, stroke_color, 1.0)
+          bg, stroke_color, 1.0,
+          stroke_sides: te_vars.stroke_sides?(stroke_color, 1.0))
       end
 
       inner = rect.min + inset

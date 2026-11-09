@@ -1017,13 +1017,27 @@ module Egui
     # "card.*" in ECSS), and fill/stroke/rounding/margin paint chrome
     # under the contents (the #frame trick; margin defaults to the
     # window padding only when chrome is requested, else zero — a
-    # plain div has no padding). Returns the outer rect.
+    # plain div has no padding). `stroke_width` is a scalar or a
+    # per-side `StyleBox` (`StyleBox.new(top: 1, left: 3)` — CSS
+    # `border-width`), `stroke_sides` additionally carries per-side
+    # colors (usually resolved from style keys by
+    # `StyleVars#stroke_sides?`). Returns the outer rect.
     def box(direction : Symbol = :column, wrap : Bool = true,
             fill : Color32? = nil, stroke : Color32? = nil,
             rounding : Float64 = 6.0, margin : Vec2? = nil,
-            stroke_width : Float64 = 1.0, style_class : String? = nil,
+            stroke_width : Float64 | StyleBox = 1.0,
+            style_class : String? = nil,
+            stroke_sides : StrokeSides? = nil,
             &block : Ui ->) : Rect
-      painted = fill || stroke
+      sides = stroke_sides ||
+              (sw = stroke_width.as?(StyleBox)) && stroke.try do |c|
+                StrokeSides.new(
+                  SideStroke.new(sw.top, c),
+                  SideStroke.new(sw.right, c),
+                  SideStroke.new(sw.bottom, c),
+                  SideStroke.new(sw.left, c))
+              end
+      painted = fill || stroke || sides
       m = margin || (painted ? style.spacing.window_padding : Vec2.new(0.0, 0.0))
       bg_index = painter.add_noop
       row = direction == :row
@@ -1082,7 +1096,8 @@ module Egui
 
       if painted
         painter.set(bg_index,
-          RectCmd.new(painter.clip, outer, rounding, fill, stroke, stroke_width))
+          RectCmd.new(painter.clip, outer, rounding, fill, stroke,
+            stroke_width.as?(Float64) || 1.0, nil, sides))
       end
       outer
     end
@@ -1091,10 +1106,11 @@ module Egui
     # contents: #box with column flow and the window padding default.
     def frame(fill : Color32? = nil, stroke : Color32? = nil,
               rounding : Float64 = 6.0, margin : Vec2? = nil,
-              stroke_width : Float64 = 1.0, &block : Ui ->) : Rect
+              stroke_width : Float64 | StyleBox = 1.0,
+              stroke_sides : StrokeSides? = nil, &block : Ui ->) : Rect
       box(:column, fill: fill, stroke: stroke, rounding: rounding,
         margin: margin || style.spacing.window_padding,
-        stroke_width: stroke_width, &block)
+        stroke_width: stroke_width, stroke_sides: stroke_sides, &block)
     end
 
     # egui `ui.horizontal(|ui| …)`: a child Ui laying out left→right on

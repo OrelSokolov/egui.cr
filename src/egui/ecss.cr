@@ -39,6 +39,13 @@
 #     background: #ff8800ff;
 #   }
 #
+# Border keys are four-sided like padding: the scalar `stroke_width`
+# sets every side (with `stroke` the shared color), and the per-side
+# `stroke_width.top/right/bottom/left` override one side — width 0
+# turns the side off (CSS `border-style: solid none none none` is
+# `stroke_width: 1; stroke_width.right: 0; stroke_width.bottom: 0;
+# stroke_width.left: 0`). Per-side colors ride `stroke.<side>`.
+#
 # Values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`, numbers, `true`/`false`,
 # quoted strings (font families). The parser is deliberately lenient —
 # a half-typed line in a live-edited file must cost a warning on

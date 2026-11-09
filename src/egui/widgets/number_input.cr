@@ -155,13 +155,19 @@ module Egui
       focused = field_resp.has_focus?
       bg = focused ? visuals.button_active : visuals.button_weak
       # Focus rides the outside ring alone — the bezel keeps its
-      # plain border (native look).
+      # plain border (native look). Border styling rides the style
+      # bag: `stroke` color and per-side `stroke_width.*` overrides.
       stroke_color = visuals.button_stroke
+      vars = style_vars(ui, id)
+      if (c = vars.color?("stroke"))
+        stroke_color = c
+      end
       if focused
         ui.painter.rect(field.expand(3.0), 7.0, nil,
           visuals.focus_ring, 3.0)
       end
-      ui.painter.rect(field, 4.0, bg, stroke_color, 1.0)
+      ui.painter.rect(field, 4.0, bg, stroke_color, 1.0,
+        stroke_sides: vars.stroke_sides?(stroke_color, 1.0))
 
       Icons.arrow_button(ui.painter, :up, up_r,
         visuals.button_fill(up_resp.hovered?, up_resp.pressed?),

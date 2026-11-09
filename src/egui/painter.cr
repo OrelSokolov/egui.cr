@@ -8,10 +8,66 @@
 # lay out children, then back-patch the window background under them.
 
 module Egui
+  # One side of a per-side border: width 0 means the side is off
+  # (CSS `border-style: none` for that side).
+  struct SideStroke
+    getter width : Float64
+    getter color : Color32
+
+    def initialize(@width : Float64, @color : Color32)
+    end
+
+    def on? : Bool
+      @width > 0.0
+    end
+  end
+
+  # CSS per-side borders (`border-width: 1 0 0 3`, `border-top-color`):
+  # each side carries its own width and color. Built by
+  # `StyleVars#stroke_sides?` from the `stroke_width.*` / `stroke.*`
+  # keys (the scalar `stroke_width`/`stroke` are the all-sides
+  # fallbacks), or by hand for `Ui#box(stroke_sides:)`.
+  struct StrokeSides
+    getter top : SideStroke
+    getter right : SideStroke
+    getter bottom : SideStroke
+    getter left : SideStroke
+
+    def initialize(@top : SideStroke, @right : SideStroke,
+                   @bottom : SideStroke, @left : SideStroke)
+    end
+
+    # The wider of two adjacent sides — what a rounded corner join
+    # draws when the two sides disagree (backends pick its color too).
+    def self.wider(a : SideStroke, b : SideStroke) : SideStroke
+      a.width >= b.width ? a : b
+    end
+  end
+
+  # CSS per-corner rounding (`border-radius: 10px 10px 4px 4px`):
+  # each corner of a filled rect gets its own radius. The two-rect
+  # border algorithm needs this on the INNER rect — its corner radius
+  # is the outer radius minus the adjacent border width, so the inner
+  # curve stays inside the outer arc with no clipping at all.
+  struct CornerRadii
+    getter top_left : Float64
+    getter top_right : Float64
+    getter bottom_right : Float64
+    getter bottom_left : Float64
+
+    def initialize(@top_left = 0.0, @top_right = 0.0,
+                   @bottom_right = 0.0, @bottom_left = 0.0)
+    end
+  end
+
   struct RectCmd
     getter clip : Rect
     getter rect : Rect
     getter rounding : Float64
+    # Per-corner rounding for the FILL: when set, each corner arcs
+    # with its own radius (overrides `rounding` for the fill; the
+    # uniform stroke paths still read `rounding`).
+    getter corners : CornerRadii?
     getter fill : Color32?
     # Optional second fill color: when set, the fill becomes a vertical
     # gradient from `fill` (top) to `fill2` (bottom) — the backend
@@ -19,6 +75,10 @@ module Egui
     getter fill2 : Color32?
     getter stroke_color : Color32?
     getter stroke_width : Float64
+    # Per-side borders: when set, the backends draw each side with its
+    # own width/color and ignore the uniform stroke pair above (which
+    # still carries the fallback base for consumers reading the cmd).
+    getter stroke_sides : StrokeSides?
     # Blend-off fill: OVERWRITE dst (rgb AND alpha) instead of blending
     # — see Painter#rect_replace.
     getter? replace : Bool
@@ -26,6 +86,8 @@ module Egui
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @fill : Color32?, @stroke_color : Color32?,
                    @stroke_width : Float64, @fill2 : Color32? = nil,
+                   @stroke_sides : StrokeSides? = nil,
+                   @corners : CornerRadii? = nil,
                    @replace : Bool = false)
     end
   end
@@ -244,7 +306,9 @@ module Egui
     def rect(rect : Rect, rounding : Float64 = 0.0,
              fill : Color32? = nil, stroke_color : Color32? = nil,
              stroke_width : Float64 = 1.0,
-             fill2 : Color32? = nil) : Nil
+             fill2 : Color32? = nil,
+             stroke_sides : StrokeSides? = nil,
+             corners : CornerRadii? = nil) : Nil
       # CSS `border-radius` semantics: the radius is clamped to half
       # the rect's short side, so an oversized value renders the
       # capsule (the classic `border-radius: 9999px` pill trick)
@@ -254,7 +318,7 @@ module Egui
       r = {rounding, 0.0}.max
       r = {r, {rect.width, rect.height}.min / 2.0}.min
       add(RectCmd.new(@clip, rect, r, fill, stroke_color,
-        stroke_width, fill2))
+        stroke_width, fill2, stroke_sides, corners))
     end
 
     # Replace-blend rect: instead of blending over the destination, it

@@ -1222,12 +1222,16 @@ module Egui
       fill = vars.try(&.color?("background")) || style.visuals.window_fill
       stroke = vars.try(&.color?("stroke")) || style.visuals.window_stroke
       stroke_w = vars.try(&.f64?("stroke_width")) || 1.0
+      # Per-side borders (`stroke_width.top: 0` …) win over the uniform
+      # pair when any per-side key is set.
+      sides = vars.try(&.stroke_sides?(style.visuals.window_stroke, 1.0))
       # stroke_width 0 means NO border (CSS border-width: 0); the
       # shadow radius follows the frame's.
       stroke = nil if stroke_w <= 0.0
       rounding = vars.try(&.rounding_px("rounding", outer, 4.0)) || 4.0
       @painter.set(bg_index,
-        RectCmd.new(outer, outer, rounding, fill, stroke, stroke_w))
+        RectCmd.new(outer, outer, rounding, fill, stroke, stroke_w,
+          stroke_sides: sides))
       if (spec = vars.try(&.shadow?)) && !spec.inset?
         # Wide clip: the shadow bleeds past the frame's own rect, and
         # the popup rides the Foreground layer anyway (no host viewport

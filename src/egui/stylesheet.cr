@@ -159,6 +159,8 @@ module Egui
   # CSS box model for paddings/margins/any four-sided spacing: every
   # side is its own key (`padding.top/left/right/bottom`), with the
   # scalar shorthand (`padding` → all sides) as fallback per side.
+  # Border widths use the same scheme (`stroke_width.<side>` — see
+  # `StyleVars#stroke_sides?`).
   struct StyleBox
     getter top : Float64
     getter right : Float64
@@ -267,6 +269,10 @@ module Egui
         StyleProp.new("background2", :color, states: true,
           label: "background 2 (gradient)"),
         StyleProp.new("stroke", :color, states: true),
+        # Border thickness, per-side box (`stroke_width.top: 0` hides
+        # one side — CSS `border-style: solid none none none`). Shared
+        # base color above; per-side colors come from `stroke.<side>`.
+        StyleProp.new("stroke_width", :box),
       ]
     end
 
@@ -395,6 +401,28 @@ module Egui
         f64("#{prefix}.spread", 0.0),
         Vec2.new(f64("#{prefix}.x", 0.0), f64("#{prefix}.y", 0.0)),
         bool("#{prefix}.inset", false))
+    end
+
+    # The CSS per-side border under the same key scheme as #box:
+    # widths read `stroke_width.<side>` with the scalar `stroke_width`
+    # as fallback, colors read `stroke.<side>` with the scalar `stroke`
+    # as fallback (`stroke_width.top: 0` = `border-style: none` on the
+    # top side). nil when no per-side key is set at all — callers keep
+    # their uniform-stroke path, so widgets without the new keys render
+    # exactly as before. Negative widths clamp to 0.
+    def stroke_sides?(base_color : Color32, base_width : Float64) : StrokeSides?
+      side = ->(s : String) do
+        w = {(f64?("stroke_width.#{s}") || f64?("stroke_width") ||
+              base_width), 0.0}.max
+        c = color?("stroke.#{s}") || color?("stroke") || base_color
+        SideStroke.new(w, c)
+      end
+      per_side = %w[top right bottom left].any? do |s|
+        has_key?("stroke_width.#{s}") || has_key?("stroke.#{s}")
+      end
+      return nil unless per_side
+      StrokeSides.new(side.call("top"), side.call("right"),
+        side.call("bottom"), side.call("left"))
     end
 
     def bool?(key : String) : Bool?
