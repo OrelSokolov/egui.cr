@@ -27,6 +27,27 @@
 
 module Egui
   class ScrollArea
+    include Widget
+
+    # The Widget-protocol content: `ScrollArea.new(...).content { … }`
+    # + `ui.add(scroll_area)` — the block form of `#show` (which
+    # stays as sugar with its legacy Rect return).
+    @content : (Ui ->)? = nil
+    @resp_id : Id? = nil
+    EMPTY_CONTENT = ->(_ui : Ui) { }
+
+    # Attach the scrolled content (the `#show` block as a builder);
+    # then the ScrollArea goes through `ui.add` like any Widget.
+    def content(&block : Ui ->) : self
+      @content = block
+      self
+    end
+
+    def ui(ui : Ui) : Response
+      rect = render(ui, &(@content || EMPTY_CONTENT))
+      Response.container(ui.ctx, @resp_id.not_nil!, rect)
+    end
+
     # Overlay bar thickness (px), pinned over the content's edge.
     BAR_W = 8.0
     # Classic bar: width of the reserved strip and of each square
@@ -55,11 +76,24 @@ module Egui
       @scrollbar == :classic
     end
 
-    def show(ui : Ui, &block : Ui ->) : Rect
+    # `show` stays yield-style (uncaptured): callers' blocks keep
+    # plain-local semantics. The Widget protocol goes through #ui,
+    # which replays the `.content` proc.
+    def show(ui : Ui, &) : Rect
+      render(ui) { |inner| yield inner }
+    end
+
+    def ui(ui : Ui) : Response
+      rect = render(ui, &(@content || EMPTY_CONTENT))
+      Response.container(ui.ctx, @resp_id.not_nil!, rect)
+    end
+
+    private def render(ui : Ui, &) : Rect
       style = ui.style
       memory = ui.ctx.memory
       input = ui.ctx.input
       id = @id || ui.next_widget_id
+      @resp_id = id
 
       height = {@max_height || ui.available_height, ui.available_height}.min
       # The scrollbar strips are reserved up front — both flavors — so

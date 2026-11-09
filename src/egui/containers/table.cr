@@ -12,12 +12,36 @@
 
 module Egui
   class Table
+    include Widget
+
+    # The Widget-protocol content: `Table.new(...).content { … }` +
+    # `ui.add(table)` — the block form of `#show` (which stays as
+    # sugar with its legacy Nil return).
+    @content : (Grid ->)? = nil
+    EMPTY_CONTENT = ->(_g : Grid) { }
+
+    def content(&block : Grid ->) : self
+      @content = block
+      self
+    end
+
+    def ui(ui : Ui) : Response
+      Response.container(ui.ctx, @id, render(ui, &(@content || EMPTY_CONTENT)))
+    end
+
     def initialize(id : String, @headers : Array(String),
                    @fractions : Array(Float64)? = nil)
       @id = Id.from("table/#{id}")
     end
 
-    def show(ui : Ui, &block : Grid ->) : Nil
+    # `show` stays yield-style (uncaptured); the Widget protocol goes
+    # through #ui, which replays the `.content` proc.
+    def show(ui : Ui, &) : Nil
+      render(ui) { |g| yield g }
+      nil
+    end
+
+    private def render(ui : Ui, &) : Rect
       avail = ui.available_width
       n = @headers.size
       fr = @fractions || Array.new(n) { 1.0 / n }

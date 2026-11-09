@@ -16,7 +16,25 @@
 
 module Egui
   class Grid
+    include Widget
+
     @ui : Ui? = nil
+
+    # The Widget-protocol content: `Grid.new("id").content { … }` +
+    # `ui.add(grid)` — the block form of `#show` (which stays as
+    # sugar with its legacy Rect return).
+    @content : (Grid ->)? = nil
+    EMPTY_CONTENT = ->(_g : Grid) { }
+
+    def content(&block : Grid ->) : self
+      @content = block
+      self
+    end
+
+    def ui(ui : Ui) : Response
+      rect = render(ui, &(@content || EMPTY_CONTENT))
+      Response.container(ui.ctx, @grid_id, rect)
+    end
 
     def initialize(id : String, @widths : Array(Float64)? = nil)
       @grid_id = Id.from("grid/#{id}")
@@ -31,7 +49,18 @@ module Egui
       @row_heights = [] of Float64
     end
 
-    def show(ui : Ui, &block : self ->) : Rect
+    # `show` stays yield-style (uncaptured); the Widget protocol goes
+    # through #ui, which replays the `.content` proc.
+    def show(ui : Ui, &) : Rect
+      render(ui) { |g| yield g }
+    end
+
+    def ui(ui : Ui) : Response
+      rect = render(ui, &(@content || EMPTY_CONTENT))
+      Response.container(ui.ctx, @grid_id, rect)
+    end
+
+    private def render(ui : Ui, &) : Rect
       @ui = ui
       @spacing = ui.style.spacing.item_spacing
       @origin = ui.cursor

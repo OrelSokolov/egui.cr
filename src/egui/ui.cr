@@ -501,8 +501,7 @@ module Egui
     def scroll_area(max_height : Float64? = nil, scrollbar : Symbol = :overlay,
                     vbar : Symbol = :right, hbar : Symbol? = nil,
                     &block : Ui ->) : Rect
-      ScrollArea.new(max_height, scrollbar, vbar, hbar)
-        .show(self) { |ui| yield ui }
+      ScrollArea.new(max_height, scrollbar, vbar, hbar).show(self, &block)
     end
 
     # A region-anchored floating block (`position: fixed`-style, see
@@ -809,18 +808,18 @@ module Egui
 
     # egui `ui.grid(id) { |grid| … }` — aligned columns; see `Grid`.
     def grid(id : String, &block : Grid ->) : Rect
-      Grid.new(id).show(self) { |g| yield g }
+      Grid.new(id).show(self, &block)
     end
 
     # Hierarchical list; see `TreeView`.
     def tree_view(id : String, &block : TreeView ->) : Nil
-      TreeView.new(id).show(self) { |tree| yield tree }
+      TreeView.new(id).show(self, &block)
     end
 
     # Header + body table; see `Table`.
     def table(id : String, headers : Array(String),
               fractions : Array(Float64)? = nil, &block : Grid ->) : Nil
-      Table.new(id, headers, fractions).show(self) { |rows| yield rows }
+      Table.new(id, headers, fractions).show(self, &block)
     end
 
     # GTK TreeView-style model/view table; see `TableView`. The block

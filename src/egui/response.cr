@@ -42,6 +42,16 @@ module Egui
       @changed
     end
 
+    # A passive container Response: containers migrating onto the
+    # Widget protocol (`#ui`) wrap their aggregate rect in this —
+    # Sense.none, no interaction verdicts, `rect` = the container's
+    # outer geometry. The `show(ui)` sugar keeps its legacy return
+    # (Rect/Bool/Nil per container, documented at each).
+    def self.container(ctx : Context, id : Id, rect : Rect) : self
+      new(ctx, id, rect, Sense.none, false, false, 0, false, false,
+        false, false, false, Vec2.zero, false)
+    end
+
     # egui `Response::mark_changed` — widgets call this after mutating
     # the value they view.
     def mark_changed : Nil

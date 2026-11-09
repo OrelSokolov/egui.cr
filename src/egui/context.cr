@@ -1682,7 +1682,7 @@ module Egui
         Pos2.new(rect.left, rect.bottom),
         @available_rect.max)
       panel_ui(id, rect, Layout.left_to_right,
-        resizable: resizable, edge: :bottom, size: h) { |ui| yield ui }
+        resizable: resizable, edge: :bottom, size: h, &block)
       rect
     end
 
@@ -1697,7 +1697,7 @@ module Egui
         Pos2.new(rect.right, rect.top))
       panel_ui(id, rect, Layout.left_to_right,
         resizable: resizable, edge: :top, size: h,
-        layer: layer, fill: fill) { |ui| yield ui }
+        layer: layer, fill: fill, &block)
       rect
     end
 
@@ -1729,7 +1729,7 @@ module Egui
       panel_ui(id, rect, Layout.top_down,
         resizable: resizable,
         edge: side == :right ? :left : :right,
-        size: w, layer: layer, fill: fill) { |ui| yield ui }
+        size: w, layer: layer, fill: fill, &block)
       rect
     end
 
@@ -1822,9 +1822,9 @@ module Egui
       # their old behavior (a panel that must scroll its body wraps
       # its own content in `ui.scroll_area` — see the Inspector).
       if layout.horizontal?
-        yield ui
+        block.call(ui)
       else
-        ScrollArea.new.show(ui) { |inner| yield inner }
+        ScrollArea.new.show(ui, &block)
       end
       panel_resize_grip(Id.from("panel/#{id}"), rect, edge, size, layer) if resizable && edge
 

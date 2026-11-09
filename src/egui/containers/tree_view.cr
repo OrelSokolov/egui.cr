@@ -13,12 +13,40 @@
 
 module Egui
   class TreeView
+    include Widget
+
+    # The Widget-protocol content: `TreeView.new("id").content { … }`
+    # + `ui.add(tree)` — the block form of `#show` (which stays as
+    # sugar with its legacy Nil return).
+    @content : (TreeView ->)? = nil
+    EMPTY_CONTENT = ->(_t : TreeView) { }
+
+    def content(&block : TreeView ->) : self
+      @content = block
+      self
+    end
+
+    # The rows paint individually — no aggregate rect to wrap, so the
+    # container Response carries an empty one over the tree's base id.
+    def ui(ui : Ui) : Response
+      render(ui, &(@content || EMPTY_CONTENT))
+      Response.container(ui.ctx, @base_id,
+        Rect.from_min_size(Pos2.zero, Vec2.zero))
+    end
+
     def initialize(id : String, @depth : Int32 = 0,
                    @base_id : Id = Id.from("tree"))
       @base_id = Id.from("tree/#{id}") if @depth.zero?
     end
 
-    def show(ui : Ui, &block : self ->) : Nil
+    # `show` stays yield-style (uncaptured); the Widget protocol goes
+    # through #ui, which replays the `.content` proc.
+    def show(ui : Ui, &) : Nil
+      render(ui) { |t| yield t }
+      nil
+    end
+
+    private def render(ui : Ui, &) : Nil
       @ui = ui
       @path_prefix = @base_id
       yield self

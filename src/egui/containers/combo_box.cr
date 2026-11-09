@@ -10,6 +10,8 @@
 
 module Egui
   class ComboBox
+    include Widget
+
     # Rendering flavors for the closed combo:
     #   :button — solid button, the chevron in a separated sub-button
     #             strip (native dropdown look)
@@ -50,9 +52,31 @@ module Egui
       self
     end
 
+    # The Widget-protocol form: attach the pick handler with
+    # `#on_select` and `ui.add(combo_box)` — `#ui` returns the BUTTON
+    # Response (hover/click of the dropdown trigger); `#show` stays
+    # as sugar returning whether an option got picked this frame.
+    @on_select : (String ->)? = nil
+    @button_response : Response? = nil
+    EMPTY_SELECT = ->(_opt : String) { }
+
+    def on_select(&block : String ->) : self
+      @on_select = block
+      self
+    end
+
+    def ui(ui : Ui) : Response
+      render(ui, @on_select || EMPTY_SELECT)
+      @button_response.not_nil!
+    end
+
     # `on_select` fires with the picked option; returns whether a new
     # option got picked this frame.
     def show(ui : Ui, &on_select : String ->) : Bool
+      render(ui, on_select)
+    end
+
+    private def render(ui : Ui, on_select : (String ->)) : Bool
       style = ui.style
       font_size = style.font_size
       # Placeholder while nothing is picked; the selection takes over
@@ -85,6 +109,7 @@ module Egui
       # focused, Up/Down walk the options and Enter confirms — the
       # arrows are locked so focus navigation can't steal them.
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
+      @button_response = response
       ctx = ui.ctx
       focused = ctx.memory.focus.has_focus?(id)
       response.request_focus if response.clicked? && !focused
