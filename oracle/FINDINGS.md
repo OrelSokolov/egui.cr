@@ -165,3 +165,128 @@ style-rule-driven, defaults unchanged):
   scripts/make_macos_oracle_shots.cr` (egui), then
   `twinshot compare --no-open` in `oracle/` (needs ruby + vips:
   `brew install ruby vips`, `gem install twinshot`).
+
+---
+
+# GNOME style findings — native GTK4/libadwaita oracle
+
+Sheets: `oracle/gtk/png` (480×160, light Adwaita, no focus/hover) from
+`oracle/gtk/render.py` — real GTK 4.20 + libadwaita 1.8 widgets under
+`GDK_BACKEND=x11` on a private `Xvfb :9` (nothing flashes on the real
+display; no WM → the CSD margins are cropped by scanning the content
+origin). Stock GNOME font Cantarell 11 is vendored under
+`oracle/gtk/fonts/` (fonts.conf pins it; the sheet pins
+`gtk-font-name` so the session's Ubuntu font can't leak).
+
+**Accent caveat**: this Ubuntu build pins Yaru purple `#7764D8` as the
+compiled-in default accent (`accent-color`/`yaru-accent` are
+read-only; even a DBUS-less, runtime-dir-less run stays purple).
+Geometry and all NEUTRAL colors below are measured as rendered; for
+accent surfaces `GnomeTheme` substitutes stock GNOME blue
+`#3584E4` (the upstream libadwaita default) — accent in modern GNOME
+is a user setting anyway.
+
+Measured values (light):
+
+- window/sheet bg `#FAFAFA` (250,250,250); content views white.
+- text `#3D3D3D`; dim label `#939393`.
+- Push button & entry-family (text field, search, popup, stepper,
+  segmented): **34pt tall**, `#E7E7E7` bezel, subtle `#DEDEDE`-ish
+  border, **6pt rounding**. Unfocused entries are GRAY `#E7E7E7`
+  (not white — white is the focused state).
+- Suggested-action button: accent fill, white label.
+- Checkbox: ~19×19 box at the row's leading edge, `#DEDEDE` ring,
+  ~4-5pt rounding, UNchecked fill = window bg; checked = accent +
+  white check. Radio: same 19pt circle; selected = accent ring + dot.
+- Switch: **48×26 capsule** track; off = WHITE fill + `#DBDBDB` rim,
+  on = accent + white knob.
+- Slider: **4pt** rail `#DEDEDE`, accent fill from the left, white
+  circular thumb ~19pt.
+- Progress: **8pt** tall capsule, track `#DEDEDE`, accent fill.
+- Segmented (linked toggles — no native Adwaita segmented): `#E7E7E7`
+  strip, `#C1C1C1` cell borders, checked cell `#C1C1C1` (NOT accent),
+  dark label.
+
+Twin: `Egui::GnomeTheme.light` (src/egui/gnome_theme.cr), sheets via
+`scripts/make_gnome_oracle_shots.cr` into `oracle/egui-gnome/png`.
+
+---
+
+# KDE style findings — native Qt6/Breeze oracle
+
+Sheets: `oracle/qt/png` (480×160, light Breeze, no focus/hover) from
+`oracle/qt/render.cpp` — real Qt 6.9 + Breeze 6.4 QStyle widgets,
+fully headless (`QT_QPA_PLATFORM=offscreen`, `QWidget::render` into a
+QImage; nothing maps anywhere). Focus is banned per widget
+(`Qt::NoFocus`: Breeze paints a blue focus border on entries and
+offscreen ignores `clearFocus`). Font pinned to Noto Sans 10.
+
+Measured values (light):
+
+- window/sheet bg `#EFF0F1` (Window role); views/entries white.
+- accent `#3DAEE9` (Breeze blue); groove/progress fill
+  `#69A9D2` (a muted blue the style paints on slider/progress
+  chunks — NOT the raw accent); track `#CDCDCD`.
+- text `#232629`; borders `#BFBFBF`.
+- Push button: ~33pt tall, `#EFF0F1` bezel (same as window bg),
+  `#BFBFBF` border, **~3pt rounding** (corner insets 2,1,0).
+- Checkbox: 16pt box, `#BFBFBF` border; CHECKED = light blue fill
+  (~`#A1BCCE`..`#69A9D2` family — the muted selection mix) with a
+  DARK `#232629` check mark (Breeze draws dark marks, not white).
+- Radio: checked = DARK dot `#232629` (not accent).
+- Entry/search/combo/stepper: white fill, `#BFBFBF` border, ~2pt
+  rounding, 31-32pt tall.
+- Slider: 6pt groove (`#CDCDCD`, filled `#69A9D2`), thumb = ~19pt
+  OUTLINED circle (light rim, transparent center — not a filled knob).
+- Progress: **6pt** tall, fill `#69A9D2`, track `#CDCDCD`.
+- Segmented (linked checkable tool buttons — no native Qt segmented):
+  checked cell `#D1D1D1` (NOT accent), borders `#BFBFBF`.
+- Switch: QtWidgets has no switch primitive (Breeze switches live in
+  QML/Quick) — KdeTheme switch metrics come from the Breeze Quick
+  style: ~46×23 capsule, accent `#3DAEE9` on, light track + white
+  round knob off.
+
+Twin: `Egui::KdeTheme.light` (src/egui/kde_theme.cr), sheets via
+`scripts/make_kde_oracle_shots.cr` into `oracle/egui-kde/png`.
+
+## Twin diff numbers (round 1)
+
+Same pixel-differ metric as the macOS rounds (share of pixels off by
+more than 16/channel), native sheets vs `Egui::GnomeTheme` /
+`Egui::KdeTheme` twins:
+
+| gnome | % | | kde | % |
+|---|---|---|---|---|
+| label | 1.55 | | label | 0.73 |
+| popup | 1.66 | | stepper | 1.16 |
+| search_field | 1.85 | | radio | 1.07 |
+| radio | 2.00 | | checkbox | 1.29 |
+| text_field | 1.96 | | text_field | 1.48 |
+| checkbox | 2.32 | | search_field | 1.42 |
+| switch | 2.80 | | slider | 1.76 |
+| slider | 2.88 | | popup | 1.98 |
+| progress | 3.38 | | button | 2.00 |
+| segmented | 3.49 | | progress | 2.43 |
+| stepper | 3.50 | | segmented | 3.09 |
+| button | 4.47 | | | |
+| **avg** | **2.66** | | **avg** | **1.67** |
+
+Known residues:
+
+- **GNOME accent hue**: the oracle machine pins Yaru purple
+  `#7764D8`; the twin paints stock GNOME blue `#3584E4`. Every accent
+  surface differs wholesale (~2.4% on button = the whole OK bezel,
+  ~1.6% on switch = the on-track). Irreducible on this machine;
+  geometry underneath matches.
+- **Stepper width**: the egui NumberInput has no fixed-width mode
+  (sized by its widest value); the native GTK SpinButton sheet was
+  re-rendered at natural width to compare like-for-like.
+- **Fonts**: the egui font port reads glyf only — Cantarell ships as
+  a CFF2 VF, so the oracle vendors a static wght=400 TrueType
+  instance (`oracle/gtk/fonts/truetype/`, produced with fonttools
+  instancer + cu2qu via tmp/otf2ttf.py).
+- Regenerate: `cd oracle/gtk && FONTCONFIG_FILE=.../fonts.conf
+  GDK_BACKEND=x11 DISPLAY=:9 python3 render.py` (Xvfb :9), `make -C
+  oracle/qt` (headless), then `crystal run
+  scripts/make_gnome_oracle_shots.cr` / `make_kde_oracle_shots.cr`,
+  and `python3 oracle/diff_sheets.py gnome kde`.
