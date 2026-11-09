@@ -554,6 +554,21 @@ module Egui
     # write lands directly in the signal — bindings run inside the frame,
     # so no repaint request is needed (the driving event already bought
     # the settle repaints).
+    #
+    # Every form shares ONE skeleton (`signal_form`): add the widget,
+    # push the new value into the signal when it changed this frame,
+    # return the Response. Only the widget construction and the write
+    # line differ per widget — no more hand-copied boilerplate.
+
+    # :nodoc: the shared signal write-back skeleton. The block body
+    # runs only when the widget changed; `response` is in scope.
+    private macro signal_form(widget, &write)
+      response = {{ widget }}
+      if response.changed?
+        {{ write.body }}
+      end
+      response
+    end
 
     def slider(sig : Signal(Float64), range : Range(Float64, Float64),
                text : String? = nil, tips : {String, String}? = nil,
@@ -561,77 +576,69 @@ module Egui
                values : Array(Float64)? = nil,
                ticks : Bool | Symbol = false,
                handle : Symbol = :circle) : Response
-      response = add(Slider.new(sig.value, range, text, tips: tips,
+      signal_form add(Slider.new(sig.value, range, text, tips: tips,
         quantized: quantized, values: values, ticks: ticks,
-        handle: handle))
-      if response.changed? && (v = response.widget_value)
-        sig.value = v
+        handle: handle)) do
+        sig.value = response.widget_value.not_nil!
       end
-      response
     end
 
     def drag_value(sig : Signal(Float64), speed : Float64 = 1.0,
                    prefix : String = "", suffix : String = "",
                    format : (Float64 -> String)? = nil) : Response
-      response = add(DragValue.new(sig.value, speed, prefix, suffix, format))
-      if response.changed? && (v = response.widget_value)
-        sig.value = v
+      signal_form add(DragValue.new(sig.value, speed, prefix, suffix, format)) do
+        sig.value = response.widget_value.not_nil!
       end
-      response
     end
 
     def number_input(sig : Signal(Int32), range : Range(Int32, Int32)? = nil,
                      step : Int32 = 1, prefix : String = "",
                      suffix : String = "") : Response
-      response = add(NumberInput.new(sig.value, range, step, prefix, suffix))
-      if response.changed? && (v = response.widget_value)
-        sig.value = v.to_i32
+      signal_form add(NumberInput.new(sig.value, range, step, prefix, suffix)) do
+        sig.value = response.widget_value.not_nil!.to_i32
       end
-      response
     end
 
     def checkbox(sig : Signal(Bool), text : String) : Response
-      response = add(Checkbox.new(sig.value, text))
-      sig.value = !sig.value if response.changed?
-      response
+      signal_form add(Checkbox.new(sig.value, text)) do
+        sig.value = !sig.value
+      end
     end
 
     def toggle_button(sig : Signal(Bool), text : String? = nil) : Response
-      response = add(ToggleButton.new(sig.value, text))
-      sig.value = !sig.value if response.changed?
-      response
+      signal_form add(ToggleButton.new(sig.value, text)) do
+        sig.value = !sig.value
+      end
     end
 
     def selectable(sig : Signal(Bool), text : String) : Response
-      response = add(SelectableLabel.new(sig.value, text))
-      sig.value = !sig.value if response.changed?
-      response
+      signal_form add(SelectableLabel.new(sig.value, text)) do
+        sig.value = !sig.value
+      end
     end
 
     def text_field(sig : Signal(String), hint : String? = nil,
                    password : Bool = false,
                    cursor_style : Symbol = :line,
                    cursor_blinks : Bool = true) : Response
-      response = add(TextEdit.new(sig.value, hint, password,
-        cursor_style: cursor_style, cursor_blinks: cursor_blinks))
-      if response.changed? && (text = response.widget_text)
-        sig.value = text
+      signal_form add(TextEdit.new(sig.value, hint, password,
+        cursor_style: cursor_style, cursor_blinks: cursor_blinks)) do
+        sig.value = response.widget_text.not_nil!
       end
-      response
     end
 
     def textarea(sig : Signal(String), hint : String? = nil,
                  rows : Int32 = 8, frame : Bool = true,
                  cursor_style : Symbol = :line,
                  cursor_blinks : Bool = true) : Response
-      response = add(TextArea.new(sig.value, hint, rows, frame,
-        cursor_style: cursor_style, cursor_blinks: cursor_blinks))
-      if response.changed? && (text = response.widget_text)
-        sig.value = text
+      signal_form add(TextArea.new(sig.value, hint, rows, frame,
+        cursor_style: cursor_style, cursor_blinks: cursor_blinks)) do
+        sig.value = response.widget_text.not_nil!
       end
-      response
     end
 
+    # The select-shaped exception: ComboBox reports a picked option,
+    # not a changed Response — the block writes the pick directly.
     def combo_box(id : String, sig : Signal(String), options : Array(String),
                   width : Float64? = nil, variant : Symbol = :button,
                   label : String? = nil, overlay : Bool = false,
