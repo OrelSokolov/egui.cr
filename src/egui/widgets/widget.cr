@@ -166,7 +166,8 @@ module Egui
             when 1 then ui.ctx.stylesheet.resolve(paths.first, state)
             else        ui.ctx.stylesheet.resolve_chain(paths, state)
             end
-      merge_element_override(ui.ctx, id, state, bag)
+      bag = merge_element_override(ui.ctx, id, state, bag)
+      apply_keyframes(bag, ui, id)
     end
 
     # The ONE per-element overlay merge (id rules over the class bag,
@@ -183,6 +184,35 @@ module Egui
       else
         bag
       end
+    end
+
+    # --- @keyframes (plans/NativeHTML.md §7) --------------------------
+    #
+    # A rule playing an `animation:*` overlays the track's
+    # interpolated values on top of its class+id layers (the resolved
+    # bag is cached, so the overlay goes onto a fresh copy — the
+    # per-frame interpolation never poisons the cache). The inline
+    # `#style` layer still outranks the overlay (a deliberate
+    # deviation from CSS, where animations sit above normal inline
+    # declarations — SPEC.md §5). `prefers-reduced-motion` skips the
+    # overlay entirely. fill-mode is "none": during the delay and
+    # after a finite run finishes, the base cascade values apply.
+    private def apply_keyframes(bag : StyleVars, ui : Ui, id : Id) : StyleVars
+      return bag if ui.ctx.reduced_motion?
+      spec = Keyframes::Spec.from_vars(bag)
+      return bag unless spec
+      track = ui.ctx.stylesheet.keyframe_track?(spec.name)
+      return bag unless track && track.any?
+      ev = ui.ctx.memory.keyframe_anims.evaluate(id, spec, ui.ctx.input.time)
+      ui.ctx.request_repaint if ev.running
+      prog = ev.progress
+      return bag unless prog
+      overlay = track.vars_at(prog)
+      return bag if overlay.empty?
+      merged = StyleVars.new
+      merged.merge!(bag)
+      merged.merge!(overlay)
+      merged
     end
 
     # Style-driven sizing (plans/responsive-mobile.md Этап 2): apply

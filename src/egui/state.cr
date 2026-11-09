@@ -339,6 +339,78 @@ module Egui
     end
   end
 
+  # @keyframes playback state (plans/NativeHTML.md §7): per-widget-id
+  # start times and pause bookkeeping. The track data and the timing
+  # live in the rule (`Keyframes::Spec`); this only remembers WHEN a
+  # given id started playing it (a spec change restarts, like CSS).
+  class KeyframeAnims
+    private class Run
+      property spec : Keyframes::Spec
+      property start : Float64
+      property paused_at : Float64?
+
+      def initialize(@spec : Keyframes::Spec, @start : Float64)
+        @paused_at = nil
+      end
+    end
+
+    @runs = {} of Id => Run
+
+    def initialize
+    end
+
+    # Where the animation stands for `id` at `time` (seconds):
+    # `running` is true while a future frame changes something (the
+    # caller requests repaints); `progress` is the eased,
+    # direction-applied track position in 0..1, nil while in delay or
+    # after a finite run finished (CSS fill-mode none — the base
+    # cascade values apply again).
+    def evaluate(id : Id, spec : Keyframes::Spec,
+                 time : Float64) : Keyframes::Eval
+      run = @runs[id]?
+      if run.nil? || !run.spec.same_run?(spec)
+        run = @runs[id] = Run.new(spec, time)
+      else
+        # A play-state toggle or easing retune refreshes in place —
+        # no restart (see Spec#same_run?).
+        run.spec = spec
+      end
+      # Pause bookkeeping: while paused the clock reads the FROZEN
+      # moment (progress holds); resuming shifts the start so the
+      # paused span never counts as elapsed time.
+      if spec.paused
+        run.paused_at = time if run.paused_at.nil?
+        clock = run.paused_at.not_nil!
+      else
+        if (pa = run.paused_at)
+          run.start += time - pa
+          run.paused_at = nil
+        end
+        clock = time
+      end
+      active = clock - run.start - spec.delay
+      return Keyframes::Eval.new(true, nil) if active < 0.0
+      return Keyframes::Eval.new(false, nil) if spec.duration <= 0.0
+      cycle = active / spec.duration
+      if spec.iterations >= 0.0 && cycle >= spec.iterations
+        return Keyframes::Eval.new(false, nil)
+      end
+      raw = cycle - cycle.floor
+      eased = Easing.apply(spec.easing, raw)
+      prog = case spec.direction
+             when "reverse"          then 1.0 - eased
+             when "alternate"        then cycle.floor.to_i.even? ? eased : 1.0 - eased
+             when "alternate-reverse" then cycle.floor.to_i.even? ? 1.0 - eased : eased
+             else eased
+             end
+      Keyframes::Eval.new(true, prog.clamp(0.0, 1.0))
+    end
+
+    def reset : Nil
+      @runs.clear
+    end
+  end
+
   class StyleAnimations
     private class Cell(T)
       property from : T

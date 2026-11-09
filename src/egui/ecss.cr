@@ -100,6 +100,9 @@ module Egui
         # One bucket per DISTINCT media condition, declaration order —
         # same {path → StyleClass} shape as the unconditional rules.
         @media = [] of {MediaCond, Hash(String, StyleClass)}
+        # Named @keyframes tracks (plans/NativeHTML.md §7) — kept
+        # parsed; `Session#apply_doc` writes them into the stylesheet.
+        @keyframes = {} of String => KeyframeTrack
         # The version this document was parsed from / will be written
         # as (`@ecss vN;`). Files without the directive parse as the
         # current version (v1 predates the directive).
@@ -109,6 +112,7 @@ module Egui
       getter classes : Hash(String, StyleClass)
       getter elements : Hash(UInt64, ElementEntry)
       getter media : Array({MediaCond, Hash(String, StyleClass)})
+      getter keyframes : Hash(String, KeyframeTrack)
       # Written by .parse_version (the `@ecss vN;` directive) — outside
       # code reads it, only the parser sets it.
       getter version : Int32
@@ -244,6 +248,16 @@ module Egui
           end
           io << "}\n"
         end
+        @keyframes.keys.sort.each do |name|
+          track = @keyframes[name]
+          io << '\n' << "@keyframes " << name << " {\n"
+          track.stops.each do |pos, vars|
+            label = pos <= 0.0 ? "from" : pos >= 1.0 ? "to"
+              : "#{(pos * 100).round.to_i}%"
+            write_rule(io, label, vars, "  ")
+          end
+          io << "}\n"
+        end
         @elements.values.sort_by(&.target).each do |entry|
           write_rule(io, "##{entry.target}", entry.vars) unless entry.vars.empty?
           entry.states.keys.sort.each do |state|
@@ -320,6 +334,20 @@ module Egui
             warn "missing '}' — the rest of the file is ignored"
             close = size
           end
+          # `@keyframes name { from { … } to { … } }` — nested braces,
+          # so the block ends at the MATCHING close, not the next one.
+          if selector.downcase.starts_with?("@keyframes")
+            kclose = match_brace(text, brace)
+            if kclose.nil?
+              warn "@keyframes block without matching '}' — ignored"
+              break
+            end
+            parse_keyframes(doc, selector[10..].strip,
+              text[(brace + 1)...kclose])
+            break if kclose >= size
+            pos = kclose + 1
+            next
+          end
           if selector.downcase.starts_with?("@media")
             cond = selector[6..].strip
             if (parsed = MediaCond.parse(cond))
@@ -347,6 +375,53 @@ condition — block ignored"
       # `@ecss v1;` / `@ecss 2` — stamp the document version; a version
       # newer than this build warns (the lenient parse continues —
       # unknown future syntax is skipped, files are live-edited).
+      # Index of the '}' matching the '{' at `open` (depth-counted);
+      # nil when unclosed.
+      private def self.match_brace(text : String, open : Int32) : Int32?
+        depth = 0
+        (open...text.size).each do |i|
+          c = text[i]
+          depth += 1 if c == '{'
+          depth -= 1 if c == '}'
+          return i if depth.zero? && c == '}'
+        end
+        nil
+      end
+
+      # The frames of an @keyframes block: "from"/"to"/"N%" selectors,
+      # each with a plain declaration body.
+      private def self.parse_keyframes(doc : Doc, name : String,
+                                       body : String) : Nil
+        if name.empty?
+          warn "@keyframes without a name — ignored"
+          return
+        end
+        pos = 0
+        frames = {} of String => StyleVars
+        size = body.size
+        loop do
+          pos = skip_blank(body, pos)
+          break if pos >= size
+          brace = body.index('{', pos)
+          if brace.nil?
+            warn "@keyframes #{name}: trailing text without '{' — ignored"
+            break
+          end
+          label = body[pos...brace].strip
+          close = body.index('}', brace + 1) || size
+          vars = StyleVars.new
+          each_decl(body[(brace + 1)...close]) { |k, v| vars[k] = v }
+          frames[label] = vars unless label.empty? || vars.empty?
+          break if close >= size
+          pos = close + 1
+        end
+        if frames.empty?
+          warn "@keyframes #{name}: no frames — ignored"
+        else
+          doc.keyframes[name] = KeyframeTrack.new(name, frames)
+        end
+      end
+
       private def self.parse_version(doc : Doc, directive : String) : Nil
         body = directive[5..].strip.rstrip(';').lstrip('v').strip
         if (v = body.to_i32?) && v > 0
@@ -572,6 +647,9 @@ explicit id to persist element overrides"
       # key-delete would take the theme's own value down with it.
       @applied_class : Array({String, String?, String, String?, StyleValue?})
       @applied_element : Array({Id, String?, String})
+      # @keyframes tracks this session applied, with the track the
+      # stylesheet had before (nil = none) — the un-apply journal.
+      @applied_keyframes : Array({String, KeyframeTrack?})
 
       def self.enable(ctx : Context, app_id : String) : Session
         # A FLAT file next to the binary — no per-app subdirectory: the
@@ -591,6 +669,7 @@ explicit id to persist element overrides"
         @last_size = -1_i64
         @applied_class = [] of {String, String?, String, String?, StyleValue?}
         @applied_element = [] of {Id, String?, String}
+        @applied_keyframes = [] of {String, KeyframeTrack?}
         return unless File.exists?(@path)
         begin
           remember_stat
@@ -727,6 +806,12 @@ explicit id to persist element overrides"
             apply_element(entry.id, state, vars)
           end
         end
+        @doc.keyframes.each do |name, track|
+          unless @applied_keyframes.any? { |n, _| n == name }
+            @applied_keyframes << {name, @ctx.stylesheet.keyframe_track?(name)}
+          end
+          @ctx.stylesheet.keyframes(name, track)
+        end
       end
 
       private def apply_class(path : String, state : String?,
@@ -787,8 +872,16 @@ explicit id to persist element overrides"
         @applied_element.each do |id, state, key|
           @ctx.clear_id_style(id, key, state)
         end
+        @applied_keyframes.each do |name, prev|
+          if prev
+            @ctx.stylesheet.keyframes(name, prev)
+          else
+            @ctx.stylesheet.remove_keyframes(name)
+          end
+        end
         @applied_class.clear
         @applied_element.clear
+        @applied_keyframes.clear
       end
 
       private def remember_stat : Nil

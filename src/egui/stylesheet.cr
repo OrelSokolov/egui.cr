@@ -653,6 +653,9 @@ module Egui
       @classes = {} of String => StyleClass
       @resolved = {} of {String, String?} => StyleVars
       @media_rules = [] of MediaRuleEntry
+      # Named @keyframes tracks (see KeyframeTrack) — read-time
+      # overlays, never part of the #resolve cache.
+      @keyframes = {} of String => KeyframeTrack
       # The viewport width the media conditions match against, in
       # logical points — set by `Context#begin_frame` from
       # `screen_rect` (headless tests set it directly).
@@ -1001,6 +1004,190 @@ module Egui
         {selector[0...i], selector[(i + 1)..]}
       else
         {selector, nil}
+      end
+    end
+
+    # --- @keyframes (plans/NativeHTML.md §7) --------------------------
+    #
+    # A named track of keyframe stops; rules reference it through the
+    # `animation:*` keys and widgets overlay the interpolated values
+    # on top of the cascade (see `Widget#vars_for`).
+
+    # Define a track by named stops ("from"/"to"/"N%" — from = 0%,
+    # to = 100%). Redefining a name replaces it whole.
+    def keyframes(name : String, frames : Hash(String, StyleVars)) : self
+      @keyframes[name] = KeyframeTrack.new(name, frames)
+      self
+    end
+
+    # The ecss path: an already-built track (Doc keeps them parsed).
+    def keyframes(name : String, track : KeyframeTrack) : self
+      @keyframes[name] = track
+      self
+    end
+
+    def keyframe_track?(name : String) : KeyframeTrack?
+      @keyframes[name]?
+    end
+
+    # Drop a track; returns the previous one (the ecss un-apply
+    # journal restores it). Tracks never feed #resolve, so no cache
+    # invalidation is needed.
+    def remove_keyframes(name : String) : KeyframeTrack?
+      @keyframes.delete(name)
+    end
+
+    # Introspection: every defined track name.
+    def keyframe_names : Array(String)
+      @keyframes.keys.sort
+    end
+  end
+
+  # One `@keyframes` track: stops at normalized positions (0.0..1.0)
+  # with a StyleVars bag each, sorted by position. Interpolation at
+  # `#vars_at`: colors and numbers lerp, everything else switches at
+  # the halfway point (CSS discrete animation).
+  class KeyframeTrack
+    getter name : String
+    getter stops : Array({Float64, StyleVars})
+
+    def initialize(@name : String, frames : Hash(String, StyleVars))
+      @stops = frames.map do |key, vars|
+        pos = case key.downcase
+              when "from", "0%"   then 0.0
+              when "to", "100%"   then 1.0
+              else
+                raw = key.rstrip('%')
+                (raw.to_f64? || -1.0) / 100.0
+              end
+        {pos, vars}
+      end.select { |pos, _| pos >= 0.0 && pos <= 1.0 }
+        .sort_by(&.[0])
+    end
+
+    def any? : Bool
+      !@stops.empty?
+    end
+
+    # The interpolated vars at track position `t` (clamped to 0..1).
+    def vars_at(t : Float64) : StyleVars
+      bag = StyleVars.new
+      return bag if @stops.empty?
+      return bag.merge!(@stops.first[1]) if t <= 0.0 || @stops.size == 1
+      return bag.merge!(@stops.last[1]) if t >= 1.0
+      hi_idx = @stops.index { |pos, _| pos > t } || (@stops.size - 1)
+      lo = @stops[{hi_idx - 1, 0}.max]
+      hi = @stops[hi_idx]
+      span = hi[0] - lo[0]
+      u = span > 0.0 ? (t - lo[0]) / span : 1.0
+      (lo[1].keys | hi[1].keys).each do |key|
+        a = lo[1][key]?
+        b = hi[1][key]?
+        bag[key] = Egui::Keyframes.interpolate(a, b, u)
+      end
+      bag
+    end
+  end
+
+  # The `animation:*` rule vocabulary: what a class rule declares to
+  # play a @keyframes track (durations in the rule are milliseconds).
+  module Keyframes
+    record Eval, running : Bool, progress : Float64?
+
+    # One animation declaration, parsed off a rule's vars. Value
+    # equality — the per-id runner restarts when the spec changes
+    # (a re-declared duration or easing restarts the track, like a
+    # CSS animation name/duration change does).
+    struct Spec
+      getter name : String
+      getter duration : Float64 # seconds
+      getter delay : Float64    # seconds
+      getter iterations : Float64 # -1 = infinite
+      getter direction : String   # normal|reverse|alternate|alternate-reverse
+      getter paused : Bool
+      getter easing : String?
+
+      def initialize(@name, @duration, @delay, @iterations, @direction,
+                     @paused, @easing)
+      end
+
+      # Value equality IGNORING the play state and the easing curve —
+      # toggling `animation.play_state` (or retuning the curve) must
+      # not restart the run; only name/timing/direction changes do
+      # (CSS semantics).
+      def same_run?(other : self) : Bool
+        name == other.name && duration == other.duration &&
+          delay == other.delay && iterations == other.iterations &&
+          direction == other.direction
+      end
+
+      # nil when the rule declares no animation. The `animation`
+      # shorthand is "<name> <duration>" (name first, CSS order);
+      # `animation.<key>` entries refine and override it.
+      def self.from_vars(vars : StyleVars) : Spec?
+        name = vars.str?("animation.name")
+        duration = duration_of(vars["animation.duration"]?)
+        if (shorthand = vars.str?("animation"))
+          tokens = shorthand.split
+          name = tokens[0]? unless tokens.empty?
+          if (d = parse_duration(tokens[1]?))
+            duration = d
+          end
+        end
+        return nil if name.nil? || name.empty?
+        iterations = -1.0
+        unless (v = vars["animation.iterations"]?).is_a?(String) &&
+               v == "infinite"
+          iterations = case v = vars["animation.iterations"]?
+                       when String then v.to_f64? || 1.0
+                       when Float64 then v
+                       when Int32 then v.to_f64
+                       else 1.0
+                       end
+        end
+        new(name,
+          (duration || 0.0) / 1000.0,
+          (duration_of(vars["animation.delay"]?) || 0.0) / 1000.0,
+          iterations,
+          vars.str?("animation.direction") || "normal",
+          vars.str?("animation.play_state") == "paused",
+          vars.str?("animation.easing"))
+      end
+
+      # "300ms"/"2s"/"300" → milliseconds; nil when absent/unknown.
+      private def self.parse_duration(token : String?) : Float64?
+        return nil if token.nil? || token.empty?
+        t = token.downcase
+        if t.ends_with?("ms")
+          t[0...-2].to_f64?
+        elsif t.ends_with?('s')
+          (t[0...-1].to_f64? || return nil) * 1000.0
+        else
+          t.to_f64?
+        end
+      end
+
+      private def self.duration_of(v : StyleValue?) : Float64?
+        case v
+        when String then parse_duration(v)
+        when Float64 then v
+        when Int32 then v.to_f64
+        else nil
+        end
+      end
+    end
+
+    # Interpolate one key between stops: colors and numbers lerp,
+    # other values switch at the halfway point (CSS discrete
+    # animation). A key present on ONE stop snaps to it at u >= 0.5.
+    def self.interpolate(a : StyleValue?, b : StyleValue?,
+                         u : Float64) : StyleValue
+      case {a, b}
+      when {Color32, Color32} then a.lerp(b, u)
+      when {Float64, Float64} then a + (b - a) * u
+      when {Int32, Int32}     then (a + (b - a) * u).round.to_i32
+      else
+        u < 0.5 ? (a || b).not_nil! : (b || a).not_nil!
       end
     end
   end

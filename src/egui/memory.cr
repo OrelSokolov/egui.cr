@@ -70,6 +70,9 @@ module Egui
     # Cascade-driven transitions (`transition` style keys) — see
     # StyleAnimations (plans/animations.md Ур.1).
     getter style_animations : StyleAnimations
+    # @keyframes playback state — see KeyframeAnims
+    # (plans/NativeHTML.md §7).
+    getter keyframe_anims : KeyframeAnims
     getter open_popups : Set(Id)
     getter duplicate_ids : Array(Id)
     # Tooltip hover-start times, kept outside IdTypeMap on purpose: the
@@ -195,6 +198,7 @@ module Egui
       @focus = Focus.new
       @animations = AnimationManager.new
       @style_animations = StyleAnimations.new
+      @keyframe_anims = KeyframeAnims.new
       @open_popups = Set(Id).new
     @popups_opened_this_frame = Set(Id).new
     @tooltip_starts = {} of Id => Float64

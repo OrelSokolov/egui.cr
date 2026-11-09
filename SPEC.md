@@ -130,6 +130,17 @@ is the parameter form).
 
 Deviations (🔶):
 
+- `@keyframes` overlay sits UNDER the inline `#style` layer (CSS puts
+  animations above normal inline declarations). fill-mode is "none":
+  during the delay and after a finite run the base cascade applies
+  again. In ecss the `animation` shorthand is quoted
+  (`animation: "fadeIn 300ms"` — bare values with spaces don't parse);
+  `animation.name:`/`animation.duration:` work bare. Wired keys:
+  `animation` (shorthand), `animation.name/duration/delay/iterations/
+  direction/play_state/easing` (iterations accepts `"infinite"`;
+  direction normal/reverse/alternate/alternate-reverse). NOT wired:
+  `animation.fill` (fill-mode none is the only behavior), per-stop
+  easing functions.
 - `sub`/`sup`: 0.75em size only — the engine does not shift baselines.
 - `mark`: text tinted with the selection color — no background runs.
 - `fieldset`: legend renders inside the frame's first row, not on the
@@ -152,4 +163,4 @@ Deviations (🔶):
 | video | example-level (examples/video) — engine promotion ⏳ |
 | svg, lottie, icons | ✅ |
 | first frame (exml codegen) | ⏳ plan §6 |
-| `@keyframes` | ⏳ plan §7 |
+| `@keyframes` | ✅ `animation:*` rule keys + `StyleSheet#keyframes` / ecss `@keyframes` blocks (deviations §5) |
