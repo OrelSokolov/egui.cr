@@ -162,5 +162,5 @@ Deviations (🔶):
 | audio | ✅ (system port + minaudio) |
 | video | example-level (examples/video) — engine promotion ⏳ |
 | svg, lottie, icons | ✅ |
-| first frame (exml codegen) | ⏳ plan §6 |
+| first frame (exml codegen) | ✅ Route A: `egui-gen` (scripts/egui_gen.cr) emits the literal Node tree; `Document.hybrid` picks live file (dev) → literals (release) |
 | `@keyframes` | ✅ `animation:*` rule keys + `StyleSheet#keyframes` / ecss `@keyframes` blocks (deviations §5) |
