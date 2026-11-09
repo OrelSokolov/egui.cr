@@ -371,17 +371,6 @@ module Egui
       add(Button.new(text, id: id))
     end
 
-    # A block-level button filling the region's width — the Windows
-    # dialog idiom, where `#button` is the inline (content-hugging)
-    # one. `height` overrides the 40pt default.
-    def big_button(text : String, height : Float64 = 40.0,
-                   icon : Svg? = nil, rounding : Float64? = nil) : Response
-      btn = Button.new(text).min_size(Vec2.new(available_width, height))
-      btn.icon(icon) if icon
-      btn.rounding(rounding) if rounding
-      add(btn)
-    end
-
     # egui `ui.checkbox(&mut bool, text)` — Crystal keeps the value in
     # app state; the block fires with the new value on toggle, and
     # `Response#changed?` reports the same on the returned Response.
