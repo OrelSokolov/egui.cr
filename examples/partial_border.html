@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>per-side borders — CSS reference</title>
+<style>
+  :root {
+    --panel: #262626;
+    --surface: #3a3a3a;
+    --border: #707070;
+    --text: #d6d6d6;
+    --accent-blue: #118ad6;
+    --accent-orange: #ff8800;
+  }
+  html, body {
+    margin: 0;
+    background: var(--panel);
+    color: var(--text);
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  .panel {
+    max-width: 540px;
+    margin: 0 auto;
+    padding: 24px 20px;
+  }
+  h2 { font-size: 18px; margin: 0 0 4px; color: #f0f0f0; }
+  .note { color: #9a9a9a; margin: 0 0 12px; }
+  section { margin-bottom: 24px; }
+  hr { border: none; border-top: 1px solid #444; margin: 20px 0; }
+
+  /* --- code API section: the ui.box equivalents ------------------- */
+  .box { background: var(--surface); margin: 0 0 10px; padding: 8px 12px; }
+
+  .top-only {
+    border-style: solid none none none;   /* THE case from the chat */
+    border-top-width: 1px; border-color: var(--border);
+  }
+  .bottom-only {
+    border-style: none none solid none;
+    border-bottom-width: 3px; border-color: var(--border);
+  }
+  .left-only {
+    border-style: none none none solid;
+    border-left-width: 3px; border-color: var(--border);
+  }
+
+  /* --- standard widgets: class rules ------------------------------- */
+  .btn {
+    font: inherit; color: var(--text);
+    background: #454545;
+    border: solid var(--border);
+    border-width: 0 1px 2px 1px;         /* top off, bottom 2px */
+    border-bottom-color: var(--accent-blue);
+    border-radius: 4px;
+    padding: 6px 16px; margin: 0 8px 8px 0; cursor: pointer;
+  }
+  .btn:hover { background: #555; }
+  .field {
+    font: inherit; color: var(--text);
+    background: #2e2e2e;
+    border: solid var(--border);
+    border-width: 1px 1px 1px 3px;       /* accent left bar */
+    border-left-color: var(--accent-orange);
+    border-radius: 4px;
+    padding: 7px 10px; width: 260px;
+  }
+  .field::placeholder { color: #7d7d7d; }
+
+  /* --- rounded corners ---------------------------------------------- */
+  .round-tr {
+    background: var(--surface);
+    border-style: solid solid none none; /* top + right only */
+    border-width: 1px 1px 0 0;
+    border-color: var(--border);
+    border-radius: 8px;
+    padding: 8px 12px; margin-bottom: 10px;
+  }
+  .round-bl {
+    background: var(--surface);
+    border-style: none none solid solid; /* bottom + left only */
+    border-width: 0 0 4px 4px;
+    border-color: var(--border);
+    border-radius: 8px;
+    padding: 8px 12px;
+  }
+</style>
+</head>
+<body>
+<div class="panel">
+
+  <section>
+    <h2>Per-side borders — code API</h2>
+    <p class="note">ui.box stroke_width: StyleBox (solid none none none)</p>
+    <div class="box top-only">top only</div>
+    <div class="box bottom-only">bottom only, 3px</div>
+    <div class="box left-only">left only, 3px</div>
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Stylesheet rules (standard widgets)</h2>
+    <p class="note">button { stroke_width.top: 0; stroke_width.bottom: 2 }</p>
+    <div>
+      <button class="btn">One</button>
+      <button class="btn">Two</button>
+      <button class="btn">Three</button>
+    </div>
+    <p class="note">text_edit { stroke_width.left: 3; stroke.left: orange }</p>
+    <input class="field" placeholder="accent left bar">
+  </section>
+
+  <hr>
+
+  <section>
+    <h2>Rounded corners</h2>
+    <p class="note">a corner ring needs both adjacent sides on</p>
+    <div class="round-tr">top + right, rounding 8</div>
+    <div class="round-bl">bottom + left, 4px</div>
+  </section>
+
+</div>
+</body>
+</html>
