@@ -910,7 +910,7 @@ int egui_cr_glx_want_argb(void);
 // forward: X11 resize synchronization (defined with the other X11
 // helpers below, after the sokol headers).
 static void sh_x11_sync_request_init(void);
-static void sh_x11_sync_request_confirm(void);
+static void sh_x11_sync_request_confirm(int presented_w, int presented_h);
 #endif
 
 #if defined(__ANDROID__)
@@ -1087,7 +1087,7 @@ static void sh_frame_cb(void) {
     // egui_cr_end_pass); sokol swaps right after we return — the frame
     // at the current size is on its way out, so the pending resize can
     // be released (see sh_x11_sync_request_confirm).
-    sh_x11_sync_request_confirm();
+    sh_x11_sync_request_confirm(sapp_width(), sapp_height());
 #endif
 }
 static void sh_cleanup_cb(void){ g_cleanup(); }
@@ -1742,6 +1742,10 @@ static XSyncCounter sh_sync_counter = None;
 static XSyncValue sh_sync_set;            // counter value we last wrote
 static unsigned long long sh_sync_target; // serial the WM asked for
 static int sh_sync_target_seen;
+// sh_now() of the still-unconfirmed target (defined with the atomics
+// below; forward-declared so this section can time the deadline).
+static double sh_now(void);
+static double sh_sync_target_at;
 
 static void sh_x11_sync_request_init(void) {
     Display* dpy = (Display*)sapp_x11_get_display();
@@ -1779,6 +1783,7 @@ void egui_cr_x11_event_hook(XEvent* event) {
         (Atom)cm->data.l[0] != sync_request) return;
     sh_sync_target = (unsigned long long)(uint32_t)cm->data.l[2] |
                      ((unsigned long long)(uint32_t)cm->data.l[3] << 32);
+    sh_sync_target_at = sh_now();
     sh_sync_target_seen = 1;
 }
 
@@ -1787,16 +1792,39 @@ void egui_cr_x11_event_hook(XEvent* event) {
 // is on its way out, so the pending resize can be released. XSync-
 // SetCounter is fire-and-forget; skipped entirely when no request is
 // outstanding (zero cost on idle frames).
-static void sh_x11_sync_request_confirm(void) {
+//
+// (presented_w, presented_h) is the size of the frame being swapped
+// out — the packet's framebuffer on the detached path, the live window
+// on the legacy one. The counter is released only when that frame
+// matches the CURRENT window size: until then the WM must not grow the
+// window past content that already exists, which is what keeps an
+// expanding resize free of the unbacked strip (the engine leads, the
+// window follows). A 100 ms deadline releases the hold anyway — a
+// stalled frame producer must not freeze an interactive resize (the
+// WM's own watchdog is far blunter: mutter waits a full second, then
+// stops syncing the window altogether).
+static void sh_x11_sync_request_confirm(int presented_w, int presented_h) {
     if (!sh_sync_counter || !sh_sync_target_seen) return;
     unsigned long long set = (unsigned long long)(uint32_t)XSyncValueLow32(sh_sync_set) |
                              ((unsigned long long)(uint32_t)XSyncValueHigh32(sh_sync_set) << 32);
     if (sh_sync_target == set) return;
+    Display* dpy = (Display*)sapp_x11_get_display();
+    if (!dpy) return;
+    if (presented_w > 0 && presented_h > 0 &&
+        (presented_w != sapp_width() || presented_h != sapp_height()) &&
+        sh_now() - sh_sync_target_at < 0.1) {
+        if (getenv("EGUI_FRAME_DEBUG"))
+            fprintf(stderr, "[sync] hold resize: presented %dx%d, window %dx%d\n",
+                    presented_w, presented_h, sapp_width(), sapp_height());
+        return; // frame not at the WM's size yet — hold the resize step
+    }
+    if (getenv("EGUI_FRAME_DEBUG") && sh_sync_target_seen)
+        fprintf(stderr, "[sync] release resize at %dx%d%s\n", presented_w,
+                presented_h,
+                sh_now() - sh_sync_target_at >= 0.1 ? " (deadline)" : "");
     XSyncValue value;
     XSyncIntsToValue(&value, (int)(uint32_t)sh_sync_target,
                      (int)(uint32_t)(sh_sync_target >> 32));
-    Display* dpy = (Display*)sapp_x11_get_display();
-    if (!dpy) return;
     XSyncSetCounter(dpy, sh_sync_counter, value);
     sh_sync_set = value;
 }
@@ -4429,7 +4457,16 @@ void egui_cr_drop_payload_free(void* payload) {
     sh_drop_payload_free((sh_drop_payload_t*)payload);
 }
 
+// Time of the last RESIZED event (R thread only — event_cb and
+// frame_cb both run there). While fresh, sh_rt_frame waits a few ms
+// for A's real-size packet instead of presenting a stale-size frame.
+static double g_rsz_at = -1e9;
+
 static void sh_rt_event_cb(const sapp_event* ev) {
+    // Stamp interactive resizes (R thread): frame_cb runs after event
+    // processing in the same tick, and sh_rt_frame uses the stamp to
+    // wait for A's real-size packet — see the resize draw-sync there.
+    if (ev->type == SAPP_EVENTTYPE_RESIZED) g_rsz_at = sh_now();
     sh_event_rec_t rec;
     memset(&rec, 0, sizeof rec);
     rec.type = (int)ev->type;
@@ -4661,6 +4698,9 @@ static sh_packet_t* g_build;    // A-side builder (between publishes)
 static sh_packet_t* g_pkt;      // mailbox slot: latest, maybe unconsumed
 static sh_packet_t* g_pkt_last; // R-owned: replay source
 static sh_mutex g_pkt_mx = SH_MUTEX_STATIC_INIT;
+static sh_cond g_pkt_cv;        // signalled on publish: R's resize wait
+static int g_pkt_cv_ready;      // lazy init under g_pkt_mx (no static
+                                // CONDITION_VARIABLE initializer on Win32)
 static float g_pkt_ppp = 1.0f;  // ppp for the packet being built (A)
 
 static void sh_packet_free(sh_packet_t* p) {
@@ -4790,6 +4830,8 @@ static void egui_cr_pkt_publish(void) {
         sh_texops_splice(&p->post, &p->post_n, &p->post_cap, post, post_n);
     }
     g_pkt = p;
+    if (!g_pkt_cv_ready) { sh_cv_init(&g_pkt_cv); g_pkt_cv_ready = 1; }
+    sh_cv_signal(&g_pkt_cv);
     sh_mx_unlock(&g_pkt_mx);
     if (getenv("EGUI_FRAME_DEBUG") && p->pre_n)
         fprintf(stderr, "[pkt] publish+splice pre=%d (first kind=%d id=%u)\n",
@@ -4964,36 +5006,43 @@ static void sh_tex_run(const sh_texop_t* op) {
 // ---- R-side replay ------------------------------------------------------------
 
 static void sh_ensure_pipelines(void);
+static void sh_resize_dbg_check(sh_packet_t* pkt); // EGUI_RESIZE_DBG=1
 
-static void sh_replay(sh_packet_t* p) {
-    sh_ensure_pipelines();
-    sh_sampler_ensure();
-    sh_white_tex_ensure();
-    sg_begin_pass(&(sg_pass){
-        .swapchain = sglue_swapchain(),
-        .action = {
-            .colors[0] = {
-                .load_action = SG_LOADACTION_CLEAR,
-                .clear_value = { p->clear[0], p->clear[1], p->clear[2], p->clear[3] },
-            },
-        },
-    });
+// One replay pass of the packet's op stream. `vp_w/vp_h` is the GL
+// viewport (window px); the ortho always spans the packet's POINT space,
+// so a viewport larger than the packet magnifies the content — that
+// mapping is what the edge-fill passes use, clipped to the exposed
+// strip. `strip` (0 none, 1 right, 2 bottom) forces a scissor to the
+// exposed region and ignores the packet's own scissors (their scaled
+// rects would un-clip the pass).
+static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
+    float sx = (float)vp_w / (float)p->fb_w;
+    float sy = (float)vp_h / (float)p->fb_h;
     float w = (float)p->fb_w / p->ppp;
     float h = (float)p->fb_h / p->ppp;
-    sgl_viewport(0, 0, p->fb_w, p->fb_h, true);
+    sgl_viewport(0, 0, vp_w, vp_h, true);
     sgl_matrix_mode_projection();
     sgl_load_identity();
     sgl_ortho(0.0f, w, h, 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
+    if (strip == 1) { // right: window px right of the packet's edge
+        sgl_scissor_rectf((float)p->fb_w, 0.0f,
+                          (float)vp_w - (float)p->fb_w, (float)vp_h, true);
+    } else if (strip == 2) { // bottom: full width below the packet's edge
+        sgl_scissor_rectf(0.0f, (float)p->fb_h,
+                          (float)vp_w, (float)vp_h - (float)p->fb_h, true);
+    }
 
     const uint32_t* op = p->ops;
     const uint32_t* end = p->ops + p->ops_len;
     while (op < end) {
         switch (*op++) {
         case SH_OP_SCISSOR:
-            sgl_scissor_rectf(sh_u2f(op[0]), sh_u2f(op[1]), sh_u2f(op[2]),
-                              sh_u2f(op[3]), true);
+            if (!strip) {
+                sgl_scissor_rectf(sh_u2f(op[0]) * sx, sh_u2f(op[1]) * sy,
+                                  sh_u2f(op[2]) * sx, sh_u2f(op[3]) * sy, true);
+            }
             op += 4;
             break;
         case SH_OP_PIPE: {
@@ -5046,9 +5095,9 @@ static void sh_replay(sh_packet_t* p) {
             int count = (int)op[21];
             op += 22;
             sh_draw_mesh3d(mvp, flags & 1, (flags >> 1) & 1,
-                           vx, vy, vw, vh, count,
-                           (const unsigned char*)op,
-                           p->fb_w, p->fb_h, p->ppp);
+                           (int)(vx * sx), (int)(vy * sy),
+                           (int)(vw * sx), (int)(vh * sy), count,
+                           (const unsigned char*)op, vp_w, vp_h, p->ppp);
             op += (size_t)count * 4;
             break;
         }
@@ -5057,9 +5106,92 @@ static void sh_replay(sh_packet_t* p) {
             break;
         }
     }
+}
+
+static void sh_replay(sh_packet_t* p) {
+    sh_ensure_pipelines();
+    sh_sampler_ensure();
+    sh_white_tex_ensure();
+    sg_begin_pass(&(sg_pass){
+        .swapchain = sglue_swapchain(),
+        .action = {
+            .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { p->clear[0], p->clear[1], p->clear[2], p->clear[3] },
+            },
+        },
+    });
+    // Base pass: the packet 1:1 at its own size (GL clips it to the
+    // window when the window shrank).
+    sh_replay_pass(p, p->fb_w, p->fb_h, 0);
+    // Resize bridge (window grew past the packet — A's real-size frame is
+    // still a doorbell roundtrip away; sh_rt_frame's draw-sync wait
+    // usually closes that gap, this covers the misses): re-render the
+    // packet magnified over the full window, SCISSORED to the exposed
+    // strips. The content itself stays 1:1 — only its outermost slice
+    // smears into the new region, so there is no whole-frame dolly zoom
+    // (the v2 full-stretch read as one) and no unbacked strip for the
+    // compositor to paint black. Shrink needs no fill: the 1:1 pass
+    // already covers the window.
+    int cw = sapp_width(), ch = sapp_height();
+    if (cw > 0 && ch > 0 && (cw > p->fb_w || ch > p->fb_h)) {
+        if (cw > p->fb_w) sh_replay_pass(p, cw, ch, 1);
+        if (ch > p->fb_h) sh_replay_pass(p, cw, ch, 2);
+    }
+    sh_resize_dbg_check(p);
     sgl_draw();
     sg_end_pass();
     sg_commit();
+    sh_resize_dbg_check(p);
+}
+
+// --- resize diagnostics (EGUI_RESIZE_DBG=1) -----------------------------
+// Prints the live sokol window size vs the presented packet's size every
+// tick, and when they disagree paints the unbacked strip (the pixels a
+// compositor would otherwise flash black) RED on top of the frame — the
+// exact mismatch frame is then visible, not inferred. Called at the end
+// of sh_replay (the detached path, where replay-vs-window mismatches
+// exist; the legacy path draws and swaps at one size by construction).
+static int sh_rsz_dbg = -1;
+static void sh_resize_dbg_check(sh_packet_t* pkt) {
+    if (sh_rsz_dbg < 0) sh_rsz_dbg = getenv("EGUI_RESIZE_DBG") ? 1 : 0;
+    if (!sh_rsz_dbg) return;
+    int cw = sapp_width(), ch = sapp_height();
+    if (pkt->fb_w == cw && pkt->fb_h == ch) {
+        fprintf(stderr, "[rsz] window %dx%d  packet %dx%d\n", cw, ch,
+                pkt->fb_w, pkt->fb_h);
+        return;
+    }
+    fprintf(stderr, "[rsz] window %dx%d  packet %dx%d  MISMATCH\n", cw, ch,
+            pkt->fb_w, pkt->fb_h);
+    // Runs INSIDE sh_replay's pass (before sgl_draw): re-map to the
+    // full-stretch space (viewport = window, ortho = packet points) and
+    // accumulate red quads over the exposed strips; the frame's own
+    // sgl_draw() submits them with everything else.
+    float pw = (float)pkt->fb_w / pkt->ppp, ph = (float)pkt->fb_h / pkt->ppp;
+    float ww = (float)cw / pkt->ppp, wh = (float)ch / pkt->ppp;
+    sgl_viewport(0, 0, cw, ch, true);
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, pw, ph, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_scissor_rectf(0.0f, 0.0f, (float)cw, (float)ch, true);
+    sgl_disable_texture();
+    sgl_begin_quads();
+    if (ww > pw) { // right strip: tl, tr, br, bl (same order as #quad)
+        sgl_v2f_c4b(pw, 0, 255, 0, 0, 255);
+        sgl_v2f_c4b(ww, 0, 255, 0, 0, 255);
+        sgl_v2f_c4b(ww, wh, 255, 0, 0, 255);
+        sgl_v2f_c4b(pw, wh, 255, 0, 0, 255);
+    }
+    if (wh > ph) { // bottom strip
+        sgl_v2f_c4b(0, ph, 255, 0, 0, 255);
+        sgl_v2f_c4b(ww, ph, 255, 0, 0, 255);
+        sgl_v2f_c4b(ww, wh, 255, 0, 0, 255);
+        sgl_v2f_c4b(0, wh, 255, 0, 0, 255);
+    }
+    sgl_end();
 }
 
 // ---- R render tick (called from sokol's frame callback) ------------------------
@@ -5140,6 +5272,35 @@ static void sh_rt_frame(void) {
         }
     }
 
+    // Resize draw-sync: the WM applied a new size this tick (event_cb
+    // stamped g_rsz_at; A was doorbelled the same moment) and the last
+    // packet is stale. Wait for a packet AT THE CURRENT WINDOW SIZE —
+    // not just any packet: A is usually mid-produce of an old-size
+    // frame when the resize lands, and that stale publish would end the
+    // wait early and present a mismatched frame (the whole-frame-stretch
+    // era's permanent dolly zoom). Deadline keeps the present cadence;
+    // on a miss sh_replay's edge-fill covers the exposed strip.
+    if (g_pkt_last && sh_now() - g_rsz_at < 0.2 &&
+        (g_pkt_last->fb_w != sapp_width() || g_pkt_last->fb_h != sapp_height())) {
+        double budget = 0.012; // ms — fits the vsync frame with margin
+        const char* wms = getenv("EGUI_RESIZE_WAIT_MS");
+        if (wms) {
+            double v = atof(wms);
+            if (v >= 0.0 && v <= 50.0) budget = v / 1000.0;
+        }
+        if (budget > 0.0) {
+            double deadline = sh_now() + budget;
+            sh_mx_lock(&g_pkt_mx);
+            for (;;) {
+                if (g_pkt && g_pkt->fb_w == sapp_width() &&
+                    g_pkt->fb_h == sapp_height()) break;
+                if (sh_cv_wait_until(&g_pkt_cv, &g_pkt_mx, deadline) != 0)
+                    break; // timeout (or spurious) — present what we have
+            }
+            sh_mx_unlock(&g_pkt_mx);
+        }
+    }
+
     sh_mx_lock(&g_pkt_mx);
     sh_packet_t* fresh = g_pkt;
     g_pkt = NULL;
@@ -5187,6 +5348,13 @@ static void sh_rt_init_cb(void) {
     sh_on_render_thread = 1;
     if (g_borderless) egui_cr_set_decorations(0);
     if (g_transparent) egui_cr_set_transparent();
+#if defined(_SAPP_LINUX)
+    // EWMH resize sync on the detached path too (see the section above):
+    // without the counter the WM never throttles itself to the engine's
+    // present rate, and an interactive resize runs ahead of the frames —
+    // the expanding-window black band. Legacy wires this in sh_init_cb.
+    sh_x11_sync_request_init();
+#endif
     egui_cr_gfx_init();     // sg_setup + sgl_setup — GL objects on R
     egui_cr_text_pipeline_init();
     sh_ensure_pipelines();
@@ -5197,6 +5365,18 @@ static void sh_rt_frame_cb(void) {
     egui_cr_wd_on_frame_begin();
     sh_rt_frame();
     egui_cr_wd_on_frame_end();
+#if defined(_SAPP_LINUX)
+    // EWMH resize sync, detached flavor: the replay is STRETCHED over
+    // the live window (see sh_replay's resize bridge), so the frame
+    // being swapped out is always complete and window-sized — release
+    // the pending resize step on every present (classic GTK semantics:
+    // the WM may apply the next step; content catches up stretched for
+    // a frame or two). No packet yet → 0x0 skips the size check and
+    // releases unconditionally (the young window's clear pass is
+    // full-size anyway).
+    sh_x11_sync_request_confirm(
+        g_pkt_last ? sapp_width() : 0, g_pkt_last ? sapp_height() : 0);
+#endif
     // Present-ack: sokol swaps right after this callback returns, so
     // this byte lands ~one present later. It paces A's frame
     // production to the actual present rate (the display's vsync) —
