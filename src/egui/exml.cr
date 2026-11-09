@@ -109,14 +109,14 @@ module Egui
     # the vocabulary is open per application, no module edits needed.
     enum Kind
       Page; Modal; MenuBar; Menu; MenuItem; Central; Statusbar
-      Row; Column; Heading; Label; Button; Slider; Checkbox
+      Row; Column; Box; Heading; Label; Button; Slider; Checkbox
       Separator; Progress; Input; Textarea; Combo; Custom
       Partial; Use; Repeat; Markdown
     end
 
     CONTAINERS = {Kind::Page, Kind::Modal, Kind::MenuBar, Kind::Menu,
                   Kind::Central, Kind::Statusbar, Kind::Row, Kind::Column,
-                  Kind::Repeat}
+                  Kind::Box, Kind::Repeat}
 
     # Element-name → Kind (enum `parse?` is case-sensitive and has no
     # idea about aliases, so the map carries both). "exml" is the
@@ -129,6 +129,7 @@ module Egui
       "central" => Kind::Central, "central_panel" => Kind::Central,
       "statusbar" => Kind::Statusbar, "bottom_panel" => Kind::Statusbar,
       "row" => Kind::Row, "column" => Kind::Column,
+      "box" => Kind::Box,
       "heading" => Kind::Heading, "label" => Kind::Label,
       "button" => Kind::Button, "slider" => Kind::Slider,
       "checkbox" => Kind::Checkbox, "separator" => Kind::Separator,
@@ -189,6 +190,14 @@ module Egui
       getter repeat_for : String?
       getter repeat_in : String?
       getter repeat_key : String?
+      # box
+      getter box_row : Bool
+      getter box_wrap : Bool
+      getter box_fill : Color32?
+      getter box_stroke : Color32?
+      getter box_rounding : Float64
+      getter box_padding : Float64?
+      getter box_class : String?
 
       @children_under : Hash(String, Array(Node))? = nil
 
@@ -221,6 +230,13 @@ module Egui
         @repeat_for = @attrs["for"]?
         @repeat_in = @attrs["in"]?
         @repeat_key = @attrs["key"]?
+        @box_row = @attrs["direction"]? == "row"
+        @box_wrap = @attrs["wrap"]? != "false"
+        @box_fill = Exml.parse_box_color(@attrs["fill"]?)
+        @box_stroke = Exml.parse_box_color(@attrs["border"]?)
+        @box_rounding = @attrs["rounding"]?.try(&.to_f?) || 6.0
+        @box_padding = @attrs["padding"]?.try(&.to_f?)
+        @box_class = @attrs["class"]?
       end
 
       def container? : Bool
@@ -239,6 +255,22 @@ module Egui
     end
 
     # ── parser ─────────────────────────────────────────────────────────
+
+    # `fill=`/`border=` color for `<box>`: #rgb / #rrggbb / #rrggbbaa,
+    # parsed once at Node build time (nil for absent or malformed —
+    # the linter flags the malformed ones at validate time).
+    def self.parse_box_color(s : String?) : Color32?
+      return nil unless s
+      return nil unless s.starts_with?('#')
+      hex = s[1..]
+      hex = hex.chars.map { |c| "#{c}#{c}" }.join if hex.size == 3
+      return nil unless hex.size == 6 || hex.size == 8
+      vals = hex.chars.map { |c| c.to_i?(16) || (return nil) }
+      pair = ->(i : Int32) { vals[i] * 16 + vals[i + 1] }
+      a = hex.size == 8 ? pair.call(6).to_u8 : 255u8
+      Color32.new(pair.call(0).to_u8, pair.call(2).to_u8,
+        pair.call(4).to_u8, a)
+    end
 
     # Parses markup into a Document. Lenient like the ECSS parser: a
     # half-typed live-edited file costs a STDERR warning and a skipped
@@ -654,6 +686,7 @@ module Egui
       Kind::Statusbar => %w(),
       Kind::Row       => %w(),
       Kind::Column    => %w(),
+      Kind::Box       => %w(direction wrap border fill padding rounding class),
       Kind::Heading   => %w(text),
       Kind::Label     => %w(text live),
       Kind::Button    => %w(text on_click),
@@ -746,6 +779,23 @@ module Egui
       when .label?
         if (v = node.attrs["live"]?) && !%w(true false).includes?(v)
           issues << "#{node.path}: live=#{v.inspect} must be true/false"
+        end
+      when .box?
+        if (v = node.attrs["direction"]?) && !%w(row column).includes?(v)
+          issues << "#{node.path}: direction=#{v.inspect} must be row/column"
+        end
+        if (v = node.attrs["wrap"]?) && !%w(true false).includes?(v)
+          issues << "#{node.path}: wrap=#{v.inspect} must be true/false"
+        end
+        %w(padding rounding).each do |a|
+          if (v = node.attrs[a]?) && v.to_f?.nil?
+            issues << "#{node.path}: #{a}=#{v.inspect} is not a number"
+          end
+        end
+        %w(fill border).each do |a|
+          if (v = node.attrs[a]?) && Exml.parse_box_color(v).nil?
+            issues << "#{node.path}: #{a}=#{v.inspect} is not a #rrggbb color"
+          end
         end
       end
 
@@ -1113,6 +1163,14 @@ module Egui
           ui.horizontal { |h| node.children.each { |c| render(c, h, ctx, rt) } }
         in .column?
           node.children.each { |c| render(c, ui, ctx, rt) }
+        in .box?
+          margin = node.box_padding.try { |p| Vec2.new(p, p) }
+          ui.box(node.box_row ? :row : :column,
+            wrap: node.box_wrap, fill: node.box_fill,
+            stroke: node.box_stroke, rounding: node.box_rounding,
+            margin: margin, style_class: node.box_class) do |b|
+            node.children.each { |c| render(c, b, ctx, rt) }
+          end
         in .heading?
           ref_set(node, ui.heading(text_of(node, rt)))
         in .label?

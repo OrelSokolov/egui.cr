@@ -1008,28 +1008,67 @@ module Egui
       end
     end
 
-    # egui `Frame::show` — a padded, painted panel around a block of
-    # contents. Reserve a paint slot, lay the children out inside the
-    # margin, then back-paint the frame under them (the #window trick).
-    # In an up-flowing region the frame's inner region is semi-infinite
-    # UPWARD: the contents start at the flow line (minus the bottom
-    # margin) and grow above it — the dialogue bubble anchored on the
-    # flow line.
-    def frame(fill : Color32? = nil, stroke : Color32? = nil,
-              rounding : Float64 = 6.0, margin : Vec2? = nil,
-              stroke_width : Float64 = 1.0, &block : Ui ->) : Rect
-      m = margin || style.spacing.window_padding
+    # `ui.box` — THE generic container ("div"): one entry point over
+    # the shared core that #scope/#frame/#horizontal specialize.
+    # `direction` picks the children's flow (`:column` — the default —
+    # like #scope, `:row` like #horizontal, wrap included), `style_class`
+    # runs the children under a style scope (#with_style_scope —
+    # `box(style_class: "card")` styles everything inside under
+    # "card.*" in ECSS), and fill/stroke/rounding/margin paint chrome
+    # under the contents (the #frame trick; margin defaults to the
+    # window padding only when chrome is requested, else zero — a
+    # plain div has no padding). Returns the outer rect.
+    def box(direction : Symbol = :column, wrap : Bool = true,
+            fill : Color32? = nil, stroke : Color32? = nil,
+            rounding : Float64 = 6.0, margin : Vec2? = nil,
+            stroke_width : Float64 = 1.0, style_class : String? = nil,
+            &block : Ui ->) : Rect
+      painted = fill || stroke
+      m = margin || (painted ? style.spacing.window_padding : Vec2.new(0.0, 0.0))
       bg_index = painter.add_noop
+      row = direction == :row
 
       w = {@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max
-      inner = if @layout.bottom_up?
-        Rect.new(Pos2.new(@cursor.x + m.x, @cursor.y - m.y - 1e6),
-          Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y))
-      else
-        Rect.from_min_size(@cursor + m, Vec2.new(w, 1e6))
+      child =
+        if @layout.bottom_up?
+          if row
+            # Up flow: the row hugs the flow line from ABOVE (#horizontal)
+            row_ui = child_ui(Rect.new(
+              Pos2.new(@cursor.x + m.x, @max_rect.min.y),
+              Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y)),
+              layout: Layout.left_to_right)
+            row_ui.cross_up = true
+            row_ui.cursor = Pos2.new(@cursor.x + m.x, @cursor.y - m.y)
+            row_ui
+          else
+            child_ui(Rect.new(
+              Pos2.new(@cursor.x + m.x, @cursor.y - m.y - 1e6),
+              Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y)))
+          end
+        else
+          # A row inside a HORIZONTAL parent is a line-break block
+          # (#horizontal): start on a fresh full-width line below.
+          origin = if row && @layout.horizontal?
+            Pos2.new(@max_rect.min.x,
+              @cursor.y + @row_h + style.spacing.item_spacing.y)
+          else
+            @cursor
+          end
+          child_ui(Rect.from_min_size(origin + m, Vec2.new(w, 1e6)),
+            layout: row ? Layout.left_to_right
+              : (@layout.bottom_up? ? Layout.bottom_up : Layout.top_down))
+        end
+      if row
+        child.wrap_x = wrap
+        # Assume something interactive on a row so short widgets share
+        # a common center line (#horizontal's seeding).
+        child.seed_row_height(style.spacing.interact_size.y)
       end
-      child = child_ui(inner)
-      yield child
+      if (sc = style_class)
+        child.with_style_scope(sc) { |c| yield c }
+      else
+        yield child
+      end
 
       outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
       outer = Rect.new(
@@ -1039,12 +1078,23 @@ module Egui
       @cursor = @layout.advance(@cursor, outer.size,
         style.spacing.item_spacing)
       @min_rect = min_rect
+      @row_h = 0.0 if row && @layout.horizontal?
 
-      if fill || stroke
+      if painted
         painter.set(bg_index,
           RectCmd.new(painter.clip, outer, rounding, fill, stroke, stroke_width))
       end
       outer
+    end
+
+    # egui `Frame::show` — a padded, painted panel around a block of
+    # contents: #box with column flow and the window padding default.
+    def frame(fill : Color32? = nil, stroke : Color32? = nil,
+              rounding : Float64 = 6.0, margin : Vec2? = nil,
+              stroke_width : Float64 = 1.0, &block : Ui ->) : Rect
+      box(:column, fill: fill, stroke: stroke, rounding: rounding,
+        margin: margin || style.spacing.window_padding,
+        stroke_width: stroke_width, &block)
     end
 
     # egui `ui.horizontal(|ui| …)`: a child Ui laying out left→right on
