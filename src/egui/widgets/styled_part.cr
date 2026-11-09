@@ -112,17 +112,5 @@ module Egui
         StyleVars.new
       end
     end
-
-    private def merge_element_override(ctx : Context, id : Id,
-                                       state : String?, class_vars : StyleVars) : StyleVars
-      if (ov = ctx.id_style_state_vars(id, state))
-        merged = StyleVars.new
-        merged.merge!(class_vars)
-        merged.merge!(ov)
-        merged
-      else
-        class_vars
-      end
-    end
   end
 end

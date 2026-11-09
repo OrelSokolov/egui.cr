@@ -83,32 +83,37 @@ module Egui
     end
 
     # Effective style = the theme's Style with every non-nil override
-    # applied. Returns a copy; the theme is never mutated.
+    # applied. Returns a copy; the theme is never mutated. The key →
+    # Style-slot mapping lives in ONE place (`StyleVars#apply_over`) —
+    # this builds a bag from the non-nil fields and runs it through
+    # the same merge the class rules use; only `button_padding` (a
+    # Vec2, outside the StyleValue vocabulary) maps by hand.
     def merge_over(base : Style) : Style
-      merged = base.clone
-      v = merged.visuals
+      vars = StyleVars.new
       if (c = @text_color)
-        v.text_color = c
+        vars["text_color"] = c
       end
       if (c = @stroke)
-        v.button_stroke = c
+        vars["stroke"] = c
       end
       if (c = @selection_fill)
-        v.selection_fill = c
+        vars["selection_fill"] = c
       end
       if (c = @separator_color)
-        v.separator_color = c
+        vars["separator_color"] = c
       end
       if (c = @hyperlink_color)
-        v.hyperlink_color = c
+        vars["hyperlink_color"] = c
       end
       if (c = @font_size)
-        merged.font_size = c
+        vars["font_size"] = c
       end
       if (c = @font_family)
-        merged.font_family = c
+        vars["font_family"] = c
       end
+      merged = vars.apply_over(base)
       if (c = @button_padding)
+        merged = merged.clone if vars.empty?
         merged.spacing.button_padding = c
       end
       merged

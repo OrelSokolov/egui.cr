@@ -685,7 +685,7 @@ module Egui
     # viewport matches (see `#viewport_width=`).
     def rule(selector : String,
              vars : Hash(String, StyleValue), media : String? = nil) : self
-      path, state = split_selector(selector)
+      path, state = StyleSheet.split_selector(selector)
       if media
         if (cond = MediaCond.parse(media))
           @media_rules << MediaRuleEntry.new(cond, path, state,
@@ -796,7 +796,7 @@ module Egui
     # unknown selectors are no-ops. With `media` the key is removed
     # from that media rule instead (same spelling as `#rule`).
     def unset(selector : String, key : String, media : String? = nil) : self
-      path, state = split_selector(selector)
+      path, state = StyleSheet.split_selector(selector)
       if media
         if (cond = MediaCond.parse(media))
           @media_rules.each do |entry|
@@ -813,6 +813,36 @@ module Egui
         else
           cls.vars.delete(key)
         end
+      end
+      @resolved.clear
+      self
+    end
+
+    # Cancel rules declared for `selector` — the mirror of `#rule`:
+    # drop the inherited declaration instead of re-declaring it with
+    # local values (a platform theme removing a default-theme media
+    # rule it disagrees with, e.g. GNOME dropping the touch-metrics
+    # button rule so the 34pt bezel holds at any width). With `media`
+    # only that condition's rules go; without it, every declaration of
+    # the selector (base, states and media-gated) is removed.
+    def cancel_rule(selector : String, media : String? = nil) : self
+      path, state = StyleSheet.split_selector(selector)
+      if media
+        if (cond = MediaCond.parse(media))
+          @media_rules.reject! do |entry|
+            entry.cond == cond && entry.path == path && entry.state == state
+          end
+          refresh_media_matches
+        else
+          STDERR.puts "stylesheet: unsupported media condition " \
+                      "#{media.inspect} — cancel #{selector.inspect} ignored"
+        end
+      else
+        if (cls = @classes[path]?)
+          state ? cls.states.delete(state) : @classes.delete(path)
+        end
+        @media_rules.reject! { |e| e.path == path && e.state == state }
+        refresh_media_matches
       end
       @resolved.clear
       self
@@ -964,7 +994,9 @@ module Egui
     end
 
     # "sidebar.tab:hover" → {"sidebar.tab", "hover"}.
-    private def split_selector(selector : String) : {String, String?}
+    # The ONE selector splitter of the cascade (the ecss `Doc`
+    # delegates here — no parallel implementation).
+    def self.split_selector(selector : String) : {String, String?}
       if (i = selector.rindex(':'))
         {selector[0...i], selector[(i + 1)..]}
       else

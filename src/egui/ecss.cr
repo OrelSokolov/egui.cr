@@ -125,12 +125,10 @@ module Egui
       end
 
       # "button:hover" → {"button", "hover"}; "button" → {"button", nil}.
+      # Delegates to `StyleSheet.split_selector` — the ONE splitter of
+      # the cascade (this used to be a byte-identical copy).
       def self.split_selector(selector : String) : {String, String?}
-        if (i = selector.rindex(':'))
-          {selector[0...i], selector[(i + 1)..]}
-        else
-          {selector, nil}
-        end
+        StyleSheet.split_selector(selector)
       end
 
       # Merge one key into a class rule (creating the class on first

@@ -197,11 +197,10 @@ module Egui
     end
 
     # The accent "default" push button (macOS key-equivalent \r look):
-    # blue bezel, white label. The colors are pinned per ELEMENT as
-    # well: class state rules (`button:hover/:active`) sit ABOVE
-    # inline styles in the cascade and would gray the bezel on
-    # press — the element layer (`ctx.set_id_style`) outranks them,
-    # so the accent + white text survive every state.
+    # blue bezel, white label. The inline `#style` alone survives every
+    # state — the cascade contract puts inline ABOVE class rules
+    # (inline beats `:hover`, CSS `style="…"` semantics), so no
+    # per-element pinning is needed.
     def self.default_button(ui : Ui, text : String,
                             id : String? = nil) : Response
       btn = Button.new(text, id: id)
@@ -210,13 +209,7 @@ module Egui
         s.text_color = Color32.rgb(255, 255, 255)
         s.stroke = ACCENT
       end
-      response = ui.add(btn)
-      ctx = ui.ctx
-      ctx.set_id_style(response.id, "background", ACCENT)
-      ctx.set_id_style(response.id, "text_color",
-        Color32.rgb(255, 255, 255))
-      ctx.set_id_style(response.id, "stroke", ACCENT)
-      response
+      ui.add(btn)
     end
   end
 end

@@ -215,17 +215,17 @@ module Egui
       end
 
       # CSS-like state resolution: ONE `background` key whose value for
-      # the widget's live state comes from the cascade (element
-      # override → inline `#style` → class base/:hover/:active rules →
-      # theme slots) — see `Widget#background_color`. The stroke rides
-      # the same state bag (a `button:hover { stroke }` rule applies
-      # while hovered).
+      # the widget's live state comes from the cascade (inline `#style`
+      # → element override → class base/:hover/:active rules → theme
+      # slots) — see `Widget#background_color`. The stroke rides the
+      # SAME order (`Widget#cascade_color`): inline beats a
+      # `button:hover { stroke }` rule like CSS `style="…"`.
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
       state_vars = style_vars(ui, id, state)
       fill = background_color(ui, id, state,
         response.hovered?, response.active?)
-      stroke_color = state_vars.color?("stroke") ||
-                     style.visuals.button_stroke
+      stroke_color = cascade_color("stroke", ui, id, state,
+        style.visuals.button_stroke)
       stroke_color = transition_color("stroke", stroke_color,
         state_vars, ui, id)
       # Per-side borders (`stroke_width.top: 0`, `stroke.left: 3` …)
@@ -268,9 +268,9 @@ module Egui
           stroke_color: stroke_color, stroke_width: 1.0,
           stroke_sides: sides)
       elsif (grad = @gradient) && !response.active?
-        own = ui.ctx.id_style_state_vars(id, state)
-          .try(&.color?("background")) ||
-          @style_override.try(&.background)
+        own = @style_override.try(&.background) ||
+              ui.ctx.id_style_state_vars(id, state)
+                .try(&.color?("background"))
         top = own ? fill : grad[0]
         ui.painter.rect(rect, rounding: rounding, fill: top, fill2: grad[1],
           stroke_color: stroke_color, stroke_width: 1.0,

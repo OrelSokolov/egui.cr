@@ -97,6 +97,17 @@ module Egui
     property scrollbar_fill : Color32?
     property scrollbar_arrow : Color32?
     property scrollbar_track : Color32?
+    # --- the documented internal fallback layer -----------------------
+    # The cascade contract's lowest layer is the theme, and inside the
+    # theme a fixed fallback chain resolves unset niche slots — a
+    # documented INTERNAL layer, not a cascade rule (user-agent
+    # defaults with dependencies, spelled out so no widget redoes
+    # them by hand):
+    #   text_selection  = text_selection_fill || selection_fill
+    #   focus_ring      = focus_ring_fill    || text_selection
+    #   button_fill     = button_active | button_hovered | button_weak
+    #   (scrollbar/arrow glyphs ride the button_* slots)
+
     # Selection/accent fill (upstream `Visuals::selection.bg_fill`) —
     # progress bar fill, slider handle, hyperlinks.
     property selection_fill : Color32

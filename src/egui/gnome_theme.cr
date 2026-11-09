@@ -78,18 +78,9 @@ module Egui
       })
       # The default theme ships touch-media button metrics (14/16
       # padding, 15pt font — the 44pt target). A GNOME look keeps the
-      # 34pt bezel at any width: re-declare the media rule with the
-      # desktop metrics so narrow viewports don't grow the buttons.
-      sheet.rule("button", StyleVars{
-        "padding.top"    => 9.0,
-        "padding.bottom" => 9.0,
-        "padding.left"   => 14.0,
-        "padding.right"  => 14.0,
-        "font_size"      => 11.0,
-        "rounding"       => 6.0,
-        "background"     => Color32.rgb(231, 231, 231),
-        "stroke"         => Color32.rgb(222, 222, 222),
-      }, media: DefaultTheme::MOBILE_MAX)
+      # 34pt bezel at any width: CANCEL the media rule instead of
+      # re-declaring it — the desktop rule above then holds everywhere.
+      sheet.cancel_rule("button", media: DefaultTheme::MOBILE_MAX)
 
       # Checkboxes/radios: 19pt box, #DEDEDE ring, ~4.5pt rounding;
       # UNchecked fill is the window bg itself (native Adwaita leaves
@@ -179,11 +170,10 @@ module Egui
     end
 
     # The accent "suggested-action" push button (Adwaita's filled
-    # call-to-action): blue bezel, white label. The colors are pinned
-    # per ELEMENT as well: class state rules (`button:hover/:active`)
-    # sit ABOVE inline styles in the cascade and would gray the bezel
-    # on press — the element layer (`ctx.set_id_style`) outranks them,
-    # so the accent + white text survive every state.
+    # call-to-action): blue bezel, white label. The inline `#style`
+    # alone survives every state — the cascade contract puts inline
+    # ABOVE class rules (inline beats `:hover`, CSS `style="…"`
+    # semantics), so no per-element pinning is needed.
     def self.suggested_button(ui : Ui, text : String,
                               id : String? = nil) : Response
       btn = Button.new(text, id: id)
@@ -192,13 +182,7 @@ module Egui
         s.text_color = Color32.rgb(255, 255, 255)
         s.stroke = ACCENT
       end
-      response = ui.add(btn)
-      ctx = ui.ctx
-      ctx.set_id_style(response.id, "background", ACCENT)
-      ctx.set_id_style(response.id, "text_color",
-        Color32.rgb(255, 255, 255))
-      ctx.set_id_style(response.id, "stroke", ACCENT)
-      response
+      ui.add(btn)
     end
   end
 end

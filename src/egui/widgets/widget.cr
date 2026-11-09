@@ -166,7 +166,16 @@ module Egui
             when 1 then ui.ctx.stylesheet.resolve(paths.first, state)
             else        ui.ctx.stylesheet.resolve_chain(paths, state)
             end
-      if (ov = ui.ctx.id_style_state_vars(id, state))
+      merge_element_override(ui.ctx, id, state, bag)
+    end
+
+    # The ONE per-element overlay merge (id rules over the class bag,
+    # state value over base) — shared by `Widget#style_vars` and the
+    # paint-in-place `StyledPart`s so both stack the layers identically.
+    protected def merge_element_override(ctx : Context, id : Id,
+                                         state : String?,
+                                         bag : StyleVars) : StyleVars
+      if (ov = ctx.id_style_state_vars(id, state))
         merged = StyleVars.new
         merged.merge!(bag)
         merged.merge!(ov)
@@ -255,33 +264,55 @@ module Egui
         transition_easing?(key, vars))
     end
 
-    # The CSS-like `background` of a state-painted widget, resolved
-    # from its live interaction `state` ("active"/"hover"/nil) through
-    # the cascade — one key, no per-state duplicates:
+    # The cascade's explicit value for `key` at this state, resolved
+    # through the ONE layer order every key shares (the NativeHTML
+    # cascade contract — the order never depends on the key):
     #
-    #   1. per-element inspector override (state value over base);
-    #   2. the inline `#style` background (flat — inline-style
-    #      semantics, CSS `style="background: …"`);
+    #   1. the inline `#style` override (flat — CSS `style="…"`
+    #      semantics: inline beats `:hover`);
+    #   2. the per-element inspector override (`id_style_state_vars`,
+    #      state value over base);
     #   3. the class chain's rules (`StyleSheet#resolve_chain`) — a
     #      `:hover`/`:active` rule beats the class base value, a
-    #      scoped path beats the base class;
-    #   4. the theme's state slots (`Visuals#button_fill`) — the
-    #      user-agent default with built-in per-state colors.
-    # The cascade's explicit value for `key` at this state — per-element
-    # inspector override → inline `#style` (the `background` slot) →
-    # class-chain rules. nil when only the theme slot applies.
-    # `#background_color` adds the theme fallback and the `transition`
-    # animation on top of this for the `background` key.
+    #      scoped path beats the base class.
+    # nil when only the theme slot applies — `#background_color` adds
+    # the theme fallback and the `transition` animation for the
+    # `background` key, callers add their own slot fallbacks.
     protected def cascade_color?(key : String, ui : Ui, id : Id,
                                  state : String?) : Color32?
-      if (oc = ui.ctx.id_style_state_vars(id, state).try(&.color?(key)))
+      if (inline = inline_style_color?(key))
+        inline
+      elsif (oc = ui.ctx.id_style_state_vars(id, state).try(&.color?(key)))
         oc
-      elsif key == "background" && (ic = @style_override.try(&.background))
-        ic
       else
         paths = class_paths(ui.style_scope)
         paths.empty? ? nil :
           ui.ctx.stylesheet.resolve_chain(paths, state).color?(key)
+      end
+    end
+
+    # Same as #cascade_color? with a theme-slot fallback rolled in —
+    # the full inline → id → class → theme resolution in one call.
+    protected def cascade_color(key : String, ui : Ui, id : Id,
+                                state : String?,
+                                fallback : Color32) : Color32
+      cascade_color?(key, ui, id, state) || fallback
+    end
+
+    # The widget's inline `#style` value for a color key, mapped
+    # through the same vocabulary `StyleVars#apply_over` uses (nil =
+    # the key is not overridden inline).
+    private def inline_style_color?(key : String) : Color32?
+      ws = @style_override
+      return nil unless ws
+      case key
+      when "background"      then ws.background
+      when "stroke"          then ws.stroke
+      when "text_color"      then ws.text_color
+      when "selection_fill"  then ws.selection_fill
+      when "separator_color" then ws.separator_color
+      when "hyperlink_color" then ws.hyperlink_color
+      else nil
       end
     end
 
@@ -306,27 +337,26 @@ module Egui
     end
 
     # The effective Style with the full cascade applied:
-    # theme → class rules (`class_vars`) → this widget's `#style`
-    # overrides → the inspector's per-element override (`id`,
-    # `Context#id_style_overrides` — base keys only here; the
-    # state-scoped `background` goes through #background_color).
-    # Every layer is a copy — the theme is never mutated; widgets
-    # without any layer share the theme object itself, no per-widget
-    # copying.
+    # theme → class rules (`class_vars`) → the inspector's per-element
+    # override (`id`, `Context#id_style_overrides` — base keys only
+    # here; the state-scoped `background` goes through
+    # #background_color) → this widget's `#style` overrides (inline —
+    # the top layer, CSS `style="…"` semantics). Every layer is a copy
+    # — the theme is never mutated; widgets without any layer share
+    # the theme object itself, no per-widget copying.
     protected def effective_style(ui : Ui, id : Id? = nil,
                                   class_vars : StyleVars? = nil) : Style
       base = ui.style
       if class_vars && !class_vars.empty?
         base = class_vars.apply_over(base)
       end
+      if id && (ov = ui.ctx.id_style_state_vars(id, nil))
+        base = ov.apply_over(base)
+      end
       if (ws = @style_override)
         base = ws.merge_over(base)
       end
-      if id && (ov = ui.ctx.id_style_state_vars(id, nil))
-        base = ov.apply_over(base)
-      else
-        base
-      end
+      base
     end
   end
 end

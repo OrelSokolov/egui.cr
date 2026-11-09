@@ -65,32 +65,27 @@ describe "widget inspector" do
     ctx.inspector.meta_for(Egui::Id.from("save")).should be_nil
   end
 
-  it "per-element override changes the button fill, beating class rule and inline style" do
+  it "per-element override changes the button fill, beating the class rule" do
     ctx = Egui::Context.new
     red = Egui::Color32.rgb(255, 0, 0)
-    green = Egui::Color32.rgb(0, 255, 0)
     blue = Egui::Color32.rgb(0, 0, 255)
-    # class rule blue + inline green — inline should win…
+    # class rule blue; the element override red outranks it. (An inline
+    # `#style` background would outrank red in turn — the cascade
+    # contract inline > id > class > theme, covered in
+    # cascade_order_spec.cr — so no inline style here.)
     ctx.stylesheet.rule("button", Egui::StyleVars{"background" => blue})
 
-    button_fill = nil
     raw = Egui::RawInput.new(INSP_SCREEN, [] of Egui::Event, 0.016)
     ctx.begin_frame(raw)
     ctx.window("w") do |ui|
-      ui.add(Egui::Button.new("OK", id: "save").style do |s|
-        s.background = green
-      end)
+      ui.add(Egui::Button.new("OK", id: "save"))
     end
     ctx.end_frame
-    cmds = ctx.painter.commands
-    # …and the element override red beats both
     ctx.set_id_style(Egui::Id.from("save"), "background", red)
     raw = Egui::RawInput.new(INSP_SCREEN, [] of Egui::Event, 0.032)
     ctx.begin_frame(raw)
     ctx.window("w") do |ui|
-      ui.add(Egui::Button.new("OK", id: "save").style do |s|
-        s.background = green
-      end)
+      ui.add(Egui::Button.new("OK", id: "save"))
     end
     ctx.end_frame
     rects = ctx.painter.commands.select(Egui::RectCmd)
