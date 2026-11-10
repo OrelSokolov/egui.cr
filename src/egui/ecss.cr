@@ -47,7 +47,9 @@
 # stroke_width.left: 0`). Per-side colors ride `stroke.<side>`.
 #
 # Values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`, numbers, `true`/`false`,
-# quoted strings (font families). The parser is deliberately lenient —
+# quoted strings (font families), and the `spring(…)` transition value
+# (`transition: background spring(bouncy)` / `transition: width
+# spring(0.3, 0.8) 50ms`). The parser is deliberately lenient —
 # a half-typed line in a live-edited file must cost a warning on
 # STDERR, not a crash; only the declarations that fully parse apply.
 # Auto-id (`#0x…`) element rules are filtered out with a warning: a
@@ -484,7 +486,18 @@ explicit id to persist element overrides"
             warn "empty property name — \"#{part.strip}\" ignored"
             next
           end
-          if (value = parse_value(part[(ci + 1)..].strip))
+          vs = part[(ci + 1)..].strip
+          # `transition: background spring(bouncy)` — the CSS-shorthand
+          # spelling: a bare leading identifier names the key the
+          # spring applies to (recorded as the per-key
+          # `transition.background`, exactly what the value reader
+          # expects).
+          if key == "transition" &&
+             (split = Spring::Spec.split_shorthand(vs))
+            key = "transition.#{split[0]}"
+            vs = split[1]
+          end
+          if (value = parse_value(vs))
             yield key, value
           end
         end
@@ -498,11 +511,25 @@ explicit id to persist element overrides"
         when s.starts_with?('#') then parse_color(s)
         when s.starts_with?('"')
           parse_string(s)
+        when s == "spring" || s.starts_with?("spring(")
+          # The `spring(…)` transition value (plans/NATIVE_HTML_DEMO.md
+          # §3.2) — stored as its canonical spelling, parsed by
+          # `Widget#transition_spring?`.
+          if (spec = Spring::Spec.parse?(s))
+            spec.to_s
+          else
+            warn "bad spring \"#{s}\" — ignored"
+            nil
+          end
         else
           if (n = s.to_f64?)
             n
           elsif s.ends_with?("px") && (n = s[0...s.size - 2].to_f64?)
             n # px is the default unit — a plain number, back-compat
+          elsif time_value?(s)
+            s # a time spelling ("80ms", "0.08s") — kept raw; readers
+              # like AppearAnims.delay_from parse it (plain numbers
+              # elsewhere mean milliseconds)
           elsif (l = StyleLength.parse?(s))
             l
           elsif (kw = bare_keyword?(s))
@@ -556,6 +583,15 @@ explicit id to persist element overrides"
           return nil
         end
         s
+      end
+
+      # "80ms" / "0.08s" — a number with a time unit (a bare number is
+      # matched earlier and means milliseconds wherever a duration is
+      # expected). Kept as the raw string spelling.
+      private def self.time_value?(s : String) : Bool
+        return false unless s.ends_with?("ms") || s.ends_with?('s')
+        body = s.ends_with?("ms") ? s[0...s.size - 2] : s[0...s.size - 1]
+        !body.empty? && !body.to_f64?.nil?
       end
 
       private def self.hex_val(c : Char) : Int32?

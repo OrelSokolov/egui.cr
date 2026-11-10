@@ -160,6 +160,129 @@ describe "style transitions" do
     f.r.should be > 0
     f.r.should be < 100
   end
+
+  it "ecss parses spring values, including the <key> shorthand" do
+    doc = Egui::Ecss::Doc.parse(<<-ECSS)
+      button {
+        transition: background spring(bouncy);
+        transition.width: spring(0.3, 0.8) 50ms;
+      }
+      chip { transition: spring(smooth); }
+    ECSS
+    vars = doc.class_vars("button", nil).not_nil!
+    # The compound value lands as the per-key `transition.background`
+    # with the canonical spelling.
+    vars["transition.background"].should eq "spring(bouncy)"
+    vars["transition.width"].should eq "spring(0.3, 0.8) 50ms"
+    # The bare shorthand stays `transition` (every key).
+    doc.class_vars("chip", nil).not_nil!["transition"]
+      .should eq "spring(smooth)"
+    # Round trip: the written file re-parses to the same values.
+    io = IO::Memory.new
+    doc.to_s(io)
+    Egui::Ecss::Doc.parse(io.to_s)
+      .class_vars("button", nil).not_nil!["transition.width"]
+      .should eq "spring(0.3, 0.8) 50ms"
+  end
+
+  it "transition.background spring(bouncy) springs the fill through hover" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "background"             => Egui::Color32.rgb(0, 0, 0),
+      "transition.background"  => "spring(bouncy)",
+    })
+    ctx.stylesheet.rule("button:hover", Egui::StyleVars{
+      "background" => Egui::Color32.rgb(200, 0, 0),
+    })
+
+    t = 0.0
+    rect = nil
+    btn = nil
+    trans_frame(ctx, t += 0.016) do |c|
+      c.central_panel do |ui|
+        btn = ui.add(Egui::Button.new("OK", id: "save"))
+        rect = btn.not_nil!.rect
+      end
+    end
+
+    center = Egui::Pos2.new(rect.not_nil!.center.x, rect.not_nil!.center.y)
+    probe = TransProbe.new
+    fills = [] of Egui::Color32
+    trans_frame(ctx, t += 0.016,
+        [Egui::Event.pointer_moved(center)]) do |c|
+      c.central_panel do |ui|
+        ui.add(Egui::Button.new("OK", id: "save"))
+      end
+    end
+    3.times do |i|
+      trans_frame(ctx, t += 0.016,
+          [Egui::Event.pointer_moved(center)]) do |c|
+        c.central_panel do |ui|
+          probe.call(ui, Egui::Id.from("save"), "hover")
+          fills << probe.fill.not_nil!
+          ui.add(Egui::Button.new("OK", id: "save"))
+        end
+      end
+    end
+    # Between base and hover target mid-flight…
+    fills[0].r.should be > 0
+    fills[0].r.should be < 200
+    # …moving (bouncy: not necessarily monotonic per frame, but the
+    # run must still be animating)…
+    fills[0].should_not eq fills[2]
+    # …and it settles exactly at the hover target.
+    60.times do
+      trans_frame(ctx, t += 0.016,
+          [Egui::Event.pointer_moved(center)]) do |c|
+        c.central_panel do |ui|
+          ui.add(Egui::Button.new("OK", id: "save"))
+        end
+      end
+    end
+    trans_frame(ctx, t += 0.016,
+        [Egui::Event.pointer_moved(center)]) do |c|
+      c.central_panel do |ui|
+        probe.call(ui, Egui::Id.from("save"), "hover")
+        fills << probe.fill.not_nil!
+        ui.add(Egui::Button.new("OK", id: "save"))
+      end
+    end
+    fills.last.should eq Egui::Color32.rgb(200, 0, 0)
+  end
+
+  it "transition.width spring animates a declared width without a snap" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "width"             => 100.0,
+      "transition.width"  => "spring(0.3, 0.8)",
+    })
+
+    t = 0.0
+    widths = [] of Float64
+    trans_frame(ctx, t += 0.016) do |c|
+      c.central_panel do |ui|
+        widths << ui.add(Egui::Button.new("OK")).rect.width
+      end
+    end
+    widths.last.should eq 100.0 # first sighting snaps
+
+    ctx.stylesheet.rule("button", Egui::StyleVars{"width" => 220.0})
+    trans_frame(ctx, t += 0.016) do |c|
+      c.central_panel do |ui|
+        widths << ui.add(Egui::Button.new("OK")).rect.width
+      end
+    end
+    # The retarget frame already glides (the spring steps at once —
+    # no easing-style hold at the start value), but does not snap.
+    widths.last.should be > 100.0
+    widths.last.should be < 220.0
+    trans_frame(ctx, t += 0.016) do |c|
+      c.central_panel do |ui|
+        widths << ui.add(Egui::Button.new("OK")).rect.width
+      end
+    end
+    widths.last.should be > widths[-2] # still moving
+  end
 end
 
 # A minimal button-like widget exposing background_color for probing.

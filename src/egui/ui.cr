@@ -1023,13 +1023,18 @@ module Egui
     # per-side `StyleBox` (`StyleBox.new(top: 1, left: 3)` — CSS
     # `border-width`), `stroke_sides` additionally carries per-side
     # colors (usually resolved from style keys by
-    # `StyleVars#stroke_sides?`). Returns the outer rect.
+    # `StyleVars#stroke_sides?`). `appear`/`appear_delay` override the
+    # `appear:`/`appear-delay:` style keys with a named transition
+    # played when the box first shows up (see AppearAnims). Returns the
+    # outer rect.
     def box(direction : Symbol = :column, wrap : Bool = true,
             fill : Color32? = nil, stroke : Color32? = nil,
             rounding : Float64 = 6.0, margin : Vec2? = nil,
             stroke_width : Float64 | StyleBox = 1.0,
             style_class : String? = nil,
             stroke_sides : StrokeSides? = nil,
+            appear : String | Symbol? = nil,
+            appear_delay : Float64? = nil,
             &block : Ui ->) : Rect
       sides = stroke_sides ||
               (sw = stroke_width.as?(StyleBox)) && stroke.try do |c|
@@ -1074,34 +1079,83 @@ module Egui
             layout: row ? Layout.left_to_right
               : (@layout.bottom_up? ? Layout.bottom_up : Layout.top_down))
         end
-      if row
-        child.wrap_x = wrap
-        # Assume something interactive on a row so short widgets share
-        # a common center line (#horizontal's seeding).
-        child.seed_row_height(style.spacing.interact_size.y)
+
+      # Appear transition (plans/NATIVE_HTML_DEMO.md §3.2): the whole
+      # subtree — children and the back-patched chrome — paints through
+      # a painter transform while the run plays. The box's rect (the
+      # pivot) exists only after the children have run, so the frame is
+      # pushed with a deferred pivot and popped with `outer`'s center.
+      xf = appear_transform(child, style_class, appear, appear_delay)
+      painter.push_transform(nil, xf[:sx], xf[:sy], xf[:dx], xf[:dy],
+        xf[:opacity]) if xf
+      outer_rect : Rect? = nil
+      begin
+        if row
+          child.wrap_x = wrap
+          # Assume something interactive on a row so short widgets share
+          # a common center line (#horizontal's seeding).
+          child.seed_row_height(style.spacing.interact_size.y)
+        end
+        if (sc = style_class)
+          child.with_style_scope(sc) { |c| yield c }
+        else
+          yield child
+        end
+
+        outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
+        outer = Rect.new(
+          Pos2.new({outer.min.x, @cursor.x}.min, {outer.min.y, @cursor.y}.min),
+          Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
+        min_rect = @min_rect.union(outer)
+        @cursor = @layout.advance(@cursor, outer.size,
+          style.spacing.item_spacing)
+        @min_rect = min_rect
+        @row_h = 0.0 if row && @layout.horizontal?
+
+        if painted
+          painter.set(bg_index,
+            RectCmd.new(painter.clip, outer, rounding, fill, stroke,
+              stroke_width.as?(Float64) || 1.0, nil, sides))
+        end
+        outer_rect = outer
+      ensure
+        painter.pop_transform(outer_rect.try(&.center) || @cursor) if xf
       end
-      if (sc = style_class)
-        child.with_style_scope(sc) { |c| yield c }
+      outer_rect.not_nil!
+    end
+
+    # Resolve and drive the box's appear transition (see AppearAnims):
+    # the explicit `appear`/`appear_delay` arguments beat the cascade,
+    # the cascade resolves the box's own class rule over the global
+    # "*" rule (a theme-wide default). Returns the transform to paint
+    # the subtree with, nil when there is nothing to play. The run is
+    # keyed by the box's child-Ui id and marked used so end-frame
+    # pruning keeps it while the box is emitted (a re-appearance after
+    # the box was gone replays).
+    private def appear_transform(child : Ui, style_class : String?,
+                                 appear : String | Symbol?,
+                                 appear_delay : Float64?) : NamedTuple(sx: Float64, sy: Float64,
+                                                                        dx: Float64, dy: Float64,
+                                                                        opacity: Float64)?
+      return nil if @ctx.reduced_motion?
+      vars : StyleVars? = nil
+      if appear.nil?
+        paths = ["*"] # the theme-global default, least specific
+        paths << style_class if style_class
+        vars = @ctx.stylesheet.resolve_chain(paths)
+        name = vars.str?("appear")
       else
-        yield child
+        name = appear.to_s
       end
-
-      outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
-      outer = Rect.new(
-        Pos2.new({outer.min.x, @cursor.x}.min, {outer.min.y, @cursor.y}.min),
-        Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
-      min_rect = @min_rect.union(outer)
-      @cursor = @layout.advance(@cursor, outer.size,
-        style.spacing.item_spacing)
-      @min_rect = min_rect
-      @row_h = 0.0 if row && @layout.horizontal?
-
-      if painted
-        painter.set(bg_index,
-          RectCmd.new(painter.clip, outer, rounding, fill, stroke,
-            stroke_width.as?(Float64) || 1.0, nil, sides))
-      end
-      outer
+      return nil if name.nil? || name == "none"
+      kind = AppearAnims.kind?(name)
+      return nil unless kind
+      delay = appear_delay || (vars ? AppearAnims.delay_from(vars) : 0.0)
+      xf = @ctx.memory.appear_anims.drive(child.id, kind, delay,
+        @ctx.input.time)
+      @ctx.memory.use_id(child.id)
+      @ctx.request_repaint if xf
+      xf
     end
 
     # egui `Frame::show` — a padded, painted panel around a block of

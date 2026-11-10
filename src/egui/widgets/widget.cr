@@ -280,9 +280,31 @@ module Egui
       vars.str?("easing.#{key}") || vars.str?("easing")
     end
 
+    # The declared spring spec for `key` (nil = the easing path
+    # above): the `spring(…)` transition value — `transition.<key>:
+    # spring(bouncy)` beats the `transition: spring(bouncy)` shorthand
+    # (plans/NATIVE_HTML_DEMO.md §3.2). The vars carry the canonical
+    # spelling as a String; numbers (the ms form) parse as nil. The
+    # compound shorthand (`transition: width spring(…)`, which the
+    # ecss parser rewrites to the per-key form) works here too, so
+    # programmatic rules can use the same spelling.
+    protected def transition_spring?(key : String,
+                                     vars : StyleVars) : Spring::Spec?
+      raw = vars.str?("transition.#{key}") || vars.str?("transition")
+      return nil unless raw
+      if (split = Spring::Spec.split_shorthand(raw)) && split[0] == key
+        raw = split[1]
+      end
+      Spring::Spec.parse?(raw)
+    end
+
     protected def transition_color(key : String, target : Color32,
                                    vars : StyleVars, ui : Ui,
                                    id : Id) : Color32
+      if (spring = transition_spring?(key, vars))
+        return ui.ctx.animate_style_color(id, key, target, 0.0,
+          spring: spring)
+      end
       ui.ctx.animate_style_color(id, key, target, transition_ms?(key, vars),
         transition_easing?(key, vars))
     end
@@ -290,6 +312,10 @@ module Egui
     protected def transition_scalar(key : String, target : Float64,
                                      vars : StyleVars, ui : Ui,
                                      id : Id) : Float64
+      if (spring = transition_spring?(key, vars))
+        return ui.ctx.animate_style_scalar(id, key, target, 0.0,
+          spring: spring)
+      end
       ui.ctx.animate_style_scalar(id, key, target, transition_ms?(key, vars),
         transition_easing?(key, vars))
     end

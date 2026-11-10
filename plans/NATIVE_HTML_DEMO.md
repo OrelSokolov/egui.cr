@@ -58,8 +58,9 @@
 | Raven | egui.cr | Статус |
 |---|---|---|
 | `ui/*.xml` разметка | exml (тот же словарь, §5 NativeHTML) | есть, словарь расширить |
-| `<Widget Name= Params>` + `{expr}` | exml-компоненты: props + `{}`-интерполяция есть | тернарники добавить (~день) |
+| `<Widget Name= Params>` + `{expr}` | exml-компоненты: props + `{}`-интерполяция есть; тернарники НЕ портируем (non-goal), вместо них param-defaults + `if=`/class-интерполяция | param-defaults ~полдня |
 | `<Include Source>` | `<partial>`/`<use>` (parse-time) | есть |
+| `If="{!empty(...)}"` | структурные `if`/`unless` | есть |
 | `Rxml_register_tag` (Icon/Cover/Visualizer/Heading) | `Custom` + реестр хендлеров (§2 NativeHTML) | план есть, формализовать |
 | `Rcustom_set_paint_callback` + Rdraw_rect(r) | painter/painter.cr + canvas | есть |
 | `Rtheme_set_accent` (динамика) | accent-оверрайд поверх темы | **нет** — добавить |
@@ -85,27 +86,47 @@
 
 По убыванию визуального эффекта. Оценки — грубые.
 
-### 3.1 SDF-примитивы (та самая плавность)
+### 3.1 SDF-примитивы (та самая плавность) — ✅ сделано 2026-11-10
 
-Стабильный край при субпиксельном движении: у нас тесселяция (AA
-пересчитывается — края мерцают на медленных анимациях), у Raven —
-аналитический SDF в `ui.frag` (Apache-2.0, прецедент). План: свой
-шейдер-пайплайн в sokol (GL3 тянет, Vulkan не нужен), для набора
-rect/rounded/border/shadow/glyph — квад с flat-атрибутами вместо
-треугольников. Попутно: paint list худеет, градиенты и радиусы —
-параметры инстанса. Это же закрывает Canvas2D Route B (§4.3
-NativeHTML) проще тесселяции.
+Реализовано за два среза, флаг `EGUI_SDF=1` (off по умолчанию),
+`EGUI_SDF_DEBUG=1` — счётчик батчей:
 
-Инфраструктурный прецедент уже в шиме (проверено 2026-11-10):
-кастомные пайплайны существуют (`text_pipeline`, `g_pip_3d` с depth,
-`g_replace_pip` — все через `sgl_make_pipeline`), а `Mesh3DCmd` —
-готовый образец «типизированная команда paint list → свой entry-пойнт
-`egui_cr_mesh3d` в шиме». SDF добавляется по той же схеме: `SdfCmd`
-батчем + `egui_cr_sdf_batch` + шейдер (GL3 instancing есть в GLCORE).
-Текст остаётся на атласе (как у Raven — `PRIM_GLYPH` сэмплирует
-атлас тем же пайплайном). Оценка: 1–2 недели.
+- **Шим**: GLSL-шейдер (sd_round_box, аналитический AA, градиент,
+  бордер, ветка тени с exp(-2t²)-спадом), сырой sg-пайплайн с
+  инстансингом (28 float = 7×vec4 на инстанс, PER_INSTANCE), кольцо
+  инстанс-буферов, пакетный op SH_OP_SDF с реплеем, интерливинг через
+  sgl-слои (raw sg-draw нельзя флашить mid-frame — батч ставится
+  между слоями с сохранением порядка painter'а). Квад half и shape
+  half разделены (тень расширяет квад, не искажая SDF).
+- **Драйвер**: RectCmd (fill/градиент/uniform stroke/per-corner
+  радиусы), ShadowCmd (outset; inset — fallback), CircleCmd → батчи по
+  clip. Несовместимое — старый тесселяционный путь.
+- Проверено: border_radius 1260 / box_shadow 6174 SDF-батчей с
+  флагом, 0 без; A/B RMSE 1.2–1.4% (только край); спеки зелёные.
+- Осталось по §3.1: inset-тени, глифы через SDF-пайплайн, замер
+  выигрыша draw-количества.
 
-### 3.2 Spring-слой анимаций («живость» Raven)
+### 3.2 Spring-слой анимаций («живость» Raven) — ✅ частично 2026-11-10
+
+**Инкремент 1 готов**: `Egui::Spring` (src/egui/spring.cr) — точный
+порт замкнутой формы осциллятора из anim.c (не подшаг — там тоже
+аналитическое решение; frame-rate-независимое), пресеты
+smooth/bouncy/wobbly/snappy, пороги успокоения Raven. Spring-ячейки
+в `Memory#style_animations`, ретаргет без скачка (скорость
+сохраняется). `spring(...)` — значение `transition` в ECSS (включая
+shorthand и delay-суффикс). Спеки spec/spring_spec.cr.
+
+**Инкремент 2 готов**: `Painter#push_transform/pop_transform` (стек
+фреймов, immediate + deferred-режим для `Ui#box` — pivot известен
+только после детей; радиусы/толщины/blur масштабируются, alpha
+умножается, clip и хит-тест не трансформируются — как у Raven).
+`appear:`/`appear-delay:` свойства ECSS (`fade/pop/zoom/fly×4/drop/
+slide×2`, параметры кривых взяты из rvn_transition_begin), reduced-
+motion форсит none. Спеки spec/appear_spec.cr, демо examples/appear.cr.
+
+**Осталось**: paint-пружины на hover/press дефолтами виджетов, exml-
+маппинг атрибутов Raven Appear/AppearDelay, layout-пружины (island/
+панели), ghost закрывающихся попапов, time-step override для тестов.
 
 Модель Raven (`tmp/Raven/src/widget/anim.c`, 319 строк; раздел Animation
 в docs/ARCHITECTURE.md): **пружина** — затухающий осциллятор (значение +
@@ -183,10 +204,20 @@ island/панелей → ghost попапов → reduce-motion/time-step. Оц
 интерполяция `{name}` из store (`Runtime#interpolate`), `bind=`,
 компоненты с props (атрибуты use-site → props, `seed_props`),
 `<partial id>`/`<use partial>` (аналог Raven `<Include>`, parse-time),
-структурные `if`/`unless`. Осталось: тернарники
-`{Active ? 'chip on' : 'chip'}` и функции типа `empty()` в
-интерполяции — мини-набор над store, не expression engine (границы
-§10 NativeHTML соблюдаются). Оценка: ~день.
+структурные `if`/`unless` (= v-if; аналог v-show — `hidden:` из
+универсальной пятёрки).
+
+Тернарники Raven (`{Active ? 'chip on' : 'chip'}`) — НЕ делаем
+(решение 2026-11-10): expression engine — non-goal (§10 NativeHTML),
+а все три реальных использования у Raven закрываются без него:
+класс по состоянию — интерполяция `class="chip {extra}"` (значение
+кладёт Crystal в store) + ECSS state-селекторы; условный ребёнок —
+существующий `if=`/`unless=`; дефолты значений — новая мини-фича
+ниже.
+
+Осталось одно: **param-defaults** — атрибуты определения компонента
+(`<widget TrackRow CornerRadius="8">`) как дефолты, которые use-site
+переопределяет. Parse-time, ноль рантайма. Оценка: ~полдня.
 
 ### 3.7 Реестр кастомных тегов
 
@@ -210,20 +241,22 @@ Notch — macOS-only, отдельно и потом (на Linux-дев-маши
 - Очередь из 2 кадров + копия paint list в пакет (back-pressure,
   модель Raven) — инженерная работа в шиме, после 3.1.
 
-## 4. Порядок работ
+## 4. Порядок работ — статус 2026-11-10
 
-| # | Этап | Результат |
-|---|------|-----------|
-| 1 | Каркас: окно, sidebar, 5 пустых страниц, плеер-состояние, тикер, клавиши, данные `library.cr` | ходячее приложение без красоты |
-| 2 | 3.6 + 3.7: компоненты exml + кастомные теги; страницы размечены, строки/карточки из данных | UI 1 к 1 статично |
-| 3 | 3.5 + темы Nocturne/Aurora/Daylight (ECSS); процедурные обложки + extraction акцента | картинка без эффектов |
-| 4 | 3.1 SDF-примитивы | плавность анимаций |
-| 4b | 3.2 spring-слой: spring-примитив → paint-пружины hover/press → `appear:`/`spring()` в ECSS → layout-пружины island → ghost → reduce-motion | «живость» интерактива |
-| 5 | 3.3 эффекты фона; «Animate» вкл/выкл | фон как у оригинала |
-| 6 | 3.4 glass для Aurora-темы | стеклянный лук |
-| 7 | 3.8 island (+ later notch) | мини-плеер |
-| 8 | 3.9 mailbox + pacing | задержка ввода |
-| 9 | Полировка: notice-таймер, history/Alt+←, empty-состояния, 16 луков поверх своих тем | демо готово |
+| # | Этап | Статус |
+|---|------|--------|
+| 1 | Каркас: окно, sidebar, 5 страниц, плеер-состояние, тикер, клавиши, данные `library.cr` | ✅ examples/music.cr + music_components/library.cr (данные 1:1 с library.c), bin/music, скриншоты tmp/music_*.png |
+| 2 | 3.6 + 3.7: param-defaults (~полдня) + хендлеры тегов демо | ✅ частично: реестр тегов уже был; param-defaults и хендлеры Icon/Cover/Visualizer/Heading — не начаты |
+| 3 | 3.5 + темы Nocturne/Aurora/Daylight; процедурные обложки + extraction акцента | обложки ✅ (в демо); акцент-оверрайд и темы — не начаты |
+| 4 | 3.1 SDF-примитивы | ✅ Rect/Shadow(outset)/Circle, флаг EGUI_SDF; хвост: inset-тени, глифы |
+| 4b | 3.2 spring-слой | ✅ инкременты 1–2 (spring() в transition, appear: + painter-transform); хвост: paint-пружины hover/press, layout-пружины, ghost, reduce-motion=env |
+| 5 | 3.3 эффекты фона; «Animate» вкл/выкл | не начато — следующий заход |
+| 6 | 3.4 glass для Aurora-темы | не начато |
+| 7 | 3.8 island (+ later notch) | не начато |
+| 8 | 3.9 mailbox + pacing | не начато |
+| 9 | Полировка: notice-таймер, history/Alt+←, empty-состояния, 16 луков | history/Alt+← уже в каркасе; остальное не начато |
+
+Полный `crystal spec` после инкрементов: 1067 examples, 0 failures.
 
 Этапы 1–3 не трогают рендер; 4 — точка невозврата по шейдеру (всё
 дальше поверх пайплайна).
@@ -245,7 +278,30 @@ Notch — macOS-only, отдельно и потом (на Linux-дев-маши
   смена темы/эффекта, follow-cover акцент.
 - `crystal spec` зелёный; бинарь запускается из `bin/music`.
 
-## 6. Не-цели
+## 6. Оракул HTML (добавлено 2026-11-10)
+
+`oracle/raven_music/index.html` + `style.css` — статическая HTML+CSS
+копия Raven Music 1:1 по разметке и структуре (тема Nocturne, без
+анимаций): пять окон 1360×860 — Home / Search / Settings / Library /
+Collection (альбом Tides). Источники: `ui/*.xml` + `themes/nocturne.xml`
++ `themes/styles.xml`; данные — те же, что в `library.cr` (имена/цвета
+альбомов из генератора); обложки процедурные (градиент двух цветов +
+инициалы), mesh-фон — статичная аппроксимация радиальными градиентами.
+
+Эталонные скриншоты оригинала (снят с запущенного `raven_music`,
+X11-принуждение `RAVEN_WINDOW_SYSTEM=x11`): `tmp/raven_{home,search,
+settings,library,collection}.png`. Скриншоты оракула:
+`tmp/oracle_*.png` (chromium headless). Side-by-side: `tmp/cmp_home.png`,
+`tmp/cmp_collection.png`. RMSE 13–29% — почти целиком за счёт обложек
+и mesh-градиента; структура, сетки, отступы, палитра и типографика
+совпадают.
+
+Назначение: визуальный и структурный эталон для этапа 2 демо — exml-
+разметка и ECSS-темы сверяются с оракулом попиксельно (тот же критерий,
+что в §5). Скрипты: `tmp/raven_shots*.py` (съёмка оригинала),
+`tmp/oracle_full.png` → кропы по окнам (шаг окон 921px).
+
+## 7. Не-цели
 
 - Звук настоящий (у оригинала нет; minaudio — отдельным решением).
 - Notch на macOS до момента, когда есть машина для проверки.

@@ -806,6 +806,12 @@ static int g_msaa = 1;
 // at the bottom of this block are never reached.
 typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
 static int sh_run_direct(void);
+// SDF deferred-interleave state (defined with the SDF section below;
+// begin/end_pass and the sdf entry points drive it)
+static void sh_sdf_reset(void);
+static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
+                         float ch, const float* inst, int count, int copy);
+static void sh_sdf_frame(float w_pts, float h_pts);
 // pixels-per-point scale. Detached platforms: set from Crystal via
 // egui_cr_set_ppp every produced frame. Direct path (macOS): set_ppp is
 // never called, so egui_cr_begin_pass refreshes it from sapp_dpi_scale()
@@ -835,6 +841,8 @@ static void egui_cr_pkt_vt(float x, float y, float u, float v, unsigned r,
 static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
                                int x, int y, int w, int h, int count,
                                const unsigned char* verts);
+static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
+                            int count);
 #if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
@@ -882,6 +890,10 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
                                const unsigned char* verts) {
     (void)mvp; (void)blend; (void)prim; (void)x; (void)y; (void)w; (void)h;
     (void)count; (void)verts;
+}
+static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
+                            int count) {
+    (void)clip4; (void)instances; (void)count;
 }
 static void egui_cr_pkt_pipe(int kind) { (void)kind; }
 static void egui_cr_pkt_pipe_pop(void) {}
@@ -1951,6 +1963,7 @@ void egui_cr_begin_pass(int w, int h) {
     // drawing becomes possible again, not now.
     if (!sh_gl_ok()) return;
     if (g_pass_open) { sg_end_pass(); sg_commit(); g_pass_open = false; }
+    sh_sdf_reset(); // deferred SDF batches from the abandoned frame die
     // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
     // is only called by the detached produce loop), yet the mesh3d
     // restore divides by it — a stale 0 turns the restored ortho into
@@ -1988,7 +2001,10 @@ void egui_cr_end_pass(void) {
     // sgl command buffer rewinds at the next real sgl_draw. (g_pass_open
     // also covers the frame whose begin_pass was skipped entirely.)
     if (!sh_gl_ok() || !g_pass_open) return;
-    sgl_draw();
+    // SDF batches stashed mid-frame draw interleaved with the sgl
+    // layers (sh_sdf_frame); plain sgl_draw() when none were.
+    float d = g_pkt_ppp > 0.0f ? g_pkt_ppp : 1.0f;
+    sh_sdf_frame((float)g_fb_w / d, (float)g_fb_h / d);
     sg_end_pass();
     sg_commit();
     g_pass_open = false;
@@ -2315,6 +2331,434 @@ static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
     sgl_load_identity();
 }
 
+// --- SDF rounded rects (EGUI_SDF=1) ---------------------------------------
+//
+// Analytic signed-distance rounded rects: one instanced quad per RectCmd
+// instead of tessellation, so the anti-aliased edge is evaluated per
+// PIXEL and stays stable under sub-pixel movement (the tessellated rim
+// re-approximates it every frame and shimmers on slow animations).
+// sd_round_box + the fill/border math below are a port of Raven's
+// ui.frag (tmp/Raven, Apache-2.0).
+//
+// sokol_gl cannot carry per-instance attributes (fixed pos+color+uv
+// vertex format), so this is a raw sokol_gfx pipeline: a static 6-vertex
+// quad (buffer 0) + one PER_INSTANCE vec4×6 record (buffer 1), drawn
+// with sg_draw(0, 6, count). It interleaves with sgl by flushing the
+// accumulated sgl command buffer first (sgl_draw() can run any number
+// of times inside one pass); sgl keeps recording afterwards.
+//
+// Instance layout (28 floats, screen POINTS for geometry — see
+// egui_cr_sdf_batch):
+//   [0..3]   center.x, center.y, quad_half_w, quad_half_h — the quad
+//            covers the SHAPE plus its margin (blur falloff, stroke
+//            overhang, AA); the shape itself is measured against the
+//            separate shape half below
+//   [4..7]   radii tl, tr, br, bl (pre-clamped onto the shape half by
+//            the caller)
+//   [8..11]  fill  r,g,b,a (0..1, straight alpha)
+//   [12..15] fill2 r,g,b,a (== fill when there is no gradient)
+//   [16..19] stroke r,g,b,a (alpha 0 = no border)
+//   [20..23] shape_half_w, shape_half_h, kind, blur (points)
+//            kind 0 = rounded rect (a circle is half == radius with
+//            full radii — capsule edge case), kind 1 = outset
+//            box-shadow: gaussian-like alpha falloff from the shape
+//            silhouette outward over `blur`, fill carries the shadow
+//            color
+//   [24..27] stroke_w (points), ppp (pixels per point), 0, 0
+// The shader converts the signed distance to PIXELS via ppp, so the
+// ~1 px AA band stays one physical pixel at any dpi scale.
+
+#define SH_SDF_MAX_INST 2048
+#define SH_SDF_INST_BYTES (28 * 4)
+#define SH_SDF_INST_FLOATS 28
+#define SH_SDF_RING 64 // see sh_draw_sdf: one update per buffer per frame
+
+static sg_shader g_sdf_shd;
+static sg_pipeline g_sdf_pip;
+static sg_buffer g_sdf_quad; // static corner quad (-1..1), 6 × vec2
+static sg_buffer g_sdf_ring[SH_SDF_RING];
+static int g_sdf_ring_next;
+// 0 = not tried, 1 = ready, -1 = unsupported/failed on this backend
+static int g_sdf_state;
+
+#if defined(SOKOL_GLCORE)
+static const char SH_SDF_VS[] =
+    "#version 410 core\n"
+    "layout(location = 0) in vec2 corner;\n"
+    "layout(location = 1) in vec4 i_rect;\n"
+    "layout(location = 2) in vec4 i_radii;\n"
+    "layout(location = 3) in vec4 i_fill;\n"
+    "layout(location = 4) in vec4 i_fill2;\n"
+    "layout(location = 5) in vec4 i_stroke;\n"
+    "layout(location = 6) in vec4 i_params;\n"
+    "layout(location = 7) in vec4 i_ext;\n"
+    "uniform mat4 u_mvp;\n"
+    "out vec2 v_p;\n"
+    "flat out vec2 v_half;\n"
+    "flat out vec4 v_radii;\n"
+    "flat out vec4 v_fill;\n"
+    "flat out vec4 v_fill2;\n"
+    "flat out vec4 v_stroke;\n"
+    "flat out vec4 v_params;\n"
+    "flat out vec4 v_ext;\n"
+    "void main() {\n"
+    "    v_p = corner * i_rect.zw;\n"
+    "    v_half = i_params.xy;\n"
+    "    v_radii = i_radii;\n"
+    "    v_fill = i_fill;\n"
+    "    v_fill2 = i_fill2;\n"
+    "    v_stroke = i_stroke;\n"
+    "    v_params = i_params;\n"
+    "    v_ext = i_ext;\n"
+    "    gl_Position = u_mvp * vec4(i_rect.xy + v_p, 0.0, 1.0);\n"
+    "}\n";
+static const char SH_SDF_FS[] =
+    "#version 410 core\n"
+    "in vec2 v_p;\n"
+    "flat in vec2 v_half;\n"
+    "flat in vec4 v_radii;\n"
+    "flat in vec4 v_fill;\n"
+    "flat in vec4 v_fill2;\n"
+    "flat in vec4 v_stroke;\n"
+    "flat in vec4 v_params;\n"
+    "flat in vec4 v_ext;\n"
+    "out vec4 frag_color;\n"
+    "float sd_round_box(vec2 p, vec2 half_size, vec4 radii) {\n"
+    "    float r = p.x < 0.0 ? (p.y < 0.0 ? radii.x : radii.w)\n"
+    "                        : (p.y < 0.0 ? radii.y : radii.z);\n"
+    "    r = min(r, min(half_size.x, half_size.y));\n"
+    "    vec2 q = abs(p) - half_size + r;\n"
+    "    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n"
+    "}\n"
+    "void main() {\n"
+    "    float ppp = max(v_ext.y, 1.0);\n"
+    "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
+    "    if (v_params.z > 0.5) {\n"
+    // Outset box-shadow: same exp(-2t^2) curve as the tessellated
+    // bands (shadow_stop in driver/sokol.cr), renormalized to hit 0
+    // at t=1 so the quad rim (placed past d=blur) is seamless.
+    "        float blur = max(v_params.w * ppp, 1.0);\n"
+    "        float t = clamp(d / blur, 0.0, 1.0);\n"
+    "        float cov = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        if (cov <= 0.0) discard;\n"
+    "        frag_color = vec4(v_fill.rgb, v_fill.a * cov);\n"
+    "        return;\n"
+    "    }\n"
+    "    float aa = 1.0;\n"
+    "    float cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "    if (cov <= 0.0) discard;\n"
+    "    vec4 fill = mix(v_fill, v_fill2,\n"
+    "                    clamp(v_p.y / max(2.0 * v_half.y, 1e-4) + 0.5,\n"
+    "                          0.0, 1.0));\n"
+    "    vec4 color = fill;\n"
+    "    if (v_stroke.a > 0.0 && v_ext.x > 0.0) {\n"
+    "        float sw = v_ext.x * ppp;\n"
+    "        float inside = 1.0 - smoothstep(-aa, aa, d + sw);\n"
+    "        color = mix(v_stroke, fill, inside);\n"
+    "    }\n"
+    "    frag_color = vec4(color.rgb, color.a * cov);\n"
+    "}\n";
+#elif defined(SOKOL_GLES3)
+// Same shader for GLES3 (Android/iOS direct path): layout(location) on
+// vertex inputs and flat varyings are both ES 3.00 features.
+static const char SH_SDF_VS[] =
+    "#version 300 es\n"
+    "layout(location = 0) in vec2 corner;\n"
+    "layout(location = 1) in vec4 i_rect;\n"
+    "layout(location = 2) in vec4 i_radii;\n"
+    "layout(location = 3) in vec4 i_fill;\n"
+    "layout(location = 4) in vec4 i_fill2;\n"
+    "layout(location = 5) in vec4 i_stroke;\n"
+    "layout(location = 6) in vec4 i_params;\n"
+    "layout(location = 7) in vec4 i_ext;\n"
+    "uniform mat4 u_mvp;\n"
+    "out vec2 v_p;\n"
+    "flat out vec2 v_half;\n"
+    "flat out vec4 v_radii;\n"
+    "flat out vec4 v_fill;\n"
+    "flat out vec4 v_fill2;\n"
+    "flat out vec4 v_stroke;\n"
+    "flat out vec4 v_params;\n"
+    "flat out vec4 v_ext;\n"
+    "void main() {\n"
+    "    v_p = corner * i_rect.zw;\n"
+    "    v_half = i_params.xy;\n"
+    "    v_radii = i_radii;\n"
+    "    v_fill = i_fill;\n"
+    "    v_fill2 = i_fill2;\n"
+    "    v_stroke = i_stroke;\n"
+    "    v_params = i_params;\n"
+    "    v_ext = i_ext;\n"
+    "    gl_Position = u_mvp * vec4(i_rect.xy + v_p, 0.0, 1.0);\n"
+    "}\n";
+static const char SH_SDF_FS[] =
+    "#version 300 es\n"
+    "precision mediump float;\n"
+    "in vec2 v_p;\n"
+    "flat in vec2 v_half;\n"
+    "flat in vec4 v_radii;\n"
+    "flat in vec4 v_fill;\n"
+    "flat in vec4 v_fill2;\n"
+    "flat in vec4 v_stroke;\n"
+    "flat in vec4 v_params;\n"
+    "flat in vec4 v_ext;\n"
+    "out vec4 frag_color;\n"
+    "float sd_round_box(vec2 p, vec2 half_size, vec4 radii) {\n"
+    "    float r = p.x < 0.0 ? (p.y < 0.0 ? radii.x : radii.w)\n"
+    "                        : (p.y < 0.0 ? radii.y : radii.z);\n"
+    "    r = min(r, min(half_size.x, half_size.y));\n"
+    "    vec2 q = abs(p) - half_size + r;\n"
+    "    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n"
+    "}\n"
+    "void main() {\n"
+    "    float ppp = max(v_ext.y, 1.0);\n"
+    "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
+    "    if (v_params.z > 0.5) {\n"
+    // Outset box-shadow: same exp(-2t^2) curve as the tessellated
+    // bands (shadow_stop in driver/sokol.cr), renormalized to hit 0
+    // at t=1 so the quad rim (placed past d=blur) is seamless.
+    "        float blur = max(v_params.w * ppp, 1.0);\n"
+    "        float t = clamp(d / blur, 0.0, 1.0);\n"
+    "        float cov = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        if (cov <= 0.0) discard;\n"
+    "        frag_color = vec4(v_fill.rgb, v_fill.a * cov);\n"
+    "        return;\n"
+    "    }\n"
+    "    float aa = 1.0;\n"
+    "    float cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "    if (cov <= 0.0) discard;\n"
+    "    vec4 fill = mix(v_fill, v_fill2,\n"
+    "                    clamp(v_p.y / max(2.0 * v_half.y, 1e-4) + 0.5,\n"
+    "                          0.0, 1.0));\n"
+    "    vec4 color = fill;\n"
+    "    if (v_stroke.a > 0.0 && v_ext.x > 0.0) {\n"
+    "        float sw = v_ext.x * ppp;\n"
+    "        float inside = 1.0 - smoothstep(-aa, aa, d + sw);\n"
+    "        color = mix(v_stroke, fill, inside);\n"
+    "    }\n"
+    "    frag_color = vec4(color.rgb, color.a * cov);\n"
+    "}\n";
+#endif
+
+// Lazy resource creation, same locking/defer rules as sh_ensure_pipelines.
+static void sh_sdf_ensure(void) {
+    if (g_sdf_state) return;
+    SH_LAZY_LOCK();
+    if (g_sdf_state) { SH_LAZY_UNLOCK(); return; }
+    if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; } // retry next frame
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+    sg_shader_desc sd;
+    memset(&sd, 0, sizeof sd);
+    sd.vertex_func.source = SH_SDF_VS;
+    sd.fragment_func.source = SH_SDF_FS;
+    sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[0].size = 64;
+    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "u_mvp";
+    sd.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
+    sd.label = "egui-cr-sdf-shader";
+    g_sdf_shd = sg_make_shader(&sd);
+    if (g_sdf_shd.id == 0) {
+        g_sdf_state = -1;
+        SH_LAZY_UNLOCK();
+        return;
+    }
+    static const float quad[12] = {
+        -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    };
+    g_sdf_quad = sg_make_buffer(&(sg_buffer_desc){
+        .size = sizeof quad,
+        .usage = {.vertex_buffer = true, .immutable = true},
+        .data = {.ptr = quad, .size = sizeof quad},
+        .label = "egui-cr-sdf-quad",
+    });
+    for (int i = 0; i < SH_SDF_RING; i++) {
+        g_sdf_ring[i] = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)SH_SDF_MAX_INST * SH_SDF_INST_BYTES,
+            .usage = {.vertex_buffer = true, .dynamic_update = true},
+            .label = "egui-cr-sdf-inst",
+        });
+    }
+    // Inherit the swapchain's formats/sample count the same way
+    // _sgl_init_pipeline takes them from the sgl context (a raw
+    // sg_pipeline_desc alone would fall back to generic defaults).
+    sg_swapchain sc = sglue_swapchain();
+    sg_pipeline_desc pd;
+    memset(&pd, 0, sizeof pd);
+    pd.shader = g_sdf_shd;
+    pd.index_type = SG_INDEXTYPE_NONE;
+    pd.sample_count = sc.sample_count;
+    pd.depth.pixel_format = sc.depth_format;
+    pd.colors[0].pixel_format = sc.color_format;
+    pd.colors[0].write_mask = SG_COLORMASK_RGBA;
+    pd.colors[0].blend = (sg_blend_state){
+        .enabled = true, // same blend as the alpha pipeline (g_alpha_pip)
+        .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+        .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+        .src_factor_alpha = SG_BLENDFACTOR_ONE,
+        .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+    };
+    pd.layout.buffers[0].stride = 8; // static quad: 2 floats
+    pd.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT2;
+    pd.layout.buffers[1].stride = SH_SDF_INST_BYTES; // PER_INSTANCE vec4×7
+    pd.layout.buffers[1].step_func = SG_VERTEXSTEP_PER_INSTANCE;
+    for (int i = 0; i < 7; i++)
+        pd.layout.attrs[1 + i] = (sg_vertex_attr_state){
+            .buffer_index = 1, .offset = (uint16_t)(i * 16),
+            .format = SG_VERTEXFORMAT_FLOAT4,
+        };
+    pd.label = "egui-cr-sdf-pip";
+    g_sdf_pip = sg_make_pipeline(&pd);
+    bool ok = g_sdf_pip.id != 0 && g_sdf_quad.id != 0;
+    for (int i = 0; i < SH_SDF_RING; i++) ok = ok && g_sdf_ring[i].id != 0;
+    g_sdf_state = ok ? 1 : -1;
+#else // Vulkan/D3D11/Metal/WGPU: no GLSL source path — SDF unavailable
+    g_sdf_state = -1;
+#endif
+    SH_LAZY_UNLOCK();
+}
+
+// Raw draw of one SDF batch. `inst` is count × 28 floats (see the
+// section comment). `w_pts`/`h_pts` span the SAME point-space ortho the
+// frame (direct) or the replay pass (detached) established for sgl; the
+// current GL viewport — possibly magnified by a resize-bridge strip
+// pass — maps it to pixels, so the viewport is deliberately left alone.
+// `apply_clip`: 0 keeps the pass's own scissor (the replay's strip
+// passes ignore packet clips by design), 1 applies the given scissor
+// (framebuffer pixels, already scaled by the caller on the replay path).
+//
+// Never called with sgl content pending: the caller drives the
+// sgl-layer interleaving (see sh_sdf_frame below) — sokol_gl uploads
+// its CPU vertex buffer only ONCE per frame (first _sgl_draw), so a
+// mid-frame sgl_draw() would leave the later chunks' vertices stale in
+// the GPU buffer. Ring rotation on EVERY update is still required: one
+// frame draws up to three packet replays' worth of batches.
+static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
+                        float ch, const float* inst, int count,
+                        float w_pts, float h_pts) {
+    if (!inst || count <= 0) return;
+    if (count > SH_SDF_MAX_INST) count = SH_SDF_MAX_INST;
+    sh_sdf_ensure();
+    if (g_sdf_state <= 0) return; // unsupported backend / failed init
+    if (getenv("EGUI_SDF_DEBUG"))
+        fprintf(stderr, "[sdf] batch n=%d clip=%g,%g %gx%g pts=%gx%g\n",
+                count, cx, cy, cw, ch, w_pts, h_pts);
+    if (w_pts <= 0.0f || h_pts <= 0.0f) return;
+    if (apply_clip)
+        sg_apply_scissor_rectf(cx, cy, cw, ch, true);
+    sg_apply_pipeline(g_sdf_pip);
+    // sgl_ortho(0, w, h, 0, -1, 1) as a column-major mat4 (y-down).
+    float mvp[16];
+    memset(mvp, 0, sizeof mvp);
+    mvp[0] = 2.0f / w_pts;
+    mvp[5] = -2.0f / h_pts;
+    mvp[10] = -1.0f;
+    mvp[12] = -1.0f;
+    mvp[13] = 1.0f;
+    mvp[15] = 1.0f;
+    sg_range ur = {.ptr = mvp, .size = sizeof mvp};
+    sg_apply_uniforms(0, &ur);
+    sg_buffer buf = g_sdf_ring[g_sdf_ring_next];
+    g_sdf_ring_next = (g_sdf_ring_next + 1) % SH_SDF_RING;
+    sg_range data = {.ptr = inst, .size = (size_t)count * SH_SDF_INST_BYTES};
+    sg_update_buffer(buf, &data);
+    sg_bindings b;
+    memset(&b, 0, sizeof b);
+    b.vertex_buffers[0] = g_sdf_quad;
+    b.vertex_buffers[1] = buf;
+    sg_apply_bindings(&b);
+    sg_draw(0, 6, count);
+}
+
+// --- deferred SDF interleaving (order without mid-frame sgl_draw) --------
+//
+// Raw sg draws cannot flush sokol_gl mid-frame (see sh_draw_sdf), yet a
+// batch must land between the sgl content recorded before and after it.
+// The way out is sgl LAYERS: while RECORDING, each flush point tags the
+// following sgl commands with a new sgl_layer() id and stashes the
+// batch; once everything is recorded, the draw phase walks the layers
+// in order — sgl_draw_layer(L) (the first call uploads the whole vertex
+// buffer, every later one only draws) then the raw batch stashed at L.
+// One batch per layer, so paint order is preserved exactly.
+
+#define SH_SDF_MAX_SEGS 4096
+typedef struct {
+    int layer;       // sgl segment drawn BEFORE this batch
+    int apply_clip;  // 0 in the replay's strip passes
+    float cx, cy, cw, ch; // framebuffer px (replay: already sx/sy-scaled)
+    const float* inst;    // op stream (replay) / frame arena (direct)
+    int count;
+} sh_sdf_seg_t;
+static sh_sdf_seg_t g_sdf_segs[SH_SDF_MAX_SEGS];
+static int g_sdf_segs_n;
+static int g_sdf_layer; // layer of the sgl segment being recorded
+
+// Direct-path instance stash: Crystal reuses its batch buffer, so the
+// deferred draw needs a copy that lives until end_pass. Grow-only.
+static float* g_sdf_arena;
+static int g_sdf_arena_n, g_sdf_arena_cap;
+
+static void sh_sdf_reset(void) {
+    g_sdf_segs_n = 0;
+    g_sdf_layer = 0;
+    g_sdf_arena_n = 0;
+}
+
+// Record a flush point: the batch draws after the sgl segment currently
+// being recorded (layer g_sdf_layer), and the NEXT sgl commands go to a
+// fresh layer. `inst` rides the packet op stream on the detached path
+// (copy=0, R draws within the packet's lifetime) or is copied into the
+// frame arena on the direct path (copy=1).
+static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
+                         float ch, const float* inst, int count,
+                         int copy) {
+    if (count <= 0 || !inst) return;
+    if (g_sdf_segs_n >= SH_SDF_MAX_SEGS) return; // drop, keep drawing
+    const float* src = inst;
+    if (copy) {
+        int need = g_sdf_arena_n + count * SH_SDF_INST_FLOATS;
+        if (need > g_sdf_arena_cap) {
+            int ncap = g_sdf_arena_cap ? g_sdf_arena_cap : 4096;
+            while (ncap < need) ncap *= 2;
+            float* na = (float*)realloc(g_sdf_arena,
+                                        (size_t)ncap * sizeof(float));
+            if (!na) return;
+            g_sdf_arena = na;
+            g_sdf_arena_cap = ncap;
+        }
+        src = g_sdf_arena + g_sdf_arena_n;
+        memcpy((void*)src, inst, (size_t)count * SH_SDF_INST_BYTES);
+        g_sdf_arena_n += count * SH_SDF_INST_FLOATS;
+    }
+    sh_sdf_seg_t* s = &g_sdf_segs[g_sdf_segs_n++];
+    s->layer = g_sdf_layer;
+    s->apply_clip = apply_clip;
+    s->cx = cx; s->cy = cy; s->cw = cw; s->ch = ch;
+    s->inst = src;
+    s->count = count;
+    sgl_layer(++g_sdf_layer);
+}
+
+// Draw phase: walk the layers in order, interleaving the stashed raw
+// batches. Replaces the frame's final sgl_draw() whenever any batch was
+// recorded (plain sgl_draw() would only draw layer 0).
+static void sh_sdf_frame(float w_pts, float h_pts) {
+    if (g_sdf_segs_n == 0) {
+        sgl_draw();
+        return;
+    }
+    for (int l = 0; l <= g_sdf_layer; l++) {
+        sgl_draw_layer(l);
+        for (int i = 0; i < g_sdf_segs_n; i++) {
+            const sh_sdf_seg_t* s = &g_sdf_segs[i];
+            if (s->layer != l) continue;
+            sh_draw_sdf(s->apply_clip, s->cx, s->cy, s->cw, s->ch,
+                        s->inst, s->count, w_pts, h_pts);
+        }
+    }
+    g_sdf_segs_n = 0; // the arena rides until the next reset
+}
+
 // --- textures -------------------------------------------------------------
 
 static sg_sampler g_linear_sampler;
@@ -2552,6 +2996,21 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
     sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
                    g_fb_w, g_fb_h, g_pkt_ppp);
 }
+// One SDF rounded-rect batch (EGUI_SDF=1) — see the SDF section above
+// for the instance layout. `clip4` is x,y,w,h in FRAMEBUFFER pixels
+// (Crystal scales points by ppp); on the replay path it is scaled by
+// sx/sy like SH_OP_SCISSOR/SH_OP_MESH3D do.
+void egui_cr_sdf_batch(const float* clip4, const float* instances,
+                       int count) {
+    if (!sh_run_direct()) {
+        egui_cr_pkt_sdf(clip4, instances, count);
+        return;
+    }
+    // Direct path: stash (instance copy into the frame arena) — the
+    // batch draws interleaved at end_pass (see sh_sdf_frame).
+    sh_sdf_stash(1, clip4[0], clip4[1], clip4[2], clip4[3], instances,
+                 count, 1);
+}
 #else /* not a detached platform (macOS): straight pass-throughs */
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     sgl_viewport(x, y, w, h, origin_top_left);
@@ -2582,6 +3041,12 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
                     const unsigned char* verts) {
     sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
                    g_fb_w, g_fb_h, g_pkt_ppp);
+}
+// macOS pass-through: no packet path — stash for the end_pass interleave.
+void egui_cr_sdf_batch(const float* clip4, const float* instances,
+                       int count) {
+    sh_sdf_stash(1, clip4[0], clip4[1], clip4[2], clip4[3], instances,
+                 count, 1);
 }
 #endif
 
@@ -4682,7 +5147,7 @@ typedef struct {
 enum {
     SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
-    SH_OP_MESH3D,
+    SH_OP_MESH3D, SH_OP_SDF,
 };
 
 typedef struct {
@@ -4903,6 +5368,28 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
     g_build->ops_len += words;
 }
 
+// One SDF rounded-rect batch (EGUI_SDF=1): [op, clip x/y/w/h (f32
+// bits), count], then count×28 instance floats riding the word stream
+// as raw bits — same cost model as MESH3D vertices. The clip is in
+// PACKET pixels; the replay scales it by sx/sy like SH_OP_SCISSOR.
+static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
+                            int count) {
+    if (count <= 0 || !instances) return;
+    if (count > SH_SDF_MAX_INST) count = SH_SDF_MAX_INST;
+    uint32_t head[6] = {
+        SH_OP_SDF, sh_f2u(clip4[0]), sh_f2u(clip4[1]),
+        sh_f2u(clip4[2]), sh_f2u(clip4[3]), (uint32_t)count,
+    };
+    sh_push_words(head, 6);
+    int words = count * SH_SDF_INST_FLOATS;
+    sh_build_ensure();
+    sh_grow((void**)&g_build->ops, &g_build->ops_cap,
+            g_build->ops_len + words, sizeof(uint32_t));
+    memcpy(g_build->ops + g_build->ops_len, instances,
+           (size_t)words * 4);
+    g_build->ops_len += words;
+}
+
 // ---- R-side texture table -----------------------------------------------------
 // id → (sg_image, sg_view). Ids are allocated on A (atomic counter) and
 // created lazily here as packet pre-ops arrive; an UPDATE for a missing
@@ -5020,6 +5507,13 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
     float sy = (float)vp_h / (float)p->fb_h;
     float w = (float)p->fb_w / p->ppp;
     float h = (float)p->fb_h / p->ppp;
+    // A fresh sgl layer per pass keeps a stashed SDF batch of a LATER
+    // pass from drawing after this pass's head commands (one batch per
+    // layer — see sh_sdf_frame). Layer 0 on the first pass.
+    if (g_sdf_layer > 0 || g_sdf_segs_n > 0) {
+        g_sdf_layer += 1;
+        sgl_layer(g_sdf_layer);
+    }
     sgl_viewport(0, 0, vp_w, vp_h, true);
     sgl_matrix_mode_projection();
     sgl_load_identity();
@@ -5101,6 +5595,19 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             op += (size_t)count * 4;
             break;
         }
+        case SH_OP_SDF: {
+            float cx = sh_u2f(op[0]), cy = sh_u2f(op[1]);
+            float cw = sh_u2f(op[2]), ch = sh_u2f(op[3]);
+            int count = (int)op[4];
+            op += 5;
+            // Not drawn here: the batch is stashed and drawn between
+            // the sgl layers at the end of sh_replay (sh_sdf_frame) —
+            // the instance floats ride the op stream until then.
+            sh_sdf_stash(!strip, cx * sx, cy * sy, cw * sx, ch * sy,
+                         (const float*)op, count, 0);
+            op += (size_t)count * SH_SDF_INST_FLOATS;
+            break;
+        }
         default: // corrupted stream — drop the rest of the frame
             op = end;
             break;
@@ -5112,6 +5619,7 @@ static void sh_replay(sh_packet_t* p) {
     sh_ensure_pipelines();
     sh_sampler_ensure();
     sh_white_tex_ensure();
+    sh_sdf_reset(); // stashed batches never survive a tick
     sg_begin_pass(&(sg_pass){
         .swapchain = sglue_swapchain(),
         .action = {
@@ -5139,7 +5647,9 @@ static void sh_replay(sh_packet_t* p) {
         if (ch > p->fb_h) sh_replay_pass(p, cw, ch, 2);
     }
     sh_resize_dbg_check(p);
-    sgl_draw();
+    // Draw phase: sgl layers interleaved with the stashed SDF batches
+    // (plain sgl_draw() when the frame has none — sh_sdf_frame).
+    sh_sdf_frame((float)p->fb_w / p->ppp, (float)p->fb_h / p->ppp);
     sg_end_pass();
     sg_commit();
     sh_resize_dbg_check(p);

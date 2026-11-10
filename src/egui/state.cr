@@ -412,6 +412,47 @@ module Egui
   end
 
   class StyleAnimations
+    # Spring-interpolated state (plans/NATIVE_HTML_DEMO.md §3.2): one
+    # oscillator per channel of the animated value (1 for scalars, 4
+    # for colors), the target, the live spec and the delay countdown.
+    # A reference class for the same reason as Cell — stored in a Hash
+    # and mutated in place. Retargeting keeps value AND velocity (the
+    # easing cells above restart from the current value with a zero
+    # derivative; the spring glides on — no jump).
+    class SpringCell
+      property channels : Array(Spring)
+      property targets : Array(Float64)
+      property spec : Spring::Spec
+      property delay : Float64
+      property last_time : Float64?
+
+      def initialize(targets : Array(Float64), @spec : Spring::Spec,
+                     time : Float64)
+        # First sighting snaps (CSS: no transition on the initial
+        # style application) — the oscillators start settled.
+        @channels = targets.map { |t| s = Spring.new(t); s.set(t); s }
+        @targets = targets
+        @delay = 0.0
+        @last_time = time
+      end
+
+      # Still animating: waiting out a delay or an oscillator has not
+      # settled at its target yet.
+      def running? : Bool
+        @delay > 0.0 ||
+          @channels.zip(@targets).any? { |s, t| s.moving?(t) }
+      end
+
+      # The clamped frame delta since the last step (Raven's
+      # `rvn_animation_dt`: after a pause the motion resumes gently
+      # instead of fast-forwarding through the missed time).
+      def tick(time : Float64) : Float64
+        dt = @last_time ? (time - @last_time.not_nil!) : 0.0
+        @last_time = time
+        dt.clamp(0.0, 1.0 / 30.0)
+      end
+    end
+
     private class Cell(T)
       property from : T
       property target : T
@@ -427,6 +468,8 @@ module Egui
     @colors = {} of Id => Cell(Color32)
     @scalars = {} of Id => Cell(Float64)
     @vec2s = {} of Id => Cell(Vec2)
+    @spring_scalars = {} of Id => SpringCell
+    @spring_colors = {} of Id => SpringCell
 
     # Smoothly move the color for `id` towards `target` over
     # `duration` seconds; the first sighting jumps (CSS: no transition
@@ -436,6 +479,7 @@ module Egui
               time : Float64, easing : String? = nil) : Color32
       if duration <= 0.0
         @colors.delete(id)
+        @spring_colors.delete(id)
         return target
       end
       anim = @colors[id]?
@@ -457,6 +501,7 @@ module Egui
                time : Float64, easing : String? = nil) : Float64
       if duration <= 0.0
         @scalars.delete(id)
+        @spring_scalars.delete(id)
         return target
       end
       anim = @scalars[id]?
@@ -495,12 +540,80 @@ module Egui
       vec2_at(anim, time)
     end
 
-    # True while any flavor for `id` is still easing (the Context
-    # requests repaints until everything settles).
+    # True while any flavor for `id` is still easing or springing (the
+    # Context requests repaints until everything settles).
     def running?(id : Id, time : Float64) : Bool
       anim = @colors[id]? || @scalars[id]? || @vec2s[id]?
-      return false if anim.nil?
-      anim.duration > 0.0 && (time - anim.start) < anim.duration
+      return true if anim &&
+                     anim.duration > 0.0 && (time - anim.start) < anim.duration
+      spring = @spring_scalars[id]? || @spring_colors[id]?
+      spring ? spring.running? : false
+    end
+
+    # --- spring flavors (plans/NATIVE_HTML_DEMO.md §3.2) ---------------
+    #
+    # `transition.<key>: spring(…)` / `transition: spring(…)` — a
+    # damped oscillator (Egui::Spring) instead of duration+easing: the
+    # value keeps its velocity across retargets (no jump), and while
+    # it moves #running? stays true so the next frame is requested.
+
+    # Smoothly spring a style SCALAR towards `target`; the first
+    # sighting snaps, a retarget glides on with the current velocity,
+    # an optional `spec.delay` holds the value first (like a CSS
+    # transition delay).
+    def spring_scalar(id : Id, target : Float64, spec : Spring::Spec,
+                      time : Float64) : Float64
+      cell = @spring_scalars[id]?
+      if cell.nil?
+        @scalars.delete(id) # a key animates by ONE flavor at a time
+        @spring_scalars[id] = SpringCell.new([target], spec, time)
+        return target
+      end
+      retarget = cell.targets[0] != target
+      cell.spec = spec # retune in place; motion continues
+      cell.targets[0] = target
+      cell.delay = spec.delay if retarget
+      step_cell(cell, time)
+      cell.channels[0].value
+    end
+
+    # Same for a style COLOR — one oscillator per channel (normalized
+    # 0..1, the scale the settle thresholds are tuned for).
+    def spring_color(id : Id, target : Color32, spec : Spring::Spec,
+                     time : Float64) : Color32
+      t4 = [target.r, target.g, target.b, target.a].map { |c| c / 255.0 }
+      cell = @spring_colors[id]?
+      if cell.nil?
+        @colors.delete(id)
+        @spring_colors[id] = SpringCell.new(t4, spec, time)
+        return target
+      end
+      retarget = cell.targets != t4
+      cell.spec = spec
+      4.times { |i| cell.targets[i] = t4[i] }
+      cell.delay = spec.delay if retarget
+      step_cell(cell, time)
+      Color32.new(
+        chan_byte(cell, 0), chan_byte(cell, 1),
+        chan_byte(cell, 2), chan_byte(cell, 3))
+    end
+
+    # Advance one cell by the clamped frame delta: count down an
+    # active delay (value holds), otherwise track every channel and
+    # snap the ones that settled.
+    private def step_cell(cell : SpringCell, time : Float64) : Nil
+      dt = cell.tick(time)
+      if cell.delay > 0.0
+        cell.delay = {cell.delay - dt, 0.0}.max
+        return
+      end
+      cell.channels.zip(cell.targets) do |s, t|
+        s.track(dt, t, cell.spec.response, cell.spec.damping)
+      end
+    end
+
+    private def chan_byte(cell : SpringCell, i : Int32) : UInt8
+      (cell.channels[i].value * 255.0).round.clamp(0.0, 255.0).to_u8
     end
 
     private def color_at(a : Cell(Color32), time : Float64) : Color32

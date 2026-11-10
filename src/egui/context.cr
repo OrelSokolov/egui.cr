@@ -585,15 +585,25 @@ module Egui
     # Interpolate a style COLOR towards its new cascade target — the
     # `transition`/`transition.<key>` style keys hold the duration in
     # milliseconds (0/absent = snap, no state kept), `easing` /
-    # `easing.<key>` name the curve (nil = smoothstep). Keyed by
+    # `easing.<key>` name the curve (nil = smoothstep). A `spring`
+    # spec (the `spring(…)` transition value, §3.2 of
+    # plans/NATIVE_HTML_DEMO.md) replaces the duration+easing pair:
+    # the value glides on its velocity across retargets. Keyed by
     # widget id + the key name, so several properties of one widget
     # animate independently. `reduced_motion=` snaps everything.
     def animate_style_color(id : Id, key : String, target : Color32,
-                            ms : Float64, easing : String? = nil) : Color32
-      return target if ms <= 0.0 || @reduced_motion
+                            ms : Float64, easing : String? = nil,
+                            spring : Spring::Spec? = nil) : Color32
+      return target if @reduced_motion
       salted = id.child(Id.from("style/#{key}").value)
-      result = @memory.style_animations.color(salted, target,
-        ms / 1000.0, @input.time, easing)
+      result = if spring
+                 @memory.style_animations.spring_color(salted, target,
+                   spring, @input.time)
+               else
+                 return target if ms <= 0.0
+                 @memory.style_animations.color(salted, target,
+                   ms / 1000.0, @input.time, easing)
+               end
       request_repaint if @memory.style_animations.running?(salted,
         @input.time)
       result
@@ -601,11 +611,18 @@ module Egui
 
     # Same for a style SCALAR (a resolved px length, a rounding…).
     def animate_style_scalar(id : Id, key : String, target : Float64,
-                             ms : Float64, easing : String? = nil) : Float64
-      return target if ms <= 0.0 || @reduced_motion
+                             ms : Float64, easing : String? = nil,
+                             spring : Spring::Spec? = nil) : Float64
+      return target if @reduced_motion
       salted = id.child(Id.from("style/#{key}").value)
-      result = @memory.style_animations.scalar(salted, target,
-        ms / 1000.0, @input.time, easing)
+      result = if spring
+                 @memory.style_animations.spring_scalar(salted, target,
+                   spring, @input.time)
+               else
+                 return target if ms <= 0.0
+                 @memory.style_animations.scalar(salted, target,
+                   ms / 1000.0, @input.time, easing)
+               end
       request_repaint if @memory.style_animations.running?(salted,
         @input.time)
       result

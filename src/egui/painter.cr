@@ -249,6 +249,131 @@ module Egui
   alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | NoopCmd
 
   class Painter
+    # A bracketed subtree transform (plans/NATIVE_HTML_DEMO.md §3.2):
+    # everything emitted between #push_transform and #pop_transform is
+    # scaled around `pivot`, shifted by an offset and faded by
+    # `opacity` — the immediate-mode counterpart of Raven's post-factum
+    # `rvn_drawlist_transform` (widget/anim.c). Clip rects are NOT
+    # transformed and neither is hit-testing: layout stays in place
+    # from the first frame, only the emitted geometry moves (Raven's
+    # appear semantics).
+    #
+    # The pivot may be DEFERRED: a caller that learns its rect only
+    # after its children have run (`Ui#box`) pushes without one and
+    # supplies it at #pop_transform; the frame then owns a bracket
+    # [start, size) of the command list and transforms that range when
+    # it pops — a pass scoped to the frame's own commands, never a
+    # rewrite of the whole list. A frame pushed WITH a pivot transforms
+    # each command as it is emitted. Frames nest; the transforms
+    # compose inner-first either way.
+    class TransformFrame
+      getter scale_x : Float64
+      getter scale_y : Float64
+      getter offset_x : Float64
+      getter offset_y : Float64
+      getter opacity : Float64
+      property pivot : Pos2?
+      property start : Int32
+      # True when the frame was pushed WITHOUT a pivot: its bracket is
+      # transformed in one pass at #pop_transform (an immediate frame
+      # transforms at emit time instead and its pop is a plain pop).
+      getter? deferred : Bool
+      # `Painter#set` calls whose slot sits BELOW the frame's bracket
+      # (a container's back-patched chrome, reserved before the push) —
+      # transformed when the frame pops.
+      getter deferred_sets : Array(Tuple(Int32, PaintCmd))
+
+      def initialize(pivot : Pos2?, @start : Int32, @scale_x : Float64,
+                     @scale_y : Float64, @offset_x : Float64,
+                     @offset_y : Float64, @opacity : Float64)
+        @pivot = pivot
+        @deferred = pivot.nil?
+        @deferred_sets = [] of Tuple(Int32, PaintCmd)
+      end
+
+      # The average axis scale — what radii, stroke widths, font sizes
+      # and blurs scale by (the GPU would scale x and y apart; the CPU
+      # transform approximates with one factor).
+      def k : Float64
+        (@scale_x + @scale_y) / 2.0
+      end
+
+      def x(px : Float64) : Float64
+        @pivot.not_nil!.x + (px - @pivot.not_nil!.x) * @scale_x + @offset_x
+      end
+
+      def y(py : Float64) : Float64
+        @pivot.not_nil!.y + (py - @pivot.not_nil!.y) * @scale_y + @offset_y
+      end
+
+      def pt(p : Pos2) : Pos2
+        Pos2.new(x(p.x), y(p.y))
+      end
+
+      def scale_rect(r : Rect) : Rect
+        Rect.new(pt(r.min), pt(r.max))
+      end
+
+      def fade(c : Color32) : Color32
+        return c if @opacity >= 1.0
+        Color32.new(c.r, c.g, c.b,
+          (c.a.to_f64 * @opacity.clamp(0.0, 1.0)).round.to_u8)
+      end
+
+      def fade_opt(c : Color32?) : Color32?
+        c && fade(c)
+      end
+
+      def apply(cmd : PaintCmd) : PaintCmd
+        case cmd
+        when RectCmd
+          sides = cmd.stroke_sides.try { |s|
+            StrokeSides.new(
+              SideStroke.new(s.top.width * k, fade(s.top.color)),
+              SideStroke.new(s.right.width * k, fade(s.right.color)),
+              SideStroke.new(s.bottom.width * k, fade(s.bottom.color)),
+              SideStroke.new(s.left.width * k, fade(s.left.color)))
+          }
+          corners = cmd.corners.try { |c|
+            CornerRadii.new(c.top_left * k, c.top_right * k,
+              c.bottom_right * k, c.bottom_left * k)
+          }
+          RectCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
+            fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
+            cmd.stroke_width * k, fade_opt(cmd.fill2), sides, corners,
+            cmd.replace?)
+        when TextCmd
+          TextCmd.new(cmd.clip, pt(cmd.pos), cmd.text, cmd.size * k,
+            fade(cmd.color), cmd.family, cmd.bold?, cmd.italic?)
+        when CircleCmd
+          CircleCmd.new(cmd.clip, pt(cmd.center), cmd.radius * k,
+            fade_opt(cmd.fill), fade_opt(cmd.stroke), cmd.stroke_width * k)
+        when LineCmd
+          LineCmd.new(cmd.clip, pt(cmd.p1), pt(cmd.p2), cmd.width * k,
+            fade(cmd.color))
+        when TriCmd
+          TriCmd.new(cmd.clip, pt(cmd.a), pt(cmd.b), pt(cmd.c),
+            fade(cmd.fill))
+        when ArcCmd
+          ArcCmd.new(cmd.clip, pt(cmd.center), cmd.radius * k,
+            cmd.start_angle, cmd.end_angle, cmd.width * k, fade(cmd.color))
+        when ImageCmd
+          # `uv` maps into the texture and stays — only the screen rect
+          # moves (the same quad, resized).
+          ImageCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.uv,
+            cmd.texture_id, fade(cmd.tint), cmd.nearest?)
+        when ShadowCmd
+          ShadowCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
+            cmd.blur * k, cmd.spread * k,
+            Vec2.new(cmd.offset.x * @scale_x, cmd.offset.y * @scale_y),
+            fade(cmd.color), cmd.inset?)
+        else
+          # Mesh3DCmd carries its own mvp, NoopCmd nothing — untouched.
+          cmd
+        end
+      end
+    end
+
     getter commands : Array(PaintCmd)
 
     def initialize
@@ -256,6 +381,7 @@ module Egui
       @layers = [] of Int32
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @xforms = [] of TransformFrame
     end
 
     def clear : Nil
@@ -263,6 +389,7 @@ module Egui
       @layers.clear
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @xforms.clear
     end
 
     # Which layer subsequently pushed commands belong to (egui
@@ -289,6 +416,7 @@ module Egui
     end
 
     def add(cmd : PaintCmd) : Int32
+      cmd = emit_xform(cmd) unless @xforms.empty?
       @commands << cmd
       @layers << @layer
       @commands.size - 1
@@ -300,7 +428,81 @@ module Egui
     end
 
     def set(index : Int32, cmd : PaintCmd) : Nil
-      @commands[index] = cmd
+      if (top = @xforms.last?)
+        if top.pivot
+          # Immediate frames transform at emit time.
+          @commands[index] = emit_xform(cmd)
+        elsif index >= top.start
+          # Inside the deferred bracket: written raw, the pop pass
+          # transforms it with the rest of the range.
+          @commands[index] = cmd
+        else
+          # Below the bracket (this container's back-patched chrome) —
+          # held until the pivot exists, transformed at pop.
+          top.deferred_sets << {index, cmd}
+        end
+      else
+        @commands[index] = cmd
+      end
+    end
+
+    # --- subtree transform (see TransformFrame) -------------------------
+
+    # Begin a transform bracket for everything emitted until the
+    # matching #pop_transform. `pivot` may be nil to defer it to the
+    # pop (the bracket range is transformed then); a frame pushed with
+    # its pivot transforms every command at emit time.
+    def push_transform(pivot : Pos2?, scale_x : Float64, scale_y : Float64,
+                       offset_x : Float64, offset_y : Float64,
+                       opacity : Float64) : Nil
+      @xforms << TransformFrame.new(pivot, @commands.size, scale_x,
+        scale_y, offset_x, offset_y, opacity)
+    end
+
+    # End the innermost transform bracket. A deferred frame must be
+    # given its `pivot` here; the commands of its bracket (and its
+    # deferred sets) are transformed around it now. An immediate frame
+    # already transformed at emit time and only pops.
+    def pop_transform(pivot : Pos2? = nil) : Nil
+      frame = @xforms.pop
+      raise "pop_transform without a matching push_transform" unless frame
+      p = pivot || frame.pivot
+      raise "pop_transform: a deferred frame needs its pivot here" unless p
+      frame.pivot = p
+      return unless frame.deferred?
+      base = @xforms.size
+      (frame.start...@commands.size).each do |i|
+        @commands[i] = compose_below(base, frame.apply(@commands[i]))
+      end
+      frame.deferred_sets.each do |index, cmd|
+        @commands[index] = compose_below(base, frame.apply(cmd))
+      end
+    end
+
+    # Apply the consecutive IMMEDIATE frames from the top of the stack
+    # (inner-first), stopping at the first deferred one — its bracket
+    # pass catches the command later, and the composition order
+    # inner-first stays correct either way.
+    private def emit_xform(cmd : PaintCmd) : PaintCmd
+      i = @xforms.size - 1
+      while i >= 0 && (f = @xforms[i]) && f.pivot
+        cmd = f.apply(cmd)
+        i -= 1
+      end
+      cmd
+    end
+
+    # A deferred frame's pop pass transforms its range AFTER the frames
+    # above it already did at emit time — the frames BELOW it (base =
+    # stack size without them) still need their share, applied
+    # inner-first, again stopping at the next deferred frame.
+    private def compose_below(base : Int32, cmd : PaintCmd) : PaintCmd
+      i = base - 1
+      while i >= 0 && (f = @xforms[i]) && f.pivot
+        cmd = f.apply(cmd)
+        i -= 1
+      end
+      cmd
     end
 
     def rect(rect : Rect, rounding : Float64 = 0.0,

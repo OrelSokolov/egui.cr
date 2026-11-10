@@ -70,6 +70,9 @@ module Egui
     # Cascade-driven transitions (`transition` style keys) — see
     # StyleAnimations (plans/animations.md Ур.1).
     getter style_animations : StyleAnimations
+    # Appear-transition runs (`appear:`/`appear-delay:` style keys) —
+    # see AppearAnims (plans/NATIVE_HTML_DEMO.md §3.2).
+    getter appear_anims : AppearAnims
     # @keyframes playback state — see KeyframeAnims
     # (plans/NativeHTML.md §7).
     getter keyframe_anims : KeyframeAnims
@@ -198,6 +201,7 @@ module Egui
       @focus = Focus.new
       @animations = AnimationManager.new
       @style_animations = StyleAnimations.new
+      @appear_anims = AppearAnims.new
       @keyframe_anims = KeyframeAnims.new
       @open_popups = Set(Id).new
     @popups_opened_this_frame = Set(Id).new
@@ -450,6 +454,7 @@ module Egui
       # `Memory::end_pass(used_ids)`).
       @data.keep_only(@used_ids)
       @scroll_histories.select! { |id, _| @used_ids.includes?(id) }
+      @appear_anims.select_used!(@used_ids)
       close_popups_if_clicked_elsewhere
       # egui: a pointer press that didn't land on the focused widget
       # drops keyboard focus — click/tap outside a text field and the

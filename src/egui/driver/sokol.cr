@@ -267,6 +267,15 @@ lib LibEguiCr
   fun mesh3d = egui_cr_mesh3d(mvp : Float32*, blend : Bool, primitive : Int32,
                               x : Int32, y : Int32, w : Int32, h : Int32,
                               count : Int32, verts : UInt8*)
+  # SDF rounded-rect batch (EGUI_SDF=1): `count` instances of 28 floats
+  # each — geometry in POINTS (center.x/y, quad half_w/h, radii
+  # tl/tr/br/bl, then shape half_w/h, kind, blur), colors straight
+  # alpha 0..1 (fill, fill2, stroke), then stroke_w (points), ppp, 0, 0.
+  # `clip` is x,y,w,h in FRAMEBUFFER pixels (points × ppp — same
+  # numbers #apply_scissor computes); the shim scales it like every
+  # packet clip.
+  fun sdf_batch = egui_cr_sdf_batch(clip : Float32*, instances : Float32*,
+                                    count : Int32)
 
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
@@ -430,6 +439,16 @@ module Egui
       @@cursor_image : Egui::CustomCursorImage? = nil
       # Last applied scissor (framebuffer px, x/y/w/h) — see #apply_scissor.
       @@last_scissor : Tuple(Float64, Float64, Float64, Float64)? = nil
+      # EGUI_SDF=1: analytic SDF rounded rects (see #sdf_try). Off by
+      # default — the tessellated path stays byte-for-byte.
+      @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] != "0" : false
+      # SDF batch accumulation: instance buffer (28 floats × 2048, the
+      # shim's per-batch cap), fill mark, and the clip (framebuffer px,
+      # the #scissor_rect tuple) the current group runs under.
+      SDF_MAX_INSTANCES = 2048
+      @@sdf_buf = Slice(Float32).new(28 * SDF_MAX_INSTANCES)
+      @@sdf_n = 0
+      @@sdf_clip : Tuple(Float64, Float64, Float64, Float64)? = nil
       # Transparent window mode (run(transparent: true)): clear to
       # alpha 0 and blend UI quads premultiplied.
       @@transparent = false
@@ -2056,7 +2075,21 @@ module Egui
         # blending) makes any alpha<255 fill overwrite dst — the modal
         # scrim rendered as solid black.
         LibEguiCr.alpha_pipeline_push
-        commands.each { |cmd| paint(cmd) }
+        if @@sdf
+          # SDF path: runs of plain filled RectCmds accumulate into
+          # instanced batches (grouped by clip); everything else — and
+          # every RectCmd the shader cannot express — paints as before,
+          # in stream order (a batch flushes before any fallback).
+          commands.each do |cmd|
+            unless sdf_try(cmd)
+              sdf_flush
+              paint(cmd)
+            end
+          end
+          sdf_flush
+        else
+          commands.each { |cmd| paint(cmd) }
+        end
         LibEguiCr.alpha_pipeline_pop
 
         LibEguiCr.end_pass
@@ -2135,38 +2168,38 @@ module Egui
         end
       end
 
-      # sg_apply_scissor_rectf truncates x/y/w/h to ints independently
-      # (sokol_gfx.h), so trunc(y) + trunc(h) can land a full pixel above
-      # trunc(y + h) for a fractional clip — e.g. a modal centered at
-      # screen.center - size/2 — clipping away a stroke sitting on the
-      # rect edge (the invisible bottom border). Round outward instead:
-      # floor the min corner, ceil the size, so every partially-covered
-      # pixel row/column stays inside the scissor. Scissor rects are in
-      # FRAMEBUFFER pixels — scale the point-space clip by ppp first.
-      def self.apply_scissor(clip : Egui::Rect) : Nil
+      # The framebuffer-pixel scissor rect for a point-space clip:
+      # floor the min corner, ceil the max, so every partially-covered
+      # pixel row/column stays inside (sg_apply_scissor_rectf truncates
+      # x/y/w/h to ints independently — trunc(y) + trunc(h) can land a
+      # full pixel above trunc(y + h), clipping away an edge stroke),
+      # then clamp to the framebuffer: "infinite" clip sentinels
+      # (Rect ±1e9 in points — e.g. the painter reset after
+      # Context#popup) scale past the int32 range once ppp > 2.14 (a
+      # 400 dpi phone is 2.5), and the float→int casts down in
+      # sgl_scissor_rectf / sg_apply_scissor_rectf are UB for
+      # out-of-range values: ARM64 saturates them to INT_MIN,
+      # glScissor rejects the negative sizes with GL_INVALID_VALUE and
+      # keeps the STALE (popup-sized) scissor — every widget painted
+      # after an open popup disappears. Intersecting with the pass
+      # covers the same pixels with in-range values.
+      def self.scissor_rect(clip : Egui::Rect)
         s = @@pixels_per_point
         x = (clip.min.x * s).floor
         y = (clip.min.y * s).floor
         w = {(clip.max.x * s).ceil - x, 1.0}.max
         h = {(clip.max.y * s).ceil - y, 1.0}.max
-        # Clamp to the framebuffer before emitting. "Infinite" clip
-        # sentinels (Rect ±1e9 in points — e.g. the painter reset after
-        # Context#popup) scale past the int32 range once ppp > 2.14 (a
-        # 400 dpi phone is 2.5), and the float→int casts down in
-        # sgl_scissor_rectf / sg_apply_scissor_rectf are UB for
-        # out-of-range values: ARM64 saturates them to INT_MIN,
-        # glScissor rejects the negative sizes with GL_INVALID_VALUE
-        # and keeps the STALE (popup-sized) scissor — every widget
-        # painted after an open popup disappears. Intersecting with the
-        # pass covers the same pixels with in-range values (desktop,
-        # ppp 1.0, is unaffected: the clamp is the identity there for
-        # on-screen rects).
         fb_w = LibEguiCr.sapp_width.to_f64
         fb_h = LibEguiCr.sapp_height.to_f64
         x = x.clamp(0.0, fb_w)
         y = y.clamp(0.0, fb_h)
         w = {(x + w).clamp(0.0, fb_w) - x, 0.0}.max
         h = {(y + h).clamp(0.0, fb_h) - y, 0.0}.max
+        {x, y, w, h}
+      end
+
+      def self.apply_scissor(clip : Egui::Rect) : Nil
+        x, y, w, h = scissor_rect(clip)
         # sgl_scissor_rect emits a command UNCONDITIONALLY (no
         # same-rect dedupe in sokol_gl), and a scissor between two
         # begin/end blocks breaks sgl's consecutive-draw merging — so
@@ -2179,6 +2212,208 @@ module Egui
         @@last_scissor = {x, y, w, h}
         LibEguiCr.sgl_scissor_rectf(
           x.to_f32, y.to_f32, w.to_f32, h.to_f32, true)
+      end
+
+      # --- SDF rounded-rect batching (EGUI_SDF=1) --------------------------
+      #
+      # Runs of plain filled RectCmds (fill ± vertical gradient, uniform
+      # stroke, uniform or per-corner rounding), outset ShadowCmds and
+      # CircleCmds become one instanced SDF batch per clip group — see
+      # egui_cr_sdf_batch in the shim. Anything the shader cannot
+      # express (stroke_sides, replace, stroke-only rects, corners +
+      # stroke, inset shadows) falls back to the tessellated #paint
+      # path. Instances of one batch render in issue order (a single
+      # instanced draw), so a shadow followed by the content fill in
+      # the SAME batch keeps painter order exactly.
+
+      # A command the SDF path can take: RectCmd with a fill (fill2 /
+      # uniform stroke / per-corner radii all map onto the 28-float
+      # instance), an outset ShadowCmd or a CircleCmd. Per-side
+      # borders, replace blends, stroke-only rects and inset shadows
+      # keep the tessellated path.
+      def self.sdf_try(cmd : Egui::PaintCmd) : Bool
+        case cmd
+        when Egui::RectCmd   then sdf_try_rect(cmd)
+        when Egui::ShadowCmd then sdf_try_shadow(cmd)
+        when Egui::CircleCmd then sdf_try_circle(cmd)
+        else                      false
+        end
+      end
+
+      # Reserve one instance slot under `clip` (the #scissor_rect
+      # tuple), flushing the current group on clip change or overflow
+      # first. The caller fills the 28 floats and bumps @@sdf_n.
+      private def self.sdf_slot(clip : Tuple(Float64, Float64, Float64, Float64))
+        if @@sdf_n >= SDF_MAX_INSTANCES || clip != @@sdf_clip
+          sdf_flush
+          @@sdf_clip = clip
+        end
+        @@sdf_buf.to_unsafe + @@sdf_n * 28
+      end
+
+      # Straight-alpha 0..1 rgba write into the instance at `at`.
+      private def self.sdf_rgba8(d : Pointer(Float32), c : Egui::Color32,
+                                 at : Int32) : Nil
+        d[at] = c.r.to_f32 / 255.0f32
+        d[at + 1] = c.g.to_f32 / 255.0f32
+        d[at + 2] = c.b.to_f32 / 255.0f32
+        d[at + 3] = c.a.to_f32 / 255.0f32
+      end
+
+      # Fill placeholder for stroke-only circles: alpha 0, the shader's
+      # stroke band covers the ring and the interior blends nothing.
+      TRANSPARENT_FILL = Egui::Color32.rgba(0, 0, 0, 0)
+
+      def self.sdf_try_rect(cmd : Egui::RectCmd) : Bool
+        return false if cmd.replace? || cmd.stroke_sides
+        fill = cmd.fill || return false
+        stroke = cmd.stroke_color if cmd.stroke_width > 0
+        # Per-corner radii only model the FILL; the uniform stroke
+        # still reads `rounding`, so corners + stroke cannot ride one
+        # instance — tessellate it instead.
+        return false if cmd.corners && stroke
+        r = cmd.rect
+        return false if r.width <= 0.0 || r.height <= 0.0
+
+        d = sdf_slot(scissor_rect(cmd.clip))
+        hw = r.width / 2.0
+        hh = r.height / 2.0
+        d[0] = ((r.min.x + r.max.x) / 2.0).to_f32
+        d[1] = ((r.min.y + r.max.y) / 2.0).to_f32
+        d[2] = hw.to_f32
+        d[3] = hh.to_f32
+        # Radii pre-clamped onto the half-size (capsule semantics); the
+        # shader clamps again defensively.
+        clamp = ->(v : Float64) { {v.clamp(0.0, {hw, hh}.min), 0.0}.max.to_f32 }
+        if corners = cmd.corners
+          d[4] = clamp.call(corners.top_left)
+          d[5] = clamp.call(corners.top_right)
+          d[6] = clamp.call(corners.bottom_right)
+          d[7] = clamp.call(corners.bottom_left)
+        else
+          rad = clamp.call(cmd.rounding)
+          d[4] = d[5] = d[6] = d[7] = rad
+        end
+        sdf_rgba8(d, fill, 8)
+        sdf_rgba8(d, cmd.fill2 || fill, 12)
+        if stroke
+          sdf_rgba8(d, stroke, 16)
+          d[24] = cmd.stroke_width.to_f32
+        else
+          d[16] = d[17] = d[18] = d[19] = 0.0f32 # alpha 0 = no border
+          d[24] = 0.0f32
+        end
+        # Shape half == quad half; kind 0 (rect), no blur.
+        d[20] = hw.to_f32
+        d[21] = hh.to_f32
+        d[22] = 0.0f32
+        d[23] = 0.0f32
+        d[25] = @@pixels_per_point.to_f32
+        d[26] = 0.0f32
+        d[27] = 0.0f32
+        @@sdf_n += 1
+        true
+      end
+
+      # Outset box-shadow: the caster is the rect translated by
+      # `offset` and grown by `spread` (corner radius grows with it —
+      # the same shape #paint_shadow_outset builds); the shader fades
+      # alpha outward from that silhouette over `blur`, the same
+      # exp(-2t²) curve as the tessellated bands. Inset shadows need
+      # per-side depths one uniform SDF cannot express — they keep the
+      # tessellated path.
+      def self.sdf_try_shadow(cmd : Egui::ShadowCmd) : Bool
+        return false if cmd.inset?
+        return false if cmd.color.a.zero?
+        base = cmd.rect.translate(cmd.offset).expand(cmd.spread)
+        return false if base.width <= 0.0 || base.height <= 0.0
+
+        d = sdf_slot(scissor_rect(cmd.clip))
+        blur = {cmd.blur, 0.0}.max
+        hw = base.width / 2.0
+        hh = base.height / 2.0
+        d[0] = ((base.min.x + base.max.x) / 2.0).to_f32
+        d[1] = ((base.min.y + base.max.y) / 2.0).to_f32
+        # The quad reaches past the falloff's end (t=1 at d=blur) plus
+        # one AA px, so the zero-coverage rim never cuts the curve.
+        margin = blur + 1.5 / @@pixels_per_point
+        d[2] = (hw + margin).to_f32
+        d[3] = (hh + margin).to_f32
+        rad = {cmd.rounding + cmd.spread, {hw, hh}.min, 0.0}.max.to_f32
+        d[4] = d[5] = d[6] = d[7] = rad
+        sdf_rgba8(d, cmd.color, 8)
+        sdf_rgba8(d, cmd.color, 12) # no gradient on shadows
+        d[16] = d[17] = d[18] = d[19] = 0.0f32
+        # Shape half == the caster's; kind 1 (shadow), blur in points.
+        d[20] = hw.to_f32
+        d[21] = hh.to_f32
+        d[22] = 1.0f32
+        d[23] = blur.to_f32
+        d[24] = 0.0f32
+        d[25] = @@pixels_per_point.to_f32
+        d[26] = 0.0f32
+        d[27] = 0.0f32
+        @@sdf_n += 1
+        true
+      end
+
+      # A circle is the capsule edge case of sd_round_box: every corner
+      # radius clamps onto min(half) = radius. Fill and stroke ride the
+      # same instance — the shader's stroke band sits at radius ±
+      # stroke_w/2, like #paint_circle's #paint_ring.
+      def self.sdf_try_circle(cmd : Egui::CircleCmd) : Bool
+        r = cmd.radius
+        return false if r <= 0.0
+        fill = cmd.fill
+        stroke = cmd.stroke if cmd.stroke_width > 0
+        return false unless fill || stroke
+
+        d = sdf_slot(scissor_rect(cmd.clip))
+        d[0] = cmd.center.x.to_f32
+        d[1] = cmd.center.y.to_f32
+        # The quad covers the disc plus the stroke overhang and one AA
+        # px; the shape itself stays a radius-sized square.
+        margin = (stroke ? cmd.stroke_width / 2.0 : 0.0) + 1.5 / @@pixels_per_point
+        d[2] = (r + margin).to_f32
+        d[3] = (r + margin).to_f32
+        d[4] = d[5] = d[6] = d[7] = r.to_f32
+        sdf_rgba8(d, fill || TRANSPARENT_FILL, 8)
+        sdf_rgba8(d, fill || TRANSPARENT_FILL, 12)
+        if stroke
+          sdf_rgba8(d, stroke, 16)
+          d[24] = cmd.stroke_width.to_f32
+        else
+          d[16] = d[17] = d[18] = d[19] = 0.0f32
+          d[24] = 0.0f32
+        end
+        # Shape half == radius (a square with full rounding); kind 0.
+        d[20] = r.to_f32
+        d[21] = r.to_f32
+        d[22] = 0.0f32
+        d[23] = 0.0f32
+        d[25] = @@pixels_per_point.to_f32
+        d[26] = 0.0f32
+        d[27] = 0.0f32
+        @@sdf_n += 1
+        true
+      end
+
+      def self.sdf_flush : Nil
+        return if @@sdf_n == 0
+        x, y, w, h = @@sdf_clip.not_nil!
+        clip = StaticArray(Float32, 4).new(0.0f32)
+        clip[0] = x.to_f32
+        clip[1] = y.to_f32
+        clip[2] = w.to_f32
+        clip[3] = h.to_f32
+        LibEguiCr.sdf_batch(clip.to_unsafe, @@sdf_buf.to_unsafe, @@sdf_n)
+        @@sdf_n = 0
+        @@sdf_clip = nil
+        # The raw draw left the GL scissor on the batch's clip while
+        # sgl's recorded stream (and the dedupe state) knows nothing
+        # about it — force the next #apply_scissor to re-emit, exactly
+        # like the first clip of a frame.
+        @@last_scissor = nil
       end
 
       def self.paint_image(cmd : Egui::ImageCmd) : Nil
