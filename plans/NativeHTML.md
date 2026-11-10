@@ -124,14 +124,19 @@ wrap + grid + columns, — а не «сломанным flexbox».
 
 ### 4.3 Canvas2D (браузерный canvas, Crystal-код)
 
-- Immediate-draw API поверх готовых кусков: NanoSVG-растеризатор
-  (`nanosvg_cr.cr` — AA-филы, градиенты, трансформы, dash) +
-  retained-буфер + stream texture (паттерн отработан в
-  `Canvas`/lottie/SVG). **Route A** — CPU-растер, почти чистый клей.
-- Поверхность: `moveTo/lineTo/bezier/arc`, `fill/stroke` (join/cap/
-  dash, nonzero/evenodd), `save/restore`, CTM, линейные/радиальные
-  градиенты, `globalAlpha`, текст с `textAlign/textBaseline`,
-  rect-clip.
+- **Route A — сделано** (`src/egui/canvas2d.cr`, SPEC.md §5): записанный
+  список опов → CPU-бейк через NanoSVG-растеризатор (AA-филы, градиенты,
+  dash, evenodd) по боксам регионов → source-over в retained-буфер →
+  stream texture. CTM — в момент добавления сегмента; градиенты — в
+  user space вызова fill/stroke. fillText — через `Fonts#coverage_quads`
+  (CPU-ридбек атласа). Спеки: `spec/canvas2d_spec.cr` +
+  `spec/canvas2d_font_smoke.cr` (под реальным шрифтом). Отклонения —
+  SPEC.md §5.
+- Поверхность: `moveTo/lineTo/quad/bezier/arc/ellipse/rect/close`,
+  `fill/stroke` (join/cap/dash, nonzero/evenodd), `fillRect/strokeRect/
+  clearRect`, `save/restore`, CTM (translate/rotate/scale/transform/
+  setTransform), линейные/радиальные градиенты, `globalAlpha`,
+  `fillText/measureText` (`textAlign/textBaseline`), rect-clip.
 - **Route B** (потом): `PathCmd` + тесселяция + sgl-pipeline;
   `Mesh3DCmd` — доказанный прецедент расширения paint list. Тот же
   кусок (2D CTM) закрывает `transform`-анимации (§7).
@@ -270,10 +275,11 @@ resolver, много declaration front-ends.
 | CSS-transitions (цвет, размер, прозрачность) | ✅ есть: `transition.*`/`easing.*` + `StyleAnimations` (widget.cr:224-256), спеки |
 | value-анимации | ✅ есть: `animate_value_with_time` (порт egui AnimationManager) |
 | кинетика/физика | ✅ есть: `KineticScroller` + `History` |
+| **пружины (spring-интерполятор)** | ❌ добавить: затухающий осциллятор как значение `transition` — `spring(smooth/bouncy/wobbly/response,damping)`; состояние (скорость) в Memory. Плюс paint-пружины hover/press, Appear-переходы (`appear:`/`appear-delay:` свойства ECSS, аналог `@starting-style`), layout-пружины, ghost попапов, reduce-motion, time-step override. Дизайн и порядок — `plans/NATIVE_HTML_DEMO.md` §3.2 (прецедент: Raven `widget/anim.c`) |
 | lottie (векторные) | ✅ есть (rlottie; pure-Crystal плеер в планах lottie-port.md) |
 | кадровая инфраструктура | ✅ есть: `request_repaint` + on-demand (план 0percent_cpu.md) |
 | `@keyframes` + `animation:*` (`delay`/`play-state`/`direction`) | добавить: правило в stylesheet (наборы StyleVars по ключевым кадрам) + интерполяция поверх готового `StyleAnimations`; ~день-два, нулевая новая архитектура |
-| `transform`-анимации (`rotate`/`scale`/`translate`) | после 2D CTM — ОБЩИЙ кусок с Canvas2D Route B (§4.3): одна фича закрывает обе дыры |
+| `transform`-анимации (`rotate`/`scale`/`translate`) | после SDF-примитивов — постфактум transform инстансов (квад × матрица, как `rvn_drawlist_transform` у Raven); полный 2D CTM — потом, ОБЩИЙ кусок с Canvas2D Route B (§4.3) |
 
 В SPEC.md — по закону «никаких полусвойств»: `transition` на цвет —
 в спеку сразу; `transform` — только после CTM.
@@ -285,7 +291,7 @@ resolver, много declaration front-ends.
 | CSS cascade (классы, states, media, transitions, units) | есть; контракт порядка слоёв — §4.2 |
 | border-radius, box-shadow, градиенты, per-side borders | есть |
 | forms | есть; словарь — §5 |
-| canvas | есть (pixel); Canvas2D — §4.3 |
+| canvas | есть (pixel); Canvas2D Route A ✅ (§4.3) |
 | audio | есть (system port + minaudio) |
 | **video** | **example-уровень** (examples/video: ffmpeg+player) — промоутить в движок |
 | svg, lottie, icons | есть |
@@ -299,7 +305,7 @@ resolver, много declaration front-ends.
 | 1 | cascade-контракт (§4.2) | низкий | вся инфраструктура есть; чистые спеки |
 | 2 | контракт элемента + HTML-словарь + атрибуты (§4.1, §5) | механический, массовый | миграция examples |
 | 3 | leaf-контракт (§4.4) | средний | общее из TextArea/CodeEditor/TableView/terminal |
-| 4 | Canvas2D Route A (§4.3) | изолированный | клей над существующим |
+| 4 | Canvas2D Route A (§4.3) ✅ | изолированный | клей над существующим |
 | 5 | exml-кодоген (§6) | низкий | после №2 (стабильный поверхностный API) |
 | 6 | SPEC.md (§3, §8) | дисциплинарный | из таблиц §5, живёт с ними синхронно |
 | 7 | `@keyframes` (§7) | низкий | поверх StyleAnimations |
