@@ -1,0 +1,1140 @@
+<!DOCTYPE html>
+<!-- Raven Music — статический HTML-оракул, 1:1 по структуре ui/*.xml
+     (тема Nocturne, без анимаций). Пять окон 1360x860 — по одному на
+     страницу. Эталонные скриншоты оригинала: tmp/raven_*.png. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Raven Music — oracle</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- векторные глифы (аналог <Icon Glyph="..."> из tags.c) -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-library" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 6l4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-heart-f" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4"/><path d="M5 5v14h2V5z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20"/><path d="M17 5v14h2V5z"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.8-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><path d="M12 2v13"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+  </defs>
+</svg>
+
+<h1>Raven Music — оракул 1:1 (Nocturne, статично)</h1>
+<div class="win-label">1 · Home</div>
+
+<!-- ================================================================ HOME -->
+<div class="win" id="home">
+  <div class="mesh"></div>
+
+  <div class="island">
+    <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+    <div class="title">Glass Waves</div>
+    <div class="vis"><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg><span>What do you want to play?</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item active"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip on">All</div><div class="chip">Playlists</div><div class="chip">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div>
+            <div><div class="t">Liked songs</div><div class="s">Playlist · 26 songs</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div>
+            <div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div>
+            <div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div>
+            <div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div>
+            <div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+            <div><div class="t">Tides</div><div class="s">Album · The Distant Horizon</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div>
+            <div><div class="t">Restless Satellites</div><div class="s">Album · The Copper Motel</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div>
+            <div><div class="t">The Paper Lanterns</div><div class="s">Album · Remy Quinn</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <div class="page">
+        <div class="home-chips">
+          <div class="chip on">All</div><div class="chip">Music</div>
+          <div class="chip">Podcasts</div><div class="chip">Audiobooks</div>
+        </div>
+        <div class="greeting">Good evening</div>
+        <div class="quick-grid">
+          <div class="quick"><div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div><div class="t">The Paper Lanterns</div></div>
+          <div class="quick"><div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div><div class="t">Restless Satellites</div></div>
+          <div class="quick"><div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div><div class="t">Mirrors</div></div>
+          <div class="quick"><div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div><div class="t">Tides</div>
+            <div class="vis"><i></i><i></i><i></i><i></i></div></div>
+          <div class="quick"><div class="cover" style="--c1:#3AC69E;--c2:#61C626">ES</div><div class="t">Faded Summer</div></div>
+          <div class="quick"><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div><div class="t">Electric Highways</div></div>
+        </div>
+
+        <div class="section-head"><div class="t">Made for you</div><div class="link">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card round"><div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#3B63C6;--c2:#C69927">SH</div><div class="t">Fresh finds</div><div class="s">Playlist · Mira Solen</div></div>
+        </div>
+
+        <div class="section-head"><div class="t">Recently played</div><div class="link">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card"><div class="cover" style="--c1:#C66F1D;--c2:#1D24C6">OL</div><div class="t">The Blue Comets</div><div class="s">2010 · Otis Lindqvist</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#DC2091;--c2:#1D8AC6">SC</div><div class="t">Cathedral in Berlin</div><div class="s">2013 · The Static Comets</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div><div class="t">Endless Gardens</div><div class="s">2012 · The Electric Wolves</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#5EA6C6;--c2:#4AC667">KD</div><div class="t">The Stray Embers</div><div class="s">2026 · Kai Delacroix</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E82266;--c2:#1DC68C">HH</div><div class="t">Heartbeat in July</div><div class="s">2022 · The Hollow Harbor</div></div>
+        </div>
+
+        <div class="section-head"><div class="t">Your favorite artists</div></div>
+        <div class="card-row">
+          <div class="album-card round"><div class="cover" style="--c1:#C66F1D;--c2:#1D24C6">OL</div><div class="t">Otis Lindqvist</div><div class="s">Artist</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div><div class="t">Sasha Kane</div><div class="s">Artist</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div><div class="t">Noor Kane</div><div class="s">Artist</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#5EA6C6;--c2:#4AC667">KD</div><div class="t">Kai Delacroix</div><div class="s">Artist</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div><div class="t">Remy Quinn</div><div class="s">Artist</div></div>
+        </div>
+
+        <div class="section-head"><div class="t">New releases</div><div class="link">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card"><div class="cover" style="--c1:#5EA6C6;--c2:#4AC667">KD</div><div class="t">The Stray Embers</div><div class="s">2026 · Kai Delacroix</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#3B63C6;--c2:#27C68C">AK</div><div class="t">Glass Gardens</div><div class="s">2026 · Ava Kane</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div><div class="t">Tides</div><div class="s">2026 · The Distant Horizon</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#237FEC;--c2:#71C61D">GH</div><div class="t">Heartbeat in Seoul</div><div class="s">2024 · The Golden Horizon</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E82266;--c2:#1D5EC6">KA</div><div class="t">Crimson Ghosts</div><div class="s">2025 · Kai Ash</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nowplaying"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From Tides</div>
+        <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">Glass Waves</div>
+          <div class="np-artist">The Distant Horizon</div>
+        </div>
+        <div class="icon-btn"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+      </div>
+      <div class="np-vis">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="np-artist-card">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">The Distant Horizon</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link">Open queue</div></div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Midnight Horizon</div><div class="s">The Distant Horizon</div></div>
+        </div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Static Cathedral</div><div class="s">The Distant Horizon</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+      <div><div class="t">Glass Waves</div><div class="a">The Distant Horizon</div></div>
+      <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round"><svg><use href="#i-pause"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">1:24</div>
+        <div class="slider"><div class="track"><div class="fill" style="width:28%"></div><div class="knob" style="left:calc(28% - 6px)"></div></div></div>
+        <div class="time">5:00</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <div class="vis"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="icon-btn"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-volume"/></svg></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:calc(70% - 6px)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="win-label">2 · Search</div>
+
+<!-- =============================================================== SEARCH -->
+<div class="win" id="search">
+  <div class="mesh"></div>
+
+  <div class="island">
+    <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+    <div class="title">Glass Waves</div>
+    <div class="vis"><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg><span>What do you want to play?</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item active"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip on">All</div><div class="chip">Playlists</div><div class="chip">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div>
+            <div><div class="t">Liked songs</div><div class="s">Playlist · 26 songs</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div>
+            <div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div>
+            <div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div>
+            <div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div>
+            <div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+            <div><div class="t">Tides</div><div class="s">Album · The Distant Horizon</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div>
+            <div><div class="t">Restless Satellites</div><div class="s">Album · The Copper Motel</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div>
+            <div><div class="t">The Paper Lanterns</div><div class="s">Album · Remy Quinn</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <div class="page">
+        <div class="browse-title">Browse all</div>
+        <div class="genre-grid">
+          <div class="genre-tile" style="--g:#E8115B"><div class="t">Pop</div><div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+          <div class="genre-tile" style="--g:#BA5D07"><div class="t">Hip-Hop</div><div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div></div>
+          <div class="genre-tile" style="--g:#E91429"><div class="t">Rock</div><div class="cover" style="--c1:#3AC69E;--c2:#C64526">CW</div></div>
+          <div class="genre-tile" style="--g:#608108"><div class="t">Indie</div><div class="cover" style="--c1:#3AC69E;--c2:#61C626">ES</div></div>
+          <div class="genre-tile" style="--g:#8D67AB"><div class="t">R&amp;B</div><div class="cover" style="--c1:#98C61D;--c2:#9D1DC6">RQ</div></div>
+          <div class="genre-tile" style="--g:#0D73EC"><div class="t">Electronic</div><div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div></div>
+          <div class="genre-tile" style="--g:#DC148C"><div class="t">Soul</div><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div></div>
+          <div class="genre-tile" style="--g:#477D95"><div class="t">Folk</div><div class="cover" style="--c1:#C66F1D;--c2:#1D24C6">OL</div></div>
+          <div class="genre-tile" style="--g:#1E3264"><div class="t">Jazz</div><div class="cover" style="--c1:#5EA6C6;--c2:#4AC667">BH</div></div>
+          <div class="genre-tile" style="--g:#27856A"><div class="t">Chill</div><div class="cover" style="--c1:#5EA6C6;--c2:#4AC667">KD</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nowplaying"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From Tides</div>
+        <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">Glass Waves</div>
+          <div class="np-artist">The Distant Horizon</div>
+        </div>
+        <div class="icon-btn"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+      </div>
+      <div class="np-vis">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="np-artist-card">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">The Distant Horizon</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link">Open queue</div></div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Midnight Horizon</div><div class="s">The Distant Horizon</div></div>
+        </div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Static Cathedral</div><div class="s">The Distant Horizon</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+      <div><div class="t">Glass Waves</div><div class="a">The Distant Horizon</div></div>
+      <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round"><svg><use href="#i-pause"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">1:24</div>
+        <div class="slider"><div class="track"><div class="fill" style="width:28%"></div><div class="knob" style="left:calc(28% - 6px)"></div></div></div>
+        <div class="time">5:00</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <div class="vis"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="icon-btn"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-volume"/></svg></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:calc(70% - 6px)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="win-label">3 · Settings</div>
+
+<!-- ============================================================== SETTINGS -->
+<div class="win" id="settings">
+  <div class="mesh"></div>
+
+  <div class="island">
+    <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+    <div class="title">Glass Waves</div>
+    <div class="vis"><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg><span>What do you want to play?</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item active"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip on">All</div><div class="chip">Playlists</div><div class="chip">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div>
+            <div><div class="t">Liked songs</div><div class="s">Playlist · 26 songs</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div>
+            <div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div>
+            <div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div>
+            <div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div>
+            <div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+            <div><div class="t">Tides</div><div class="s">Album · The Distant Horizon</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div>
+            <div><div class="t">Restless Satellites</div><div class="s">Album · The Copper Motel</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div>
+            <div><div class="t">The Paper Lanterns</div><div class="s">Album · Remy Quinn</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <div class="page">
+        <div class="settings-col">
+          <div class="settings-title">Settings</div>
+
+          <div class="eyebrow">APPEARANCE</div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Look</div>
+              <div class="d">A theme of the player, or a look of Raven: Windows, macOS, GNOME, glass, high contrast.</div>
+            </div>
+            <div class="combo" style="width:260px">Nocturne <svg><use href="#i-chev"/></svg></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Accent from the cover</div>
+              <div class="d">The color of the controls follows the cover of what plays.</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Accent</div>
+              <div class="d">The color of the controls, when it does not follow the cover.</div>
+            </div>
+            <div class="swatch"></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Background</div>
+              <div class="d">What moves behind the panels, in the colors of the cover.</div>
+            </div>
+            <div class="combo" style="width:160px">Mesh <svg><use href="#i-chev"/></svg></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Animate the background</div>
+              <div class="d">Off, the background stays still and the window draws only when something changes.</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Now playing panel</div>
+              <div class="d">The panel on the right, with the cover and what comes next.</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+
+          <div class="sep"></div>
+          <div class="eyebrow">PLAYBACK</div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Crossfade</div>
+              <div class="d">Songs fade into each other.</div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center">
+              <div class="slider"><div class="track"><div class="fill" style="width:42%"></div><div class="knob" style="left:calc(42% - 6px)"></div></div></div>
+              <div style="width:36px;font-size:14px">5 s</div>
+            </div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Normalize the volume</div>
+              <div class="d">The same loudness for every song.</div>
+            </div>
+            <div class="switch"></div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Streaming quality</div>
+              <div class="d">Nothing is streamed: the songs of this player are made up.</div>
+            </div>
+            <div class="combo" style="width:160px">High <svg><use href="#i-chev"/></svg></div>
+          </div>
+
+          <div class="sep"></div>
+          <div class="eyebrow">ABOUT</div>
+          <div class="surface about-card">
+            <p><b>Raven Music</b> is a showcase of Raven: no server, no sound, only the interface.</p>
+            <ul>
+              <li>every part is an XML file of ui/, brought in with Include</li>
+              <li>the cards, the rows and the tiles are tags declared in widgets.xml</li>
+              <li>Icon, Cover, Visualizer and Heading are made by the application</li>
+              <li>the themes are files of themes/; the accent follows the cover playing</li>
+              <li>the island at the top lives in the notch of a MacBook</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nowplaying"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From Tides</div>
+        <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">Glass Waves</div>
+          <div class="np-artist">The Distant Horizon</div>
+        </div>
+        <div class="icon-btn"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+      </div>
+      <div class="np-vis">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="np-artist-card">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">The Distant Horizon</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link">Open queue</div></div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Midnight Horizon</div><div class="s">The Distant Horizon</div></div>
+        </div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Static Cathedral</div><div class="s">The Distant Horizon</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+      <div><div class="t">Glass Waves</div><div class="a">The Distant Horizon</div></div>
+      <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round"><svg><use href="#i-pause"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">1:24</div>
+        <div class="slider"><div class="track"><div class="fill" style="width:28%"></div><div class="knob" style="left:calc(28% - 6px)"></div></div></div>
+        <div class="time">5:00</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <div class="vis"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="icon-btn"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-volume"/></svg></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:calc(70% - 6px)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="win-label">4 · Library</div>
+
+<!-- =============================================================== LIBRARY -->
+<div class="win" id="library">
+  <div class="mesh"></div>
+
+  <div class="island">
+    <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+    <div class="title">Glass Waves</div>
+    <div class="vis"><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg><span>What do you want to play?</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item active"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip on">All</div><div class="chip">Playlists</div><div class="chip">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div>
+            <div><div class="t">Liked songs</div><div class="s">Playlist · 26 songs</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div>
+            <div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div>
+            <div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div>
+            <div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div>
+            <div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+            <div><div class="t">Tides</div><div class="s">Album · The Distant Horizon</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div>
+            <div><div class="t">Restless Satellites</div><div class="s">Album · The Copper Motel</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div>
+            <div><div class="t">The Paper Lanterns</div><div class="s">Album · Remy Quinn</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <div class="page lib-page">
+        <div class="greeting" style="font-size:30px">Your library</div>
+        <div class="lib-summary">6 playlists · 24 albums</div>
+
+        <div class="section-head"><div class="t">Playlists</div><div class="link">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card round"><div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div><div class="t">Liked songs</div><div class="s">26 songs</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          <div class="album-card round"><div class="cover" style="--c1:#3B63C6;--c2:#C69927">SH</div><div class="t">Fresh finds</div><div class="s">Playlist · Mira Solen</div></div>
+        </div>
+
+        <div class="section-head"><div class="t">Albums</div><div class="link">Show all</div></div>
+        <div class="card-row" style="flex-wrap:wrap;height:auto;overflow:hidden;max-height:286px">
+          <div class="album-card"><div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div><div class="t">The Paper Lanterns</div><div class="s">2024 · Remy Quinn</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div><div class="t">Restless Satellites</div><div class="s">2024 · The Copper Motel</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div><div class="t">Mirrors</div><div class="s">1998 · Noor Kane</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div><div class="t">Tides</div><div class="s">2026 · The Distant Horizon</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#3AC69E;--c2:#61C626">ES</div><div class="t">Faded Summer</div><div class="s">1989 · The Endless Strangers</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div><div class="t">Electric Highways</div><div class="s">2022 · Sasha Kane</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#C66F1D;--c2:#1D24C6">OL</div><div class="t">The Blue Comets</div><div class="s">2010 · Otis Lindqvist</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#DC2091;--c2:#1D8AC6">SC</div><div class="t">Cathedral in Berlin</div><div class="s">2013 · The Static Comets</div></div>
+          <div class="album-card"><div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div><div class="t">Endless Gardens</div><div class="s">2012 · The Electric Wolves</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nowplaying"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From Tides</div>
+        <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">Glass Waves</div>
+          <div class="np-artist">The Distant Horizon</div>
+        </div>
+        <div class="icon-btn"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+      </div>
+      <div class="np-vis">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="np-artist-card">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">The Distant Horizon</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link">Open queue</div></div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Midnight Horizon</div><div class="s">The Distant Horizon</div></div>
+        </div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Static Cathedral</div><div class="s">The Distant Horizon</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+      <div><div class="t">Glass Waves</div><div class="a">The Distant Horizon</div></div>
+      <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round"><svg><use href="#i-pause"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">1:24</div>
+        <div class="slider"><div class="track"><div class="fill" style="width:28%"></div><div class="knob" style="left:calc(28% - 6px)"></div></div></div>
+        <div class="time">5:00</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <div class="vis"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="icon-btn"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-volume"/></svg></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:calc(70% - 6px)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+<div class="win-label">5 · Collection (альбом Tides)</div>
+
+<!-- ============================================================ COLLECTION -->
+<div class="win" id="collection">
+  <div class="mesh"></div>
+
+  <div class="island">
+    <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+    <div class="title">Glass Waves</div>
+    <div class="vis"><i></i><i></i><i></i><i></i></div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg><span>What do you want to play?</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item active"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip on">All</div><div class="chip">Playlists</div><div class="chip">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#B79CFF;--c2:#6D28D9">♥</div>
+            <div><div class="t">Liked songs</div><div class="s">Playlist · 26 songs</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#E82266;--c2:#2E1DC6">EW</div>
+            <div><div class="t">Late night drive</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#98C61D;--c2:#C61D9F">NK</div>
+            <div><div class="t">Focus flow</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#3B63C6;--c2:#27C640">AO</div>
+            <div><div class="t">Sunday morning</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row round">
+            <div class="cover" style="--c1:#DC2091;--c2:#1DC661">SK</div>
+            <div><div class="t">Heavy rotation</div><div class="s">Playlist · Mira Solen</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+            <div><div class="t">Tides</div><div class="s">Album · The Distant Horizon</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#237FEC;--c2:#C3C61D">CM</div>
+            <div><div class="t">Restless Satellites</div><div class="s">Album · The Copper Motel</div></div>
+          </div>
+          <div class="lib-row">
+            <div class="cover" style="--c1:#5EA6C6;--c2:#C6714A">RQ</div>
+            <div><div class="t">The Paper Lanterns</div><div class="s">Album · Remy Quinn</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <div class="page col-page">
+        <div class="hero">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6;font-size:48px">DH</div>
+          <div class="meta">
+            <div class="kind">ALBUM</div>
+            <div class="title">Tides</div>
+            <div class="desc">The eleventh album of the band: slow waves, wide guitars, eleven songs.</div>
+            <div class="by">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div class="artist">The Distant Horizon</div>
+              <div class="more">2026 · 11 songs, 43 min</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-actions">
+          <div class="play-big"><svg><use href="#i-play"/></svg></div>
+          <div class="icon-btn"><svg><use href="#i-shuffle"/></svg></div>
+          <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+          <div class="icon-btn"><svg><use href="#i-download"/></svg></div>
+          <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+          <div class="list-label">List <svg style="width:18px;height:18px;opacity:.7"><use href="#i-queue"/></svg></div>
+        </div>
+
+        <div class="col-heads">
+          <div class="n">#</div>
+          <div class="title-head">Title</div>
+          <div class="album-head">Album</div>
+          <div style="width:32px"></div>
+          <div class="tail"><svg style="width:16px;height:16px;opacity:.7"><use href="#i-clock"/></svg></div>
+        </div>
+        <div class="col-sep"></div>
+
+        <div class="tracks">
+          <div class="track-row playing">
+            <div class="n">1</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Glass Waves</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">5:00</div>
+          </div>
+          <div class="track-row">
+            <div class="n">2</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Midnight Horizon</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">5:02</div>
+          </div>
+          <div class="track-row">
+            <div class="n">3</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Static Cathedral</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart on"><svg><use href="#i-heart-f"/></svg></div>
+            <div class="time">4:14</div>
+          </div>
+          <div class="track-row">
+            <div class="n">4</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Leave Me Tonight</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">3:12</div>
+          </div>
+          <div class="track-row">
+            <div class="n">5</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Burning Weather</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">3:11</div>
+          </div>
+          <div class="track-row">
+            <div class="n">6</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">The Arcade</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">2:52</div>
+          </div>
+          <div class="track-row">
+            <div class="n">7</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">the Desert, Forever</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart on"><svg><use href="#i-heart-f"/></svg></div>
+            <div class="time">3:13</div>
+          </div>
+          <div class="track-row">
+            <div class="n">8</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Daydreams</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">4:18</div>
+          </div>
+          <div class="track-row">
+            <div class="n">9</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">The Machines</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">5:23</div>
+          </div>
+          <div class="track-row">
+            <div class="n">10</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">the Valley, Home</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">3:41</div>
+          </div>
+          <div class="track-row">
+            <div class="n">11</div>
+            <div class="main">
+              <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+              <div><div class="tt">Seoul, Tonight</div><div class="ta">The Distant Horizon</div></div>
+            </div>
+            <div class="album">Tides</div>
+            <div class="heart"><svg><use href="#i-heart"/></svg></div>
+            <div class="time">3:23</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="nowplaying"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From Tides</div>
+        <div class="icon-btn"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" style="--c1:#E92236;--c2:#571DC6">DH</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">Glass Waves</div>
+          <div class="np-artist">The Distant Horizon</div>
+        </div>
+        <div class="icon-btn"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+      </div>
+      <div class="np-vis">
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+        <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+      </div>
+      <div class="np-artist-card">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">The Distant Horizon</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link">Open queue</div></div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Midnight Horizon</div><div class="s">The Distant Horizon</div></div>
+        </div>
+        <div class="np-q-row">
+          <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+          <div><div class="t">Static Cathedral</div><div class="s">The Distant Horizon</div></div>
+        </div>
+      </div>
+    </div></div>
+  </div>
+
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" style="--c1:#E92236;--c2:#571DC6">DH</div>
+      <div><div class="t">Glass Waves</div><div class="a">The Distant Horizon</div></div>
+      <div class="icon-btn"><svg><use href="#i-heart"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round"><svg><use href="#i-pause"/></svg></div>
+        <div class="icon-btn"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18"><svg><use href="#i-repeat"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">1:24</div>
+        <div class="slider"><div class="track"><div class="fill" style="width:28%"></div><div class="knob" style="left:calc(28% - 6px)"></div></div></div>
+        <div class="time">5:00</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <div class="vis"><i></i><i></i><i></i><i></i><i></i></div>
+      <div class="icon-btn"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn"><svg><use href="#i-volume"/></svg></div>
+      <div class="slider"><div class="track"><div class="fill" style="width:70%"></div><div class="knob" style="left:calc(70% - 6px)"></div></div></div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
