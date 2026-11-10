@@ -242,6 +242,21 @@ module Egui
         @atlas.debug_region(g)
       end
 
+      # `Fonts#coverage_quads` — the walk that measure/draw share,
+      # materializing each glyph's coverage from the atlas (blank
+      # glyphs drop out; a stack without a rasterized atlas never gets
+      # here — this override only exists on the atlas backends).
+      def coverage_quads(text : String, size : Float64) : Array(GlyphCoverage)?
+        return nil unless loaded?
+        out = [] of GlyphCoverage
+        walk(text, size) do |pen_x, g|
+          next if g.w == 0 || g.h == 0
+          out << GlyphCoverage.new(pen_x, g.xoff, g.ytop, g.w, g.h,
+            @atlas.debug_region(g))
+        end
+        out
+      end
+
       # Rasterized coverage bitmap as text (debug/tests) — works for
       # every backend: glyphs land in the shared atlas either way.
       def debug_bitmap(ch : Char, size : Float64) : Nil

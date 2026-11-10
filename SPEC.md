@@ -120,6 +120,30 @@ docs/ANALYSIS.md), `target:` (links already open through SystemPorts).
 
 ## 5. Deliberate duplicates and deviations
 
+### Canvas2D (Route A — `Egui::Canvas2D`, src/egui/canvas2d.cr)
+
+The browser `<canvas>` 2D surface: recorded op list, CPU bake through
+the NanoSVG port, one stream texture. CTM applies when a path segment
+is added (canvas path semantics); gradients are positioned in the user
+space of the fill/stroke call. Works headless (the dummy registry keeps
+upload pixels).
+
+Surface: moveTo/lineTo/quadraticCurveTo/bezierCurveTo/arc/ellipse/
+rect/closePath, fill/stroke (+fillRule evenodd), fillRect/strokeRect/
+clearRect, save/restore, translate/rotate/scale/transform/setTransform,
+linear/radial gradients (addColorStop), globalAlpha, fillText +
+measureText (textAlign left/center/right, textBaseline top/middle/
+alphabetic/bottom), clip (rect).
+
+Deviations (explicit, Route B items stay out of the contract):
+- fillText: the CTM translates the anchor only — no rotated/sheared
+  text; a gradient fill style does not paint text (solid colors only).
+- clip: the current path's bounding box (exact for rect paths — the
+  supported clip shape).
+- createRadialGradient: r0 > 0 collapses to a focal point at the inner
+  circle's center.
+- textAlign start/end map to left/right.
+
 Duplicates KEPT (distinct HTML elements, distinct native paint — the
 vocabulary keeps them apart): `checkbox` vs `radio` (box+check vs
 ring+dot), `ComboBox` vs `SelectBox` (native dropdown vs searchable
@@ -158,7 +182,7 @@ Deviations (🔶):
 | CSS cascade (classes, states, media, transitions, units) | ✅ contract §1 |
 | border-radius, box-shadow, gradients, per-side borders | ✅ |
 | forms | ✅ vocabulary §3–4 |
-| canvas (pixel) | ✅; Canvas2D Route A ⏳ plan §4.3 |
+| canvas (pixel) | ✅; Canvas2D Route A ✅ (contract §5) |
 | audio | ✅ (system port + minaudio) |
 | video | example-level (examples/video) — engine promotion ⏳ |
 | svg, lottie, icons | ✅ |

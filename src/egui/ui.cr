@@ -692,6 +692,13 @@ module Egui
       ia.response
     end
 
+    # A Canvas2D drawing surface; the block draws through the canvas
+    # (recorded ops bake into the texture on this frame).
+    def canvas2d(canvas : Canvas2D, & : Canvas2D ->) : Response
+      yield canvas
+      canvas.ui(self)
+    end
+
     # A depth-tested 3D viewport with an orbit camera; the block draws
     # meshes through the frame it receives.
     def viewport3d(viewport : Viewport3D, & : Frame3D ->) : Response

@@ -7,6 +7,22 @@
 # words hard-break by character.
 
 module Egui
+  # One rasterized glyph for CPU-side text blending (Canvas2D#fill_text):
+  # the coverage bitmap and its placement relative to the pen origin.
+  # `pen_x`/`xoff` are fractional px, `ytop` is the bitmap top over the
+  # baseline, `coverage` is w×h alpha bytes.
+  struct GlyphCoverage
+    getter pen_x : Float64
+    getter xoff : Float64
+    getter ytop : Int32
+    getter w : Int32
+    getter h : Int32
+    getter coverage : Bytes
+
+    def initialize(@pen_x, @xoff, @ytop, @w, @h, @coverage)
+    end
+  end
+
   abstract class Fonts
     # Estimated line height as a font-size factor (matches MonospaceFonts;
     # used by containers that need a row height before measuring).
@@ -34,6 +50,15 @@ module Egui
     # behavior either way.
     def measure_cached(text : String, size : Float64) : Vec2
       measure(text, size)
+    end
+
+    # CPU-side glyph readback for text that must land in a software
+    # buffer (Canvas2D#fill_text blends these through): pen positions
+    # and coverage bitmaps at `size`. Stacks without a rasterized
+    # atlas (synthetic headless ones) return nil — text painting is
+    # a no-op there.
+    def coverage_quads(text : String, size : Float64) : Array(GlyphCoverage)?
+      nil
     end
 
     # Truncate `text` with an ellipsis so it measures at most
