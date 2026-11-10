@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<!-- Raven Music — live-оракул на Vue 3: то же окно 1360x860 и та же верстка,
+     что в статическом оракуле raven_music, но интерактивно и с анимациями,
+     как в оригинальном приложении Raven (tmp/Raven/examples/music):
+     плеер, визуализаторы, акцент и фон из обложки, поиск, настройки.
+     Один .win; страницы переключаются: Home / Search / Settings / Library / Collection. -->
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Raven Music — oracle live</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>Raven Music — оракул live (Nocturne, Vue, анимировано)</h1>
+<div class="win-label">интерактивное окно 1 · Home → Search → Settings → Library → Collection (клик по карточкам и сайдбару)</div>
+
+<!-- векторные глифы (аналог <Icon Glyph="..."> из tags.c) -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="i-home" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M9 22V12h6v10"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></symbol>
+    <symbol id="i-library" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 6l4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-back" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></symbol>
+    <symbol id="i-note" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></symbol>
+    <symbol id="i-heart" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-heart-f" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="currentColor"><rect x="5" y="3" width="5" height="18" rx="1"/><rect x="14" y="3" width="5" height="18" rx="1"/></symbol>
+    <symbol id="i-prev" viewBox="0 0 24 24" fill="currentColor"><polygon points="19 20 9 12 19 4"/><path d="M5 5v14h2V5z"/></symbol>
+    <symbol id="i-next" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20"/><path d="M17 5v14h2V5z"/></symbol>
+    <symbol id="i-shuffle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 18h1.4c1.3 0 2.5-.6 3.3-1.7l6.1-8.6c.8-1.1 2-1.7 3.3-1.7H22"/><path d="m18 2 4 4-4 4"/><path d="M2 6h1.9c1.5 0 2.9.9 3.6 2.2"/><path d="M22 18h-5.9c-1.3 0-2.6-.7-3.3-1.8l-.5-.8"/><path d="m18 14 4 4-4 4"/></symbol>
+    <symbol id="i-repeat" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/></symbol>
+    <symbol id="i-repeat-one" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m17 2 4 4-4 4"/><path d="M3 11v-1a4 4 0 0 1 4-4h14"/><path d="m7 22-4-4 4-4"/><path d="M21 13v1a4 4 0 0 1-4 4H3"/><path d="M11 10h1v4"/></symbol>
+    <symbol id="i-volume" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></symbol>
+    <symbol id="i-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19"/><line x1="22" y1="9" x2="16" y2="15"/><line x1="16" y1="9" x2="22" y2="15"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><path d="M12 19v3"/></symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3 6h.01M3 12h.01M3 18h.01"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/></symbol>
+    <symbol id="i-share" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><path d="M12 2v13"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><path d="M12 15V3"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
+  </defs>
+</svg>
+
+<div id="app">
+<div class="win" :style="winStyle" :class="{ paused: !animate }">
+
+  <!-- фон: плывущие пятна в цветах обложки (settings.effect; None — скрыт) -->
+  <div v-show="effect !== 5" class="mesh" :class="'fx' + effect" :style="meshStyle">
+    <div class="blob b1"></div><div class="blob b2"></div><div class="blob b3"></div><div class="blob b4"></div>
+  </div>
+
+  <!-- остров: свёрнут — что играет; наведение разворачивает в мини-плеер -->
+  <div class="island">
+    <div class="folded">
+      <div class="cover" :style="covCur()">{{ album.ini }}</div>
+      <div class="title">{{ islandText }}</div>
+      <ra-vis :bars="4" :h="12" :min="2"></ra-vis>
+    </div>
+    <div class="unfolded">
+      <div class="u-song">
+        <div class="cover" :style="covCur()">{{ album.ini }}</div>
+        <div class="u-texts">
+          <div class="t">{{ trackObj ? trackObj.title : '' }}</div>
+          <div class="s">{{ album.artist }}</div>
+        </div>
+        <ra-vis :bars="6" :h="16" :min="2"></ra-vis>
+      </div>
+      <ra-slider :value="seekFrac" @set="seek"></ra-slider>
+      <div class="u-times"><span>{{ elapsed }}</span><span>{{ length }}</span></div>
+      <div class="u-row">
+        <div class="icon-btn" :class="{ liked: currentLiked }" @click="likeCurrent"><svg><use :href="currentLiked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+        <div class="icon-btn" @click="prev"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round" @click="toggle"><svg><use :href="playing ? '#i-pause' : '#i-play'"/></svg></div>
+        <div class="icon-btn" @click="next"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn" @click="togglePanel"><svg><use href="#i-panel"/></svg></div>
+      </div>
+      <div class="u-sep"></div>
+      <div class="u-look">
+        <svg class="moon"><use href="#i-moon"/></svg>
+        <select class="mini-combo" :value="look" @change="look = +$event.target.value; onLook()">
+          <option v-for="(l, i) in looks" :key="l" :value="i">{{ l }}</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="header">
+    <div class="logo"><svg><use href="#i-note"/></svg></div>
+    <div class="app-name">Raven Music</div>
+    <div class="icon-btn" @click="back"><svg><use href="#i-back"/></svg></div>
+    <div class="icon-btn s20" @click="navTo('home')"><svg><use href="#i-home"/></svg></div>
+    <div class="search-pill">
+      <svg><use href="#i-search"/></svg>
+      <input ref="search" v-model="query" @input="onSearch" @keydown.esc="$event.target.blur()"
+             placeholder="What do you want to play?" spellcheck="false">
+    </div>
+    <div class="spacer"></div>
+    <div class="icon-btn s20" @click="navTo('settings')"><svg><use href="#i-settings"/></svg></div>
+    <div class="avatar">M</div>
+  </div>
+
+  <div class="main">
+    <div class="sidebar">
+      <div class="surface nav-box">
+        <div class="col">
+          <div class="nav-item" :class="{ active: page === 'home' }" @click="navTo('home')"><svg><use href="#i-home"/></svg>Home</div>
+          <div class="nav-item" :class="{ active: page === 'search' }" @click="navTo('search'); focusSearch()"><svg><use href="#i-search"/></svg>Search</div>
+          <div class="nav-item" :class="{ active: page === 'settings' }" @click="navTo('settings')"><svg><use href="#i-settings"/></svg>Settings</div>
+        </div>
+      </div>
+      <div class="surface lib-box">
+        <div class="lib-head">
+          <div class="nav-item" :class="{ active: page === 'library' || page === 'collection' }" @click="navTo('library')"><svg><use href="#i-library"/></svg>Your library</div>
+          <div class="icon-btn" @click="notInDemo"><svg><use href="#i-plus"/></svg></div>
+        </div>
+        <div class="chips">
+          <div class="chip" :class="{ on: libFilter === 0 }" @click="setFilter(0)">All</div>
+          <div class="chip" :class="{ on: libFilter === 1 }" @click="setFilter(1)">Playlists</div>
+          <div class="chip" :class="{ on: libFilter === 2 }" @click="setFilter(2)">Albums</div>
+        </div>
+        <div class="lib-list">
+          <div class="lib-row" v-for="(r, i) in sidebarRows" :key="r.t + i" :class="{ round: r.round }" @click="r.open()">
+            <div class="cover" :style="{ '--c1': r.c1, '--c2': r.c2 }">{{ r.ini }}</div>
+            <div><div class="t">{{ r.t }}</div><div class="s">{{ r.s }}</div></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="center">
+      <!-- ======================= HOME ======================= -->
+      <div class="page" v-if="page === 'home'">
+        <div class="home-chips">
+          <div class="chip on">All</div>
+          <div class="chip" @click="chipHome('Music')">Music</div>
+          <div class="chip" @click="chipHome('Podcasts')">Podcasts</div>
+          <div class="chip" @click="chipHome('Audiobooks')">Audiobooks</div>
+        </div>
+        <div class="greeting">{{ greeting }}</div>
+        <div class="quick-grid">
+          <div class="quick" v-for="ai in quickPicks" :key="'q' + ai" @click="openAlbum(ai)">
+            <div class="cover" :style="cov(albums[ai])">{{ albums[ai].ini }}</div>
+            <div class="t">{{ albums[ai].title }}</div>
+            <ra-vis v-if="trackObj && trackObj.album === ai" :bars="4" :h="14" :min="2"></ra-vis>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="t">Made for you</div><div class="link" @click="notInDemo">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card round" v-for="p in [1, 2, 3, 4, 5]" :key="'mf' + p" @click="openPlaylist(p)">
+            <div class="cover" :style="cov(albums[playlists[p].cover])">{{ albums[playlists[p].cover].ini }}</div>
+            <div class="t">{{ playlists[p].title }}</div>
+            <div class="s">{{ playlists[p].description }}</div>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="t">Recently played</div><div class="link" @click="notInDemo">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card" v-for="ai in recentPicks" :key="'rp' + ai" @click="openAlbum(ai)">
+            <div class="cover" :style="cov(albums[ai])">{{ albums[ai].ini }}</div>
+            <div class="t">{{ albums[ai].title }}</div>
+            <div class="s">{{ albums[ai].year }} · {{ albums[ai].artist }}</div>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="t">Your favorite artists</div></div>
+        <div class="card-row">
+          <div class="album-card round" v-for="ai in artistPicks" :key="'ar' + ai" @click="openAlbum(ai)">
+            <div class="cover" :style="cov(albums[ai])">{{ albums[ai].ini }}</div>
+            <div class="t">{{ albums[ai].artist }}</div>
+            <div class="s">Artist</div>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="t">New releases</div><div class="link" @click="notInDemo">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card" v-for="ai in newReleases" :key="'nr' + ai" @click="openAlbum(ai)">
+            <div class="cover" :style="cov(albums[ai])">{{ albums[ai].ini }}</div>
+            <div class="t">{{ albums[ai].title }}</div>
+            <div class="s">{{ albums[ai].year }} · {{ albums[ai].artist }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================= SEARCH ======================= -->
+      <div class="page" v-else-if="page === 'search'">
+        <template v-if="!query.trim()">
+          <div class="browse-title">Browse all</div>
+          <div class="genre-grid">
+            <div class="genre-tile" v-for="g in genres" :key="g.name" :style="{ '--g': g.color }" @click="genreOpen(g)">
+              <div class="t">{{ g.name }}</div>
+              <div class="cover" :style="covG(g)">{{ g.ini }}</div>
+            </div>
+          </div>
+        </template>
+        <template v-else>
+          <div class="browse-title">Results</div>
+          <div class="search-none" v-if="searchTop < 0">Nothing matches &laquo;{{ query }}&raquo;. Try another word: a genre, a city, a color&hellip;</div>
+          <template v-else>
+            <div class="section-head"><div class="t">Top result</div></div>
+            <div class="top-card" @click="topOpen()">
+              <div class="cover" :style="cov(albums[searchTop])">{{ albums[searchTop].ini }}</div>
+              <div class="texts">
+                <div class="t">{{ albums[searchTop].title }}</div>
+                <div class="s">Album · {{ albums[searchTop].artist }}</div>
+              </div>
+            </div>
+            <div class="section-head"><div class="t">Songs</div></div>
+            <div class="song-list">
+              <div class="track-row" v-for="(ti, i) in searchSongs" :key="'ss' + ti" :class="{ playing: ti === track }" @click="playTrackRow(ti)">
+                <div class="n">{{ i + 1 }}</div>
+                <div class="main">
+                  <div class="cover" :style="cov(albums[tracks[ti].album])">{{ albums[tracks[ti].album].ini }}</div>
+                  <div><div class="tt">{{ tracks[ti].title }}</div><div class="ta">{{ albums[tracks[ti].album].artist }}</div></div>
+                </div>
+                <div class="album">{{ albums[tracks[ti].album].title }}</div>
+                <div class="heart" :class="{ on: tracks[ti].liked }" @click.stop="likeTrack(ti)"><svg><use :href="tracks[ti].liked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+                <div class="time">{{ fmt(tracks[ti].seconds) }}</div>
+              </div>
+            </div>
+            <div class="section-head"><div class="t">Albums</div></div>
+            <div class="card-row">
+              <div class="album-card" v-for="ai in searchAlbums" :key="'sa' + ai" @click="openAlbum(ai)">
+                <div class="cover" :style="cov(albums[ai])">{{ albums[ai].ini }}</div>
+                <div class="t">{{ albums[ai].title }}</div>
+                <div class="s">{{ albums[ai].year }} · {{ albums[ai].artist }}</div>
+              </div>
+            </div>
+          </template>
+        </template>
+      </div>
+
+      <!-- ======================= SETTINGS ======================= -->
+      <div class="page" v-else-if="page === 'settings'">
+        <div class="settings-col">
+          <div class="settings-title">Settings</div>
+
+          <div class="eyebrow">APPEARANCE</div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Look</div>
+              <div class="d">A theme of the player, or a look of Raven: Windows, macOS, GNOME, glass, high contrast.</div>
+            </div>
+            <select class="combo" style="width:260px" :value="look" @change="look = +$event.target.value; onLook()">
+              <option v-for="(l, i) in looks" :key="l" :value="i">{{ l }}</option>
+            </select>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Accent from the cover</div>
+              <div class="d">The color of the controls follows the cover of what plays.</div>
+            </div>
+            <button class="switch" :class="{ off: !followCover }" @click="followCover = !followCover"></button>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Accent</div>
+              <div class="d">The color of the controls, when it does not follow the cover.</div>
+            </div>
+            <label class="swatch-wrap" title="Pick a color">
+              <input type="color" :value="followCover ? accent : picked" @input="onAccent">
+              <span class="swatch" :style="{ background: accent }"></span>
+            </label>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Background</div>
+              <div class="d">What moves behind the panels, in the colors of the cover.</div>
+            </div>
+            <select class="combo" style="width:160px" v-model.number="effect">
+              <option v-for="(e, i) in effects" :key="e" :value="i">{{ e }}</option>
+            </select>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Animate the background</div>
+              <div class="d">Off, the background stays still and the window draws only when something changes.</div>
+            </div>
+            <button class="switch" :class="{ off: !animate }" @click="animate = !animate"></button>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Now playing panel</div>
+              <div class="d">The panel on the right, with the cover and what comes next.</div>
+            </div>
+            <button class="switch" :class="{ off: !panel }" @click="togglePanel"></button>
+          </div>
+
+          <div class="sep"></div>
+          <div class="eyebrow">PLAYBACK</div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Crossfade</div>
+              <div class="d">Songs fade into each other.</div>
+            </div>
+            <div style="display:flex;gap:10px;align-items:center">
+              <ra-slider :value="crossfade / 12" @set="setCrossfade"></ra-slider>
+              <div style="width:36px;font-size:14px">{{ crossfade }} s</div>
+            </div>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Normalize the volume</div>
+              <div class="d">The same loudness for every song.</div>
+            </div>
+            <button class="switch" :class="{ off: !normalize }" @click="normalize = !normalize"></button>
+          </div>
+          <div class="set-row">
+            <div class="texts">
+              <div class="t">Streaming quality</div>
+              <div class="d">Nothing is streamed: the songs of this player are made up.</div>
+            </div>
+            <select class="combo" style="width:160px" v-model.number="quality">
+              <option :value="0">Low</option><option :value="1">Normal</option>
+              <option :value="2">High</option><option :value="3">Very high</option>
+            </select>
+          </div>
+
+          <div class="sep"></div>
+          <div class="eyebrow">ABOUT</div>
+          <div class="surface about-card">
+            <p><b>Raven Music</b> is a showcase of Raven: no server, no sound, only the interface.</p>
+            <ul>
+              <li>every part is an XML file of ui/, brought in with Include</li>
+              <li>the cards, the rows and the tiles are tags declared in widgets.xml</li>
+              <li>Icon, Cover, Visualizer and Heading are made by the application</li>
+              <li>the themes are files of themes/; the accent follows the cover playing</li>
+              <li>the island at the top lives in the notch of a MacBook</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================= LIBRARY ======================= -->
+      <div class="page lib-page" v-else-if="page === 'library'">
+        <div class="greeting" style="font-size:30px">Your library</div>
+        <div class="lib-summary">{{ libSummary }}</div>
+
+        <div class="section-head"><div class="t">Playlists</div><div class="link" @click="notInDemo">Show all</div></div>
+        <div class="card-row">
+          <div class="album-card round" v-for="(p, pi) in playlists" :key="'pl' + pi" @click="openPlaylist(pi)">
+            <div class="cover" :style="pi === 0 ? { '--c1': '#B79CFF', '--c2': '#6D28D9' } : cov(albums[p.cover])">{{ pi === 0 ? '♥' : albums[p.cover].ini }}</div>
+            <div class="t">{{ p.title }}</div>
+            <div class="s">{{ (pi === 0 ? likedCount : p.trackList.length) + ' songs' }}</div>
+          </div>
+        </div>
+
+        <div class="section-head"><div class="t">Albums</div><div class="link" @click="notInDemo">Show all</div></div>
+        <div class="card-row wrap">
+          <div class="album-card" v-for="(a, ai) in albums" :key="'la' + ai" @click="openAlbum(ai)">
+            <div class="cover" :style="cov(a)">{{ a.ini }}</div>
+            <div class="t">{{ a.title }}</div>
+            <div class="s">{{ a.year }} · {{ a.artist }}</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ======================= COLLECTION ======================= -->
+      <div class="page col-page" v-else-if="page === 'collection'">
+        <div class="hero" :style="heroStyle">
+          <div class="cover" :style="cov(colAlbum)">{{ colAlbum.ini }}</div>
+          <div class="meta">
+            <div class="kind">{{ colKind === 'album' ? 'ALBUM' : 'PLAYLIST' }}</div>
+            <div class="title">{{ colKind === 'album' ? albums[colIndex].title : playlists[colIndex].title }}</div>
+            <div class="desc" v-if="colKind === 'playlist'">{{ playlists[colIndex].description }}</div>
+            <div class="by">
+              <div class="cover" :style="cov(colAlbum)">{{ colAlbum.ini }}</div>
+              <div class="artist">{{ colArtist }}</div>
+              <div class="more">{{ colMeta }}</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="col-actions">
+          <div class="play-big" @click="colPlay"><svg><use :href="colPlayIcon"/></svg></div>
+          <div class="icon-btn" :class="{ active: shuffle }" @click="toggleShuffle"><svg><use href="#i-shuffle"/></svg></div>
+          <div class="icon-btn" :class="{ liked: colIsLiked }" @click="likeCollection"><svg><use :href="colIsLiked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+          <div class="icon-btn" @click="notInDemo"><svg><use href="#i-download"/></svg></div>
+          <div class="icon-btn" @click="notInDemo"><svg><use href="#i-more"/></svg></div>
+          <div class="list-label">List <svg style="width:18px;height:18px;opacity:.7"><use href="#i-queue"/></svg></div>
+        </div>
+
+        <div class="col-heads">
+          <div class="n">#</div>
+          <div class="title-head">Title</div>
+          <div class="album-head">{{ colKind === 'playlist' ? 'Album' : '' }}</div>
+          <div style="width:32px"></div>
+          <div class="tail"><svg style="width:16px;height:16px;opacity:.7"><use href="#i-clock"/></svg></div>
+        </div>
+        <div class="col-sep"></div>
+
+        <div class="tracks">
+          <div class="track-row" v-for="(ti, i) in colTracks" :key="colKind + '-' + colIndex + '-' + ti"
+               :class="{ playing: ti === track }" @click="playTrackRow(ti)">
+            <div class="n">{{ i + 1 }}</div>
+            <div class="main">
+              <div class="cover" :style="cov(albums[tracks[ti].album])">{{ albums[tracks[ti].album].ini }}</div>
+              <div><div class="tt">{{ tracks[ti].title }}</div><div class="ta">{{ albums[tracks[ti].album].artist }}</div></div>
+            </div>
+            <div class="album">{{ colKind === 'playlist' ? albums[tracks[ti].album].title : '' }}</div>
+            <div class="heart" :class="{ on: tracks[ti].liked }" @click.stop="likeTrack(ti)"><svg><use :href="tracks[ti].liked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+            <div class="time">{{ fmt(tracks[ti].seconds) }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ======================= NOW PLAYING ======================= -->
+    <div class="nowplaying" v-show="panel"><div class="np-inner">
+      <div class="np-head">
+        <div class="ctx">From {{ context }}</div>
+        <div class="icon-btn" @click="notInDemo"><svg><use href="#i-more"/></svg></div>
+        <div class="icon-btn" @click="togglePanel"><svg><use href="#i-close"/></svg></div>
+      </div>
+      <div class="np-cover-wrap"><div class="np-cover cover" :style="covCur()">{{ album.ini }}</div></div>
+      <div class="np-title-row">
+        <div class="texts">
+          <div class="np-title">{{ trackObj ? trackObj.title : '' }}</div>
+          <div class="np-artist">{{ album.artist }}</div>
+        </div>
+        <div class="icon-btn" @click="notInDemo"><svg><use href="#i-share"/></svg></div>
+        <div class="icon-btn" :class="{ liked: currentLiked }" @click="likeCurrent"><svg><use :href="currentLiked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+      </div>
+      <ra-vis class="np-vis" :bars="36" :h="56" :min="4"></ra-vis>
+      <div class="np-artist-card" :style="npArtistStyle">
+        <div class="k">ABOUT THE ARTIST</div>
+        <div class="n">{{ album.artist }}</div>
+        <div class="l">2,341,992 monthly listeners</div>
+        <div class="b">An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026.</div>
+      </div>
+      <div class="np-queue-card">
+        <div class="h"><div class="t">Next in queue</div><div class="link" @click="notInDemo">Open queue</div></div>
+        <template v-if="queueNext.length">
+          <div class="np-q-row" v-for="(qi, n) in queueNext" :key="'nq' + qi + '-' + n" @click="jumpQueue(n)">
+            <div class="cover" :style="cov(albums[tracks[qi].album])">{{ albums[tracks[qi].album].ini }}</div>
+            <div><div class="t">{{ tracks[qi].title }}</div><div class="s">{{ albums[tracks[qi].album].artist }}</div></div>
+          </div>
+        </template>
+        <div class="np-none" v-else>Nothing after this song.</div>
+      </div>
+    </div></div>
+  </div>
+
+  <!-- ======================= PLAYER BAR ======================= -->
+  <div class="playerbar">
+    <div class="pb-song">
+      <div class="cover" :style="covCur()">{{ album.ini }}</div>
+      <div><div class="t">{{ trackObj ? trackObj.title : '' }}</div><div class="a">{{ album.artist }}</div></div>
+      <div class="icon-btn" :class="{ liked: currentLiked }" @click="likeCurrent"><svg><use :href="currentLiked ? '#i-heart-f' : '#i-heart'"/></svg></div>
+    </div>
+    <div class="pb-transport">
+      <div class="pb-buttons">
+        <div class="icon-btn s18" :class="{ active: shuffle }" @click="toggleShuffle"><svg><use href="#i-shuffle"/></svg></div>
+        <div class="icon-btn" @click="prev"><svg><use href="#i-prev"/></svg></div>
+        <div class="play-round" @click="toggle"><svg><use :href="playing ? '#i-pause' : '#i-play'"/></svg></div>
+        <div class="icon-btn" @click="next"><svg><use href="#i-next"/></svg></div>
+        <div class="icon-btn s18" :class="{ active: repeat !== 0 }" @click="cycleRepeat"><svg><use :href="repeatIcon()"/></svg></div>
+      </div>
+      <div class="pb-seek">
+        <div class="time r">{{ elapsed }}</div>
+        <ra-slider :value="seekFrac" @set="seek"></ra-slider>
+        <div class="time">{{ length }}</div>
+      </div>
+    </div>
+    <div class="pb-right">
+      <ra-vis :bars="5" :h="16" :min="2"></ra-vis>
+      <div class="icon-btn" @click="notInDemo"><svg><use href="#i-mic"/></svg></div>
+      <div class="icon-btn" @click="togglePanel"><svg><use href="#i-panel"/></svg></div>
+      <div class="icon-btn" @click="notInDemo"><svg><use href="#i-queue"/></svg></div>
+      <div class="icon-btn" @click="toggleMute"><svg><use :href="volIcon"/></svg></div>
+      <ra-slider :value="muted ? 0 : volume" @set="setVolume"></ra-slider>
+    </div>
+  </div>
+</div>
+</div>
+
+<script src="vue.global.prod.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
