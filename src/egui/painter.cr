@@ -1150,26 +1150,56 @@ module Egui
     # front — ascending z; within one z, push order (registration
     # order) decides, so a container's back-filled frame stays under
     # its contents.
+    #
+    # VOLATILITY CONTRACT: the returned array is only valid until the
+    # next #commands_in_layer_order call — when the frame's layers
+    # were pushed in non-decreasing z (the common case: content, then
+    # overlays) the painter's own live command list is returned
+    # as-is (a stable sort of sorted input is the identity
+    # permutation, so no permuted copy is needed); the next frame's
+    # Painter#clear empties it. Consumers that hold command lists
+    # across frames (the sokol idle-frame cache, capybara
+    # #texts/#screenshot) hold at most the LATEST result, which
+    # stays valid until a new frame begins — the one-frame lifetime
+    # they already assume. A mid-frame layer regression (a low-z
+    # command AFTER a high-z one — e.g. the deferred central panel
+    # flushing after an overlay was painted) falls through to a real
+    # counting sort and a fresh array.
     def commands_in_layer_order : Array(PaintCmd)
       # Counting sort over the clamped z range: count per z, prefix
       # the start offsets, then one stable placement pass — O(n + z),
-      # no allocation besides the returned array (the old scan was
+      # the returned array the only allocation (the old scan was
       # O(layers × commands), see FPS_OPTIMIZATION.md §7).
       n = @commands.size
       return Array(PaintCmd).new(0) if n.zero?
-      counts = @z_counts
-      cursors = @z_cursors
-      counts.fill(0)
-      @layers.each { |z| counts[z] += 1 }
+      sorted = true
+      prev = -1
+      @layers.each do |z|
+        if z < prev
+          sorted = false
+          break
+        end
+        prev = z
+      end
+      Egui::Bench.count(sorted ? "layers.sorted" : "layers.unsorted")
+      return @commands if sorted
+      @z_counts.fill(0)
+      counts = @z_counts.to_unsafe
+      cursors = @z_cursors.to_unsafe
+      layers = @layers.to_unsafe
+      n.times { |i| counts[layers[i]] += 1 }
       total = 0
       (0..MAX_LAYER_Z).each do |z|
         cursors[z] = total
         total += counts[z]
       end
+      # Pointer pass (no bounds checks): a stable placement into the
+      # prefixed buckets — for each z, ascending insertion order.
       Array(PaintCmd).build(n) do |buffer|
-        @commands.each_with_index do |cmd, i|
-          z = @layers[i]
-          buffer[cursors[z]] = cmd
+        commands = @commands.to_unsafe
+        n.times do |i|
+          z = layers[i]
+          buffer[cursors[z]] = commands[i]
           cursors[z] += 1
         end
         n
