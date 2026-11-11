@@ -670,6 +670,10 @@ module Egui
       # buckets fit a fixed array reused across frames.
       @z_counts = Array(Int32).new(MAX_LAYER_Z + 1, 0)
       @z_cursors = Array(Int32).new(MAX_LAYER_Z + 1, 0)
+      # Bumped on every push/pop_transform: the paint cache captures
+      # only spans with a stable epoch (a transform bracket inside the
+      # span would double-transform the cached commands on replay).
+      @xform_epoch = 0
     end
 
     def clear : Nil
@@ -781,9 +785,47 @@ module Egui
       @commands.size - 1
     end
 
+    # Command-list length — the paint-cache capture span start.
+    def snapshot : Int32
+      @commands.size
+    end
+
+
     # Reserve a slot now, fill it later (egui `Painter::set`).
     def add_noop : Int32
       add(NoopCmd.new)
+    end
+
+    # --- paint cache capture (see paint_cache.cr) ------------------------
+    #
+    # The frame's transform bracket churn counter (capture guard).
+    getter xform_epoch : Int32
+
+    # Snapshot the commands (and their layer tags) emitted since index
+    # `start` — the paint-cache bucket of a widget span. nil when the
+    # range was truncated away (a Flex measure pass cut into it) or
+    # the list shrank below `start` for any other reason. COPIES: a
+    # later back-patch (#set) inside the range cannot mutate what the
+    # cache replays.
+    def take_bucket(start : Int32) : Tuple(Array(PaintCmd), Array(Int32))?
+      return nil if start > @commands.size
+      cmds = Array(PaintCmd).new(@commands.size - start)
+      layers = Array(Int32).new(@commands.size - start)
+      (start...@commands.size).each do |i|
+        cmds << @commands[i]
+        layers << @layers[i]
+      end
+      {cmds, layers}
+    end
+
+    # Re-emit a cached command at its recorded layer (paint-cache
+    # replay): the layer tag is part of the cached state, so playback
+    # restores it exactly even when the ambient layer moved on.
+    def replay_add(z : Int32, cmd : PaintCmd) : Nil
+      saved = @layer
+      @layer = z
+      add(cmd)
+      @layer = saved
     end
 
     def set(index : Int32, cmd : PaintCmd) : Nil
@@ -816,6 +858,7 @@ module Egui
                        opacity : Float64) : Nil
       @xforms << TransformFrame.new(pivot, @commands.size, scale_x,
         scale_y, offset_x, offset_y, opacity)
+      @xform_epoch += 1
     end
 
     # End the innermost transform bracket. A deferred frame must be

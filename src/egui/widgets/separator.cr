@@ -22,6 +22,17 @@ module Egui
         StyleProps.sizable
     end
 
+    # Retained paint (see paint_cache.cr): paint = a hairline through
+    # the resolved style bag; layout axes and room sizes are key
+    # inputs (the line's direction depends on them).
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      vars = style_vars(ui, id, nil)
+      {"separator", ui.layout.horizontal?, ui.available_width,
+       ui.available_height, vars.object_id, ui.style.object_id,
+       @style_override.try(&.hash)}
+    end
+
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       style = effective_style(ui, id)

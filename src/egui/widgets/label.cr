@@ -106,6 +106,32 @@ module Egui
       "label"
     end
 
+    # Retained paint (see paint_cache.cr): everything Label#ui's
+    # output depends on. Selectable labels opt out (the text-selection
+    # highlight lives in interaction state the key can't see) and so
+    # do preset runs (syntax highlighting mutates per paint). The
+    # RichText folds in BY VALUE — immediate-mode apps build a fresh
+    # Label every frame, so object identity would never hit; the text
+    # and its formatting flags are the stable identity. The wrap
+    # decision's inputs (layout orientation, wrap capability, room
+    # widths) are key inputs too: they pick the galley the paint
+    # replays.
+    def paint_cache_key(ui : Ui)
+      return nil if @userselect
+      return nil if @preset_runs
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      {"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
+       @rich.italic?, @rich.underline?, @rich.strikethrough?,
+       @wrap, @align, @userselect,
+       @line_height, ui.layout.vertical?, ui.wrap_x,
+       ui.max_rect.width, ui.available_width, base.object_id,
+       stated.object_id, ui.style.object_id,
+       @style_override.try(&.hash)}
+    end
+
     def style_properties : Array(StyleProp)
       StyleProps.textlike + StyleProps.sizable +
         [StyleProp.new("padding", :box),

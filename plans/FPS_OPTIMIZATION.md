@@ -131,7 +131,7 @@ exml-кодоген (`NativeHTML.md` §6) планируется как «лит
 | # | Этап | Зависимость | Риск |
 |---|------|-------------|------|
 | 0 | ~~§7 мелочи + frame arena~~ ✅ 2026-11-11 | — | низкий |
-| 1 | ~~§3 слоты Memory, style sharing~~ ✅ 2026-11-11 | арена (0) | средний (Memory — центр кадра) || 2 | §1 per-widget бакеты + кэш по ключу | — | средний |
+| 1 | ~~§3 слоты Memory, style sharing~~ ✅ 2026-11-11 | арена (0) | средний (Memory — центр кадра) || 2 | §1 per-widget бакеты + кэш по ключу — ч.1 ✅ 2026-11-11 (Button/Label; см. ниже) | — | средний |
 | 3 | §2 dirty-регион + частичный replay | 2 | средний |
 | 4 | §4 кэш меша, SDF-квад, instanced текст | 2 (бакеты), частично 3 | высокий (шейдеры/шим) |
 | 5 | §5 инкрементальный box-layout | 2 | средний |
@@ -230,6 +230,77 @@ hit-rate 4824/4825 и 4799/4800; кадр p50 ~8.0–8.2 мс (в предела
 **Этап 1 закрыт полностью.** Итог по lucide за два этапа:
 кадр p50 15.0 → 8.0 мс (−47%), у Engine Button self 57.5 → 24.5 мкс.
 Следующий — этап 2 (per-widget paint-бакеты + кэш по ключу).
+
+### Этап 2 (часть 1: retained paint для Button/Label) — сделан 2026-11-11
+
+API остаётся immediate, вывод кадра memoized: `Ui#add`/`#add_sized`
+при наличии у виджета ключа реплеят записанный paint вместо запуска
+`#ui` (hit: allocate + interact + переэмиссия команд с recorded z;
+miss: прогон под захватом). Файлы: `src/egui/paint_cache.cr` (Entry +
+кэш + replay), хуки в `ui.cr`, ключи в `button.cr`/`label.cr`,
+`Memory#interaction_state` (детерминированное зеркало hover/active
+вердикта ДО регистрации — вход ключа), `Painter#take_bucket`/
+`#replay_add`/`xform_epoch`.
+
+Ключевые решения:
+- ключ = (контент-поля виджета, identity resolve-бэгов стилей,
+  identity базового Style, constraints, доступная ширина) → UInt64;
+  Ui добавляет id виджета, focus-флаг, font_scale, ppp. Инвалидация
+  стилей НЕЯВНАЯ: смена правила/темы выдаёт свежие объекты → miss;
+  тема чистит кэш явно;
+- **id-стабильность**: entry хранит, сколько child-id виджет
+  потребил; реплей переминчивает тот же спан — id братьев не
+  съезжают (баг двух одинаковых `<vue_counter>` ловился спекой);
+- реплей позиционен: команды абсолютны, сдвиг виджета →
+  translate-only TransformFrame + пере-клип (пересечение сдвинутого
+  записанного клипа с амбиентным);
+- гейты: Flex measure-проход, любые живые transition/appear-анимации
+  (глобально — ячейки transitions живут под salted id, пер-виджетно
+  их не видно; одна анимация ставит кэш на паузу — осознанная
+  грубость), xform-эпоха захвата, Mesh3DCmd (данные — указатель
+  виджета), selectable/preset Label;
+- свежие-в-кадр виджеты: Label ключуется по VALUE (text+форматting),
+  не по object_id — immediate-приложения создают Label каждый кадр;
+- бюджет 100k команд, clear-on-overflow, stale-выселение ≥3 кадров.
+
+A/B lucide (stationary hover): **hit 9240 / miss 385 (96%)**, кадр
+p50 **8.0 → 4.59 мс**; Button/Label/Svg#paint вызываются только на
+захвате (193/217/193 вызовов суммарно против 4825). Спеки:
+1257 зелёные (включая 5 новых spec/paint_cache_spec.cr: реплей =
+тот же вывод, content-change → miss, клик/hover на кэшированном,
+theme-swap → clear, сдвиг позиции → транслированный paint).
+
+Итог трёх этапов на lucide: **15.0 → 4.59 мс p50 (−69%)**, ≈218 fps
+CPU ceiling pre-FFI. Осталось в этапе 2: opt-in остальных виджетов
+(checkbox/toggle/slider/…), пер-id гейт анимаций, и этап 3
+(dirty-регион + частичный replay на render-потоке).
+
+### Этап 2 (часть 2: пер-id гейт анимаций + 6 виджетов) — сделан 2026-11-11
+
+- **Пер-id гейт анимаций** вместо глобального: `StyleAnimations#adopt`
+  (Context#animate_style_* регистрирует владельца salted-ячейки) +
+  `#owner_running?(id, time)` — вечная анимация одного виджета больше
+  не ставит кэш на паузу весь экран; appear-гейт остался пер-id.
+  Глобальный `#any_running?` оставлен (дешёвая сводка).
+- **Opt-in виджеты**: Checkbox (checked-флаг + «checked»-бэг в ключе),
+  ToggleButton, RadioButton (selected), Separator (оси layout в
+  ключе), ProgressBar (fraction+text; `animate:` opting-OUT —
+  animate_value_with_time интерполирует значение вне StyleAnimations),
+  Hyperlink (label+url+underline). Побочные эффекты вынесены в
+  `#cache_replay`: mark_changed у checkbox/toggle/radio, курсор
+  Pointer + open_url у hyperlink.
+- Профильные спаны replay-пути (`paintcache.key/.mint/.replay`,
+  нулевая цена вне бенчмарка) + починен попутно найденный дубль
+  mint/аллокации в hit-пути.
+
+A/B в текущем дереве (с параллельными flex-правками, утяжелившими
+саму панель до ~4 мс self): **без кэша 9.96 → с кэшем 7.00 мс p50**;
+hit 9264/386 (96%); replay-путь целиком ≈1.2 мс/кадр (key 0.64 +
+replay 0.4 + mint 0.2). Спеки: 1257 зелёные.
+
+Остались в этапе 2: slider/select_box/combo_box/rich_label,
+значимые анимации значений (ProgressBar#animate) вне StyleAnimations
+— нужен пер-виджет срок или общий реестр value-анимаций. Затем этап 3.
 
 ## Критерий готовности
 

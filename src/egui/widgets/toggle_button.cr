@@ -60,6 +60,25 @@ module Egui
       @text
     end
 
+    # Retained paint (see paint_cache.cr): content = checked flag +
+    # optional text; hover/active via the state bag from
+    # Memory#interaction_state (the knob reads button_fill with the
+    # live hover/active flags).
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      {"toggle_button", @checked, @text, ui.available_width,
+       base.object_id, stated.object_id, ui.style.object_id,
+       @style_override.try(&.hash)}
+    end
+
+    # #ui marks the response changed on click — the caller reads it.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      response.mark_changed if response.clicked?
+    end
+
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       style = effective_style(ui, id)

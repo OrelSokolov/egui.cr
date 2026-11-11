@@ -485,6 +485,62 @@ module Egui
     @spring_scalars = {} of Id => SpringCell
     @spring_colors = {} of Id => SpringCell
 
+    # True while ANY cell anywhere is still easing or springing — the
+    # paint-cache's global gate. Transition cells live under SALTED
+    # child ids (see Context#animate_style_scalar), so a per-widget
+    # check can't see them; while anything animates anywhere, cached
+    # paint must not replay (a settled cell lingering in a hash does
+    # not block — liveness is evaluated, not presence). Coarse on
+    # purpose: one animation pauses the whole cache for its duration;
+    # frames that need repaint anyway are not the cache's target.
+    # Memoized per timestamp — one evaluation per frame.
+    @any_running : Tuple(Float64, Bool)?
+
+    def any_running?(time : Float64) : Bool
+      if (memo = @any_running.try { |t, r| t == time ? r : nil })
+        return memo
+      end
+      r = easing?(@colors, time) || easing?(@scalars, time) ||
+          easing?(@vec2s, time) ||
+          @spring_scalars.any? { |_, s| s.running? } ||
+          @spring_colors.any? { |_, s| s.running? }
+      @any_running = {time, r}
+      r
+    end
+
+    private def easing?(cells, time : Float64) : Bool
+      cells.any? { |_, a| a.duration > 0.0 && (time - a.start) < a.duration }
+    end
+
+    # --- per-owner animation gate (paint cache) ---------------------------
+    #
+    # Cells keyed by a SALTED child id carry a map back to the OWNING
+    # widget id (registered by Context#animate_style_* at insert
+    # time); cells keyed by the raw widget id own themselves. The
+    # paint cache gates a single widget on #owner_running? instead of
+    # the whole-frame #any_running? — a perpetual animation somewhere
+    # on screen no longer pauses caching everywhere.
+
+    # cell id → owning widget id
+    @owners = {} of Id => Id
+
+    # Register that `cell_id` (possibly salted) belongs to `owner`.
+    def adopt(cell_id : Id, owner : Id) : Nil
+      @owners[cell_id] = owner
+    end
+
+    # True while any cell OWNED by `owner` (or keyed by it directly)
+    # is still easing or springing.
+    def owner_running?(owner : Id, time : Float64) : Bool
+      # Direct cells (transition_color path keys by the widget id).
+      return true if running?(owner, time)
+      @owners.each do |cell_id, o|
+        next unless o == owner
+        return true if running?(cell_id, time)
+      end
+      false
+    end
+
     # Smoothly move the color for `id` towards `target` over
     # `duration` seconds; the first sighting jumps (CSS: no transition
     # on the initial style application). `easing` names an

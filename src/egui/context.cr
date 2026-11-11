@@ -54,6 +54,9 @@ module Egui
     # Per-frame bump allocator, reset in #end_frame (frame_arena.cr —
     # FPS_OPTIMIZATION.md §3; stage-1 Memory slots build on it).
     getter frame_arena : FrameArena
+    # Retained paint cache (paint_cache.cr — FPS_OPTIMIZATION.md §1,
+    # stage 2): memoized widget paint output replayed by Ui#add.
+    getter paint_cache : PaintCache
     # The app-global hotkey → action bindings (see `hotkeys.cr`).
     # Actions fired this frame (key press or `#fire_action`) live for
     # exactly one frame and are claimed with `#consume_action`.
@@ -353,6 +356,8 @@ module Egui
       # Per-frame bump allocator, reset in #end_frame (see
       # frame_arena.cr — FPS_OPTIMIZATION.md §3, stage-1 foundation).
       @frame_arena = FrameArena.new
+      # Retained paint output of widgets (see paint_cache.cr).
+      @paint_cache = PaintCache.new
       @theme = Theme.dark
       @cursor_icon = CursorIcon::Default
       @cursor_image = nil
@@ -463,6 +468,10 @@ module Egui
     def theme=(theme : Theme) : Theme
       unless theme.name == @theme.name
         @theme = theme
+        # Cached paint output references the old theme's style objects
+        # — wholesale drop (keys would miss anyway; this frees memory
+        # immediately).
+        @paint_cache.clear
         # A new theme brings a fresh StyleSheet — the .ecss class-rule
         # diff must ride over to it (see Ecss::Session#reapply).
         @ecss.try &.reapply
@@ -500,6 +509,8 @@ module Egui
       # A frame closed — the layout cache's generations age by one (its
       # stale eviction runs on this clock; see Fonts#tick_layout_cache).
       @fonts.tick_layout_cache
+      # Same clock for the paint cache's stale eviction.
+      @paint_cache.tick
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
       cmds = Egui::Bench.span("Painter#commands_in_layer_order") do
         @painter.commands_in_layer_order
@@ -609,6 +620,7 @@ module Egui
                             spring : Spring::Spec? = nil) : Color32
       return target if @reduced_motion
       salted = id.child(Id.from("style/#{key}").value)
+      @memory.style_animations.adopt(salted, id)
       result = if spring
                  @memory.style_animations.spring_color(salted, target,
                    spring, @input.time)
@@ -628,6 +640,7 @@ module Egui
                              spring : Spring::Spec? = nil) : Float64
       return target if @reduced_motion
       salted = id.child(Id.from("style/#{key}").value)
+      @memory.style_animations.adopt(salted, id)
       result = if spring
                  @memory.style_animations.spring_scalar(salted, target,
                    spring, @input.time)

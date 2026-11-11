@@ -94,6 +94,36 @@ module Egui
       self
     end
 
+    # Retained paint (see paint_cache.cr): the id this frame's
+    # #resolve_id WILL return, computed WITHOUT side effects — no id
+    # claiming, no child-counter advance. Ui#add uses it to gate and
+    # key the paint cache before the widget runs.
+    def cache_id(ui : Ui) : Id
+      if (name = @id_name)
+        Id.from(name)
+      else
+        ui.peek_next_widget_id
+      end
+    end
+
+    # Retained paint: the widget's memoization key — nil (the default)
+    # opts out. Everything the widget's PAINT depends on must fold in:
+    # content fields, the resolved style bags (pass the StyleVars
+    # OBJECTS — their identity already encodes class set + state +
+    # rule revisions) and the constraints it laid out under. Ui#add
+    # adds the id, focus flag, font scale and ppp on top; hover and
+    # active state enter through the state bag's identity.
+    def paint_cache_key(ui : Ui)
+      nil
+    end
+
+    # Called after a cache HIT replayed this widget's recorded paint:
+    # re-run the side effects #ui would have done besides painting
+    # (Button re-sets its hover cursor). Response is the fresh verdict
+    # from the replayed interact registration.
+    def cache_replay(ui : Ui, response : Response) : Nil
+    end
+
     # The widget's id for this frame: the explicit one (claimed — a
     # duplicate raises) or the stable auto id. Widgets call this
     # instead of `ui.next_widget_id` directly.

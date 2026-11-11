@@ -40,6 +40,26 @@ module Egui
       @label
     end
 
+    # Retained paint (see paint_cache.cr): content = label + url +
+    # the explicit underline flag; hover/active via the state bag
+    # (color and underline ride it).
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      {"hyperlink", @label, @url, @underline, ui.available_width,
+       base.object_id, stated.object_id, ui.style.object_id,
+       @style_override.try(&.hash)}
+    end
+
+    # #ui's non-paint side effects: the pointing hand and the URL
+    # open on click.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      ui.ctx.set_cursor_icon(CursorIcon::Pointer) if response.hovered?
+      Hyperlink.open_url(@url) if response.clicked?
+    end
+
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       class_vars = style_vars(ui, id)

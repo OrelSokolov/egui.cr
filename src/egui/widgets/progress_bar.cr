@@ -32,6 +32,18 @@ module Egui
       @text
     end
 
+    # Retained paint (see paint_cache.cr): content = fraction + text.
+    # An `animate:` bar opts out — animate_value_with_time interpolates
+    # the fraction per frame (a value animation, not a style cell the
+    # per-owner gate sees).
+    def paint_cache_key(ui : Ui)
+      return nil if @animate
+      id = cache_id(ui)
+      vars = style_vars(ui, id)
+      {"progress_bar", @fraction, @text, ui.available_width,
+       vars.object_id, ui.style.object_id, @style_override.try(&.hash)}
+    end
+
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       # Class rules through the full cascade: textlike keys (`text_color`

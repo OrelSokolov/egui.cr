@@ -148,6 +148,33 @@ module Egui
       self
     end
 
+    # Retained paint (see paint_cache.cr): everything Button#ui's
+    # output depends on — content fields, the resolved style bags
+    # (identity: class set, state, rule revisions), the base style,
+    # the inline WidgetStyle (value hash) and the constraint the
+    # label truncates against (available width; `fonts.fit`). Hover
+    # and active enter via the state bag chosen from
+    # Memory#interaction_state — the deterministic mirror of this
+    # frame's verdict.
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      {"button", @text, @icon, @icon_trailing, @vertical, @min_size,
+       @rounding, @gradient, @cursor, @icon_size, @image_texture,
+       @icon_svg.try(&.object_id), @style_override.try(&.hash),
+       ui.available_width, base.object_id, stated.object_id,
+       ui.style.object_id}
+    end
+
+    # The one non-paint side effect of #ui: the hover cursor.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      if response.hovered? && (cursor = @cursor)
+        ui.ctx.set_cursor_icon(cursor)
+      end
+    end
+
     def ui(ui : Ui) : Response
       sense = Sense.click | Sense::Focusable
       id = resolve_id(ui)

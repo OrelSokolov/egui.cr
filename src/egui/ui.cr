@@ -159,6 +159,12 @@ module Egui
       @id.child(@child_counter)
     end
 
+    # The id the NEXT #next_widget_id would mint, without consuming it
+    # (paint-cache gate — see Widget#cache_id).
+    def peek_next_widget_id : Id
+      @id.child(@child_counter + 1)
+    end
+
     # A stable, route-addressable widget id: this Ui's id + the name.
     # When the router owes this page a focus fragment (`root/page#name`
     # from `--page` or navigate) and `name` matches, the id is also
@@ -379,10 +385,98 @@ module Egui
       parent = @ctx.current_widget
       @ctx.current_widget = widget
       begin
-        Egui::Bench.span(widget.class.name) { widget.ui(self) }
+        # Retained paint (FPS_OPTIMIZATION.md §1, stage 2): when the
+        # widget offers a cache key and nothing volatile is in play,
+        # a hit replays the recorded paint instead of running the
+        # widget; a miss runs it and captures the emitted span.
+        resp = if (key = widget.paint_cache_key(self)) &&
+                  paint_cache_usable?(widget, key)
+                paint_cache_add(widget, key, exact: false)
+              else
+                Egui::Bench.span(widget.class.name) { widget.ui(self) }
+              end
+        resp
       ensure
         @ctx.current_widget = parent
       end
+    end
+
+    # --- retained paint (see paint_cache.cr) --------------------------------
+    #
+    # Gates that make caching opt-out safe: no Flex measure pass (its
+    # paint is provisional), no live transition/appear animation for
+    # the widget's id (time-dependent output would freeze mid-flight),
+    # no transform bracket churn during the span (recorded commands
+    # must be in the painter's base space to replay correctly). The
+    # key itself carries the volatile parts the widget can't see
+    # (focus flag, ppp, font scale) — Ui#add folds them in below.
+
+    # (No `private`: #add_sized calls these on its exact-size cell —
+    # another Ui instance.)
+    def paint_cache_usable?(widget : Widget, key) : Bool
+      id = widget.cache_id(self)
+      # Per-widget animation gate: cells owned by THIS widget (its
+      # salted transition cells included — see
+      # StyleAnimations#owner_running?) block only its own caching; a
+      # perpetual animation elsewhere no longer pauses the cache
+      # globally. Appear runs are keyed by the widget id directly.
+      return false if @ctx.memory.style_animations
+                        .owner_running?(id, @ctx.input.time)
+      return false if @ctx.memory.appear_anims.run?(id)
+      true
+    end
+
+    def paint_cache_add(widget : Widget, key, exact : Bool) : Response
+      cache = @ctx.paint_cache
+      id = Egui::Bench.span("paintcache.key") { widget.cache_id(self) }
+      # Ui-level key extensions: the widget's id (two identical
+      # widgets at different sites are different cache entries), the
+      # focus flag (the focus ring is painted inside the widget) and
+      # the ctx scalars its output depends on (font_scale scales
+      # sizes, ppp scales baked rasters).
+      full = Egui::Bench.span("paintcache.key") do
+        {key, id, @ctx.memory.focus.id == id, @ctx.font_scale,
+         @ctx.pixels_per_point}.hash
+      end
+      if (entry = Egui::Bench.span("paintcache.key") { cache.lookup(full) })
+        # Re-mint the widget's id span so siblings keep their ids,
+        # then replay layout + interaction + paint from the entry.
+        # The "(cached)" suffix keeps replay cost visible as its own
+        # PerfOverlay row (a hit runs no Widget#ui, so the plain
+        # class-name span would show nothing for cached widgets).
+        resp = Egui::Bench.span("#{widget.class.name} (cached)") do
+          Egui::Bench.span("paintcache.mint") do
+            entry.ids_consumed.times { next_widget_id }
+          end
+          r = nil
+          Egui::Bench.span("paintcache.replay") do
+            rect = exact ? allocate_space(entry.size)
+                         : allocate_at_least(entry.size)
+            r = interact(rect, entry.id, entry.sense)
+            PaintCache.replay(entry, rect, painter)
+            widget.cache_replay(self, r.not_nil!)
+          end
+          r.not_nil!
+        end
+        return resp
+      end
+      # Miss: run the widget under capture. An appear-animation run
+      # for this id makes the output time-dependent — don't store it.
+      counter0 = @child_counter
+      cmd0 = painter.snapshot
+      epoch0 = painter.xform_epoch
+      clip0 = painter.clip
+      resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
+      if !@ctx.memory.appear_anims.run?(id) &&
+         painter.xform_epoch == epoch0 &&
+         (bucket = painter.take_bucket(cmd0)) &&
+         !bucket[0].any?(&.is_a?(Mesh3DCmd))
+        cmds, layers = bucket
+        cache.store(full, PaintCache::Entry.new(
+          resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
+          resp.sense, resp.rect.min, clip0, cmds, layers, 0))
+      end
+      resp
     end
 
     # egui `ui.label` — selectable text by default (`userselect: false`
@@ -946,7 +1040,16 @@ module Egui
       parent = @ctx.current_widget
       @ctx.current_widget = widget
       begin
-        Egui::Bench.span(widget.class.name) { widget.ui(cell) }
+        # Retained paint, same as #add but inside the exact cell: the
+        # key comes from the CELL (its available width differs), and a
+        # hit replays with allocate_space semantics.
+        resp = if (key = widget.paint_cache_key(cell)) &&
+                  cell.paint_cache_usable?(widget, key)
+                cell.paint_cache_add(widget, key, exact: true)
+              else
+                Egui::Bench.span(widget.class.name) { widget.ui(cell) }
+              end
+        resp
       ensure
         @ctx.current_widget = parent
       end

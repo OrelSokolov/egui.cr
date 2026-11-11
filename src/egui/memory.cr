@@ -569,6 +569,32 @@ module Egui
       @modal_open
     end
 
+    # The state string ("hover"/"active"/nil) a widget's cascade will
+    # resolve to THIS frame — a mirror of the verdict #interact is
+    # about to produce, derived from the same sources (previous
+    # frame's geometry, pointer, press state). Deterministic BEFORE
+    # registration: the paint cache keys on it so a hover switch
+    # changes the key (rebuild) while steady hover replays. Keep in
+    # sync with #interact's hovered/pressed logic.
+    def interaction_state(id : Id) : String?
+      return nil if @disabled_depth > 0
+      if (p = @pointer_pos) && @pointer_down &&
+         @potential_click_id == id && !@moved_too_much_for_click
+        return "active"
+      end
+      return nil unless (p = @pointer_pos)
+      if (i = @slot_of[id]?) && @prv_stamp[i] == @geo_gen - 1
+        layer = @prv_layers[i]
+        return nil if @modal_open && !layer.order.foreground?
+        if (@hover_top_z.nil? || layer.z >= @hover_top_z.not_nil!) &&
+           !@prv_senses[i].none? &&
+           @prv_rects[i].contains?(p) && @prv_clips[i].contains?(p)
+          return "hover"
+        end
+      end
+      nil
+    end
+
     # Called by ScrollArea while rendering: registers this frame's
     # viewport for next frame's arbitration. The viewport/content ids
     # also count as "used" so their IdTypeMap cells (offset, content

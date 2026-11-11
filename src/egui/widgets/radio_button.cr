@@ -28,6 +28,24 @@ module Egui
       @text
     end
 
+    # Retained paint (see paint_cache.cr): content = text + selected
+    # flag (its "selected" bag included — the dot fill rides it).
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      selected = style_vars(ui, id, "selected")
+      {"radio_button", @text, @selected, ui.available_width,
+       base.object_id, stated.object_id, selected.object_id,
+       ui.style.object_id, @style_override.try(&.hash)}
+    end
+
+    # #ui marks the response changed on a selecting click.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      response.mark_changed if response.clicked? && !@selected
+    end
+
     def ui(ui : Ui) : Response
       id = ui.next_widget_id
       class_vars = style_vars(ui, id)

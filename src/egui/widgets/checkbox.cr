@@ -34,6 +34,27 @@ module Egui
       @text
     end
 
+    # Retained paint (see paint_cache.cr): content = text + checked
+    # flag; the checked branch reads its own "checked" state bag, so
+    # that bag's identity is a key input too. Hover/active enter via
+    # the state bag chosen from Memory#interaction_state.
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      state = ui.ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = style_vars(ui, id, state)
+      checked = style_vars(ui, id, "checked")
+      {"checkbox", @text, @checked, ui.available_width,
+       base.object_id, stated.object_id, checked.object_id,
+       ui.style.object_id, @style_override.try(&.hash)}
+    end
+
+    # #ui's non-paint side effects: the changed flag rides the
+    # response the caller reads.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      response.mark_changed if response.clicked?
+    end
+
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
       # Class rules through the full cascade: the textlike keys

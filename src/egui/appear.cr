@@ -47,7 +47,9 @@ module Egui
     end
 
     # Raven's motion preset per kind (`rvn_transition_begin`: fade/zoom
-    # smooth, pop/fly bouncy, drop wobbly, slide snappy).
+    # smooth, pop/fly bouncy, drop wobbly, slide snappy). `rise` is the
+    # CSS card-in curve (opacity + 10px translateY over .4s ease) — a
+    # smooth, slower fade.
     MOTION = {
       :fade        => Spring::Spec.smooth,
       :pop         => Spring::Spec.bouncy,
@@ -59,6 +61,7 @@ module Egui
       :drop        => Spring::Spec.wobbly,
       :slide_left  => Spring::Spec.snappy,
       :slide_right => Spring::Spec.snappy,
+      :rise        => Spring::Spec.new(0.40, 1.00),
     }
 
     @runs = {} of Id => Run
@@ -75,6 +78,7 @@ module Egui
       when "fade"       then :fade
       when "pop"        then :pop
       when "zoom"       then :zoom
+      when "rise", "cardin" then :rise
       when "flyup"      then :fly_up
       when "flydown"    then :fly_down
       when "flyleft"    then :fly_left
@@ -147,6 +151,12 @@ module Egui
       @runs.select! { |id, _| used.includes?(id) }
     end
 
+    # A run exists for `id` (paint-cache gate: an appearing widget's
+    # output is time-dependent and must not be replayed from cache).
+    def run?(id : Id) : Bool
+      @runs.has_key?(id)
+    end
+
     def reset : Nil
       @runs.clear
     end
@@ -190,6 +200,9 @@ module Egui
         dx = 28.0 * away
       when :slide_right
         dx = -28.0 * away
+      when :rise
+        # CSS `card-in`: fade in while sliding up 10px.
+        dy = 10.0 * away
       end
       {sx: sx, sy: sy, dx: dx, dy: dy, opacity: opacity}
     end
