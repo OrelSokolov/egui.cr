@@ -33,6 +33,12 @@ module Egui
 
     @source : String
     @current_color : Color32
+    # Raster-cache key, computed once per instance lifetime: hashing
+    # the (often ~700-byte) source on every paint was ~0.8 ms/frame
+    # for icon-heavy screens (FPS_OPTIMIZATION.md §7). A 64-bit source
+    # hash collision between two DIFFERENT sources would share one
+    # baked texture — 2⁻⁶⁴ per pair, accepted.
+    @raster_key : {UInt64, Color32}?
     # Intrinsic size in user units (viewBox already applied by
     # NanoSVG) — drives the aspect-preserving fit of the quad.
     @width : Float64
@@ -93,9 +99,9 @@ module Egui
     # eviction churn exhaust the pool even with the cap respected
     # (the LUCIDE_NO_CULL stress lesson).
     MAX_RASTER_TEXTURES = 2000
-    @@raster_cache = {} of {String, Color32} =>
+    @@raster_cache = {} of {UInt64, Color32} =>
       Array(Tuple(Int32, Int32, UInt64))
-    @@raster_order = [] of Tuple({String, Color32}, UInt64)
+    @@raster_order = [] of Tuple({UInt64, Color32}, UInt64)
 
     # Optional primary rasterizer: (source, tint, w, h) →
     # straight-alpha RGBA8 bytes, or nil to use NanoSvgCr. backend/
@@ -147,7 +153,7 @@ module Egui
     # change" contract, same as the font atlas per-ppem rebake.
     private def raster_texture(registry : TextureRegistry,
                                w_px : Int32, h_px : Int32) : UInt64
-      key = {@source, @current_color}
+      key = @raster_key ||= {@source.hash.to_u64!, @current_color}
       sizes = (@@raster_cache[key] ||= [] of Tuple(Int32, Int32, UInt64))
       sizes.each do |tw, th, id|
         if !id.zero? && tw == w_px && th == h_px

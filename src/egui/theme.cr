@@ -82,6 +82,33 @@ module Egui
       @button_padding = nil
     end
 
+    # Value semantics for the style-sharing cache: two WidgetStyles
+    # with the same non-nil fields are the same cache key, so a frame
+    # full of identically-styled buttons (created fresh per frame —
+    # identity keys would never hit) still shares ONE merged Style.
+    def ==(other : WidgetStyle) : Bool
+      @text_color == other.text_color && @background == other.background &&
+        @stroke == other.stroke && @selection_fill == other.selection_fill &&
+        @separator_color == other.separator_color &&
+        @hyperlink_color == other.hyperlink_color &&
+        @font_size == other.font_size &&
+        @font_family == other.font_family &&
+        @button_padding == other.button_padding
+    end
+
+    def hash(hasher)
+      hasher = @text_color.hash(hasher) if @text_color
+      hasher = @background.hash(hasher) if @background
+      hasher = @stroke.hash(hasher) if @stroke
+      hasher = @selection_fill.hash(hasher) if @selection_fill
+      hasher = @separator_color.hash(hasher) if @separator_color
+      hasher = @hyperlink_color.hash(hasher) if @hyperlink_color
+      hasher = @font_size.hash(hasher) if @font_size
+      hasher = @font_family.hash(hasher) if @font_family
+      @button_padding.hash(hasher) if @button_padding
+      hasher
+    end
+
     # Effective style = the theme's Style with every non-nil override
     # applied. Returns a copy; the theme is never mutated. The key →
     # Style-slot mapping lives in ONE place (`StyleVars#apply_over`) —
@@ -117,6 +144,30 @@ module Egui
         merged.spacing.button_padding = c
       end
       merged
+    end
+
+    # `#merge_over` memoized on the sheet's style-sharing cache,
+    # value-keyed (see #==/#hash) — #merge_over allocates a StyleVars
+    # bag plus a Style clone per call; immediate-mode widgets are
+    # fresh objects every frame, so only VALUE identity dedupes them.
+    def merge_over_shared(base : Style, sheet : StyleSheet) : Style
+      return base if empty?
+      key = {self, base}
+      if (cached = sheet.shared_inline_styles[key]?)
+        Egui::Bench.count("style.share.inline.hit")
+        return cached
+      end
+      Egui::Bench.count("style.share.inline.miss")
+      merged = merge_over(base)
+      sheet.shared_inline_styles[key] = merged
+      merged
+    end
+
+    protected def empty? : Bool
+      @text_color.nil? && @background.nil? && @stroke.nil? &&
+        @selection_fill.nil? && @separator_color.nil? &&
+        @hyperlink_color.nil? && @font_size.nil? &&
+        @font_family.nil? && @button_padding.nil?
     end
   end
 end

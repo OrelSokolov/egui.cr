@@ -157,8 +157,10 @@ module Egui
       # the class defaults. Sizing uses the state-less style; the
       # state only picks colors, re-resolved after the interaction
       # verdict.
-      class_vars = style_vars(ui, id)
-      style = effective_style(ui, id, class_vars)
+      class_vars = Egui::Bench.span("Button#style") { style_vars(ui, id) }
+      style = Egui::Bench.span("Button#style") do
+        effective_style(ui, id, class_vars)
+      end
 
       # Per-side padding box; falls back to Spacing#button_padding
       # (symmetric) when the class leaves it unset.
@@ -171,7 +173,9 @@ module Egui
       # has one) — measure and draw share the resolved stack.
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, style.font_weight, false)
-      text_size = fonts.measure_cached(@text, font_size)
+      text_size = Egui::Bench.span("Button#measure") do
+        fonts.measure_cached(@text, font_size)
+      end
       # An icon-only button (empty label) still needs a glyph-height
       # box: `measure("")` is zero and would collapse the icon to
       # nothing. Fall back to the estimated line height.
@@ -209,7 +213,7 @@ module Egui
       size = styled_size(size, class_vars, ui, id)
 
       rect = ui.allocate_at_least(size)
-      response = ui.interact(rect, id, sense)
+      response = Egui::Bench.span("Button#interact") { ui.interact(rect, id, sense) }
       if response.hovered? && (cursor = @cursor)
         ui.ctx.set_cursor_icon(cursor)
       end
@@ -221,9 +225,11 @@ module Egui
       # SAME order (`Widget#cascade_color`): inline beats a
       # `button:hover { stroke }` rule like CSS `style="…"`.
       state = response.active? ? "active" : response.hovered? ? "hover" : nil
-      state_vars = style_vars(ui, id, state)
-      fill = background_color(ui, id, state,
-        response.hovered?, response.active?)
+      state_vars = Egui::Bench.span("Button#state") { style_vars(ui, id, state) }
+      fill = Egui::Bench.span("Button#state") do
+        background_color(ui, id, state,
+          response.hovered?, response.active?)
+      end
       stroke_color = cascade_color("stroke", ui, id, state,
         style.visuals.button_stroke)
       stroke_color = transition_color("stroke", stroke_color,

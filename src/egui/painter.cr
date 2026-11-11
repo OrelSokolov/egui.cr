@@ -665,6 +665,11 @@ module Egui
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       @xforms = [] of TransformFrame
+      # Counting-sort scratch for #commands_in_layer_order — z is
+      # clamped into [0, MAX_LAYER_Z] by both layer setters, so the
+      # buckets fit a fixed array reused across frames.
+      @z_counts = Array(Int32).new(MAX_LAYER_Z + 1, 0)
+      @z_cursors = Array(Int32).new(MAX_LAYER_Z + 1, 0)
     end
 
     def clear : Nil
@@ -1103,13 +1108,29 @@ module Egui
     # order) decides, so a container's back-filled frame stays under
     # its contents.
     def commands_in_layer_order : Array(PaintCmd)
-      out = [] of PaintCmd
-      @layers.uniq.sort.each do |z|
-        @commands.each_with_index do |cmd, i|
-          out << cmd if @layers[i] == z
-        end
+      # Counting sort over the clamped z range: count per z, prefix
+      # the start offsets, then one stable placement pass — O(n + z),
+      # no allocation besides the returned array (the old scan was
+      # O(layers × commands), see FPS_OPTIMIZATION.md §7).
+      n = @commands.size
+      return Array(PaintCmd).new(0) if n.zero?
+      counts = @z_counts
+      cursors = @z_cursors
+      counts.fill(0)
+      @layers.each { |z| counts[z] += 1 }
+      total = 0
+      (0..MAX_LAYER_Z).each do |z|
+        cursors[z] = total
+        total += counts[z]
       end
-      out
+      Array(PaintCmd).build(n) do |buffer|
+        @commands.each_with_index do |cmd, i|
+          z = @layers[i]
+          buffer[cursors[z]] = cmd
+          cursors[z] += 1
+        end
+        n
+      end
     end
   end
 end

@@ -413,15 +413,19 @@ module Egui
     # the theme object itself, no per-widget copying.
     protected def effective_style(ui : Ui, id : Id? = nil,
                                   class_vars : StyleVars? = nil) : Style
+      # Each merge goes through the sheet's style-sharing cache — one
+      # merged Style per distinct layer pair, not one clone per widget
+      # per frame (the bags and bases are shared immutable objects, so
+      # identity keys are exact; see StyleSheet#shared_apply).
       base = ui.style
       if class_vars && !class_vars.empty?
-        base = class_vars.apply_over(base)
+        base = ui.ctx.stylesheet.shared_apply(class_vars, base)
       end
       if id && (ov = ui.ctx.id_style_state_vars(id, nil))
-        base = ov.apply_over(base)
+        base = ui.ctx.stylesheet.shared_apply(ov, base)
       end
       if (ws = @style_override)
-        base = ws.merge_over(base)
+        base = ws.merge_over_shared(base, ui.ctx.stylesheet)
       end
       base
     end

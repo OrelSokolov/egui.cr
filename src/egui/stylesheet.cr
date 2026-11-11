@@ -727,6 +727,20 @@ module Egui
     def initialize
       @classes = {} of String => StyleClass
       @resolved = {} of {String, String?} => StyleVars
+      # Style-sharing cache (FPS_OPTIMIZATION.md §3, этап 1):
+      # memoized `StyleVars#apply_over` results, keyed by the IDENTITY
+      # of (bag, base). Both are contractually immutable shared objects
+      # (resolve returns cached bags; base styles are theme/container
+      # objects), so all widgets of one class set share ONE merged
+      # Style instead of cloning per widget per frame. Keys are held
+      # strongly — a cached key cannot be GC'd and its address reused —
+      # and it is cleared wherever @resolved is (a rule change issues
+      # fresh bags, making old entries unreachable anyway).
+      @shared_styles = {} of Tuple(StyleVars, Style) => Style
+      # Value-keyed counterpart for the inline `WidgetStyle` layer
+      # (immediate-mode widgets are fresh objects each frame — only
+      # value identity dedupes them; see WidgetStyle#merge_over_shared).
+      @shared_inline_styles = {} of Tuple(WidgetStyle, Style) => Style
       @media_rules = [] of MediaRuleEntry
       # Named @keyframes tracks (see KeyframeTrack) — read-time
       # overlays, never part of the #resolve cache.
@@ -778,6 +792,8 @@ module Egui
         state ? cls.set(state, vars) : cls.set(vars)
       end
       @resolved.clear
+      @shared_styles.clear
+      @shared_inline_styles.clear
       self
     end
 
@@ -819,6 +835,27 @@ module Egui
       @resolved[key] = bag
       bag
     end
+
+    # Memoized `StyleVars#apply_over` — the style-sharing cache (see
+    # @shared_styles). Widgets with the same (class bag, base style)
+    # get the same merged Style object: one cascade merge per class
+    # set, not one per widget per frame.
+    def shared_apply(bag : StyleVars, base : Style) : Style
+      return base if bag.empty?
+      key = {bag, base}
+      if (cached = @shared_styles[key]?)
+        Egui::Bench.count("style.share.hit")
+        return cached
+      end
+      Egui::Bench.count("style.share.miss")
+      merged = bag.apply_over(base)
+      @shared_styles[key] = merged
+      merged
+    end
+
+    # Read access for WidgetStyle#merge_over_shared (same sharing
+    # discipline, value-keyed).
+    getter shared_inline_styles : Hash(Tuple(WidgetStyle, Style), Style)
 
     # The class-chain counterpart of #resolve: merges every path's
     # resolved bag in CSS cascade order — later paths are more
@@ -893,6 +930,8 @@ module Egui
         end
       end
       @resolved.clear
+      @shared_styles.clear
+      @shared_inline_styles.clear
       self
     end
 
@@ -923,6 +962,8 @@ module Egui
         refresh_media_matches
       end
       @resolved.clear
+      @shared_styles.clear
+      @shared_inline_styles.clear
       self
     end
 
@@ -930,6 +971,8 @@ module Egui
     # directly through `[]`; `rule` does this itself).
     def touch : self
       @resolved.clear
+      @shared_styles.clear
+      @shared_inline_styles.clear
       self
     end
 
@@ -980,7 +1023,11 @@ module Egui
       bits = @media_rules.map do |entry|
         entry.cond.matches?(@viewport_width, @viewport_height, @pointer_coarse)
       end
-      @resolved.clear if bits != @media_bits
+      if bits != @media_bits
+        @resolved.clear
+        @shared_styles.clear
+        @shared_inline_styles.clear
+      end
       @media_bits = bits
     end
 

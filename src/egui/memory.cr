@@ -161,18 +161,50 @@ module Egui
     @long_press_fired : Bool = false
     @long_press_pos : Pos2? = nil
 
-    # Geometry/sense/layer of the previous frame (hit-test input)…
-    getter prev_widget_rects : Hash(Id, Rect)
-    getter prev_widget_senses : Hash(Id, Sense)
-    getter prev_widget_layers : Hash(Id, LayerId)
-    # …and registrations so far this frame.
-    getter widget_rects : Hash(Id, Rect)
+    # --- widget geometry: id slots (FPS_OPTIMIZATION.md §3, этап 1) ---
+    # Per-widget frame data lives in parallel SoA arrays indexed by a
+    # stable per-id SLOT, not in per-frame Hashes: #interact costs one
+    # `id → slot` hash lookup instead of eight hash operations, and
+    # frame rotation is an array swap — no rehashing, no per-frame
+    # allocation. Validity is an absolute-generation stamp ("written
+    # this frame" ⇔ stamp == @geo_gen), so rotation clears nothing.
+    # @slot_order keeps REGISTRATION order (the iteration order the
+    # old Hash model had): hit-test tie-breaks ("last registered wins
+    # on equal z") and readers of #widget_rects.values depend on it.
+    @slot_ids : Array(Id)           # slot → id (stale entries for freed slots)
+    @slot_of : Hash(Id, Int32)      # id → slot (live ids only)
+    @slot_free : Array(Int32)       # recycled slots (freed at end_frame)
+    @geo_gen : Int32                # frame generation for stamps
 
-    @widget_senses : Hash(Id, Sense)
-    @widget_layers : Hash(Id, LayerId)
-    @widget_clips : Hash(Id, Rect)
-    @used_ids : Set(Id)
-    @seen_ids : Set(Id)
+    @cur_stamp : Array(Int32)       # interacted this frame ⇔ == @geo_gen
+    @cur_used : Array(Int32)        # interacted OR #use_id this frame
+    @cur_rects : Array(Rect)
+    @cur_senses : Array(Sense)
+    @cur_layers : Array(LayerId)
+    @cur_clips : Array(Rect)
+    @cur_order : Array(Int32)       # slots in this frame's registration order
+
+    @prv_stamp : Array(Int32)       # valid prev geometry ⇔ == @geo_gen - 1
+    @prv_rects : Array(Rect)
+    @prv_senses : Array(Sense)
+    @prv_layers : Array(LayerId)
+    @prv_clips : Array(Rect)
+    @prv_order : Array(Int32)       # last frame's registration order
+
+    @used_ids : Set(Id)             # rebuilt in #end_frame from @cur_used
+
+    # Lazy Hash views over the SoA arrays — the old public getters.
+    # Rebuilt on first read after any write (@geo_version); the frame
+    # itself never pays for Hash maintenance.
+    @geo_version : Int32
+    @rects_view : Hash(Id, Rect)
+    @rects_view_at : Int32
+    @prev_rects_view : Hash(Id, Rect)
+    @prev_rects_view_at : Int32
+    @prev_senses_view : Hash(Id, Sense)
+    @prev_senses_view_at : Int32
+    @prev_layers_view : Hash(Id, LayerId)
+    @prev_layers_view_at : Int32
 
     # Interaction state machine (egui InteractionState + PointerState).
     @press_pos : Pos2?
@@ -247,14 +279,33 @@ module Egui
     @scroll_histories = {} of Id => History
       @duplicate_ids = [] of Id
 
-      @prev_widget_rects = {} of Id => Rect
-      @prev_widget_senses = {} of Id => Sense
-      @prev_widget_layers = {} of Id => LayerId
-      @prev_widget_clips = {} of Id => Rect
-      @widget_rects = {} of Id => Rect
-      @widget_senses = {} of Id => Sense
-      @widget_layers = {} of Id => LayerId
-      @widget_clips = {} of Id => Rect
+      @slot_ids = [] of Id
+      @slot_of = {} of Id => Int32
+      @slot_free = [] of Int32
+      @geo_gen = 1
+      @cur_stamp = [] of Int32
+      @cur_used = [] of Int32
+      @cur_rects = [] of Rect
+      @cur_senses = [] of Sense
+      @cur_layers = [] of LayerId
+      @cur_clips = [] of Rect
+      @cur_order = [] of Int32
+      @prv_stamp = [] of Int32
+      @prv_rects = [] of Rect
+      @prv_senses = [] of Sense
+      @prv_layers = [] of LayerId
+      @prv_clips = [] of Rect
+      @prv_order = [] of Int32
+      @used_ids = Set(Id).new
+      @geo_version = 1
+      @rects_view = {} of Id => Rect
+      @rects_view_at = 0
+      @prev_rects_view = {} of Id => Rect
+      @prev_rects_view_at = 0
+      @prev_senses_view = {} of Id => Sense
+      @prev_senses_view_at = 0
+      @prev_layers_view = {} of Id => LayerId
+      @prev_layers_view_at = 0
       # Text-input widgets created this frame (id → soft-keyboard profile
       # + editor mirror). Registered every frame by the widget (like
       # senses); the backend reads the FOCUSED entry after the frame to
@@ -262,8 +313,6 @@ module Egui
       # Context#wants_text_input? / Sokol#sync_android_ime).
       @text_inputs = {} of Id => NamedTuple(kind: TextInputKind, action: TextInputAction,
                                             text: String, cursor: Int32, anchor: Int32)
-      @used_ids = Set(Id).new
-      @seen_ids = Set(Id).new
 
       @press_pos = nil
       @press_time = 0.0
@@ -315,17 +364,19 @@ module Egui
       end
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
       # pointer events hit-test against stable, complete information.
-      @prev_widget_rects = @widget_rects
-      @prev_widget_senses = @widget_senses
-      @prev_widget_layers = @widget_layers
-      @prev_widget_clips = @widget_clips
-      @widget_rects = {} of Id => Rect
-      @widget_senses = {} of Id => Sense
-      @widget_layers = {} of Id => LayerId
-      @widget_clips = {} of Id => Rect
+      # SoA rotation: swap the array pairs and bump the generation —
+      # no copying, no clearing (validity is `stamp == @geo_gen`,
+      # absolute generations, so stale entries invalidate themselves).
+      @prv_stamp, @cur_stamp = @cur_stamp, @prv_stamp
+      @prv_rects, @cur_rects = @cur_rects, @prv_rects
+      @prv_senses, @cur_senses = @cur_senses, @prv_senses
+      @prv_layers, @cur_layers = @cur_layers, @prv_layers
+      @prv_clips, @cur_clips = @cur_clips, @prv_clips
+      @prv_order, @cur_order = @cur_order, @prv_order
+      @cur_order.clear
+      @geo_gen += 1
+      @geo_version += 1
       @text_inputs.clear
-      @used_ids.clear
-      @seen_ids.clear
       @duplicate_ids.clear
 
       # Resolve this frame's hover occlusion: union the previous
@@ -336,11 +387,12 @@ module Egui
       @hover_top_z = nil
       if pos = input.pointer_pos
         layer_rects = {} of LayerId => Rect
-        @prev_widget_rects.each do |id, rect|
-          sense = @prev_widget_senses[id]?
-          next if sense.nil? || sense.none?
-          layer = @prev_widget_layers[id]? || LayerId.background
+        @prv_order.each do |i|
+          sense = @prv_senses[i]
+          next if sense.none?
+          layer = @prv_layers[i]
           next if @modal_open && !layer.order.foreground?
+          rect = @prv_rects[i]
           if (hit = layer_rects[layer]?)
             layer_rects[layer] = hit.union(rect)
           else
@@ -378,7 +430,7 @@ module Egui
         # so we can mark it as dragged right away"). This is what makes
         # clicking anywhere on a slider rail set the value immediately.
         if (candidate = @potential_drag_id) &&
-           !@prev_widget_senses[candidate]?.try(&.click?)
+           !(ci = @slot_of[candidate]?).try { |i| @prv_stamp[i] == @geo_gen - 1 && @prv_senses[i].click? }
           @dragging_id = candidate
           @drag_started_id = candidate
         end
@@ -475,6 +527,23 @@ module Egui
     end
 
     def end_frame : Nil
+      # Rebuild the used-id set from the slot stamps (registration
+      # order), free the slots of widgets absent this frame, compact
+      # when recycling has left too many holes. The freed slots' prev
+      # data may still be pending in the arrays — that is exactly the
+      # hash model's semantics (a widget's geometry stays hit-testable
+      # for one frame after it disappears), and the stamps keep it
+      # readable until the next rotation makes it stale.
+      @used_ids.clear
+      @slot_ids.each_with_index do |id, i|
+        if @cur_used[i] == @geo_gen
+          @used_ids.add(id)
+        else
+          @slot_of.delete(id)
+          @slot_free << i
+        end
+      end
+      compact_slots if @slot_free.size > @slot_ids.size // 2
       # Prune per-widget state of widgets that no longer exist (egui
       # `Memory::end_pass(used_ids)`).
       @data.keep_only(@used_ids)
@@ -487,7 +556,10 @@ module Egui
       # on ANOTHER focusable already re-requested focus during update
       # and its rect contains the press, so it survives.
       if (pos = @focus_press_pos) && (fid = @focus.id)
-        rect = @widget_rects[fid]?
+        rect = nil
+        if (i = @slot_of[fid]?) && @cur_stamp[i] == @geo_gen
+          rect = @cur_rects[i]
+        end
         @focus.clear if rect.nil? || !rect.contains?(pos)
       end
       @focus_press_pos = nil
@@ -506,7 +578,10 @@ module Egui
     # end-frame pruning (for state keys that have no #interact call of
     # their own — e.g. Grid's persisted column widths).
     def use_id(id : Id) : Nil
-      @used_ids.add(id)
+      # Marks the slot used without registering geometry (use_id ids
+      # must not appear in #widget_rects).
+      i = ensure_slot(id)
+      @cur_used[i] = @geo_gen
     end
 
     # Register a scroll sink. `can_v`/`can_h` say which axes the sink
@@ -516,8 +591,10 @@ module Egui
                              can_v : Bool = true,
                              can_h : Bool = true) : Nil
       @scroll_rects[id] = ScrollSink.new(rect, layer, can_v, can_h)
-      @used_ids.add(id)
-      @used_ids.add(id.child(0))
+      # Via #use_id (slot stamp) — #end_frame rebuilds the used-id set
+      # from the slots, so a direct set insert here would be wiped.
+      use_id(id)
+      use_id(id.child(0))
     end
 
     # The scroll area that owns this frame's scroll delta (nil = none).
@@ -563,15 +640,21 @@ module Egui
                  clip : Rect = Rect.infinite) : InteractionVerdict
       # Duplicate ids are the classic immediate-mode bug: two widgets
       # minted the same id and fight over state. Record, don't crash.
-      if @seen_ids.includes?(id)
+      # One hash op (id → slot) instead of the eight the Hash model
+      # paid (seen/used sets + four inserts + the duplicate probe).
+      i = ensure_slot(id)
+      if @cur_stamp[i] == @geo_gen
         @duplicate_ids << id unless @duplicate_ids.includes?(id)
+      else
+        @cur_stamp[i] = @geo_gen
+        @cur_order << i
       end
-      @seen_ids.add(id)
-      @used_ids.add(id)
-      @widget_rects[id] = rect
-      @widget_senses[id] = sense
-      @widget_layers[id] = layer
-      @widget_clips[id] = clip
+      @cur_used[i] = @geo_gen
+      @cur_rects[i] = rect
+      @cur_senses[i] = sense
+      @cur_layers[i] = layer
+      @cur_clips[i] = clip
+      @geo_version += 1
 
       # A modal blocks interaction with everything below its layer.
       if @modal_open && !layer.order.foreground?
@@ -671,6 +754,133 @@ module Egui
 
     # --- internals ------------------------------------------------------
 
+    # Slot bookkeeping (see the field comment at the SoA block). A
+    # recycled slot needs no stamp poisoning: stamps are absolute
+    # generations, and a generation is never re-issued, so stale data
+    # fails every `stamp == @geo_gen` comparison on its own.
+    private def ensure_slot(id : Id) : Int32
+      if (i = @slot_of[id]?)
+        return i
+      end
+      if (i = @slot_free.pop?)
+        @slot_ids[i] = id
+      else
+        i = @slot_ids.size
+        @slot_ids.push(id)
+        @cur_stamp.push(0)
+        @prv_stamp.push(0)
+        @cur_used.push(0)
+        @cur_rects.push(Rect.zero)
+        @prv_rects.push(Rect.zero)
+        @cur_senses.push(Sense.none)
+        @prv_senses.push(Sense.none)
+        @cur_layers.push(LayerId.background)
+        @prv_layers.push(LayerId.background)
+        @cur_clips.push(Rect.infinite)
+        @prv_clips.push(Rect.infinite)
+      end
+      @slot_of[id] = i
+      i
+    end
+
+    # Drop freed slots wholesale and reindex (end_frame only, when
+    # more than half the slots are holes): keeps the SoA arrays tight
+    # for id-churning UIs (virtual lists). @prv_order is NOT remapped
+    # on purpose — it is about to be cleared by the next rotation,
+    # while @cur_order becomes the next frame's prev order and must
+    # stay valid.
+    private def compact_slots : Nil
+      remap = Array(Int32).new(@slot_ids.size, -1)
+      j = 0
+      @slot_ids.each_with_index do |id, i|
+        next unless @slot_of[id]? == i # freed slots were unmapped
+        remap[i] = j
+        if j != i
+          @slot_ids[j] = id
+          @slot_of[id] = j
+          @cur_stamp[j] = @cur_stamp[i]
+          @prv_stamp[j] = @prv_stamp[i]
+          @cur_used[j] = @cur_used[i]
+          @cur_rects[j] = @cur_rects[i]
+          @prv_rects[j] = @prv_rects[i]
+          @cur_senses[j] = @cur_senses[i]
+          @prv_senses[j] = @prv_senses[i]
+          @cur_layers[j] = @cur_layers[i]
+          @prv_layers[j] = @prv_layers[i]
+          @cur_clips[j] = @cur_clips[i]
+          @prv_clips[j] = @prv_clips[i]
+        end
+        j += 1
+      end
+      return if j == @slot_ids.size
+      drop = @slot_ids.size - j
+      @slot_ids.pop(drop)
+      @cur_stamp.pop(drop)
+      @prv_stamp.pop(drop)
+      @cur_used.pop(drop)
+      @cur_rects.pop(drop)
+      @prv_rects.pop(drop)
+      @cur_senses.pop(drop)
+      @prv_senses.pop(drop)
+      @cur_layers.pop(drop)
+      @prv_layers.pop(drop)
+      @cur_clips.pop(drop)
+      @prv_clips.pop(drop)
+      @slot_free.clear
+      @cur_order.map! { |i| remap[i] }
+      @geo_version += 1
+    end
+
+    # --- lazy Hash views (the old public getters) -----------------------
+    # Rebuilt on first read after any geometry write or rotation
+    # (@geo_version); the frame path itself never pays for them.
+    # Order follows registration order, like the Hash model's
+    # insertion order (specs read #widget_rects.values positionally).
+
+    def widget_rects : Hash(Id, Rect)
+      if @rects_view_at != @geo_version
+        @rects_view.clear
+        @cur_order.each do |i|
+          @rects_view[@slot_ids[i]] = @cur_rects[i] if @cur_stamp[i] == @geo_gen
+        end
+        @rects_view_at = @geo_version
+      end
+      @rects_view
+    end
+
+    def prev_widget_rects : Hash(Id, Rect)
+      if @prev_rects_view_at != @geo_version
+        @prev_rects_view.clear
+        @prv_order.each do |i|
+          @prev_rects_view[@slot_ids[i]] = @prv_rects[i] if @prv_stamp[i] == @geo_gen - 1
+        end
+        @prev_rects_view_at = @geo_version
+      end
+      @prev_rects_view
+    end
+
+    def prev_widget_senses : Hash(Id, Sense)
+      if @prev_senses_view_at != @geo_version
+        @prev_senses_view.clear
+        @prv_order.each do |i|
+          @prev_senses_view[@slot_ids[i]] = @prv_senses[i] if @prv_stamp[i] == @geo_gen - 1
+        end
+        @prev_senses_view_at = @geo_version
+      end
+      @prev_senses_view
+    end
+
+    def prev_widget_layers : Hash(Id, LayerId)
+      if @prev_layers_view_at != @geo_version
+        @prev_layers_view.clear
+        @prv_order.each do |i|
+          @prev_layers_view[@slot_ids[i]] = @prv_layers[i] if @prv_stamp[i] == @geo_gen - 1
+        end
+        @prev_layers_view_at = @geo_version
+      end
+      @prev_layers_view
+    end
+
     # Keyboard focus navigation (upstream `Focus` + memory/mod.rs):
     # Tab / Shift+Tab cycles focusables in creation order; arrows move
     # geometrically to the nearest focusable in that direction, unless
@@ -702,8 +912,8 @@ module Egui
       return if @focus.lock_keyboard?
 
       focusables = [] of Id
-      @prev_widget_senses.each do |id, sense|
-        focusables << id if sense.focusable? && @prev_widget_rects[id]?
+      @prv_order.each do |i|
+        focusables << @slot_ids[i] if @prv_senses[i].focusable?
       end
       return if focusables.empty?
 
@@ -717,7 +927,9 @@ module Egui
       end
 
       focused = @focus.id
-      return unless focused && (from_rect = @prev_widget_rects[focused]?)
+      return unless focused && (fi = @slot_of[focused]?) &&
+                    @prv_stamp[fi] == @geo_gen - 1 &&
+                    (from_rect = @prv_rects[fi])
 
       key : KeyCode? = nil
       dir = Vec2.zero
@@ -738,7 +950,7 @@ module Egui
       best_distance = Float64::INFINITY
       focusables.each do |id|
         next if id == focused
-        delta = @prev_widget_rects[id].not_nil!.center - from
+        delta = @prv_rects[@slot_of[id].not_nil!].center - from
         in_dir = delta.x * dir.x + delta.y * dir.y
         next unless in_dir > 0.0
         if horizontal
@@ -780,14 +992,14 @@ module Egui
     def widgets_at(pos : Pos2?) : Array(Id)
       return [] of Id unless pos
       hits = [] of {Id, Float64}
-      @prev_widget_rects.each do |id, rect|
+      @prv_order.each do |i|
+        rect = @prv_rects[i]
         next unless rect.contains?(pos)
-        next unless @prev_widget_senses[id]?
-        clip = @prev_widget_clips[id]?
+        clip = @prv_clips[i]
         next if clip && !clip.contains?(pos)
-        layer = @prev_widget_layers[id]? || LayerId.background
+        layer = @prv_layers[i]
         next if @modal_open && !layer.order.foreground?
-        hits << {id, rect.width * rect.height}
+        hits << {@slot_ids[i], rect.width * rect.height}
       end
       hits.sort_by! { |_, area| -area }
       hits.map(&.[0])
@@ -869,20 +1081,19 @@ module Egui
       return nil unless pos
       hit = nil
       hit_z = 0
-      @prev_widget_rects.each do |id, rect|
-        if rect.contains?(pos)
-          sense = @prev_widget_senses[id]?
-          next if sense.nil? || !sense_filter.call(sense)
-          clip = @prev_widget_clips[id]?
-          next if clip && !clip.contains?(pos)
-          layer = @prev_widget_layers[id]? || LayerId.background
-          if @modal_open
-            next unless layer.order.foreground?
-          end
-          if hit.nil? || layer.z >= hit_z
-            hit = id
-            hit_z = layer.z
-          end
+      @prv_order.each do |i|
+        rect = @prv_rects[i]
+        next unless rect.contains?(pos)
+        next unless sense_filter.call(@prv_senses[i])
+        clip = @prv_clips[i]
+        next if clip && !clip.contains?(pos)
+        layer = @prv_layers[i]
+        if @modal_open
+          next unless layer.order.foreground?
+        end
+        if hit.nil? || layer.z >= hit_z
+          hit = @slot_ids[i]
+          hit_z = layer.z
         end
       end
       hit
@@ -890,10 +1101,22 @@ module Egui
 
     private def rect_contains?(id : Id, pos : Pos2?) : Bool
       return false unless pos
-      rect = @prev_widget_rects[id]? || @widget_rects[id]?
-      return false unless rect && rect.contains?(pos)
-      clip = @prev_widget_clips[id]? || @widget_clips[id]?
-      !clip || clip.contains?(pos)
+      if (i = @slot_of[id]?)
+        # Previous frame's geometry wins (like the hash model's
+        # `prev || current`); stamps decide which is valid.
+        if @prv_stamp[i] == @geo_gen - 1
+          rect = @prv_rects[i]
+          clip = @prv_clips[i]
+        elsif @cur_stamp[i] == @geo_gen
+          rect = @cur_rects[i]
+          clip = @cur_clips[i]
+        else
+          return false
+        end
+        return false unless rect.contains?(pos)
+        return !clip || clip.contains?(pos)
+      end
+      false
     end
   end
 end

@@ -51,6 +51,9 @@ module Egui
     getter memory : Memory
     getter input : InputState
     getter painter : Painter
+    # Per-frame bump allocator, reset in #end_frame (frame_arena.cr —
+    # FPS_OPTIMIZATION.md §3; stage-1 Memory slots build on it).
+    getter frame_arena : FrameArena
     # The app-global hotkey → action bindings (see `hotkeys.cr`).
     # Actions fired this frame (key press or `#fire_action`) live for
     # exactly one frame and are claimed with `#consume_action`.
@@ -347,6 +350,9 @@ module Egui
       @input = InputState.new(Rect.zero, nil, false, false, false,
         Vec2.zero, 0.0, 0.016)
       @painter = Painter.new
+      # Per-frame bump allocator, reset in #end_frame (see
+      # frame_arena.cr — FPS_OPTIMIZATION.md §3, stage-1 foundation).
+      @frame_arena = FrameArena.new
       @theme = Theme.dark
       @cursor_icon = CursorIcon::Default
       @cursor_image = nil
@@ -495,9 +501,13 @@ module Egui
       # stale eviction runs on this clock; see Fonts#tick_layout_cache).
       @fonts.tick_layout_cache
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
-      Egui::Bench.span("Painter#commands_in_layer_order") do
+      cmds = Egui::Bench.span("Painter#commands_in_layer_order") do
         @painter.commands_in_layer_order
       end
+      # Frame-scratch lifetime ends here: the command list above must
+      # not reference arena memory (see FrameArena's scope note).
+      @frame_arena.reset
+      cmds
     end
 
     # --- hotkey actions (see hotkeys.cr) -----------------------------------

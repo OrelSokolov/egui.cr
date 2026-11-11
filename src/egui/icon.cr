@@ -19,18 +19,18 @@
 
 module Egui
   module Icon
-    @@cache = {} of String => Svg
+    @@cache = {} of Tuple(String, String, Color32) => Svg
 
     # The runtime half of `from_file`: memoize the parsed icon per
     # (provider, name, tint). A miss (fresh parse) happens once per
-    # key for the life of the process.
+    # key for the life of the process. The key is a tuple — no string
+    # is built or hashed per call (FPS_OPTIMIZATION.md §7).
     def self.cached(provider : String, name : String, tint : Color32?,
                     source : String) : Svg
       Egui::Bench.span("Icon.cached") do
-        key = tint ? "#{provider}/#{name}/#{tint.not_nil!.r}/#{tint.not_nil!.g}/#{tint.not_nil!.b}"
-                    : "#{provider}/#{name}/-"
-        @@cache[key] ||= Svg.new(source, Vec2.new(24.0, 24.0),
-          tint || Color32.rgb(0, 0, 0))
+        resolved = tint || Color32.rgb(0, 0, 0)
+        @@cache[{provider, name, resolved}] ||= Svg.new(source,
+          Vec2.new(24.0, 24.0), resolved)
       end
     end
 
