@@ -88,6 +88,22 @@ module Egui
     # Container content sizes (modal dialog size for centering) — same
     # pruning exemption.
     getter layer_sizes : Hash(Id, Vec2)
+    # Virtual-scroll row extents (ScrollArea `virtual:`, Ui#virtual_row):
+    # per scroll-area id — {row-key hash → {height, id span}} plus the
+    # viewport width the heights were measured at (a width change
+    # invalidates them wholesale). Same pruning exemption: a SKIPPED
+    # row mints no widget ids, so nothing else keeps these cells alive.
+    getter virtual_rows : Hash(Id, Hash(UInt64, Tuple(Float64, UInt64)))
+    getter virtual_row_widths : Hash(Id, Float64)
+    # Natural widths of column boxes placed inline in horizontal rows
+    # (Ui#box under a horizontal parent): a box cannot know its natural
+    # width before its content runs, so the line-wrap decision uses the
+    # width measured LAST frame — an unconstrained run records the real
+    # width, a box that filled its region records the remainder plus a
+    # hair ("at least this — break the line first"). Same pruning
+    # exemption as layer_sizes: the key child-Ui id is minted before
+    # any widget runs, so nothing else keeps these cells alive.
+    getter inline_box_widths : Hash(Id, Float64)
     # Windows the user has grip-resized at least once: from then on the
     # size is fixed and content is clipped to the window rect (upstream
     # `Resize` inside `Window`) instead of auto-fitting the contents.
@@ -108,12 +124,18 @@ module Egui
     # so end-frame pruning must not touch it.
     getter color_cache : Hash(Color32, Hsva)
 
-    # Scroll-sink viewports (id → rect + layer) for scroll arbitration:
-    # scroll areas, textareas and (draggable) plots register here; the
-    # top-most sink containing the pointer (previous frame's geometry,
-    # like widget hit-testing) owns this frame's scroll delta.
-    getter scroll_rects : Hash(Id, Tuple(Rect, LayerId))
-    @prev_scroll_rects : Hash(Id, Tuple(Rect, LayerId))
+    # Scroll-sink viewports (id → sink) for scroll arbitration: scroll
+    # areas, textareas and (draggable) plots register here; the top-most
+    # sink containing the pointer (previous frame's geometry, like
+    # widget hit-testing) owns this frame's scroll delta. `can_v`/`can_h`
+    # carry SCROLL CHAINING (the browser rule): a sink that cannot
+    # scroll the wheel's axis (content fits, or the axis is off) is
+    # skipped and the sink UNDER it gets the delta instead.
+    record ScrollSink, rect : Rect, layer : LayerId,
+                      can_v : Bool = true, can_h : Bool = true
+
+    getter scroll_rects : Hash(Id, ScrollSink)
+    @prev_scroll_rects : Hash(Id, ScrollSink)
     @active_scroll : Id?
 
     # Canvas drag-to-scroll (upstream egui touch semantics, works with
@@ -208,12 +230,15 @@ module Egui
     @tooltip_starts = {} of Id => Float64
     @menu_open = nil
     @layer_sizes = {} of Id => Vec2
+    @virtual_rows = {} of Id => Hash(UInt64, Tuple(Float64, UInt64))
+    @virtual_row_widths = {} of Id => Float64
+    @inline_box_widths = {} of Id => Float64
     @fixed_size_layers = Set(Id).new
     @popup_rects = {} of Id => Rect
     @texture_cache = {} of String => UInt64
     @color_cache = {} of Color32 => Hsva
-    @scroll_rects = {} of Id => Tuple(Rect, LayerId)
-    @prev_scroll_rects = {} of Id => Tuple(Rect, LayerId)
+    @scroll_rects = {} of Id => ScrollSink
+    @prev_scroll_rects = {} of Id => ScrollSink
     @active_scroll = nil
     @canvas_drag_owner = nil
     @canvas_drag_delta = Vec2.zero
@@ -275,18 +300,18 @@ module Egui
       # Rotate scroll viewports and decide who owns this frame's scroll
       # delta: the top-most viewport containing the pointer (highest
       # layer z; on a tie the last registered wins, like paint order).
+      # Scroll chaining: sinks that cannot serve the wheel's axis this
+      # frame (plain vertical wheel vs an hbar-only strip, content that
+      # fits) are skipped — the sink under them gets the delta.
       @prev_scroll_rects = @scroll_rects
-      @scroll_rects = {} of Id => Tuple(Rect, LayerId)
+      @scroll_rects = {} of Id => ScrollSink
       @active_scroll = nil
       if pos = input.pointer_pos
-        best_z = nil
-        @prev_scroll_rects.each do |id, (rect, layer)|
-          next if @modal_open && !layer.order.foreground?
-          if rect.contains?(pos) && (best_z.nil? || layer.z >= best_z)
-            @active_scroll = id
-            best_z = layer.z
-          end
-        end
+        shift = input.modifiers.shift
+        wheel_v = input.scroll.y != 0.0 && !shift
+        wheel_h = input.scroll.x != 0.0 || (input.scroll.y != 0.0 && shift)
+        @active_scroll = topmost_scroll_at(pos,
+          require_v: wheel_v, require_h: wheel_h)
       end
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
       # pointer events hit-test against stable, complete information.
@@ -484,8 +509,13 @@ module Egui
       @used_ids.add(id)
     end
 
-    def register_scroll_area(id : Id, rect : Rect, layer : LayerId) : Nil
-      @scroll_rects[id] = {rect, layer}
+    # Register a scroll sink. `can_v`/`can_h` say which axes the sink
+    # can actually scroll this frame (scroll chaining skips the rest —
+    # see ScrollSink). Defaults keep every legacy sink always eligible.
+    def register_scroll_area(id : Id, rect : Rect, layer : LayerId,
+                             can_v : Bool = true,
+                             can_h : Bool = true) : Nil
+      @scroll_rects[id] = ScrollSink.new(rect, layer, can_v, can_h)
       @used_ids.add(id)
       @used_ids.add(id.child(0))
     end
@@ -813,17 +843,23 @@ module Egui
     # containing `pos` — same arbitration as the wheel delta owner
     # (highest layer z wins; on a tie the last registered, i.e. the
     # inner-most viewport painted last).
-    private def topmost_scroll_at(pos : Pos2) : Id?
+    # The top-most sink containing `pos`. `require_v`/`require_h`:
+    # skip sinks that cannot scroll the axis the wheel intends this
+    # frame (both false — plain hit-test, e.g. the canvas-drag latch).
+    private def topmost_scroll_at(pos : Pos2, require_v : Bool = false,
+                                  require_h : Bool = false) : Id?
       hit : Id? = nil
       hit_z = 0
-      @prev_scroll_rects.each do |id, (rect, layer)|
-        next unless rect.contains?(pos)
+      @prev_scroll_rects.each do |id, sink|
+        next unless sink.rect.contains?(pos)
         if @modal_open
-          next unless layer.order.foreground?
+          next unless sink.layer.order.foreground?
         end
-        if hit.nil? || layer.z >= hit_z
+        next if require_v && !sink.can_v
+        next if require_h && !sink.can_h
+        if hit.nil? || sink.layer.z >= hit_z
           hit = id
-          hit_z = layer.z
+          hit_z = sink.layer.z
         end
       end
       hit

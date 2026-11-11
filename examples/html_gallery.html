@@ -1,0 +1,1761 @@
+<!DOCTYPE html>
+<!-- html_gallery — the HTML analogue (reference page) for the egui.cr
+     html_gallery binary. Every card = code on the left in THREE panels
+     (Crystal / ECSS / EXML, switched by the tabs in the card's top-right
+     corner) and the live browser result on the right. The search box on
+     top filters cards by their code text (all three panels). Demo CSS is
+     restricted to the engine's supported subset; cards whose engine
+     mechanism differs (gradients, appear) carry a note. Compare side by
+     side with the binary to hunt render bugs. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>egui.cr — html gallery (reference)</title>
+<style>
+  :root {
+    --bg: #1b1b21; --panel: #232329; --card: #26262d;
+    --line: #3a3a44; --text: #e8e8ec; --dim: #9a9aa6;
+    --accent: #3584e4; --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, sans-serif; }
+  #top { position: sticky; top: 0; z-index: 10; background: var(--panel);
+         border-bottom: 1px solid var(--line); padding: 10px 16px;
+         display: flex; gap: 12px; align-items: center; }
+  #top h1 { font-size: 16px; margin: 0; }
+  #top input { flex: 1; max-width: 480px; padding: 8px 12px;
+               background: var(--bg); color: var(--text);
+               border: 1px solid var(--line); border-radius: 6px;
+               font: 14px var(--mono); }
+  #top input:focus { outline: 1px solid var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  h2 { font-size: 15px; color: var(--dim); text-transform: uppercase;
+       letter-spacing: 0.08em; margin: 28px 0 10px; border-bottom: 1px solid var(--line);
+       padding-bottom: 6px; }
+  .card { background: var(--card); border: 1px solid var(--line);
+          border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .chead { display: flex; justify-content: space-between; align-items: center;
+           gap: 10px; margin-bottom: 8px; }
+  .chead .title { font-size: 13px; color: var(--dim);
+                  font-family: var(--mono); font-weight: 600; }
+  .chead .title code { color: var(--text); }
+  .split { display: grid; grid-template-columns: minmax(320px, 46%) 1fr;
+           gap: 12px; }
+  .code { display: flex; flex-direction: column; gap: 4px; }
+  .plabel { font-size: 10px; letter-spacing: 0.06em; color: var(--dim);
+            font-family: var(--mono); margin: 2px 0 -2px 1px; }
+  .code textarea { width: 100%; resize: none; background: #17171c;
+                   color: #cde3c8; border: 1px solid var(--line);
+                   border-radius: 6px; padding: 8px;
+                   font: 12px/1.45 var(--mono); }
+  .code textarea.ecss { color: #dbc7e8; }
+  .code textarea.exml { color: #c8d9f0; }
+  .result { border: 1px dashed var(--line); border-radius: 6px;
+            padding: 10px; min-height: 60px; overflow: auto;
+            background: var(--panel); }
+  .note { font-size: 11px; color: var(--dim); margin-top: 6px;
+          font-style: italic; }
+  .demo-box { padding: 8px 10px; border-radius: 6px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  /* animation demos */
+  @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes slide-up { from { opacity: 0; transform: translateY(14px); }
+                        to   { opacity: 1; transform: translateY(0); } }
+  @keyframes drop-in { from { opacity: 0; transform: translateY(-40px); }
+                       to   { opacity: 1; transform: translateY(0); } }
+  @keyframes grow-bar { from { width: 4%; } to { width: 100%; } }
+  .anim-fade { animation: fade-in 600ms ease-out; }
+  .anim-slide { animation: slide-up 600ms ease-out; }
+  .anim-drop { animation: drop-in 700ms cubic-bezier(.3,1.4,.5,1); }
+  .demo-hover { padding: 8px 14px; border-radius: 6px; background: #33333c;
+                transition: background 180ms; cursor: default; }
+  .demo-hover:hover { background: var(--accent); }
+  .bar-track { width: 100%; height: 12px; border-radius: 6px;
+               background: #33333c; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; background: var(--accent);
+              animation: grow-bar 2.4s linear infinite alternate; }
+  .spin { width: 18px; height: 18px; border-radius: 50%;
+          border: 3px solid #44444f; border-top-color: var(--accent);
+          animation: spin 900ms linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .frame-mock { border: 1px solid var(--line); border-radius: 6px;
+                overflow: hidden; font-size: 12px; }
+  .frame-mock .mh { background: #2d2d36; padding: 4px 8px; }
+  .frame-mock .mrow { display: flex; min-height: 70px; }
+  .frame-mock .mnav { background: #24242b; padding: 4px 8px; width: 84px; }
+  .frame-mock .mmain { background: #1e1e24; padding: 4px 8px; flex: 1; }
+  .frame-mock .maside { background: #24242b; padding: 4px 8px; width: 70px; }
+  .frame-mock .mf { background: #2d2d36; padding: 4px 8px; }
+  input[type=text], select { padding: 6px 8px; background: #17171c;
+    color: var(--text); border: 1px solid var(--line); border-radius: 6px; }
+  button { padding: 6px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: #33333c; color: var(--text); cursor: pointer; }
+  button:hover { background: #3d3d48; }
+  input[type=range] { accent-color: var(--accent); }
+  fieldset { border: 1px solid var(--line); border-radius: 6px; }
+  a { color: #78aeed; }
+</style>
+</head>
+<body>
+<div id="top">
+  <h1>html gallery — reference</h1>
+  <input id="q" type="text" placeholder="filter by code / ecss / exml / title…">
+  <span id="count"></span>
+</div>
+<main>
+
+<!-- ======================= TEXT ======================= -->
+<h2>Text</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">h1..h6 — heading scale</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.h1("Heading 1")
+ui.h2("Heading 2")
+ui.h3("Heading 3")
+# … h4, h5 down to h6 (2em…0.67em, bold)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* one heading kind; the h1..h6 scale is Crystal-side */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><heading text="Heading 1"/></textarea>
+    </div>
+    <div class="result">
+      <h1>Heading 1</h1><h2>Heading 2</h2><h3>Heading 3</h3>
+      <h4>Heading 4</h4><h5>Heading 5</h5><h6>Heading 6</h6>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">p — paragraph</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.p("A paragraph — a label with
+breathing room above and below.")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* p = label + 0.35 line-height margins (built in) */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><label text="A paragraph — margins are Crystal-side"/></textarea>
+    </div>
+    <div class="result"><p>A paragraph — a label with breathing room above and below.</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">p + color</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.p("red text", style: "color: #e01b4c")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">alert { text_color: #e01b4c }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><alert text="red text"/></textarea>
+    </div>
+    <div class="result"><p style="color:#e01b4c">red text</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">p + font-size: 24</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.p("24px text", style: "font-size: 24")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">big-text { font_size: 24 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><big-text text="24px text"/></textarea>
+    </div>
+    <div class="result"><p style="font-size:24px">24px text</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">span — inline row</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.span do |s|
+  s.strong("bold")
+  s.em("italic")
+  s.code("mono")
+  s.label("plain")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* strong/em/code are RichText runs, not style rules */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><row>
+  <b text="bold"/> <i text="italic"/>
+  <mono-run text="mono"/> <label text="plain"/>
+</row></textarea>
+    </div>
+    <div class="result"><span><b>bold</b> <i>italic</i> <code>mono</code> plain</span></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">span + br — hard break</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.span do |s|
+  s.label("before break")
+  s.br
+  s.label("after break")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* br is flow, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><row><label text="before break"/></row>
+<row><label text="after break"/></row></textarea>
+    </div>
+    <div class="result"><span>before break<br>after break</span></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">strong / em / code</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.strong("strong text")
+ui.em("emphasized text")
+ui.code("code text")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">mono-run { font_family: monospace }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><b text="strong text"/>
+<i text="emphasized text"/>
+<mono-run text="code text"/></textarea>
+    </div>
+    <div class="result"><strong>strong text</strong><br><em>emphasized text</em><br><code>code text</code></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">mark — highlight</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.mark("highlighted with the selection color")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">mark { text_color: selection_fill }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><mark text="highlighted"/></textarea>
+    </div>
+    <div class="result"><mark>highlighted with the selection color</mark></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">small</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.small("small print, 0.83em")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">small { font_size: 0.83rem }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><small text="small print, 0.83em"/></textarea>
+    </div>
+    <div class="result"><small>small print, 0.83em</small></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">sub / sup</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.span do |s|
+  s.label("H"); s.sub("2")
+  s.label("O"); s.sup("2")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">sub, sup { font_size: 0.75em }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><row><label text="H"/><sub text="2"/>
+<label text="O"/><sup text="2"/></row></textarea>
+    </div>
+    <div class="result"><span>H<sub>2</sub>O<sup>2</sup> — baseline not shifted in the engine</span></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">pre — preformatted + h-scroll</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.pre(%[line one   stays
+    line two keeps spaces
+        line three — a very long line that overflows and scrolls horizontally])</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">pre { font_family: monospace }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><pre-run text="line one   stays"/></textarea>
+    </div>
+    <div class="result"><pre>line one   stays
+    line two keeps spaces
+        line three — a very long line that overflows and scrolls horizontally</pre></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">hr — horizontal rule</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.p("above")
+ui.hr
+ui.p("below")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">separator { separator_color: dim }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><label text="above"/>
+<separator/>
+<label text="below"/></textarea>
+    </div>
+    <div class="result"><p>above</p><hr><p>below</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">blockquote — accent left stroke</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.blockquote do |b|
+  b.p("Quoted text with a 3px accent
+stroke on the LEFT edge only.")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">quote { background: panel_fill;
+  stroke.left: 3; padding: 8 12 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><quote>
+  <label text="Quoted text with a 3px accent stroke"/>
+</quote></textarea>
+    </div>
+    <div class="result"><blockquote>Quoted text with a 3px accent stroke on the LEFT edge only.</blockquote></div>
+  </div>
+</section>
+
+<!-- ======================= LISTS ======================= -->
+<h2>Lists</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">ul &gt; li</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.ul do |l|
+  l.li("first bullet")
+  l.li("second bullet")
+  l.li("third bullet")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* bullet markers are built into li */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><repeat in="items"><label text="• {item}"/></repeat></textarea>
+    </div>
+    <div class="result"><ul><li>first bullet</li><li>second bullet</li><li>third bullet</li></ul></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">ol &gt; li</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.ol do |l|
+  l.li("numbered one")
+  l.li("numbered two")
+  l.li("numbered three")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* numbering is the ol frame counter */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><repeat in="items"><label text="{_i}. {item}"/></repeat></textarea>
+    </div>
+    <div class="result"><ol><li>numbered one</li><li>numbered two</li><li>numbered three</li></ol></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">ol start: 5</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.ol(start: 5) do |l|
+  l.li("five")
+  l.li("six")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* start is an attribute, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><repeat in="items" start="5"><label text="{_i}. {item}"/></repeat></textarea>
+    </div>
+    <div class="result"><ol start="5"><li>five</li><li>six</li></ol></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">nested ul inside ol</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="7" spellcheck="false">ui.ol do |l|
+  l.li("outer one")
+  l.li do |row|
+    row.ul do |inner|
+      inner.li("inner a")
+      inner.li("inner b")
+    end
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">li { margin_left: 14 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="5" spellcheck="false"><repeat in="groups">
+  <label text="• {group.name}"/>
+  <repeat in="group.items">
+    <label text="  • {item}"/>
+  </repeat>
+</repeat></textarea>
+    </div>
+    <div class="result"><ol><li>outer one</li><li><ul><li>inner a</li><li>inner b</li></ul></li></ol></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">nested ol inside ol</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="10" spellcheck="false">ui.ol do |l|
+  l.li("outer one")
+  l.li do |row|
+    row.ol do |inner|
+      inner.li("inner a")
+      inner.li("inner b")
+    end
+  end
+  l.li("outer two")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* nested ol numbers hierarchically: 2.1., 2.2. */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><repeat in="groups">
+  <label text="{_g}. {group.name}"/>
+  <repeat in="group.items">
+    <label text="  {_g}.{_i}. {item}"/>
+  </repeat>
+</repeat></textarea>
+    </div>
+    <div class="result"><ol><li>outer one</li><li><ol><li>inner a</li><li>inner b</li></ol></li><li>outer two</li></ol></div>
+  </div>
+</section>
+
+<!-- ======================= FILLS ======================= -->
+<h2>Fills &amp; backgrounds</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">div + background solid</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.div(style: "background: #3584e4; padding: 12") do |d|
+  d.p("Solid fill")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">card {
+  background: #3584e4;
+  padding: 12; rounding: 6;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><card><label text="Solid fill"/></card></textarea>
+    </div>
+    <div class="result"><div style="background:#3584e4;padding:12px;border-radius:6px">Solid fill</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">fill palette strip</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="7" spellcheck="false">SWATCHES = %w[#e01b4c #f5c211 #33d17a
+                 #3584e4 #9141ac #ff7800]
+ui.span do |s|
+  SWATCHES.each { |hex| swatch(s, hex) }
+end
+# swatch: ui.p("", style: "background: #{hex}",
+#              width: 44, height: 26)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">swatch { height: 26; rounding: 6 }
+swatch.red    { background: #e01b4c }
+swatch.yellow { background: #f5c211 }
+swatch.green  { background: #33d17a }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><row>
+  <repeat in="palette"><swatch class="{item.name}"/></repeat>
+</row></textarea>
+    </div>
+    <div class="result">
+      <div class="row">
+        <div style="background:#e01b4c;height:26px;width:44px;border-radius:6px"></div>
+        <div style="background:#f5c211;height:26px;width:44px;border-radius:6px"></div>
+        <div style="background:#33d17a;height:26px;width:44px;border-radius:6px"></div>
+        <div style="background:#3584e4;height:26px;width:44px;border-radius:6px"></div>
+        <div style="background:#9141ac;height:26px;width:44px;border-radius:6px"></div>
+        <div style="background:#ff7800;height:26px;width:44px;border-radius:6px"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">rgba(…, 0.4) translucent</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.div(style: "background: #1b6ef3") do |d|
+  d.div(style: "background: #ffffff66; padding: 10") do |t|
+    t.p("40% white over blue")
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">over { background: #1b6ef3 }
+over .glass {
+  background: #ffffff66; padding: 10;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><over><glass>
+  <label text="40% white over blue"/>
+</glass></over></textarea>
+    </div>
+    <div class="result"><div style="background:#1b6ef3;padding:6px;border-radius:6px"><div style="background:rgba(255,255,255,0.4);padding:10px;border-radius:6px">40% white over blue</div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">div + stroke border</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.div(style: "stroke: #e01b4c; padding: 10") do |d|
+  d.p("Border only")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">outlined {
+  stroke: #e01b4c; stroke-width: 1;
+  padding: 10; rounding: 6;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><outlined><label text="Border only"/></outlined></textarea>
+    </div>
+    <div class="result"><div style="border:1px solid #e01b4c;padding:10px;border-radius:6px">Border only</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">div + border-radius: 16</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.div(style: "background: #33d17a;
+            border-radius: 16; padding: 12") do |d|
+  d.p("rounded")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">pill-green { background: #33d17a;
+  rounding: 16; padding: 12 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><pill-green><label text="rounded"/></pill-green></textarea>
+    </div>
+    <div class="result"><div style="background:#33d17a;border-radius:16px;padding:12px">rounded</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">radius ramp 0 / 8 / 16 / 28</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">[0, 8, 16, 28].each do |r|
+  ui.div(style: "background: #9141ac;
+        border-radius: #{r}; padding: 10") do |d|
+    d.small("r#{r}")
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">ramp { background: #9141ac; padding: 10 }
+ramp.r0  { rounding: 0 }
+ramp.r8  { rounding: 8 }
+ramp.r16 { rounding: 16 }
+ramp.r28 { rounding: 28 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><row>
+  <repeat in="radii">
+    <ramp class="r{item}"><label text="r{item}"/></ramp>
+  </repeat>
+</row></textarea>
+    </div>
+    <div class="result">
+      <div class="row">
+        <div style="background:#9141ac;border-radius:0;height:40px;width:70px;display:flex;align-items:center;justify-content:center;font-size:12px">r0</div>
+        <div style="background:#9141ac;border-radius:8px;height:40px;width:70px;display:flex;align-items:center;justify-content:center;font-size:12px">r8</div>
+        <div style="background:#9141ac;border-radius:16px;height:40px;width:70px;display:flex;align-items:center;justify-content:center;font-size:12px">r16</div>
+        <div style="background:#9141ac;border-radius:28px;height:40px;width:70px;display:flex;align-items:center;justify-content:center;font-size:12px">r28</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">div + padding: 16</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.div(style: "stroke: #777; padding: 16") do |d|
+  d.div(style: "background: #3584e4; padding: 8") { |i| i.p("inner") }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">pad-demo { stroke: #777; padding: 16 }
+pad-demo .inner {
+  background: #3584e4; padding: 8;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><pad-demo><inner>
+  <label text="inner"/>
+</inner></pad-demo></textarea>
+    </div>
+    <div class="result"><div style="border:1px dashed #777;padding:16px;border-radius:6px"><div style="background:#3584e4;padding:8px;border-radius:6px">inner</div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">padding-x vs padding-y</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.div(style: "background: #f5c211;
+        padding-x: 24; padding-y: 4") do |d|
+  d.p("wide x, tight y")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">pad-xy {
+  background: #f5c211;
+  padding.left: 24; padding.right: 24;
+  padding.top: 4;  padding.bottom: 4;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><pad-xy><label text="wide x, tight y"/></pad-xy></textarea>
+    </div>
+    <div class="result"><div style="background:#f5c211;padding:4px 24px;border-radius:6px">wide x, tight y</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">fill + stroke + radius combo</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.div(style: "background: #1e1e24;
+        stroke: #3584e4; border-radius: 12;
+        padding: 12") do |d|
+  d.p("all three together")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">combo {
+  background: #1e1e24;
+  stroke: #3584e4; stroke-width: 1;
+  rounding: 12; padding: 12;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo><label text="all three together"/></combo></textarea>
+    </div>
+    <div class="result"><div style="background:#1e1e24;border:1px solid #3584e4;border-radius:12px;padding:12px">all three together</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">nested div fills</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="6" spellcheck="false">ui.div(style: "background: #3584e4; padding: 10") do |a|
+  a.div(style: "background: #33d17a; padding: 10") do |b|
+    b.div(style: "background: #f5c211; padding: 10") do |c|
+      c.p("three levels deep")
+    end
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">nest-a { background: #3584e4; padding: 10 }
+nest-b { background: #33d17a; padding: 10 }
+nest-c { background: #f5c211; padding: 10 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><nest-a><nest-b><nest-c>
+  <label text="three levels deep"/>
+</nest-c></nest-b></nest-a></textarea>
+    </div>
+    <div class="result"><div style="background:#3584e4;padding:10px;border-radius:6px"><div style="background:#33d17a;padding:10px;border-radius:6px"><div style="background:#f5c211;padding:10px;border-radius:6px">three levels deep</div></div></div></div>
+  </div>
+</section>
+
+<!-- ======================= GRADIENTS ======================= -->
+<h2>Gradients</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">linear gradient (2 stops)</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">b = Egui::Button.new("Gradient")
+  .gradient(Egui::Color32.rgb(60,150,90),
+            Egui::Color32.rgb(24,80,48))
+ui.add(b)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* no ECSS gradient key yet */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><!-- no gradient element yet — engine: Button#gradient / canvas2d --></textarea>
+    </div>
+    <div class="result"><div class="demo-box" style="background:linear-gradient(#3c965a,#185030)">Gradient</div>
+      <p class="note">engine: Button#gradient / canvas2d createLinearGradient</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">radial gradient</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">g = c2d.create_radial_gradient(60, 60, 0, 60, 60, 60*Math.sqrt(2))
+g.add_color_stop(0, Egui::Color32.rgb(255,255,255))
+g.add_color_stop(1, Egui::Color32.rgb(53,132,228))
+c2d.fill_style = g
+c2d.fill_rect(0, 0, 120, 120)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">demo { background-gradient: radial-gradient(circle, #ffffff, #3584e4) }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><canvas-view id="glow" w="120" h="120"/></textarea>
+    </div>
+    <div class="result"><div style="width:120px;height:120px;border-radius:6px;background:radial-gradient(circle,#ffffff,#3584e4)"></div>
+      <p class="note">engine: canvas2d createRadialGradient</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">multi-stop gradient</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">g = c2d.create_linear_gradient(0, 0, 200, 0)
+g.add_color_stop(0.0, Egui::Color32.rgb(224,27,76))
+g.add_color_stop(0.5, Egui::Color32.rgb(245,194,17))
+g.add_color_stop(1.0, Egui::Color32.rgb(51,209,122))
+c2d.fill_style = g
+c2d.fill_rect(0, 0, 200, 36)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* no ECSS gradient key yet */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><canvas-view id="spectrum" w="200" h="36"/></textarea>
+    </div>
+    <div class="result"><div style="height:36px;border-radius:6px;background:linear-gradient(90deg,#e01b4c,#f5c211,#33d17a)"></div>
+      <p class="note">engine: canvas2d gradient color stops</p></div>
+  </div>
+</section>
+
+<!-- ======================= LAYOUT ======================= -->
+<h2>Layout &amp; sizing</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">block flow nesting</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="6" spellcheck="false">ui.div(style: "stroke: #777; padding: 8") do |d|
+  d.p("block one fills the width")
+  d.p("block two below it")
+  d.span { |s| s.p("span row: a"); s.p("b"); s.p("c") }
+  d.p("block after the row")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* linear block flow: top to bottom */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><column>
+  <label text="block one fills the width"/>
+  <label text="block two below it"/>
+  <row><label text="a"/> <label text="b"/> <label text="c"/></row>
+  <label text="block after the row"/>
+</column></textarea>
+    </div>
+    <div class="result"><div style="border:1px dashed #777;padding:8px;border-radius:6px"><p>block one fills the width</p><p>block two below it</p><span>a b c</span><p>block after the row</p></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">span no-wrap row</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.span do |s|
+  s.div(style: "background: #e01b4c; padding: 8") { }
+  s.div(style: "background: #33d17a; padding: 8") { }
+  s.div(style: "background: #3584e4; padding: 8") { }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">chip-red   { background: #e01b4c; padding: 8 }
+chip-green { background: #33d17a; padding: 8 }
+chip-blue  { background: #3584e4; padding: 8 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><row>
+  <chip-red/><chip-green/><chip-blue/>
+</row></textarea>
+    </div>
+    <div class="result"><div class="row"><div style="background:#e01b4c;padding:8px;width:40px;border-radius:6px"></div><div style="background:#33d17a;padding:8px;width:40px;border-radius:6px"></div><div style="background:#3584e4;padding:8px;width:40px;border-radius:6px"></div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">width + height pinned</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false"># a sized swatch: label + background style
+ui.p("", style: "background: #9141ac",
+  width: 120, height: 60)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">pinned {
+  background: #9141ac;
+  width: 120; height: 60;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><pinned/></textarea>
+    </div>
+    <div class="result"><div style="background:#9141ac;width:120px;height:60px;border-radius:6px"></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">wrapping row</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">CHIPS = ["chip one", "chip two", "chip three",
+         "chip four", "chip five", "chip six", "chip seven"]
+ui.horizontal(wrap: true) do |s|
+  CHIPS.each { |c| s.small(c) }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">chips { wrap: true }
+chips .chip { background: #33333c; rounding: 6 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><row wrap="true">
+  <repeat in="chips"><chip text="{item}"/></repeat>
+</row></textarea>
+    </div>
+    <div class="result"><div class="row"><span class="demo-box" style="background:#33333c">chip one</span><span class="demo-box" style="background:#33333c">chip two</span><span class="demo-box" style="background:#33333c">chip three</span><span class="demo-box" style="background:#33333c">chip four</span><span class="demo-box" style="background:#33333c">chip five</span><span class="demo-box" style="background:#33333c">chip six</span><span class="demo-box" style="background:#33333c">chip seven</span></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">columns(3)</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.columns(3) do |cols|
+  cols.each_with_index do |col, i|
+    col.p("column #{i}")
+    col.p("second line")
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* equal-width columns are layout, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><row>
+  <column><label text="column 0"/><label text="second line"/></column>
+  <column><label text="column 1"/><label text="second line"/></column>
+  <column><label text="column 2"/><label text="second line"/></column>
+</row></textarea>
+    </div>
+    <div class="result"><div style="display:flex;gap:8px"><div style="flex:1;border:1px dashed #777;border-radius:6px;padding:6px">column 0<br>second line</div><div style="flex:1;border:1px dashed #777;border-radius:6px;padding:6px">column 1<br>second line</div><div style="flex:1;border:1px dashed #777;border-radius:6px;padding:6px">column 2<br>second line</div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">page frame: header/nav/aside/main/footer</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="8" spellcheck="false">ui.header { |h| h.p("header") }
+ui.nav { |n| n.p("nav") }
+ui.aside { |a| a.p("aside") }
+ui.main { |m| m.p("main content flows in
+  what is left between the panels") }
+ui.footer { |f| f.p("footer") }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">/* panels are app-level chrome; styled
+   through the theme/ECSS per panel class */
+nav-panel { background: #24242b; width: 84 }
+aside-panel { background: #24242b; width: 70 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><menubar><item label="header"/></menubar>
+<central><row>
+  <nav-panel><label text="nav"/></nav-panel>
+  <label text="main content"/>
+  <aside-panel><label text="aside"/></aside-panel>
+</row></central>
+<statusbar><label text="footer"/></statusbar></textarea>
+    </div>
+    <div class="result"><div class="frame-mock"><div class="mh">header</div><div class="mrow"><div class="mnav">nav</div><div class="mmain">main content flows in what is left between the panels</div><div class="maside">aside</div></div><div class="mf">footer</div></div><p class="note">panels frame the whole window — shown as a mock here</p></div>
+  </div>
+</section>
+
+<!-- ======================= FLOAT & POSITIONING ======================= -->
+<h2>Float &amp; positioning</h2>
+
+<p class="note" style="margin:0 0 10px">the engine has no float/position style keys (the flow is linear):
+floats are emulated by row order + reserved padding gutters, absolute/fixed/z-index by ui.overlay anchors.</p>
+
+<section class="card">
+  <div class="chead"><span class="title">float: left — text beside the block</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="6" spellcheck="false"># the flow is linear: the block goes FIRST in the
+# row, the wrapped text flows beside it
+ui.horizontal(wrap: false) do |row|
+  swatch(row, "#3584e4", 64, 64)
+  row.rich(Egui::RichText.new(text), wrap: true)
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* no float key — the row order IS the float */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><row>
+  <image src="block.png" w="64" h="64"/>
+  <label wrap="true" text="wraps beside the block"/>
+</row></textarea>
+    </div>
+    <div class="result"><div style="overflow:auto"><div style="float:left;width:64px;height:64px;background:#3584e4;border-radius:6px;margin:0 10px 6px 0"></div><p style="margin:0">The blue block is declared first in the row and this paragraph wraps beside it, line after line — the magazine drop-cap column. The engine's rows are linear, so the text keeps its own column and never reflows below the block (a CSS float wraps back to full width once past it).</p></div><p class="note">engine: horizontal row + wrap — no float key</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">float: right — pinned into a reserved gutter</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="10" spellcheck="false"># the paragraph's own padding reserves the gutter
+rect = ui.div do |d|
+  d.with_style_scope("fright") do |s|
+    s.rich(Egui::RichText.new(text), wrap: true)
+  end
+end.not_nil!
+ui.overlay(:top_right, rect: rect,
+    margin: StyleBox.new(top: 4, right: 4),
+    pass_through: true) do |o|
+  swatch(o, "#33d17a", 72, 48)
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">fright.label { padding.right: 84 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><label wrap="true" style="padding-right: 84" text="wraps left of the gutter"/>
+<overlay anchor="top_right">
+  <image src="block.png" w="72" h="48"/>
+</overlay></textarea>
+    </div>
+    <div class="result"><div style="overflow:auto"><div style="float:right;width:72px;height:48px;background:#33d17a;border-radius:6px;margin:0 0 6px 10px"></div><p style="margin:0">The right gutter is the paragraph's own right padding; the green block is pinned into it with an overlay anchor and the text wraps along the left — the flow never sees the block, like a CSS float taken out of the normal flow.</p></div><p class="note">engine: label padding-right gutter + overlay(:top_right)</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">clear — the next block drops below</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="7" spellcheck="false">ui.horizontal(wrap: false) do |row|
+  swatch(row, "#f5c211", 56, 56)
+  row.rich(Egui::RichText.new("floated pair…"), wrap: true)
+end
+# every div is a block — it starts below, full width
+ui.div(style: "stroke: #777; padding: 6") do |d|
+  d.small("cleared block")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">/* block flow clears implicitly — every div is
+   a block below the previous row */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="5" spellcheck="false"><row>
+  <image src="block.png" w="56" h="56"/>
+  <label wrap="true" text="floated pair"/>
+</row>
+<box><label text="cleared block — full width"/></box></textarea>
+    </div>
+    <div class="result"><div style="overflow:auto"><div style="float:left;width:56px;height:56px;background:#f5c211;border-radius:6px;margin:0 10px 6px 0"></div><p style="margin:0">A floated pair — block and the text beside it. Whatever comes next starts below the pair, spanning the full width again: the engine's block flow clears by construction, no explicit clear is needed.</p></div><div style="clear:both;border:1px solid #777;border-radius:6px;padding:6px;font-size:12px">cleared block — below the floats, full width</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">position: absolute — corner badge</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="9" spellcheck="false"># rect: re-bases the overlay on the parent's own rect
+rect = ui.div(style: "background: #1e1e24; padding: 8") do |d|
+  d.p("the parent div is the positioning context")
+end.not_nil!
+ui.overlay(:top_right, rect: rect,
+    margin: StyleBox.new(top: 6, right: 6)) do |o|
+  o.span do |s|  # span = shrink-to-fit (a bare div is a
+    s.div(style: "background: #e01b4c") { |b| b.small("NEW") }
+  end           # block — it would span the full width)
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">overlay {
+  anchor: top_right;
+  margin: 6 6 0 0;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><box style="position: relative">
+  <label text="the parent is the context"/>
+  <badge anchor="top_right" text="NEW"/>
+</box></textarea>
+    </div>
+    <div class="result"><div style="position:relative;background:#1e1e24;border:1px solid #3a3a44;border-radius:6px;padding:8px"><p style="margin:0">the parent div is the positioning context (rect:)</p><p style="margin:0;font-size:12px;color:#9a9aa6">the badge floats on top of it, six pixels off the corner</p><span style="position:absolute;top:6px;right:6px;background:#e01b4c;border-radius:4px;padding:2px 8px;font-size:12px">NEW</span></div><p class="note">engine: ui.overlay(:top_right, rect:) — nine anchors</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">position: absolute — dead center</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">rect = ui.p(" ", style: "background: #101014",
+  width: 220, height: 96).not_nil!.rect
+ui.overlay(:center, rect: rect) do |o|
+  o.button("▶ Play")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">overlay { anchor: center }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><player-box/>
+<overlay anchor="center">
+  <button text="▶ Play"/>
+</overlay></textarea>
+    </div>
+    <div class="result"><div style="position:relative;width:220px;height:96px;background:#101014;border:1px solid #3a3a44;border-radius:6px"><button style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%)">▶ Play</button></div><p class="note">engine: ui.overlay(:center, rect:) — the CSS top/left 50% + translate recipe</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">position: fixed — pinned over scroll</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="7" spellcheck="false">rect = ui.scroll_area(max_height: 110) do |a|
+  a.p("scrolling content…")
+end
+ui.overlay(:bottom_right, rect: rect,
+    margin: StyleBox.new(bottom: 10, right: 10),
+    pass_through: true) do |o|
+  o.button("↑ top")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">overlay {
+  anchor: bottom_right;
+  margin: 0 10 10 0;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><scroll>
+  <label text="scrolling content…"/>
+</scroll>
+<overlay anchor="bottom_right">
+  <button text="↑ top"/>
+</overlay></textarea>
+    </div>
+    <div class="result"><div style="position:relative"><div style="height:110px;overflow:auto;border:1px dashed #3a3a44;border-radius:6px;padding:4px 10px"><p>line one — the content scrolls under the pinned button,</p><p>line two — the overlay is anchored to the viewport,</p><p>line three — not to the flowing content,</p><p>line four — the position: fixed analog,</p><p>line five — keep scrolling…</p><p>line six — the button never moves.</p></div><button style="position:absolute;bottom:10px;right:10px">↑ top</button></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">z-index — stacking order</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="14" spellcheck="false">rect = ui.p(" ", style: "background: #1e1e24",
+  width: 220, height: 96).not_nil!.rect
+# span = shrink-to-fit: a bare div would span the
+# overlay's full width
+ui.overlay(:center, rect: rect, z: 10,
+    pass_through: true) do |o|
+  o.span { |s| s.div(style: "background: #e01b4c;
+    padding-x: 18; padding-y: 14") { |d| d.small("z: 10") } }
+end
+ui.overlay(:center, rect: rect, z: 20,
+    pass_through: true) do |o|
+  o.span { |s| s.div(style: "background: #3584e4bb;
+    padding-x: 10; padding-y: 6") { |d| d.small("z: 20 — on top") } }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">overlay.back  { anchor: center; z: 10 }
+overlay.front { anchor: center; z: 20 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><overlay anchor="center" z="10">
+  <box text="z: 10"/>
+</overlay>
+<overlay anchor="center" z="20">
+  <box text="z: 20 — on top"/>
+</overlay></textarea>
+    </div>
+    <div class="result"><div style="position:relative;width:220px;height:96px;background:#1e1e24;border:1px solid #3a3a44;border-radius:6px"><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;background:#e01b4c;border-radius:6px;padding:14px 18px;font-size:12px">z: 10</span><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;background:#3584e4bb;border-radius:6px;padding:6px 10px;font-size:12px">z: 20 — on top</span></div><p class="note">engine: ui.overlay(..., z:) — higher z paints later</p></div>
+  </div>
+</section>
+
+<!-- ======================= CONTAINERS ======================= -->
+<h2>Containers</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">fieldset + legend</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.fieldset("Legend caption") do |f|
+  f.p("content inside the frame")
+  f.checkbox(@ok, "an option") { |v| @ok = v }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">fieldset { stroke: dim;
+  padding: 8 10 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><fieldset legend="Legend caption">
+  <label text="content inside the frame"/>
+  <checkbox bind="ok" text="an option"/>
+</fieldset></textarea>
+    </div>
+    <div class="result"><fieldset><legend><b>Legend caption</b></legend><p>content inside the frame</p><label><input type="checkbox" checked> an option</label></fieldset></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">details closed</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.details("Click to expand") do |d|
+  d.p("hidden body")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* collapsing header — no style surface yet */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><details summary="Click to expand">
+  <label text="hidden body"/></details></textarea>
+    </div>
+    <div class="result"><details><summary>Click to expand</summary>hidden body</details></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">details open</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.details("Expanded", open: true) do |d|
+  d.p("visible body from the start")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* collapsing header — no style surface yet */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><details summary="Expanded" open="true">
+  <label text="visible body from the start"/></details></textarea>
+    </div>
+    <div class="result"><details open><summary>Expanded</summary>visible body from the start</details></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">dialog — button opens modal</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">if ui.button("Open dialog").clicked?
+  @dlg_open = true
+end
+ui.dialog("dlg", title: "Modal", buttons: ["Close"]) do |d|
+  d.p("everything else is blocked")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">modal { rounding: 8; padding: 16 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><modal id="dlg" title="Modal"
+       buttons="Close" on_button="close">
+  <label text="everything else is blocked"/></modal></textarea>
+    </div>
+    <div class="result"><button onclick="document.getElementById('d').showModal()">Open dialog</button>
+      <dialog id="d"><p><b>Modal</b></p><p>everything else is blocked</p>
+      <button onclick="document.getElementById('d').close()">Close</button></dialog></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">iframe — embedded window</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ui.iframe("frame", title: "Embedded",
+  width: 320) do |f|
+  f.p("a floating window over the content")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* window chrome comes from the theme */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><embedded id="frame" title="Embedded" width="320">
+  <label text="a floating window over the content"/></embedded></textarea>
+    </div>
+    <div class="result"><iframe srcdoc="&lt;p style='font:13px system-ui;padding:6px'&gt;a floating window over the content&lt;/p&gt;" style="width:100%;height:70px;border:1px solid #3a3a44;border-radius:6px"></iframe></div>
+  </div>
+</section>
+
+<!-- ======================= FORMS ======================= -->
+<h2>Forms</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">input text</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.input(@name) { |t| @name = t }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">input { rounding: 6 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><input bind="name"/></textarea>
+    </div>
+    <div class="result"><input type="text" value="typed value"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">input + placeholder</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.input(@name, placeholder: "type here…") { |t| @name = t }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">input { rounding: 6 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><input bind="name" hint="Search…"/></textarea>
+    </div>
+    <div class="result"><input type="text" placeholder="type here…"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">input disabled</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.input(@name, disabled: true) { |t| @name = t }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">input:disabled { background: #2a2a31 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><input bind="name" if="editable"/></textarea>
+    </div>
+    <div class="result"><input type="text" value="can't touch this" disabled></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">select</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.select("pick", @sel,
+  ["One", "Two", "Three"]) { |o| @sel = o }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">combo { rounding: 6 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="One,Two,Three"/></textarea>
+    </div>
+    <div class="result"><select><option>One</option><option selected>Two</option><option>Three</option></select></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">button</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.button("Click me")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">button { rounding: 6; padding: 6 14 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><button text="Click me" on_click="save"/></textarea>
+    </div>
+    <div class="result"><button>Click me</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">button + background</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.add(Egui::Button.new("Themed red")
+  .style { |s| s.background = red })</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">button.danger { background: #a02a2a }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><button class="danger" text="Themed red"/></textarea>
+    </div>
+    <div class="result"><button style="background:#a02a2a">Themed red</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">button gradient</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.add(Egui::Button.new("Gradient")
+  .gradient(Egui::Color32.rgb(40,100,200),
+            Egui::Color32.rgb(16,42,92)))</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* no ECSS gradient key yet */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><!-- engine: Button#gradient only --></textarea>
+    </div>
+    <div class="result"><button style="background:linear-gradient(#2864c8,#102a5c)">Gradient</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">button disabled</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.enabled(false) do |e|
+  e.button("Disabled")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">button:disabled { background: #2a2a31 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><button text="Disabled" if="can_save"/></textarea>
+    </div>
+    <div class="result"><button disabled>Disabled</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">button + title tooltip</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="2" spellcheck="false">ui.button("Hover me")
+  .on_hover_text("a tooltip")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* tooltip is an attribute, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><button text="Hover me" title="a tooltip"/></textarea>
+    </div>
+    <div class="result"><button title="a tooltip">Hover me</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">checkbox</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.checkbox(@checked, "Check me") { |v| @checked = v }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">checkbox { text_color: text }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><checkbox bind="checked" text="Check me"/></textarea>
+    </div>
+    <div class="result"><label><input type="checkbox" checked> Check me</label></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">radio</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.radio(@sel == 0, "First")
+ui.radio(@sel == 1, "Second")
+# state through changed? blocks</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">radio { text_color: text }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="First,Second"/></textarea>
+    </div>
+    <div class="result"><label><input type="radio" name="r" checked> First</label> <label><input type="radio" name="r"> Second</label></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">input[type=range] slider</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.slider(@vol, 0.0..100.0, "Volume") { |v| @vol = v }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">slider { selection_fill: accent }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><slider bind="vol" min="0" max="100"/></textarea>
+    </div>
+    <div class="result"><input type="range" min="0" max="100" value="40" style="width:180px"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">textarea</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.textarea(@text, rows: 4) { |t| @text = t }</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">textarea { rounding: 6; font_family: monospace }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><textarea bind="text" rows="4"/></textarea>
+    </div>
+    <div class="result"><textarea rows="4" style="width:100%;background:#17171c;color:#e8e8ec;border:1px solid #3a3a44;border-radius:6px;padding:6px;font:13px var(--mono)">line one
+line two
+line three
+line four</textarea></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">progress 0.35</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.progress(0.35)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">progress { selection_fill: accent }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><progress bind="load"/></textarea>
+    </div>
+    <div class="result"><progress value="0.35" max="1" style="width:180px"></progress></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">progress with text</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.progress(0.72, "72%")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">progress { selection_fill: accent }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><progress bind="load" text="72%"/></textarea>
+    </div>
+    <div class="result"><div class="bar-track"><div class="bar-fill" style="animation:none;width:72%"></div></div><small>72%</small></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">meter 0.7</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.meter(0.7)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">meter { selection_fill: green }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><progress bind="level"/></textarea>
+    </div>
+    <div class="result"><meter value="0.7" min="0" max="1" style="width:180px"></meter></div>
+  </div>
+</section>
+
+<!-- ======================= STATES ======================= -->
+<h2>States &amp; attributes</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">p + title hover tooltip</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.p("hover this line", title: "tooltip text")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* tooltip is an attribute, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><label text="hover this line" title="tooltip text"/></textarea>
+    </div>
+    <div class="result"><p title="tooltip text" style="cursor:default">hover this line</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">hidden</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.p("visible")
+ui.p("gone", hidden: true)
+ui.p("visible again")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* hidden is an attribute, not style */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><label text="visible"/>
+<label text="gone" if="false"/>
+<label text="visible again"/></textarea>
+    </div>
+    <div class="result"><p>visible</p><p hidden>gone</p><p>visible again</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">classes + stylesheet rule</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ctx.stylesheet.rule("card", StyleVars{
+  "background" => lime,
+})
+ui.div(classes: "card") do |d|
+  d.button("scoped button")  # card.button
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">card { background: #33d17a55 }
+card button { background: #33d17a }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><card>
+  <button text="scoped button"/></card></textarea>
+    </div>
+    <div class="result"><div class="demo-box" style="background:#33d17a55"><button style="background:#33d17a">scoped button</button></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">inline style: beats class (cascade)</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false"># rule: btnx.button { text_color: blue }
+ui.div(classes: "btnx") { |d|
+  d.button("Blue from rule")
+}
+ui.add(Egui::Button.new("Red from inline")
+  .style { |s| s.text_color = red })</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">btnx button { text_color: #5a8ee0 }
+/* inline style: wins over the class rule
+   (inline > id > class > theme) */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><button class="btnx" text="Blue from rule"/>
+<button class="btnx" style="color: #ff0000" text="Red from inline"/></textarea>
+    </div>
+    <div class="result"><button style="color:#5a8ee0">Blue from rule</button> <button style="color:#ff0000">Red from inline</button></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">data_testid</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.p("hello", data_testid: "greeting")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* recorded in ctx.data_testids for selectors */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><label text="hello" data-testid="greeting"/></textarea>
+    </div>
+    <div class="result"><p data-testid="greeting">hello — testid: <code>greeting</code></p></div>
+  </div>
+</section>
+
+<!-- ======================= ANIMATIONS ======================= -->
+<h2>Animations</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">appear: fade</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.box(appear: :fade) do |b|
+  b.p("fades in when first shown")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">fade-box {
+  appear: fade; /* named transition */
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><fade-box><label text="fades in when first shown"/></fade-box></textarea>
+    </div>
+    <div class="result"><div class="demo-box anim-fade" style="background:#33333c">fades in when first shown</div>
+      <p class="note">engine: box appear: :fade / appear-delay:</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">appear: drop</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.box(appear: :drop) do |b|
+  b.p("drops in with a wobble")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">drop-box { appear: drop }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><drop-box><label text="drops in with a wobble"/></drop-box></textarea>
+    </div>
+    <div class="result"><div class="demo-box anim-drop" style="background:#33333c">drops in with a wobble</div>
+      <p class="note">engine: box appear: :drop (wobbly spring)</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">hover transition</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">ctx.stylesheet.rule("pill", StyleVars{
+  "background"      => base,
+  "transition"      => 180,
+})
+ctx.stylesheet.rule("pill:hover", StyleVars{
+  "background"      => accent,
+})</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">pill { background: #33333c; transition: 180 }
+pill:hover { background: #3584e4 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><pill><label text="hover me"/></pill></textarea>
+    </div>
+    <div class="result"><div class="demo-hover">hover me — background eases in 180ms</div>
+      <p class="note">engine: stylesheet transition key (ms)</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">animated progress</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">@load = 0.5 + 0.5 * Math.sin(
+  ctx_time_seconds)
+ui.progress(@load) # value driven each frame</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">progress { selection_fill: accent }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><progress bind="load" live="true"/></textarea>
+    </div>
+    <div class="result"><div class="bar-track"><div class="bar-fill"></div></div>
+      <p class="note">engine: frame-driven value through ui.progress</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">spinner</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.spinner</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* spinner visuals come from the theme */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><spinner/></textarea>
+    </div>
+    <div class="result"><div class="spin"></div></div>
+  </div>
+</section>
+
+<!-- ======================= MEDIA ======================= -->
+<h2>Media &amp; links</h2>
+
+<section class="card">
+  <div class="chead"><span class="title">a link</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="3" spellcheck="false">ui.a("Docs", href: "https://example.com")
+ui.a("https://example.com")  # bare url</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">a { hyperlink_color: #78aeed }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><link href="https://example.com" text="Docs"/></textarea>
+    </div>
+    <div class="result"><a href="https://example.com">Docs</a> &nbsp; <a href="https://example.com">https://example.com</a></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">img natural size</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.img("assets/icon.png")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">img { rounding: 6 }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><image src="assets/icon.png"/></textarea>
+    </div>
+    <div class="result"><img src="../assets/icon.png" alt="icon" style="border-radius:6px"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">img width: 120 — aspect kept</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="2" spellcheck="false">ui.img("assets/icon.png", width: 120)
+ui.img("assets/icon.png", height: 36)</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">img { width: 120; height: auto }</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="2" spellcheck="false"><image src="assets/icon.png" width="120"/>
+<image src="assets/icon.png" height="36"/></textarea>
+    </div>
+    <div class="result"><img src="../assets/icon.png" alt="icon" style="width:120px;border-radius:6px"> <img src="../assets/icon.png" alt="icon" style="height:36px;border-radius:6px"></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">img + alt/title</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="1" spellcheck="false">ui.img("assets/icon.png", alt: "the app icon")</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">/* alt is the tooltip fallback */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><image src="assets/icon.png" alt="the app icon"/></textarea>
+    </div>
+    <div class="result"><img src="../assets/icon.png" alt="the app icon" title="the app icon" style="height:48px;border-radius:6px"></div>
+  </div>
+</section>
+
+</main>
+<script>
+  // Search: filter cards by any of their code text / title.
+  const q = document.getElementById('q');
+  const cards = [...document.querySelectorAll('.card')];
+  const count = document.getElementById('count');
+  function apply() {
+    const needle = q.value.trim().toLowerCase();
+    let n = 0;
+    for (const c of cards) {
+      const hit = !needle || c.textContent.toLowerCase().includes(needle);
+      c.style.display = hit ? '' : 'none';
+      if (hit) n++;
+    }
+    count.textContent = n + '/' + cards.length;
+  }
+  q.addEventListener('input', apply);
+  apply();
+</script>
+</body>
+</html>

@@ -58,6 +58,93 @@ module Egui
     def initialize(@top_left = 0.0, @top_right = 0.0,
                    @bottom_right = 0.0, @bottom_left = 0.0)
     end
+
+    def self.uniform(v : Float64) : self
+      new(v, v, v, v)
+    end
+
+    def uniform? : Bool
+      @top_left == @top_right == @bottom_right == @bottom_left
+    end
+
+    def max : Float64
+      {@top_left, @top_right, @bottom_right, @bottom_left}.max
+    end
+
+    # Every radius grown by `d` outwards — the radius of a rect
+    # expanded by `d` (the focus ring hugging the box's curve).
+    def expanded(d : Float64) : self
+      CornerRadii.new(@top_left + d, @top_right + d,
+        @bottom_right + d, @bottom_left + d)
+    end
+
+    # Per-corner maximum — how nested rounded-clip brackets merge
+    # (Painter#clip_apply): a command already clipped by an inner
+    # rounded shape that lands in an outer bracket keeps the tighter
+    # corner of the two. Exact when only one of the shapes has radii;
+    # an approximation when both do (the true intersection of two
+    # rounded rects is not a rounded rect).
+    def merge(other : CornerRadii) : CornerRadii
+      CornerRadii.new(
+        {@top_left, other.top_left}.max,
+        {@top_right, other.top_right}.max,
+        {@bottom_right, other.bottom_right}.max,
+        {@bottom_left, other.bottom_left}.max)
+    end
+
+    # The CSS `border-radius` shorthand: 1-4 space-separated radii
+    # (`px` optional), expanded per the standard — 1 → every corner,
+    # 2 → TL/BR + TR/BL, 3 → TL + TR/BL + BR, 4 → TL TR BR BL
+    # (clockwise from top-left). nil for anything else: the
+    # elliptical `a / b` form has no ellipse primitive here, and a
+    # percentage needs the rect that only the reader knows.
+    def self.parse?(s : String) : CornerRadii?
+      return nil if s.includes?('/')
+      parts = s.split
+      return nil unless parts.size.in?(1..4)
+      nums = parts.map do |p|
+        p = p[0...p.size - 2] if p.ends_with?("px")
+        n = p.to_f64?
+        n && n >= 0.0 ? n : nil
+      end
+      return nil if nums.any?(&.nil?)
+      tl, tr, br, bl = case nums.size
+        when 1 then {nums[0], nums[0], nums[0], nums[0]}
+        when 2 then {nums[0], nums[1], nums[0], nums[1]}
+        when 3 then {nums[0], nums[1], nums[2], nums[1]}
+        else        {nums[0], nums[1], nums[2], nums[3]}
+      end
+      CornerRadii.new(tl.not_nil!, tr.not_nil!, br.not_nil!, bl.not_nil!)
+    end
+
+    # CSS corner-conflict resolution (Backgrounds & Borders §5.5):
+    # when adjacent radii overlap along a side, ALL radii scale by
+    # f = min(side / adjacent pair sum). For an oversized uniform
+    # radius that is exactly the capsule clamp (min(w,h)/2) the
+    # backends apply anyway; per-corner values get the standard's
+    # proportional shrink instead of an independent per-corner clamp.
+    # (A zero pair sum divides into Infinity, i.e. no constraint.)
+    def fit(rect : Rect) : CornerRadii
+      f = {rect.width / (@top_left + @top_right),
+           rect.width / (@bottom_left + @bottom_right),
+           rect.height / (@top_left + @bottom_left),
+           rect.height / (@top_right + @bottom_right)}.min
+      return self if f >= 1.0
+      CornerRadii.new(@top_left * f, @top_right * f,
+        @bottom_right * f, @bottom_left * f)
+    end
+
+    # The CSS shorthand spelling: a uniform radius collapses to one
+    # number, otherwise the four corners clockwise from top-left.
+    def to_s(io : IO) : Nil
+      fmt = ->(v : Float64) { v % 1 == 0 ? v.to_i64.to_s : v.to_s }
+      if uniform?
+        io << fmt.call(@top_left)
+      else
+        io << fmt.call(@top_left) << ' ' << fmt.call(@top_right) << ' ' <<
+          fmt.call(@bottom_right) << ' ' << fmt.call(@bottom_left)
+      end
+    end
   end
 
   struct RectCmd
@@ -66,7 +153,8 @@ module Egui
     getter rounding : Float64
     # Per-corner rounding for the FILL: when set, each corner arcs
     # with its own radius (overrides `rounding` for the fill; the
-    # uniform stroke paths still read `rounding`).
+    # uniform stroke path is per-corner too — only the per-side
+    # `stroke_sides` path still reads `rounding`).
     getter corners : CornerRadii?
     getter fill : Color32?
     # Optional second fill color: when set, the fill becomes a vertical
@@ -75,20 +163,155 @@ module Egui
     getter fill2 : Color32?
     getter stroke_color : Color32?
     getter stroke_width : Float64
-    # Per-side borders: when set, the backends draw each side with its
-    # own width/color and ignore the uniform stroke pair above (which
-    # still carries the fallback base for consumers reading the cmd).
+    # Per-side borders: when set, each side carries its own width/color
+    # and the uniform stroke pair above is ignored (it still carries
+    # the fallback base for consumers reading the cmd). Painting goes
+    # through the standard two-rect overlay — see
+    # `.border_overlay_layers`.
     getter stroke_sides : StrokeSides?
     # Blend-off fill: OVERWRITE dst (rgb AND alpha) instead of blending
     # — see Painter#rect_replace.
     getter? replace : Bool
+    # 135° gradient: fill→fill2 along the top-left→bottom-right diagonal
+    # (CSS linear-gradient(135deg)); vertical when false.
+    getter? diag : Bool
+    # A full CSS-like gradient (`background-gradient`): when set, the
+    # fill paint evaluates it per pixel (CPU) / per vertex (Gouraud)
+    # instead of the flat `fill`/`fill2` pair. Geometry is relative to
+    # `rect` (see `Gradient#color_at`), so it survives transforms.
+    getter gradient : Gradient?
+    # Rounded-clip corner radii carried next to `clip` (see
+    # Painter#clip_apply): nil = a plain rect clip, otherwise the
+    # backends clip to `clip` rounded by these per-corner radii.
+    # Set by the painter's subtree-clip brackets, never by callers.
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @fill : Color32?, @stroke_color : Color32?,
                    @stroke_width : Float64, @fill2 : Color32? = nil,
                    @stroke_sides : StrokeSides? = nil,
                    @corners : CornerRadii? = nil,
-                   @replace : Bool = false)
+                   @replace : Bool = false, @diag : Bool = false,
+                   @gradient : Gradient? = nil,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    # Copy with a replaced clip (and its corner radii) — what
+    # Painter#clip_apply and the transform pass rewrite subtrees with.
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      RectCmd.new(clip, @rect, @rounding, @fill, @stroke_color,
+        @stroke_width, @fill2, @stroke_sides, @corners, @replace, @diag,
+        @gradient, clip_corners)
+    end
+  end
+
+  # The framework's standard border algorithm (the `clipping` demo's
+  # LEFT case): a bordered background is a pure OVERLAY of nested
+  # rounded fills — no stroke geometry, no clip masks. The outer rect
+  # carries the border color; the background rect sits on top, inset
+  # by each side's width, its corner radius = outer radius − the
+  # widest adjacent border, so the invariant inner + borders = outer
+  # holds per axis and the inner curve stays inside the outer arc (a
+  # border wider than the radius collapses to a square corner, like
+  # CSS). Per-side colors layer the same way: each side's color fills
+  # everything not yet revealed, the next inset uncovers its band, the
+  # background uncovers the last side.
+  #
+  # Returns the fill-only RectCmds back-to-front, or nil when there is
+  # nothing to decompose: no background under the border, or no side
+  # actually on (those keep the plain stroke path — the uniform band /
+  # per-side ring the backends tessellate directly).
+  def self.border_overlay_layers(cmd : RectCmd) : Array(RectCmd)?
+    sides = cmd.stroke_sides
+    if !sides && (sc = cmd.stroke_color) && cmd.stroke_width > 0.0
+      w = cmd.stroke_width
+      sides = StrokeSides.new(
+        SideStroke.new(w, sc), SideStroke.new(w, sc),
+        SideStroke.new(w, sc), SideStroke.new(w, sc))
+    end
+    return nil unless sides
+    # A side participates only when it is both wide enough and not
+    # transparent — an alpha-0 border must not push the background in.
+    return nil unless (sides.top.on? && sides.top.color.a > 0) ||
+                      (sides.right.on? && sides.right.color.a > 0) ||
+                      (sides.bottom.on? && sides.bottom.color.a > 0) ||
+                      (sides.left.on? && sides.left.color.a > 0)
+    return nil unless cmd.fill || cmd.fill2 || cmd.gradient
+
+    base = cmd.corners || CornerRadii.uniform(cmd.rounding)
+    rect = cmd.rect
+    tl = base.top_left
+    tr = base.top_right
+    br = base.bottom_right
+    bl = base.bottom_left
+    layers = [] of RectCmd
+
+    seq = {sides.top, sides.right, sides.bottom, sides.left}
+    on = seq.select { |s| s.on? && s.color.a > 0 }
+    mono = on.map(&.color).uniq.size == 1
+    if mono
+      # One border color: a single outer plate, then inset every side.
+      if (l = overlay_layer(cmd, rect, base, on.first.color, nil, nil, false))
+        layers << l
+      end
+    end
+    # Top → right → bottom → left. With per-side colors each side
+    # first fills everything not yet revealed in its color; the next
+    # inset then uncovers its band (the background below uncovers the
+    # final side). Insetting moves the edge in by the side's width and
+    # clamps its two corner radii to base − width — concentric with
+    # the outer arc under a uniform border, the CSS r − w collapse
+    # when the width reaches the radius.
+    seq.each_with_index do |s, i|
+      next unless s.on? && s.color.a > 0
+      unless mono
+        if (l = overlay_layer(cmd, rect,
+              CornerRadii.new(tl, tr, br, bl), s.color, nil, nil, false))
+          layers << l
+        end
+      end
+      case i
+      when 0 # top
+        rect = Rect.new(Pos2.new(rect.min.x, rect.min.y + s.width), rect.max)
+        tl = {tl, {base.top_left - s.width, 0.0}.max}.min
+        tr = {tr, {base.top_right - s.width, 0.0}.max}.min
+      when 1 # right
+        rect = Rect.new(rect.min, Pos2.new(rect.max.x - s.width, rect.max.y))
+        tr = {tr, {base.top_right - s.width, 0.0}.max}.min
+        br = {br, {base.bottom_right - s.width, 0.0}.max}.min
+      when 2 # bottom
+        rect = Rect.new(rect.min, Pos2.new(rect.max.x, rect.max.y - s.width))
+        br = {br, {base.bottom_right - s.width, 0.0}.max}.min
+        bl = {bl, {base.bottom_left - s.width, 0.0}.max}.min
+      when 3 # left
+        rect = Rect.new(Pos2.new(rect.min.x + s.width, rect.min.y), rect.max)
+        tl = {tl, {base.top_left - s.width, 0.0}.max}.min
+        bl = {bl, {base.bottom_left - s.width, 0.0}.max}.min
+      end
+    end
+
+    # The background: the original fill inside every border band, its
+    # corner radii already shrunk by the adjacent insets above.
+    if (l = overlay_layer(cmd, rect, CornerRadii.new(tl, tr, br, bl),
+          cmd.fill, cmd.fill2, cmd.gradient, cmd.diag?))
+      layers << l
+    end
+    layers.empty? ? nil : layers
+  end
+
+  # One overlay layer as a fill-only RectCmd (nil when degenerate).
+  # A uniform radius rides the scalar `rounding` slot so every backend
+  # takes its existing uniform path; per-corner values go via `corners`.
+  private def self.overlay_layer(cmd : RectCmd, rect : Rect, c : CornerRadii,
+                                 fill : Color32?, fill2 : Color32?,
+                                 grad : Gradient?, diag : Bool) : RectCmd?
+    return nil if rect.width <= 0.0 || rect.height <= 0.0
+    if c.uniform?
+      RectCmd.new(cmd.clip, rect, {c.top_left, 0.0}.max, fill, nil, 0.0,
+        fill2, nil, nil, cmd.replace?, diag, gradient: grad)
+    else
+      RectCmd.new(cmd.clip, rect, 0.0, fill, nil, 0.0,
+        fill2, nil, c, cmd.replace?, diag, gradient: grad)
     end
   end
 
@@ -108,10 +331,17 @@ module Egui
     # the base face's own glyphs, no emulation).
     getter? bold : Bool
     getter? italic : Bool
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @pos : Pos2, @text : String,
                    @size : Float64, @color : Color32, @family : String? = nil,
-                   @bold : Bool = false, @italic : Bool = false)
+                   @bold : Bool = false, @italic : Bool = false,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      TextCmd.new(clip, @pos, @text, @size, @color, @family, bold?,
+        italic?, clip_corners)
     end
   end
 
@@ -123,10 +353,17 @@ module Egui
     getter fill : Color32?
     getter stroke : Color32?
     getter stroke_width : Float64
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
                    @fill : Color32?, @stroke : Color32?,
-                   @stroke_width : Float64)
+                   @stroke_width : Float64,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      CircleCmd.new(clip, @center, @radius, @fill, @stroke,
+        @stroke_width, clip_corners)
     end
   end
 
@@ -139,9 +376,15 @@ module Egui
     getter p2 : Pos2
     getter width : Float64
     getter color : Color32
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @p1 : Pos2, @p2 : Pos2,
-                   @width : Float64, @color : Color32)
+                   @width : Float64, @color : Color32,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      LineCmd.new(clip, @p1, @p2, @width, @color, clip_corners)
     end
   end
 
@@ -154,9 +397,14 @@ module Egui
     getter b : Pos2
     getter c : Pos2
     getter fill : Color32
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @a : Pos2, @b : Pos2, @c : Pos2,
-                   @fill : Color32)
+                   @fill : Color32, @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      TriCmd.new(clip, @a, @b, @c, @fill, clip_corners)
     end
   end
 
@@ -170,10 +418,17 @@ module Egui
     getter end_angle : Float64
     getter width : Float64
     getter color : Color32
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
                    @start_angle : Float64, @end_angle : Float64,
-                   @width : Float64, @color : Color32)
+                   @width : Float64, @color : Color32,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      ArcCmd.new(clip, @center, @radius, @start_angle, @end_angle,
+        @width, @color, clip_corners)
     end
   end
 
@@ -189,10 +444,17 @@ module Egui
     getter texture_id : UInt64
     getter tint : Color32
     getter? nearest : Bool
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @rect : Rect, @uv : Rect,
                    @texture_id : UInt64, @tint : Color32,
-                   @nearest : Bool = false)
+                   @nearest : Bool = false,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      ImageCmd.new(clip, @rect, @uv, @texture_id, @tint, nearest?,
+        clip_corners)
     end
   end
 
@@ -211,10 +473,17 @@ module Egui
     getter data : Bytes
     getter primitive : Symbol
     getter? blend : Bool
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @viewport : Rect,
                    @mvp : StaticArray(Float32, 16), @data : Bytes,
-                   @primitive : Symbol, @blend : Bool = false)
+                   @primitive : Symbol, @blend : Bool = false,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      Mesh3DCmd.new(clip, @viewport, @mvp, @data, @primitive, blend?,
+        clip_corners)
     end
   end
 
@@ -236,14 +505,24 @@ module Egui
     getter offset : Vec2
     getter color : Color32
     getter? inset : Bool
+    getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @blur : Float64, @spread : Float64, @offset : Vec2,
-                   @color : Color32, @inset : Bool)
+                   @color : Color32, @inset : Bool,
+                   @clip_corners : CornerRadii? = nil)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      ShadowCmd.new(clip, @rect, @rounding, @blur, @spread, @offset,
+        @color, inset?, clip_corners)
     end
   end
 
   struct NoopCmd
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      self
+    end
   end
 
   alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | NoopCmd
@@ -341,32 +620,36 @@ module Egui
           RectCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
             cmd.stroke_width * k, fade_opt(cmd.fill2), sides, corners,
-            cmd.replace?)
+            cmd.replace?, gradient: cmd.gradient,
+            clip_corners: cmd.clip_corners)
         when TextCmd
           TextCmd.new(cmd.clip, pt(cmd.pos), cmd.text, cmd.size * k,
-            fade(cmd.color), cmd.family, cmd.bold?, cmd.italic?)
+            fade(cmd.color), cmd.family, cmd.bold?, cmd.italic?,
+            cmd.clip_corners)
         when CircleCmd
           CircleCmd.new(cmd.clip, pt(cmd.center), cmd.radius * k,
-            fade_opt(cmd.fill), fade_opt(cmd.stroke), cmd.stroke_width * k)
+            fade_opt(cmd.fill), fade_opt(cmd.stroke), cmd.stroke_width * k,
+            cmd.clip_corners)
         when LineCmd
           LineCmd.new(cmd.clip, pt(cmd.p1), pt(cmd.p2), cmd.width * k,
-            fade(cmd.color))
+            fade(cmd.color), cmd.clip_corners)
         when TriCmd
           TriCmd.new(cmd.clip, pt(cmd.a), pt(cmd.b), pt(cmd.c),
-            fade(cmd.fill))
+            fade(cmd.fill), cmd.clip_corners)
         when ArcCmd
           ArcCmd.new(cmd.clip, pt(cmd.center), cmd.radius * k,
-            cmd.start_angle, cmd.end_angle, cmd.width * k, fade(cmd.color))
+            cmd.start_angle, cmd.end_angle, cmd.width * k, fade(cmd.color),
+            cmd.clip_corners)
         when ImageCmd
           # `uv` maps into the texture and stays — only the screen rect
           # moves (the same quad, resized).
           ImageCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.uv,
-            cmd.texture_id, fade(cmd.tint), cmd.nearest?)
+            cmd.texture_id, fade(cmd.tint), cmd.nearest?, cmd.clip_corners)
         when ShadowCmd
           ShadowCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             cmd.blur * k, cmd.spread * k,
             Vec2.new(cmd.offset.x * @scale_x, cmd.offset.y * @scale_y),
-            fade(cmd.color), cmd.inset?)
+            fade(cmd.color), cmd.inset?, cmd.clip_corners)
         else
           # Mesh3DCmd carries its own mvp, NoopCmd nothing — untouched.
           cmd
@@ -413,6 +696,77 @@ module Egui
 
     def clip : Rect
       @clip
+    end
+
+    # --- rounded subtree clip (border-radius content clipping) ----------
+    #
+    # A container with a non-zero border radius must clip everything its
+    # subtree paints to the ROUNDED shape, not just the rect bounds —
+    # scrolled content otherwise bleeds past the curved corners. The
+    # clip cannot be baked while the children run: a #box learns its
+    # final rect only after them (the same reason its chrome is
+    # back-patched through #set). So the container MARKS the command
+    # list before the children, and once the rect exists it re-clips
+    # the bracketed range: every command's clip intersects the rect and
+    # carries the corner radii (`clip_corners`), which the backends
+    # enforce per pixel.
+    #
+    # Recursion is free by nesting: an inner bracket bakes its tighter
+    # clip first, the outer pass then intersects again and merges the
+    # radii per corner (CornerRadii#merge). Commands in a DIFFERENT
+    # painter layer than the mark (popups riding Foreground) are left
+    # alone — a menu opening inside a rounded card must not be cut by
+    # the card.
+
+    def clip_mark : Tuple(Int32, Int32)
+      {@commands.size, @layer}
+    end
+
+    def clip_apply(mark : Tuple(Int32, Int32), rect : Rect,
+                   corners : CornerRadii) : Nil
+      radii = corners.fit(rect)
+      return if radii.max <= 0.0
+      start, layer = mark
+      (start...@commands.size).each do |i|
+        next unless @layers[i] == layer
+        cmd = @commands[i]
+        next if cmd.is_a?(NoopCmd)
+        clip = cmd_clip(cmd)
+        next unless clip.intersects?(rect)
+        merged = (old = cmd_clip_corners(cmd)) ? old.merge(radii).fit(clip) : radii
+        @commands[i] = cmd.with_clip(clip.intersect(rect), merged)
+      end
+    end
+
+    private def cmd_clip(cmd : PaintCmd) : Rect
+      case cmd
+      when RectCmd     then cmd.clip
+      when TextCmd     then cmd.clip
+      when CircleCmd   then cmd.clip
+      when LineCmd     then cmd.clip
+      when TriCmd      then cmd.clip
+      when ArcCmd      then cmd.clip
+      when ImageCmd    then cmd.clip
+      when ShadowCmd   then cmd.clip
+      when Mesh3DCmd   then cmd.clip
+      when NoopCmd     then Rect.infinite
+      else                  Rect.infinite
+      end
+    end
+
+    private def cmd_clip_corners(cmd : PaintCmd) : CornerRadii?
+      case cmd
+      when RectCmd     then cmd.clip_corners
+      when TextCmd     then cmd.clip_corners
+      when CircleCmd   then cmd.clip_corners
+      when LineCmd     then cmd.clip_corners
+      when TriCmd      then cmd.clip_corners
+      when ArcCmd      then cmd.clip_corners
+      when ImageCmd    then cmd.clip_corners
+      when ShadowCmd   then cmd.clip_corners
+      when Mesh3DCmd   then cmd.clip_corners
+      else                  nil
+      end
     end
 
     def add(cmd : PaintCmd) : Int32
@@ -510,7 +864,8 @@ module Egui
              stroke_width : Float64 = 1.0,
              fill2 : Color32? = nil,
              stroke_sides : StrokeSides? = nil,
-             corners : CornerRadii? = nil) : Nil
+             corners : CornerRadii? = nil,
+             gradient : Gradient? = nil) : Nil
       # CSS `border-radius` semantics: the radius is clamped to half
       # the rect's short side, so an oversized value renders the
       # capsule (the classic `border-radius: 9999px` pill trick)
@@ -520,7 +875,7 @@ module Egui
       r = {rounding, 0.0}.max
       r = {r, {rect.width, rect.height}.min / 2.0}.min
       add(RectCmd.new(@clip, rect, r, fill, stroke_color,
-        stroke_width, fill2, stroke_sides, corners))
+        stroke_width, fill2, stroke_sides, corners, gradient: gradient))
     end
 
     # Replace-blend rect: instead of blending over the destination, it
@@ -568,6 +923,13 @@ module Egui
     def rect_gradient(rect : Rect, rounding : Float64, c1 : Color32,
                       c2 : Color32) : Nil
       rect(rect, rounding, fill: c1, fill2: c2)
+    end
+
+    # 135° diagonal gradient (`linear-gradient(135deg, c1, c2)`): c1 at
+    # the top-left corner → c2 at the bottom-right, Gouraud per-vertex.
+    def rect_gradient_diag(rect : Rect, rounding : Float64, c1 : Color32,
+                           c2 : Color32) : Nil
+      add(RectCmd.new(@clip, rect, rounding, c1, nil, 0.0, c2, diag: true))
     end
 
     # Draw text with `pos` as the LEFT-CENTER of the text bounding box

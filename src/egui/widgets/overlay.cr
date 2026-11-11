@@ -27,6 +27,13 @@
 # `pass_through: true` drops the background interaction entirely:
 # a HUD overlay draws over the map but never eats its drags/clicks.
 #
+# For the literal CSS spellings use `Ui#box(position:)` / `ui.div`
+# instead — `position: absolute|fixed|relative` with `top/right/
+# bottom/left` offsets (px, `%` of the containing block, vw/vh…) is
+# native there. This widget stays the nine-anchor sugar: an anchor +
+# margin pair compiles to one offset pair, plus the background click
+# target/pass_through machinery a plain positioned box does not carry.
+#
 # Styling goes through the global `StyleSheet` (CSS-like classes):
 #   overlay — anchor (one of the nine positions), margin (box),
 #             z (0..100)

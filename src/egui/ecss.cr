@@ -280,11 +280,16 @@ module Egui
 
       # The value spelling: colors as `#rrggbbaa` (the same lowercase
       # hex `StyleSheet#dump` uses), whole numbers without the `.0`,
-      # unit lengths as written (`50%`, `10vw`, `1.5rem`).
+      # unit lengths as written (`50%`, `10vw`, `1.5rem`), per-corner
+      # rounding as the CSS shorthand (`0 8 16 2`).
       def self.format_value(v : StyleValue) : String
         case v
         when Color32
           sprintf("#%02x%02x%02x%02x", v.r, v.g, v.b, v.a)
+        when Gradient
+          v.to_s
+        when CornerRadii
+          v.to_s
         when Float64
           v % 1 == 0 ? v.to_i64.to_s : v.to_s
         when StyleLength
@@ -486,6 +491,10 @@ explicit id to persist element overrides"
             warn "empty property name — \"#{part.strip}\" ignored"
             next
           end
+          # The CSS spelling of the engine's `rounding` key — the
+          # same alias Html.box_style takes (`rounding: 0 8 16 2`
+          # and `border-radius: 0 8 16 2` are one key).
+          key = "rounding" if key == "border-radius"
           vs = part[(ci + 1)..].strip
           # `transition: background spring(bouncy)` — the CSS-shorthand
           # spelling: a bare leading identifier names the key the
@@ -521,8 +530,23 @@ explicit id to persist element overrides"
             warn "bad spring \"#{s}\" — ignored"
             nil
           end
+        when s.starts_with?("linear-gradient(") ||
+             s.starts_with?("radial-gradient(")
+          # The `background-gradient` value — a full CSS-like gradient
+          # (see `Egui::Gradient`); parsed here so the bag carries the
+          # struct, not a string.
+          if (g = Gradient.parse?(s))
+            g
+          else
+            warn "bad gradient \"#{s}\" — ignored"
+            nil
+          end
         else
-          if (n = s.to_f64?)
+          if s.includes?(' ') && (c = CornerRadii.parse?(s))
+            # The CSS `border-radius` shorthand (`rounding: 0 8 16 2`):
+            # 1-4 radii expanded per the standard (CornerRadii.parse?).
+            c
+          elsif (n = s.to_f64?)
             n
           elsif s.ends_with?("px") && (n = s[0...s.size - 2].to_f64?)
             n # px is the default unit — a plain number, back-compat

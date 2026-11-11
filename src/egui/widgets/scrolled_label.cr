@@ -7,8 +7,8 @@
 # scrollbar all come from the delegate.
 #
 # Read-only means no caret, no keyboard pass and no soft keyboard;
-# click-drag selection, double-click word select, Ctrl+C and the
-# Copy / Select all context menu keep working.
+# click-drag selection, double-click word select, the Ctrl+C / Ctrl+A
+# hotkeys and the Copy / Select all context menu keep working.
 #
 #   ui.scrolledlabel(text)                    # grows with the text
 #   ui.scrolledlabel(text, max_height: 200.0) # scrolls past 200pt

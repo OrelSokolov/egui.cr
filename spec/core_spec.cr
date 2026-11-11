@@ -1899,7 +1899,7 @@ describe "scroll area (phase 5)" do
 
     # frame 1: layout — content overflows, scrollbar exists
     draw.call([] of Egui::Event, 0.016)
-    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil!.rect
     content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
     content.y.should be > viewport.height
     max_offset = content.y - viewport.height
@@ -1945,7 +1945,7 @@ describe "scroll area (phase 5)" do
     draw.call([] of Egui::Event, 0.016)
     # pointer over the inner viewport (first thing in the outer content,
     # at the very top of the outer viewport)
-    inner_center = ctx.memory.scroll_rects[inner_id]?.try &.[0].center
+    inner_center = ctx.memory.scroll_rects[inner_id]?.try &.rect.center
     inner_center.should_not be_nil
     draw.call([Egui::Event.pointer_moved(inner_center.not_nil!),
       Egui::Event.scroll(Egui::Vec2.new(0.0, 30.0))], 0.032)
@@ -2003,7 +2003,7 @@ describe "scroll area (phase 5)" do
     # frame 1: layout — the classic column is carved out of the width,
     # so the viewport is CLASSIC_W narrower than the region.
     draw.call([] of Egui::Event, 0.016)
-    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil!.rect
     viewport.width.should be_close(300.0 - Egui::ScrollArea::CLASSIC_W, 0.01)
     content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
     max_offset = content.y - viewport.height
@@ -2069,7 +2069,7 @@ describe "scroll area (phase 5)" do
     end
 
     draw.call([] of Egui::Event, 0.016)
-    viewport = ctx.memory.scroll_rects[Egui::Id.from("spec").child(1)].not_nil![0]
+    viewport = ctx.memory.scroll_rects[Egui::Id.from("spec").child(1)].not_nil!.rect
     # the bar strip is reserved out of the content: the viewport is a
     # BAR_W narrower and shifted in from the region's left edge
     viewport.width.should be_close(300.0 - Egui::ScrollArea::BAR_W, 0.01)
@@ -2099,7 +2099,7 @@ describe "scroll area (phase 5)" do
     # the horizontal track rides the RESERVED strip past the bottom
     # edge (the viewport lost BAR_W of height to it)
     draw.call([] of Egui::Event, 0.016)
-    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil!.rect
     content = ctx.memory.data.get_vec2(scroll_id.child(0), Egui::Vec2.zero)
     content.x.should be > viewport.width
     track = ctx.painter.commands.select(Egui::RectCmd)
@@ -2144,7 +2144,7 @@ describe "scroll area (phase 5)" do
     end
     ctx.end_frame
 
-    viewport = ctx.memory.scroll_rects[scroll_id].not_nil![0]
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil!.rect
     w = Egui::ScrollArea::CLASSIC_W
     viewport.top.should be_close(w, 0.01)
     viewport.height.should be_close(100.0 - w, 0.01)

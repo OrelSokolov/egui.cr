@@ -73,7 +73,7 @@ class PartialBorderApp < Egui::App
 
       ui.separator
       ui.heading("Rounded corners")
-      ui.label("a corner ring needs both adjacent sides on")
+      ui.label("a corner curves while any adjacent side is on")
       ui.box(:column, fill: DARK, stroke: GRAY, rounding: 8.0,
         stroke_width: Egui::StyleBox.new(top: 1.0, right: 1.0,
           bottom: 0.0, left: 0.0),

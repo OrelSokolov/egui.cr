@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>egui.cr — html positions (oracle)</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: #131317; color: #e6e6ec;
+    font: 14px/1.45 system-ui, sans-serif;
+    display: flex; flex-direction: column; align-items: center;
+    min-height: 100vh;
+  }
+  h1 { font-size: 20px; margin: 24px 0 4px; }
+  .sub { color: #9a9aa6; font-size: 13px; max-width: 720px;
+         text-align: center; margin: 0 16px 20px; }
+  /* The stage stands in for the engine WINDOW: the engine's
+     `position: fixed` pins against the window viewport; here the
+     same chips are absolute against the stage (a 1:1 viewport
+     stand-in so the oracle is scrollable alongside the notes). */
+  .stage {
+    position: relative; width: 900px; height: 620px;
+    background: #17171b; border: 1px solid #2c2c34;
+    border-radius: 8px; overflow: hidden; margin: 0 16px 24px;
+  }
+  .page { padding: 16px; max-width: 640px; }
+  .page h2 { font-size: 22px; margin: 0 0 8px; }
+  .page p { margin: 0 0 12px; color: #c9c9d2; }
+  .hr { border: 0; border-top: 1px solid #2c2c34; margin: 12px 0; }
+  .rel-stage {
+    position: relative; background: #1e1e24; border: 1px solid #3a3a44;
+    border-radius: 8px; padding: 14px; margin-bottom: 14px;
+  }
+  .rel-stage p { font-size: 12px; color: #9a9aa6; margin: 0 0 4px; }
+  .chip {
+    display: inline-block; border-radius: 6px; padding: 6px 10px;
+    font-size: 12px; color: #131317; font-weight: 600; white-space: nowrap;
+  }
+  .flow-row { display: flex; gap: 8px; align-items: flex-start; }
+  .note { position: absolute; left: 16px; right: 16px; bottom: 8px;
+          color: #9a9aa6; font-size: 12px; }
+  code { background: #26262e; border-radius: 4px; padding: 1px 5px;
+         font-size: 12px; }
+</style>
+</head>
+<body>
+  <h1>html positions — oracle</h1>
+  <p class="sub">
+    The browser twin of <code>bin/html_positions</code>: every pinned
+    element in the same spot through real CSS. In the engine these are
+    <code>ui.div(style: "position: fixed; …")</code> calls —
+    <code>fixed</code> pins against the window viewport; the stage
+    below IS that viewport.
+  </p>
+
+  <div class="stage">
+    <!-- flow column -->
+    <div class="page">
+      <h2>html positions</h2>
+      <p>Every chip below is pinned with the CSS spellings —
+         <code>position: fixed | absolute | relative</code> and
+         <code>top/right/bottom/left</code> offsets (px, %, vw/vh).
+         The flow never sees them: this text column's cursor and
+         bounds are untouched by anything pinned around it.</p>
+      <hr class="hr">
+
+      <!-- the relative stage: containing block for absolutes -->
+      <div class="rel-stage">
+        <p>the stage is position: relative — the containing block for
+           its absolute children</p>
+        <p>badge pinned top: 6 / right: 6 · strip stretched left: 8 +
+           right: 8 at bottom: 8 · marker at top: 50% / left: 50% (the
+           near edge — no translate in v1)</p>
+        <span class="chip" style="position:absolute;top:6px;right:6px;background:#e01b4c;border-radius:4px;color:#fff">NEW</span>
+        <span class="chip" style="position:absolute;left:8px;right:8px;bottom:8px;background:#3584e4;border-radius:4px">stretched — left: 8 + right: 8 (width comes from the offsets)</span>
+        <span class="chip" style="position:absolute;top:50%;left:50%;background:#9141ac;border-radius:4px;color:#fff">50% / 50%</span>
+      </div>
+
+      <!-- relative: shifted in flow, space reserved -->
+      <div class="flow-row">
+        <span class="chip" style="background:#33333c;color:#e6e6ec">flow slot</span>
+        <span class="chip" style="background:#f5c211;position:relative;top:-14px">relative top: -14</span>
+        <span class="chip" style="background:#33333c;color:#e6e6ec">next in flow — unmoved</span>
+      </div>
+    </div>
+
+    <!-- fixed-against-the-viewport chips -->
+    <span class="chip" style="position:absolute;top:12px;right:12px;background:#33d17a">fixed · top: 12 right: 12</span>
+    <span class="chip" style="position:absolute;bottom:12px;left:12px;background:#e01b4c">fixed · bottom: 12 left: 12</span>
+    <span class="chip" style="position:absolute;bottom:12px;right:12px;background:#3584e4">fixed · bottom: 12 right: 12</span>
+    <span class="chip" style="position:absolute;top:96px;left:25%;background:#f5c211">fixed · top: 96 left: 25%</span>
+    <span class="chip" style="position:absolute;top:12px;left:12px;background:#9141ac;color:#fff">hud_rule class · ecss pins it</span>
+
+    <p class="note">…the window is the viewport for the pinned chips —
+       resize the window and they stay at their offsets, the flow
+       column reflows underneath.</p>
+  </div>
+</body>
+</html>

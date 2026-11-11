@@ -243,6 +243,10 @@ module Egui
       # look.
       rounding = @rounding ||
                  state_vars.rounding_px("rounding", rect, 4.0)
+      # Per-corner rounding (CSS `border-radius: 0 8 16 2`): rides the
+      # same key — nil keeps the uniform path (and the shadow below on
+      # `rounding`, the largest fit corner).
+      corners = @rounding ? nil : state_vars.rounding_corners?("rounding", rect)
       shadow = state_vars.shadow?
       if shadow && !shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,
@@ -250,23 +254,26 @@ module Egui
       end
       bevel_light = state_vars.color?("bevel_light")
       bevel_dark = state_vars.color?("bevel_dark")
-      # Gradient fill — the second stop has two sources:
-      # * an explicit `background2` in the state bag (class rule or
-      #   inspector override, per state like `background`): the fill
-      #   becomes the vertical gradient `background` → `background2` —
-      #   this is the inspector's way into a gradient background;
-      # * the built-in `#gradient(c1, c2)`: its stops are the DEFAULTS.
-      #   Only a per-widget value (inspector element override or inline
-      #   `#style`) recolors the top — a class rule must NOT, because
-      #   the user-agent theme itself sets `button { background }`, and
-      #   honoring it here washes the top stop out (button_weak is
-      #   translucent) for EVERY gradient button. The built-in
-      #   gradient still yields to the plain state fill while pressed
-      #   (existing behavior).
-      if (bg2 = state_vars.color?("background2"))
+      # `background-gradient` (a full CSS-like gradient — linear/radial,
+      # any angle, any stops) has PRIORITY over background2 and the
+      # built-in `#gradient(c1, c2)`: it is the explicit sheet value.
+      # Not transition-animated in v1 — a state switch snaps.
+      if (bg_grad = state_vars.gradient?("background-gradient"))
+        ui.painter.rect(rect, rounding: rounding, gradient: bg_grad,
+          stroke_color: stroke_color, stroke_width: 1.0,
+          stroke_sides: sides, corners: corners)
+      # The legacy vertical gradient — the second stop has two sources:
+      # an explicit `background2` in the state bag (class rule or
+      # inspector override, per state like `background`), or the
+      # built-in `#gradient(c1, c2)` whose stops are the DEFAULTS (a
+      # class rule must not recolor its top — the user-agent theme
+      # itself sets `button { background }` and would wash the top stop
+      # out for every gradient button; the built-in also yields to the
+      # plain state fill while pressed).
+      elsif (bg2 = state_vars.color?("background2"))
         ui.painter.rect(rect, rounding: rounding, fill: fill, fill2: bg2,
           stroke_color: stroke_color, stroke_width: 1.0,
-          stroke_sides: sides)
+          stroke_sides: sides, corners: corners)
       elsif (grad = @gradient) && !response.active?
         own = @style_override.try(&.background) ||
               ui.ctx.id_style_state_vars(id, state)
@@ -274,9 +281,10 @@ module Egui
         top = own ? fill : grad[0]
         ui.painter.rect(rect, rounding: rounding, fill: top, fill2: grad[1],
           stroke_color: stroke_color, stroke_width: 1.0,
-          stroke_sides: sides)
+          stroke_sides: sides, corners: corners)
       elsif bevel_light && bevel_dark
-        ui.painter.rect(rect, rounding: rounding, fill: fill)
+        ui.painter.rect(rect, rounding: rounding, fill: fill,
+          corners: corners)
         # Raised bevel: light on the top/left, dark on the bottom/right.
         ui.painter.line(rect.min + Vec2.new(0.0, 0.5),
           Pos2.new(rect.max.x, rect.min.y + 0.5), 1.0, bevel_light)
@@ -289,7 +297,7 @@ module Egui
       else
         ui.painter.rect(rect, rounding: rounding, fill: fill,
           stroke_color: stroke_color, stroke_width: 1.0,
-          stroke_sides: sides)
+          stroke_sides: sides, corners: corners)
       end
       if shadow && shadow.inset?
         ui.painter.box_shadow(rect, shadow.color, blur: shadow.blur,

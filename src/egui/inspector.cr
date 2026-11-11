@@ -405,6 +405,8 @@ module Egui
     private def style_value_source(v : StyleValue) : String
       case v
       when Color32 then "Egui::Color32.rgb(#{v.r}, #{v.g}, #{v.b})"
+      when Gradient
+        %(Egui::Gradient.parse?(#{v.to_s.inspect}).not_nil!)
       when String  then v.inspect
       else              v.to_s
       end
@@ -830,6 +832,13 @@ module Egui
               unless (s = display_string(prop, vars)).empty?
                 setter.call(prop.key, s)
               end
+            when :gradient
+              # Seeding starts from the current display spelling; an
+              # unset gradient has nothing to copy — leave inherited.
+              if (g = vars.gradient?(prop.key) ||
+                          theme_gradient(prop, theme_state))
+                setter.call(prop.key, g)
+              end
             when :box
               b = display_box(prop, vars)
               setter.call("#{prop.key}.top", b.top)
@@ -942,6 +951,23 @@ module Egui
             row.text_edit_singleline(value) do |text|
               setter.call(prop.key, text)
             end
+          end
+        when :gradient
+          # Free-text editor over the CSS-like spelling; the commit
+          # parses through `Gradient.parse?` — invalid text never
+          # reaches the sheet. Empty unsets (back to the plain
+          # background fill).
+          value = vars.gradient?(prop.key).try(&.to_s) ||
+                  theme_gradient(prop, theme_state).try(&.to_s) || ""
+          row.text_edit_singleline(value) do |text|
+            t = text.strip
+            if t.empty?
+              unset_prop(prop, unsetter)
+            elsif (g = Gradient.parse?(t))
+              setter.call(prop.key, g)
+            end
+            # else: keep the old value — the text stays in the editor
+            # for another try; the sheet is never poisoned.
           end
         when :enum
           # A SelectBox over the declaration's fixed option list (the
@@ -1085,6 +1111,12 @@ module Egui
       if (v = vars.f64?(prop.key))
         return v
       end
+      # A per-corner rounding value (CSS `border-radius: 0 8 16 2`)
+      # shows as its largest corner — the scalar editor edits that;
+      # storing rewrites the key to the typed number.
+      if (c = vars[prop.key]?.as?(CornerRadii))
+        return c.max
+      end
       if (f = prop.fallback)
         case f
         when Float64 then return f
@@ -1172,6 +1204,14 @@ module Egui
       when "font_family" then @ctx.style.font_family
       else                    nil
       end
+    end
+
+    # The theme-slot gradient for a key — the built-in `#gradient`
+    # buttons seed their display default this way. nil for every key
+    # the theme has no gradient for.
+    private def theme_gradient(prop : StyleProp,
+                               theme_state : String?) : Gradient?
+      prop.fallback.as?(Gradient)
     end
 
     private def display_name(id : Id, m : WidgetMeta) : String

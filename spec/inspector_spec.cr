@@ -311,14 +311,14 @@ describe "widget inspector" do
     ctx.memory.open_popups.size.should eq(0)
   end
 
-  it "shows non-stylable widgets honestly (RadioButton has no props)" do
+  it "shows non-stylable widgets honestly (Image has no props)" do
     ctx = Egui::Context.new
     ctx.inspector_enabled = true
     insp_frame(ctx) do |c|
-      c.window("w") { |ui| ui.radio(false, "r") }
+      c.window("w") { |ui| ui.add(Egui::Image.new(0_u64, Egui::Vec2.new(10.0, 10.0))) }
     end
     metas = ctx.inspector.meta_values
-    metas.any? { |m| m.kind == "RadioButton" }.should be_true
-    metas.find { |m| m.kind == "RadioButton" }.not_nil!.props.should be_empty
+    metas.any? { |m| m.kind == "Image" }.should be_true
+    metas.find { |m| m.kind == "Image" }.not_nil!.props.should be_empty
   end
 end

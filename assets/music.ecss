@@ -1,0 +1,97 @@
+/* music.ecss — тема Nocturnе для демо Raven Music 1:1
+   (порт oracle/raven_music/style.css). Правила читает кастомный тег
+   <panel class="…">: background / stroke / stroke-width / rounding /
+   padding.*; :hover — подложка карточки (style.css .album-card:hover). */
+
+center {
+  background: #0d0d12;
+  stroke: #ffffff0d;
+  stroke-width: 1;
+  rounding: 12;
+}
+
+nowplaying {
+  background: #0d0d12;
+  stroke: #ffffff0d;
+  stroke-width: 1;
+  rounding: 12;
+  padding: 16;
+}
+
+nav-box {
+  background: #0d0d12;
+  stroke: #ffffff0d;
+  stroke-width: 1;
+  rounding: 12;
+  padding.top: 10;
+  padding.right: 8;
+  padding.bottom: 10;
+  padding.left: 8;
+}
+
+lib-box {
+  background: #0d0d12;
+  stroke: #ffffff0d;
+  stroke-width: 1;
+  rounding: 12;
+  padding: 10;
+}
+
+center-page {
+  padding.top: 20;
+  padding.right: 24;
+  padding.bottom: 32;
+  padding.left: 24;
+}
+
+col-page { }
+
+album-card {
+  rounding: 10;
+  padding: 10;
+}
+
+album-card:hover {
+  background: #ffffff12;
+}
+
+quick {
+  background: #ffffff12;
+  rounding: 6;
+}
+
+np-artist-card {
+  background: #241a3f;
+  rounding: 10;
+  padding: 16;
+}
+
+np-queue-card {
+  background: #16161c;
+  rounding: 10;
+  padding: 14;
+}
+
+about-card {
+  background: #16161c;
+  rounding: 10;
+  padding: 18;
+}
+
+lib-row {
+  padding: 4;
+}
+
+lib-cards { }
+
+lib-row:hover {
+  background: #ffffff10;
+}
+
+quick:hover {
+  background: #ffffff1f;
+}
+
+track-row:hover {
+  background: #ffffff10;
+}

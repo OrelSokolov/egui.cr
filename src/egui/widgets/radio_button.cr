@@ -11,18 +11,37 @@ module Egui
     def initialize(@selected : Bool, @text : String)
     end
 
+    # Styled through the `radio` class, like Checkbox: the textlike
+    # keys (`text_color` for the label, `font_*`) plus `dot_fill` (the
+    # selected dot; unset keeps the text color — see the `radio:selected`
+    # read below).
+    def style_class : String?
+      "radio"
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + StyleProps.sizable +
+        [StyleProp.new("dot_fill", :color)]
+    end
+
+    def inspector_label : String?
+      @text
+    end
+
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = ui.next_widget_id
+      class_vars = style_vars(ui, id)
+      style = effective_style(ui, id, class_vars)
       sp = style.spacing
       font_size = style.font_size
-      text_size = ui.ctx.fonts_for(style.font_family).measure(@text, font_size)
+      fonts = ui.ctx.fonts_for(style.font_family)
+      text_size = fonts.measure(@text, font_size)
 
       icon = sp.icon_width
       height = {icon, text_size.y}.max
       total_width = icon + sp.icon_spacing + text_size.x
-      id = ui.next_widget_id
       size = styled_size(Vec2.new(total_width, height),
-        style_vars(ui, id), ui, id)
+        class_vars, ui, id)
       rect = ui.allocate_at_least(size)
       response = ui.interact(rect, id, Sense.click | Sense::Focusable)
 
@@ -46,8 +65,7 @@ module Egui
       # A clamped host squeezes the rect below the natural size:
       # truncate to the room left of the icon's trailing edge (see
       # Fonts#fit).
-      label = ui.ctx.fonts_for(style.font_family)
-        .fit(@text, font_size, {rect.width - icon - sp.icon_spacing, 0.0}.max)
+      label = fonts.fit(@text, font_size, {rect.width - icon - sp.icon_spacing, 0.0}.max)
       text_pos = Pos2.new(rect.left + icon + sp.icon_spacing, rect.center.y)
       ui.painter.text(text_pos, label, font_size, visuals.text_color,
         family: style.font_family)

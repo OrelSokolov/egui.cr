@@ -33,7 +33,7 @@ describe "popup layering" do
     3.times { |i| pl_frame(ctx, time: 0.016 * (i + 1)) { |c| pl_host(c, value) } }
 
     # Open the combo list by clicking its button (the only scroll sink).
-    btn = ctx.memory.scroll_rects.each_value.first[0].center
+    btn = ctx.memory.scroll_rects.each_value.first.rect.center
     pl_frame(ctx, [Egui::Event.pointer_moved(btn),
       Egui::Event.pointer_pressed(btn)], 0.064) { |c| pl_host(c, value) }
     pl_frame(ctx, [Egui::Event.pointer_released(btn)], 0.080) { |c| pl_host(c, value) }
@@ -56,7 +56,7 @@ describe "popup layering" do
     value = "b"
     3.times { |i| pl_frame(ctx, time: 0.016 * (i + 1)) { |c| pl_host(c, value) } }
 
-    btn = ctx.memory.scroll_rects.each_value.first[0].center
+    btn = ctx.memory.scroll_rects.each_value.first.rect.center
     pl_frame(ctx, [Egui::Event.pointer_moved(btn),
       Egui::Event.pointer_pressed(btn)], 0.064) { |c| pl_host(c, value) }
     pl_frame(ctx, [Egui::Event.pointer_released(btn)], 0.080) { |c| pl_host(c, value) }

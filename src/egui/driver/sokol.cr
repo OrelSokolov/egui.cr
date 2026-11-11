@@ -277,6 +277,18 @@ lib LibEguiCr
   fun sdf_batch = egui_cr_sdf_batch(clip : Float32*, instances : Float32*,
                                     count : Int32)
 
+  # Rounded content clip (border-radius): open/close a stencil mask
+  # bracket around a run of commands sharing one rounded clip shape.
+  # x..h in framebuffer px (like #scissor_rect), radii in POINTS,
+  # `ppp` pixels per point. No-ops without a stencil attachment.
+  fun clip_mask = egui_cr_clip_mask(x : Float32, y : Float32, w : Float32,
+                                    h : Float32, rtl : Float32,
+                                    rtr : Float32, rbr : Float32,
+                                    rbl : Float32, ppp : Float32)
+  fun clip_unmask = egui_cr_clip_unmask(x : Float32, y : Float32,
+                                        w : Float32, h : Float32,
+                                        ppp : Float32)
+
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun make_stream_texture = egui_cr_make_stream_texture(w : Int32, h : Int32) : UInt32
@@ -439,6 +451,9 @@ module Egui
       @@cursor_image : Egui::CustomCursorImage? = nil
       # Last applied scissor (framebuffer px, x/y/w/h) — see #apply_scissor.
       @@last_scissor : Tuple(Float64, Float64, Float64, Float64)? = nil
+      # Open rounded-clip group ({clip rect, fitted radii}) — see
+      # #sync_clip_group; nil = no stencil bracket open.
+      @@clip_shape : Tuple(Egui::Rect, Egui::CornerRadii)? = nil
       # EGUI_SDF=1: analytic SDF rounded rects (see #sdf_try). Off by
       # default — the tessellated path stays byte-for-byte.
       @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] != "0" : false
@@ -464,6 +479,146 @@ module Egui
       # when chasing freezes. The C side adds per-phase [loop] lines
       # (x11_events / frame_cb+commit / glx_swap / xflush).
       @@frame_debug : Bool = ENV["EGUI_FRAME_DEBUG"]? ? true : false
+
+      # --- live bench HUD (EGUI_BENCH=1) ---------------------------------
+      # "Where do the frame's milliseconds go" — answered by TWO
+      # overlays:
+      #   * Crystal side (this HUD, painted by egui itself between
+      #     app.update and end_frame) — the Crystal pipeline phases:
+      #     begin_frame / update / end_frame — the egui pipeline proper
+      #     paint.fonts / paint.emit — the backend split inside
+      #       paint_frame: glyph rasterize + atlas upload vs the per-op
+      #       FFI emission run (one call per sgl op, per vertex)
+      #     bench.hud — this HUD's own draw cost (honest: it IS frame
+      #       work; if it dwarfs the phases, the HUD is lying about the
+      #       app)
+      #     frame — begin_frame through end_pass, the full CPU frame
+      #   * sokol side (render thread, C) — a stacked frame-time bar
+      #     graph painted over the replayed packet in C
+      #     (sh_bench_overlay in backend/sokol_shim.c): texture uploads
+      #     / replay / vsync+swap per tick.
+      # EGUI_BENCH=<any non-"0"> enables both; phase spans are captured
+      # unconditionally (two clock reads each) so the loop code stays
+      # single-path.
+      module FrameBench
+        HISTORY = 240 # frames kept per phase for the p50/p95 columns
+        PT = 12.0     # row font size (points)
+        LINE = 15.0   # row pitch
+
+        @@on = ENV["EGUI_BENCH"]? ? ENV["EGUI_BENCH"] != "0" : false
+        @@ns = {} of String => Array(Int64)
+        # All-time per-phase max — @@ns rings are capped at HISTORY, but
+        # the max column must survive spikes older than the window (it
+        # holds for the whole process lifetime, never scrolls out).
+        @@peak = {} of String => Int64
+        @@frames = 0
+
+        private def self.record_peak(name : String, v : Int64) : Nil
+          cur = @@peak[name]?
+          @@peak[name] = v if !cur || v > cur
+        end
+
+        def self.on? : Bool
+          @@on
+        end
+
+        # Record one phase sample, t0 → now (a no-op when off — the
+        # spans in the loop still run their two clock reads).
+        def self.span(name : String, t0 : Time::Instant) : Nil
+          return unless @@on
+          a = (@@ns[name] ||= [] of Int64)
+          v = (Time.instant - t0).total_nanoseconds.to_i64
+          a << v
+          a.shift if a.size > HISTORY
+          record_peak(name, v)
+        end
+
+        # End-of-full-frame bookkeeping (command count rides the same
+        # rings as a "phase").
+        def self.frame_done(commands : Int32) : Nil
+          return unless @@on
+          a = (@@ns["cmds"] ||= [] of Int64)
+          a << commands
+          a.shift if a.size > HISTORY
+          record_peak("cmds", commands.to_i64)
+          @@frames &+= 1
+        end
+
+        private def self.pct(a : Array(Int64), q : Float64) : Float64
+          return 0.0 if a.empty?
+          s = a.sort
+          s[(q * (s.size - 1)).to_i.clamp(0, s.size - 1)].to_f64
+        end
+
+        # Paint the table, top-left (below the client-side caption when
+        # chrome is active). Painter-only — no layout participation,
+        # same trick as WindowFrame's outline/buttons.
+        def self.show(ctx : Context) : Nil
+          return unless @@on && @@frames > 0
+          screen = ctx.input.screen_rect
+          painter = ctx.painter
+          painter.layer = POPUP_LAYER_Z - 1
+          painter.clip = screen
+
+          rows = {"begin_frame", "update", "end_frame", "paint.fonts",
+                  "paint.emit", "bench.hud", "frame"}
+          panel_w = 332.0
+          panel_h = LINE + 22.0 + LINE + rows.size * LINE + LINE + 8.0
+          x0 = screen.min.x + 8.0
+          y0 = screen.min.y + (Sokol.chrome_active? ? 44.0 : 8.0)
+          painter.rect(Rect.from_min_size(Pos2.new(x0, y0),
+            Vec2.new(panel_w, panel_h)), 6.0,
+            Color32.rgba(16, 16, 24, 228), Color32.rgba(90, 90, 110, 255), 1.0)
+
+          white = Color32.rgba(235, 235, 245, 255)
+          dim = Color32.rgba(150, 150, 165, 255)
+          accent = Color32.rgba(120, 220, 160, 255)
+          right = ->(text : String, size : Float64, x : Float64) do
+            x - ctx.fonts.measure_cached(text, size).x
+          end
+
+          y = y0 + 6.0
+          painter.text(Pos2.new(x0 + 10.0, y + LINE / 2),
+            "egui.cr bench — Crystal side", 12.0, white, bold: true)
+          fps = "≈ #{(1000.0 / [ms(@@ns["frame"]?, 0.5), 0.001].max).round.to_i} fps CPU"
+          painter.text(Pos2.new(right.call(fps, 11.0, x0 + panel_w - 10.0),
+            y + LINE / 2), fps, 11.0, accent)
+          y += LINE + 6.0
+
+          painter.text(Pos2.new(x0 + 10.0, y + LINE / 2), "phase ms", 11.0, dim)
+          col_x = {x0 + 166.0, x0 + 222.0, x0 + 278.0, x0 + 322.0}
+          {"last", "p50", "p95", "max"}.each_with_index do |h, i|
+            painter.text(Pos2.new(right.call(h, 11.0, col_x[i]), y + LINE / 2),
+              h, 11.0, dim)
+          end
+          y += LINE
+
+          rows.each do |name|
+            a = @@ns[name]?
+            painter.text(Pos2.new(x0 + 10.0, y + LINE / 2), name, PT,
+              name == "frame" ? accent : white)
+            if a && !a.empty?
+              {a.last, pct(a, 0.5), pct(a, 0.95), @@peak[name]? || a.max}.each_with_index do |v, i|
+                text = "%6.2f" % (v / 1_000_000.0)
+                painter.text(Pos2.new(right.call(text, PT, col_x[i]),
+                  y + LINE / 2), text, PT, white)
+              end
+            end
+            y += LINE
+          end
+
+          if cmds = @@ns["cmds"]?
+            painter.text(Pos2.new(x0 + 10.0, y + LINE / 2),
+              "paint cmds/frame mean #{(cmds.sum / cmds.size).round.to_i}" \
+              " · max #{@@peak["cmds"]? || cmds.max}", 11.0, dim)
+          end
+        end
+
+        private def self.ms(a : Array(Int64)?, q : Float64) : Float64
+          return 0.0 unless a && !a.empty?
+          pct(a, q) / 1_000_000.0
+        end
+      end
       # Win32 detached loop: R's doorbell write end. Pinned in a class var
       # so the GC can never collect (and finalize) the TCPSocket whose fd
       # the shim now owns — run_detached hands it over before #start and
@@ -1168,6 +1323,7 @@ module Egui
         private def self.produce_frame : Nil
           dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves}")
           frame_t0 = Time.instant if @@frame_debug
+          bt0 = Time.instant # FrameBench "frame" span (see on_frame_inner)
 
           ppp = dpi_scale.to_f64
           @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
@@ -1188,17 +1344,28 @@ module Egui
           raw.safe_area = poll_safe_area
           @@events = [] of Egui::Event
 
+          bt = Time.instant
           app.ctx.begin_frame(raw)
+          FrameBench.span("begin_frame", bt)
+          bt = Time.instant
           app.ctx.inspector.before_update if app.ctx.inspector_enabled?
           Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
           app.update(app.ctx)
+          FrameBench.span("update", bt)
+          bt = Time.instant
+          FrameBench.show(app.ctx)
+          FrameBench.span("bench.hud", bt)
+          bt = Time.instant
           commands = app.ctx.end_frame
+          FrameBench.span("end_frame", bt)
 
           @@last_commands = commands
           @@last_fb_w = fb_w
           @@last_fb_h = fb_h
 
           paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+          FrameBench.span("frame", bt0)
+          FrameBench.frame_done(commands.size)
 
           if (t0 = frame_t0) &&
              (ms = (Time.instant - t0).total_milliseconds) > 100.0
@@ -1797,6 +1964,7 @@ module Egui
         end
         dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?} delivered=#{delivered}")
         frame_t0 = Time.instant if @@frame_debug
+        bt0 = Time.instant # FrameBench "frame" span (see produce_frame)
 
         time = (Time.instant - @@start).total_seconds
         raw = Egui::RawInput.new(
@@ -1807,20 +1975,29 @@ module Egui
         raw.safe_area = poll_safe_area
         @@events = [] of Egui::Event
 
+        bt = Time.instant
         app.ctx.begin_frame(raw)
+        FrameBench.span("begin_frame", bt)
         # The inspector panel bites the bottom edge FIRST (before the
         # chrome bar and the app's panels) so it sits under everything.
         app.ctx.inspector.before_update if app.ctx.inspector_enabled?
         # Default client-side chrome first: the caption is a top panel,
         # so the app's own panels land below it.
         Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
+        bt = Time.instant
         app.update(app.ctx)
+        FrameBench.span("update", bt)
+        bt = Time.instant
+        FrameBench.show(app.ctx)
+        FrameBench.span("bench.hud", bt)
+        bt = Time.instant
         # Inspector overlays (pick menu, color popup, selection frame)
         # run inside #end_frame — AFTER the deferred central panel, so a
         # widget's context menu opened there has already claimed the
         # press and the inspector yields to it (no second popup; the
         # «Inspect …» row rides as that menu's last item instead).
         commands = app.ctx.end_frame
+        FrameBench.span("end_frame", bt)
 
         {% if flag?(:ios) %}
           # Text focus drives the on-screen keyboard (sokol's hidden
@@ -1850,6 +2027,8 @@ module Egui
         @@last_fb_h = fb_h
 
         paint_frame(app.ctx, fb_w, fb_h, commands, touch_fonts: true)
+        FrameBench.span("frame", bt0)
+        FrameBench.frame_done(commands.size)
 
         # Focus sits on / left a text widget → show/hide the Android soft
         # keyboard (debounced against the last request). After the frame:
@@ -2012,6 +2191,7 @@ module Egui
         # rasterizes and no glyph stays blank-cached. Commands are
         # grouped per stack in ONE pass (fonts_for_cmd resolves — and on
         # first use materializes — the family of every command anyway).
+        tb = Time.instant
         if touch_fonts
           @@frame_counter += 1
           by_stack = {} of Egui::Driver::AtlasFonts => Array(Egui::TextCmd)
@@ -2054,7 +2234,9 @@ module Egui
           by_stack.each_key(&.flush)
           evict_stale_stacks
         end
+        FrameBench.span("paint.fonts", tb) if touch_fonts
 
+        tb = Time.instant
         LibEguiCr.begin_pass(fb_w, fb_h)
 
         # Ortho stays in POINTS; the framebuffer-sized viewport scales them
@@ -2075,12 +2257,18 @@ module Egui
         # blending) makes any alpha<255 fill overwrite dst — the modal
         # scrim rendered as solid black.
         LibEguiCr.alpha_pipeline_push
+        # Rounded-clip groups: a run of commands sharing one rounded
+        # clip shape draws between a stencil mask and its unmask (see
+        # egui_cr_clip_mask). Reset per frame — a dangling group from a
+        # dropped frame must not bleed its mask into this one.
+        @@clip_shape = nil
         if @@sdf
           # SDF path: runs of plain filled RectCmds accumulate into
           # instanced batches (grouped by clip); everything else — and
           # every RectCmd the shader cannot express — paints as before,
           # in stream order (a batch flushes before any fallback).
           commands.each do |cmd|
+            sync_clip_group(cmd)
             unless sdf_try(cmd)
               sdf_flush
               paint(cmd)
@@ -2088,11 +2276,16 @@ module Egui
           end
           sdf_flush
         else
-          commands.each { |cmd| paint(cmd) }
+          commands.each do |cmd|
+            sync_clip_group(cmd)
+            paint(cmd)
+          end
         end
+        clip_groups_finish
         LibEguiCr.alpha_pipeline_pop
 
         LibEguiCr.end_pass
+        FrameBench.span("paint.emit", tb) if touch_fonts
 
         # Raster-cache evictions queued mid-frame (Svg#paint's
         # TextureRegistry#destroy_later) run now, after every
@@ -2216,20 +2409,21 @@ module Egui
 
       # --- SDF rounded-rect batching (EGUI_SDF=1) --------------------------
       #
-      # Runs of plain filled RectCmds (fill ± vertical gradient, uniform
-      # stroke, uniform or per-corner rounding), outset ShadowCmds and
-      # CircleCmds become one instanced SDF batch per clip group — see
-      # egui_cr_sdf_batch in the shim. Anything the shader cannot
-      # express (stroke_sides, replace, stroke-only rects, corners +
-      # stroke, inset shadows) falls back to the tessellated #paint
-      # path. Instances of one batch render in issue order (a single
-      # instanced draw), so a shadow followed by the content fill in
-      # the SAME batch keeps painter order exactly.
+      # Runs of plain filled RectCmds (fill ± vertical gradient,
+      # per-corner rounding), outset ShadowCmds and CircleCmds become
+      # one instanced SDF batch per clip group — see egui_cr_sdf_batch
+      # in the shim. Anything the shader cannot express (replace
+      # blends, stroke-only rects, inset shadows) falls back to the
+      # tessellated #paint path. Bordered backgrounds ride the batch
+      # too: they decompose into plain fills (`.border_overlay_layers`),
+      # one instance each. Instances of one batch render in issue
+      # order (a single instanced draw), so a shadow followed by the
+      # content fill in the SAME batch keeps painter order exactly.
 
       # A command the SDF path can take: RectCmd with a fill (fill2 /
-      # uniform stroke / per-corner radii all map onto the 28-float
-      # instance), an outset ShadowCmd or a CircleCmd. Per-side
-      # borders, replace blends, stroke-only rects and inset shadows
+      # per-corner radii all map onto the 28-float instance — a border
+      # decomposes into fill-only instances), an outset ShadowCmd or a
+      # CircleCmd. Replace blends, stroke-only rects and inset shadows
       # keep the tessellated path.
       def self.sdf_try(cmd : Egui::PaintCmd) : Bool
         case cmd
@@ -2265,13 +2459,22 @@ module Egui
       TRANSPARENT_FILL = Egui::Color32.rgba(0, 0, 0, 0)
 
       def self.sdf_try_rect(cmd : Egui::RectCmd) : Bool
-        return false if cmd.replace? || cmd.stroke_sides
+        return false if cmd.replace?
+        # The standard border algorithm rides the batch too: a bordered
+        # background decomposes into fill-only rects (outer border
+        # plate(s) + the inset background), each one plain instance —
+        # issue order keeps painter order. Stroke-only rects (no
+        # background under the border) keep the tessellated stroke
+        # path: a fill instance cannot punch the interior out. All
+        # layers batch or none does (a half-batched cmd would double
+        # paint in the tessellated fallback).
+        if cmd.stroke_sides || (cmd.stroke_color && cmd.stroke_width > 0)
+          overlay = Egui.border_overlay_layers(cmd)
+          return false unless overlay && overlay.all?(&.fill)
+          overlay.each { |sub| sdf_try_rect(sub) }
+          return true
+        end
         fill = cmd.fill || return false
-        stroke = cmd.stroke_color if cmd.stroke_width > 0
-        # Per-corner radii only model the FILL; the uniform stroke
-        # still reads `rounding`, so corners + stroke cannot ride one
-        # instance — tessellate it instead.
-        return false if cmd.corners && stroke
         r = cmd.rect
         return false if r.width <= 0.0 || r.height <= 0.0
 
@@ -2296,13 +2499,10 @@ module Egui
         end
         sdf_rgba8(d, fill, 8)
         sdf_rgba8(d, cmd.fill2 || fill, 12)
-        if stroke
-          sdf_rgba8(d, stroke, 16)
-          d[24] = cmd.stroke_width.to_f32
-        else
-          d[16] = d[17] = d[18] = d[19] = 0.0f32 # alpha 0 = no border
-          d[24] = 0.0f32
-        end
+        # No border on the instance itself — bordered backgrounds
+        # decompose into plain fills at the top of this method.
+        d[16] = d[17] = d[18] = d[19] = 0.0f32 # alpha 0 = no border
+        d[24] = 0.0f32
         # Shape half == quad half; kind 0 (rect), no blur.
         d[20] = hw.to_f32
         d[21] = hh.to_f32
@@ -2416,6 +2616,82 @@ module Egui
         @@last_scissor = nil
       end
 
+      # --- rounded-clip groups (see egui_cr_clip_mask) ---------------------
+      #
+      # Consecutive commands carrying the same rounded clip shape
+      # (clip rect + clip_corners) draw inside ONE stencil bracket:
+      # entering the run writes the rounded-rect mask, leaving it
+      # clears the stencil over the bbox. The shim picks
+      # stencil-testing pipeline twins while the bracket is open, so
+      # text, images and tessellated shapes are all cut by the curve.
+
+      # {clip rect, fitted radii} of the cmd's rounded clip, nil for a
+      # plain rect clip. "Infinite" clips (popups) never group.
+      private def self.rounded_shape(cmd : Egui::PaintCmd) : Tuple(Rect, CornerRadii)?
+        return nil if cmd.is_a?(Egui::NoopCmd)
+        corners = case cmd
+                  when Egui::RectCmd   then cmd.clip_corners
+                  when Egui::TextCmd   then cmd.clip_corners
+                  when Egui::CircleCmd then cmd.clip_corners
+                  when Egui::LineCmd   then cmd.clip_corners
+                  when Egui::TriCmd    then cmd.clip_corners
+                  when Egui::ArcCmd    then cmd.clip_corners
+                  when Egui::ImageCmd  then cmd.clip_corners
+                  when Egui::ShadowCmd then cmd.clip_corners
+                  else                      nil
+                  end
+        return nil unless corners && corners.max > 0.0
+        clip = case cmd
+               when Egui::RectCmd   then cmd.clip
+               when Egui::TextCmd   then cmd.clip
+               when Egui::CircleCmd then cmd.clip
+               when Egui::LineCmd   then cmd.clip
+               when Egui::TriCmd    then cmd.clip
+               when Egui::ArcCmd    then cmd.clip
+               when Egui::ImageCmd  then cmd.clip
+               when Egui::ShadowCmd then cmd.clip
+               else                      return nil
+               end
+        return nil if clip.width >= 1e8 || clip.height >= 1e8
+        {clip, corners.fit(clip)}
+      end
+
+      def self.sync_clip_group(cmd : Egui::PaintCmd) : Nil
+        shape = rounded_shape(cmd)
+        return if shape == @@clip_shape
+        sdf_flush # a batch must not straddle a mask edge
+        if (old = @@clip_shape)
+          r = old[0]
+          x, y, w, h = scissor_rect(r)
+          LibEguiCr.clip_unmask(x.to_f32, y.to_f32, w.to_f32, h.to_f32,
+            @@pixels_per_point.to_f32)
+        end
+        if shape
+          clip, radii = shape
+          x, y, w, h = scissor_rect(clip)
+          LibEguiCr.clip_mask(x.to_f32, y.to_f32, w.to_f32, h.to_f32,
+            radii.top_left.to_f32, radii.top_right.to_f32,
+            radii.bottom_right.to_f32, radii.bottom_left.to_f32,
+            @@pixels_per_point.to_f32)
+        end
+        # The raw mask draws moved the GL scissor behind sgl's back —
+        # same cure as #sdf_flush.
+        @@last_scissor = nil
+        @@clip_shape = shape
+      end
+
+      def self.clip_groups_finish : Nil
+        sdf_flush
+        if (old = @@clip_shape)
+          r = old[0]
+          x, y, w, h = scissor_rect(r)
+          LibEguiCr.clip_unmask(x.to_f32, y.to_f32, w.to_f32, h.to_f32,
+            @@pixels_per_point.to_f32)
+          @@last_scissor = nil
+        end
+        @@clip_shape = nil
+      end
+
       def self.paint_image(cmd : Egui::ImageCmd) : Nil
         return if cmd.texture_id.zero? # failed loads paint nothing
         apply_scissor(cmd.clip)
@@ -2489,13 +2765,48 @@ module Egui
       end
 
       def self.paint_rect_body(cmd : Egui::RectCmd) : Nil
+        # The standard border algorithm: a bordered background paints
+        # as the overlay of nested fills (`.border_overlay_layers`) —
+        # outer border plate(s) + the inset background, all through
+        # the plain fill branches below (no stroke geometry at all).
+        # Stroke-only rects (no background under the border) fall
+        # through to the tessellated stroke path at the end.
+        if (overlay = Egui.border_overlay_layers(cmd))
+          overlay.each { |sub| paint_rect_body(sub) }
+          return
+        end
+
         r = cmd.rect
         round = cmd.rounding
 
-        if (fill = cmd.fill) && (corners = cmd.corners)
+        if (grad = cmd.gradient)
+          # background-gradient: the general path — perimeter polygon
+          # (uniform or per-corner rounding) + exact linear bands /
+          # radial rings (see #gradient_fill). Wins over fill/fill2.
+          pts = (c = cmd.corners) ? corners_perimeter(r, c)
+                                  : rounded_perimeter(r, round)
+          gradient_fill(r, pts, grad)
+        elsif (fill = cmd.fill) && (corners = cmd.corners)
           # Per-corner rounding (the inner rect of the two-rect border
           # algorithm): each corner arcs with its own radius.
           rounded_rect_fill_corners(r, corners, fill, cmd.fill2)
+        elsif (fill = cmd.fill) && (fill2 = cmd.fill2) && cmd.diag?
+          # 135° diagonal gradient (linear-gradient(135deg)): Gouraud by
+          # (x+y) along the TL→BR diagonal.
+          if round > 0.5
+            rounded_rect_fill(r, round, fill, fill2, diag: true)
+          else
+            tl = grad_color_diag(fill, fill2, r.min.x, r.min.y, r)
+            tr = grad_color_diag(fill, fill2, r.max.x, r.min.y, r)
+            br = grad_color_diag(fill, fill2, r.max.x, r.max.y, r)
+            bl = grad_color_diag(fill, fill2, r.min.x, r.max.y, r)
+            LibEguiCr.sgl_begin_quads
+            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, tl.r, tl.g, tl.b, tl.a)
+            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, tr.r, tr.g, tr.b, tr.a)
+            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, br.r, br.g, br.b, br.a)
+            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, bl.r, bl.g, bl.b, bl.a)
+            LibEguiCr.sgl_end
+          end
         elsif (fill = cmd.fill) && (fill2 = cmd.fill2)
           # Vertical gradient: per-vertex colors, interpolated by the
           # rasterizer (Gouraud) — top verts c1, bottom verts c2.
@@ -2550,7 +2861,11 @@ module Egui
           end
         elsif (stroke = cmd.stroke_color) && cmd.stroke_width > 0
           w = cmd.stroke_width
-          if round > 0.5
+          if (cs = cmd.corners)
+            # Per-corner stroke (CSS `border-radius: a b c d`): each
+            # corner ring follows its own radius.
+            paint_rect_stroke_rounded_corners(r, cs, w, stroke, cmd.clip)
+          elsif round > 0.5
             paint_rect_stroke_rounded(r, round, w, stroke, cmd.clip)
           else
             LibEguiCr.sgl_begin_quads
@@ -2568,38 +2883,52 @@ module Egui
 
       # Rounded-corner stroke: four shortened bars + four quarter-arc
       # rings (the epaint tessellator produces the same shape as a
-      # stroked rounded path).
+      # stroked rounded path). The uniform case of the per-corner form
+      # below.
       def self.paint_rect_stroke_rounded(r : Egui::Rect, round : Float64,
                                          w : Float64, stroke : Egui::Color32,
                                          clip : Egui::Rect) : Nil
-        half = Math.sqrt(2.0) / 2.0 * round
+        paint_rect_stroke_rounded_corners(r,
+          Egui::CornerRadii.new(round, round, round, round), w, stroke, clip)
+      end
+
+      # Per-corner rounded stroke (CSS `border-radius: a b c d` with a
+      # uniform border): every side's bars are shortened by the two
+      # adjacent radii, every corner sweeps a ring of its own radius.
+      # Angles clockwise-from-+x in y-down screen space:
+      # π..1.5π = top-left, 1.5π..2π = top-right, 0..0.5π =
+      # bottom-right, 0.5π..π = bottom-left.
+      def self.paint_rect_stroke_rounded_corners(r : Egui::Rect,
+                                                 c : Egui::CornerRadii,
+                                                 w : Float64,
+                                                 stroke : Egui::Color32,
+                                                 clip : Egui::Rect) : Nil
+        lim = {r.width, r.height}.min / 2.0
+        tl = {c.top_left, lim}.min
+        tr = {c.top_right, lim}.min
+        br = {c.bottom_right, lim}.min
+        bl = {c.bottom_left, lim}.min
         LibEguiCr.sgl_begin_quads
-        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + round, r.min.y),
-          Egui::Vec2.new(r.width - 2 * round, w)), stroke)
-        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + round, r.max.y - w),
-          Egui::Vec2.new(r.width - 2 * round, w)), stroke)
-        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.min.y + round),
-          Egui::Vec2.new(w, r.height - 2 * round)), stroke)
-        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y + round),
-          Egui::Vec2.new(w, r.height - 2 * round)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + tl, r.min.y),
+          Egui::Vec2.new(r.width - tl - tr, w)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + bl, r.max.y - w),
+          Egui::Vec2.new(r.width - bl - br, w)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.min.y + tl),
+          Egui::Vec2.new(w, r.height - tl - bl)), stroke)
+        bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y + tr),
+          Egui::Vec2.new(w, r.height - tr - br)), stroke)
         LibEguiCr.sgl_end
 
-        # Quarter rings per corner. Angles are clockwise-from-+x in
-        # y-down screen space: 180..270 = top-left, 270..360 = top-right,
-        # 0..90 = bottom-right, 90..180 = bottom-left.
-        # Quarter rings per corner. Angles are clockwise-from-+x in
-        # y-down screen space: π..1.5π = top-left, 1.5π..2π = top-right,
-        # 0..0.5π = bottom-right, 0.5π..π = bottom-left.
         rad = Math::PI
-        radius = {round - w / 2.0, 0.0}.max
-        paint_ring(Egui::Pos2.new(r.min.x + round, r.min.y + round), radius,
-          rad, rad * 1.5, w, stroke, clip)
-        paint_ring(Egui::Pos2.new(r.max.x - round, r.min.y + round), radius,
-          rad * 1.5, rad * 2.0, w, stroke, clip)
-        paint_ring(Egui::Pos2.new(r.max.x - round, r.max.y - round), radius,
-          0.0, rad * 0.5, w, stroke, clip)
-        paint_ring(Egui::Pos2.new(r.min.x + round, r.max.y - round), radius,
-          rad * 0.5, rad, w, stroke, clip)
+        ring = ->(ccx : Float64, ccy : Float64, cr : Float64, a0 : Float64) do
+          radius = {cr - w / 2.0, 0.0}.max
+          paint_ring(Egui::Pos2.new(ccx, ccy), radius, a0, a0 + rad * 0.5,
+            w, stroke, clip)
+        end
+        ring.call(r.min.x + tl, r.min.y + tl, tl, rad)
+        ring.call(r.max.x - tr, r.min.y + tr, tr, rad * 1.5)
+        ring.call(r.max.x - br, r.max.y - br, br, 0.0)
+        ring.call(r.min.x + bl, r.max.y - bl, bl, rad * 0.5)
       end
 
       # Rounded-corner stroke with per-side widths/colors — the CSS
@@ -2672,28 +3001,17 @@ module Egui
       # lerp(fill, fill2, y / height), interpolated across triangles.
       def self.rounded_rect_fill(r : Egui::Rect, round : Float64,
                                  fill : Egui::Color32,
-                                 fill2 : Egui::Color32? = nil) : Nil
-        round = {round, r.width / 2.0, r.height / 2.0}.min
-        pts = [] of Egui::Pos2
-        corner = ->(cx : Float64, cy : Float64, a0 : Float64) do
-          6.times do |i|
-            a = a0 + (Math::PI / 2.0) * i / 5.0
-            pts << Egui::Pos2.new(cx + round * Math.cos(a),
-              cy + round * Math.sin(a))
-          end
-        end
-        rad = Math::PI
-        corner.call(r.min.x + round, r.min.y + round, Math::PI)       # top-left
-        corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5) # top-right
-        corner.call(r.max.x - round, r.max.y - round, 0.0)            # bottom-right
-        corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0) # bottom-left
+                                 fill2 : Egui::Color32? = nil,
+                                 diag : Bool = false) : Nil
+        pts = rounded_perimeter(r, round)
+        return if pts.size < 3
 
         center = r.center
         LibEguiCr.sgl_begin_quads
         pts.each_with_index do |p, i|
           q = pts[(i + 1) % pts.size]
           if fill2
-            quad_pts_grad(center, p, q, fill, fill2, r)
+            quad_pts_grad(center, p, q, fill, fill2.not_nil!, r, diag)
           else
             quad_pts(center, center, p, q, fill)
           end
@@ -2708,24 +3026,8 @@ module Egui
       def self.rounded_rect_fill_corners(r : Egui::Rect, c : Egui::CornerRadii,
                                          fill : Egui::Color32,
                                          fill2 : Egui::Color32? = nil) : Nil
-        lim = {r.width, r.height}.min / 2.0
-        tl = {c.top_left, lim}.min
-        tr = {c.top_right, lim}.min
-        br = {c.bottom_right, lim}.min
-        bl = {c.bottom_left, lim}.min
-        pts = [] of Egui::Pos2
-        corner = ->(cx : Float64, cy : Float64, a0 : Float64, rad : Float64) do
-          6.times do |i|
-            a = a0 + (Math::PI / 2.0) * i / 5.0
-            pts << Egui::Pos2.new(cx + rad * Math.cos(a),
-              cy + rad * Math.sin(a))
-          end
-        end
-        rad = Math::PI
-        corner.call(r.min.x + tl, r.min.y + tl, Math::PI, tl)        # top-left
-        corner.call(r.max.x - tr, r.min.y + tr, Math::PI * 1.5, tr)  # top-right
-        corner.call(r.max.x - br, r.max.y - br, 0.0, br)             # bottom-right
-        corner.call(r.min.x + bl, r.max.y - bl, Math::PI / 2.0, bl)  # bottom-left
+        pts = corners_perimeter(r, c)
+        return if pts.size < 3
 
         center = r.center
         LibEguiCr.sgl_begin_quads
@@ -2738,6 +3040,177 @@ module Egui
           end
         end
         LibEguiCr.sgl_end
+      end
+
+      # The rounded-rect perimeter polygon (corner arcs, ~1 segment per
+      # 5px of arc, 6..24 per corner) — extracted from
+      # #rounded_rect_fill for the gradient path to share.
+      def self.rounded_perimeter(r : Egui::Rect, round : Float64) : Array(Egui::Pos2)
+        pts = [] of Egui::Pos2
+        return perimeter_corners(r) if round <= 0.5
+        round = {round, r.width / 2.0, r.height / 2.0}.min
+        # сегменты на угол: крупные радиусы без «многоугольности»
+        # (~1 сегмент на 5px дуги, 6..24) — карточки r=84 были шестиугольниками
+        nseg = {(round * Math::PI / 2.0 / 5.0).ceil.to_i, 6}.max.clamp(6, 24)
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64) do
+          nseg.times do |i|
+            a = a0 + (Math::PI / 2.0) * i / (nseg - 1).to_f
+            pts << Egui::Pos2.new(cx + round * Math.cos(a),
+              cy + round * Math.sin(a))
+          end
+        end
+        rad = Math::PI
+        corner.call(r.min.x + round, r.min.y + round, Math::PI)       # top-left
+        corner.call(r.max.x - round, r.min.y + round, Math::PI * 1.5) # top-right
+        corner.call(r.max.x - round, r.max.y - round, 0.0)            # bottom-right
+        corner.call(r.min.x + round, r.max.y - round, Math::PI / 2.0) # bottom-left
+        pts
+      end
+
+      # Per-corner perimeter (CSS `border-radius: a b c d`) — extracted
+      # from #rounded_rect_fill_corners.
+      def self.corners_perimeter(r : Egui::Rect, c : Egui::CornerRadii) : Array(Egui::Pos2)
+        lim = {r.width, r.height}.min / 2.0
+        tl = {c.top_left, lim}.min
+        tr = {c.top_right, lim}.min
+        br = {c.bottom_right, lim}.min
+        bl = {c.bottom_left, lim}.min
+        pts = [] of Egui::Pos2
+        corner = ->(cx : Float64, cy : Float64, a0 : Float64, rad : Float64) do
+          nseg = {(rad * Math::PI / 2.0 / 5.0).ceil.to_i, 6}.max.clamp(6, 24)
+          nseg.times do |i|
+            a = a0 + (Math::PI / 2.0) * i / (nseg - 1).to_f
+            pts << Egui::Pos2.new(cx + rad * Math.cos(a),
+              cy + rad * Math.sin(a))
+          end
+        end
+        rad = Math::PI
+        corner.call(r.min.x + tl, r.min.y + tl, Math::PI, tl)        # top-left
+        corner.call(r.max.x - tr, r.min.y + tr, Math::PI * 1.5, tr)  # top-right
+        corner.call(r.max.x - br, r.max.y - br, 0.0, br)             # bottom-right
+        corner.call(r.min.x + bl, r.max.y - bl, Math::PI / 2.0, bl)  # bottom-left
+        pts
+      end
+
+      # A degenerate-corner zero radius still needs a polygon — the
+      # plain four-corner outline.
+      def self.perimeter_corners(r : Egui::Rect) : Array(Egui::Pos2)
+        [r.min, Egui::Pos2.new(r.max.x, r.min.y), r.max,
+         Egui::Pos2.new(r.min.x, r.max.y)]
+      end
+
+      # General gradient fill (`background-gradient`).
+      #
+      # LINEAR is exact: the axis position t is affine in (x,y), so the
+      # perimeter polygon is sliced into bands by the stop positions
+      # (each band = the polygon clipped by two parallel stop lines —
+      # Sutherland–Hodgman), and per-vertex colors make Gouraud
+      # reproduce the piecewise ramp with zero error inside a band.
+      #
+      # RADIAL approximates: t is not affine, so the perimeter fan is
+      # subdivided into concentric rings (one ring per stop plus evenly
+      # spaced intermediates) — the same concentric-circles idea the
+      # apps hand-rolled before the engine had gradients.
+      def self.gradient_fill(r : Egui::Rect, pts : Array(Egui::Pos2),
+                             grad : Egui::Gradient) : Nil
+        return if pts.size < 3 || r.width < 1.0 || r.height < 1.0
+        vx = ->(p : Egui::Pos2) do
+          c = grad.color_at(p.x, p.y, r)
+          LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, c.r, c.g, c.b, c.a)
+        end
+        LibEguiCr.sgl_begin_quads
+        if grad.kind == :radial
+          px = r.left + grad.cx * r.width
+          py = r.top + grad.cy * r.height
+          lerp_pt = ->(p : Egui::Pos2, f : Float64) do
+            Egui::Pos2.new(px + (p.x - px) * f, py + (p.y - py) * f)
+          end
+          fr = grad.stops.map(&.pos)
+          n = (grad.stops.size * 8).clamp(16, 48)
+          (0..n).each { |k| fr << k.to_f64 / n }
+          fr = fr.sort.uniq
+          pts.each_with_index do |p, i|
+            q = pts[(i + 1) % pts.size]
+            (fr.size - 1).times do |k|
+              f0 = fr[k]
+              f1 = fr[k + 1]
+              p0 = lerp_pt.call(p, f0)
+              p1 = lerp_pt.call(p, f1)
+              q0 = lerp_pt.call(q, f0)
+              q1 = lerp_pt.call(q, f1)
+              vx.call(p0)
+              vx.call(p1)
+              vx.call(q1)
+              vx.call(q0)
+            end
+          end
+        else
+          rad = grad.angle_deg * Math::PI / 180.0
+          dx = Math.sin(rad)
+          dy = -Math.cos(rad)
+          # |W·sin| + |H·cos| ≥ ~0.7·min(W,H) for any angle — never
+          # degenerate once the w/h ≥ 1 guard above passed.
+          len = r.width * dx.abs + r.height * dy.abs
+          ctr = r.center
+          edges = ([0.0] + grad.stops.map(&.pos) + [1.0]).sort.uniq
+          edges.each_cons(2) do |pair|
+            ta, tb = pair
+            next if tb - ta < 1e-6
+            band = clip_halfplane(pts, ctr.x, ctr.y, dx, dy, (ta - 0.5) * len)
+            band = clip_halfplane(band, ctr.x, ctr.y, -dx, -dy, (0.5 - tb) * len)
+            next if band.size < 3
+            anchor = band[0]
+            1.upto(band.size - 2) do |i|
+              vx.call(anchor)
+              vx.call(anchor)
+              vx.call(band[i])
+              vx.call(band[i + 1])
+            end
+          end
+        end
+        LibEguiCr.sgl_end
+      end
+
+      # Sutherland–Hodgman clip of a polygon against the half-plane
+      # n·(p − o) ≥ offset (n unit or not — the sign is all that
+      # matters).
+      def self.clip_halfplane(pts : Array(Egui::Pos2), ox : Float64,
+                              oy : Float64, nx : Float64, ny : Float64,
+                              offset : Float64) : Array(Egui::Pos2)
+        out = [] of Egui::Pos2
+        n = pts.size
+        n.times do |i|
+          a = pts[i]
+          b = pts[(i + 1) % n]
+          da = (a.x - ox) * nx + (a.y - oy) * ny - offset
+          db = (b.x - ox) * nx + (b.y - oy) * ny - offset
+          if da >= 0.0
+            out << a
+            if db < 0.0 # edge exits the half-plane
+              f = da / (da - db)
+              out << Egui::Pos2.new(a.x + (b.x - a.x) * f,
+                a.y + (b.y - a.y) * f)
+            end
+          elsif db >= 0.0 # edge enters
+            f = da / (da - db)
+            out << Egui::Pos2.new(a.x + (b.x - a.x) * f,
+              a.y + (b.y - a.y) * f)
+          end
+        end
+        out
+      end
+
+      # 135°-gradient color at (x, y) within `r`: t by the top-left →
+      # bottom-right diagonal (CSS linear-gradient(135deg)).
+      def self.grad_color_diag(c1 : Egui::Color32, c2 : Egui::Color32,
+                               x : Float64, y : Float64, r : Egui::Rect) : Egui::Color32
+        t = (((x - r.min.x) + (y - r.min.y)) /
+          {r.width + r.height, 1e-9}.max).clamp(0.0, 1.0)
+        Egui::Color32.new(
+          (c1.r.to_f + (c2.r.to_f - c1.r.to_f) * t).round.to_u8,
+          (c1.g.to_f + (c2.g.to_f - c1.g.to_f) * t).round.to_u8,
+          (c1.b.to_f + (c2.b.to_f - c1.b.to_f) * t).round.to_u8,
+          (c1.a.to_f + (c2.a.to_f - c1.a.to_f) * t).round.to_u8)
       end
 
       # Vertical-gradient color at `y` within `r` (Gouraud per-vertex).
@@ -2754,10 +3227,13 @@ module Egui
       # Triangle fan slice (center, p, q) with per-vertex gradient colors.
       def self.quad_pts_grad(center : Egui::Pos2, p : Egui::Pos2, q : Egui::Pos2,
                              c1 : Egui::Color32, c2 : Egui::Color32,
-                             r : Egui::Rect) : Nil
-        cc = grad_color(c1, c2, center.y, r)
-        pc = grad_color(c1, c2, p.y, r)
-        qc = grad_color(c1, c2, q.y, r)
+                             r : Egui::Rect, diag : Bool = false) : Nil
+        cc = diag ? grad_color_diag(c1, c2, center.x, center.y, r)
+                  : grad_color(c1, c2, center.y, r)
+        pc = diag ? grad_color_diag(c1, c2, p.x, p.y, r)
+                  : grad_color(c1, c2, p.y, r)
+        qc = diag ? grad_color_diag(c1, c2, q.x, q.y, r)
+                  : grad_color(c1, c2, q.y, r)
         LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
         LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
         LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, pc.r, pc.g, pc.b, pc.a)
@@ -2978,8 +3454,10 @@ module Egui
       # Walk the rounded perimeter clockwise: top edge → TR arc → right
       # edge → BR arc → bottom edge → BL arc → left edge → TL arc.
       # Straight edges carry only their endpoints — alpha never varies
-      # along an edge, so one quad per band spans it.
-      def self.rounded_perimeter(r : Egui::Rect, radius : Float64) : Array(PerimPt)
+      # along an edge, so one quad per band spans it. (`_sided` keeps it
+      # apart from the plain Array(Pos2) #rounded_perimeter the fill
+      # paths use — same name+signature would silently shadow it.)
+      def self.rounded_perimeter_sided(r : Egui::Rect, radius : Float64) : Array(PerimPt)
         radius = {radius, r.width / 2.0, r.height / 2.0}.min
         pts = [] of PerimPt
         corner = ->(cx : Float64, cy : Float64, a0 : Float64, s1 : Symbol, s2 : Symbol) do
@@ -3077,7 +3555,7 @@ module Egui
         # offset shape before blurring) — without it, an `offset` shows
         # a gap between the rect and the outward fade.
         rounded_rect_fill(base, radius, cmd.color)
-        pts = rounded_perimeter(base, radius)
+        pts = rounded_perimeter_sided(base, radius)
         # Bands cover the blur width; alpha stops follow exp(-2t²).
         bands = {blur.ceil.to_i, 1}.max.clamp(1..4)
         depths = Array.new(pts.size, blur)
@@ -3106,7 +3584,7 @@ module Egui
         return if d_top <= 0.0 && d_bottom <= 0.0 &&
                   d_left <= 0.0 && d_right <= 0.0
 
-        pts = rounded_perimeter(r, cmd.rounding)
+        pts = rounded_perimeter_sided(r, cmd.rounding)
         radius = {cmd.rounding, r.width / 2.0, r.height / 2.0}.min
         side = {r.width, r.height}.min / 2.0
         depths = pts.map do |(_, _, s1, s2)|

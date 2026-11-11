@@ -65,7 +65,7 @@ class Egui::Capybara::Raster
           next if ca <= 0
         end
         blend_px(x, y, Egui::Color32.rgba(cr, cg, cb, ca),
-          ca.to_f64 / 255.0, cmd.clip)
+          ca.to_f64 / 255.0, cmd.clip, corners: cmd.clip_corners)
       end
     end
   end

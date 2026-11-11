@@ -221,10 +221,15 @@ describe "ecss" do
     ctx.inspector.tab = :class
     ctx.ecss = Egui::Ecss::Session.new(ctx, path)
 
+    # Taller than ECSS_SCREEN: the buttonlike prop table grew a
+    # `background-gradient` row, and on 600px the "rounding" row (the
+    # test's click target) falls past the bottom edge.
+    screen = Egui::Rect.from_min_size(Egui::Pos2.zero,
+      Egui::Vec2.new(800.0, 800.0))
     t = 0.016
     draw = ->(events : Array(Egui::Event)) do
       t += 0.016
-      raw = Egui::RawInput.new(ECSS_SCREEN, events, t)
+      raw = Egui::RawInput.new(screen, events, t)
       ctx.begin_frame(raw)
       ctx.inspector.before_update
       ctx.central_panel do |ui|

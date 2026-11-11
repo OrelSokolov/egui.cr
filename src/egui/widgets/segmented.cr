@@ -54,7 +54,8 @@ module Egui
       ui.painter.rect(rect, rounding,
         class_vars.color("background",
           visuals.button_fill(false, false)),
-        visuals.button_stroke, 1.0)
+        visuals.button_stroke, 1.0,
+        corners: class_vars.rounding_corners?("rounding", rect))
 
       result : Response? = nil
       @labels.each_with_index do |label, i|

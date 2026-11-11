@@ -22,7 +22,9 @@
 #
 # `readonly: true` turns the widget into a scrolling text VIEW (what
 # ScrolledLabel builds on): no caret, no keyboard pass, no IME/soft
-# keyboard; click-drag selection, Copy and Select all keep working.
+# keyboard; click-drag selection and the Ctrl+C / Ctrl+A hotkeys (the
+# label-parity block in #ui, active while no text editor owns the
+# keyboard) plus the Copy / Select all context menu keep working.
 
 module Egui
   class TextArea
@@ -44,6 +46,24 @@ module Egui
                    @cursor_style : Symbol = :line,
                    @cursor_blinks : Bool = true,
                    @readonly : Bool = false)
+    end
+
+    # Styled through the `textarea` class, the same cascade as every
+    # text widget: the textlike keys (`text_color`, `font_size`,
+    # `font_weight`, `font_family`) land in the effective Style (see
+    # #ui), plus the box keys `fill`, `stroke`/`stroke_width.*` and
+    # `rounding` (unset keys keep the Visuals slots — same shape as
+    # `text_edit`).
+    def style_class : String?
+      "textarea"
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("fill", :color),
+        StyleProp.new("stroke", :color, states: true),
+        StyleProp.new("stroke_width", :box),
+        StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0)]
     end
 
     # Cross-frame state for the virtual big-text mode: TextArea widgets
@@ -169,12 +189,19 @@ module Egui
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
+      # Class rules + the per-element override ride the SAME cascade as
+      # every text widget: they apply over the theme Style before
+      # anything reads it, so `text_color` tints the text, caret and
+      # hint (all painted from `visuals.text_color`) and `font_size`/
+      # `font_weight`/`font_family` drive the layout — no per-site
+      # plumbing below.
+      vars = style_vars(ui, id)
+      style = effective_style(ui, id, vars)
       font_size = style.font_size
       fonts = ui.ctx.fonts_for(style.font_family)
       memory = ui.ctx.memory
       input = ui.ctx.input
-      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
 
       anchor_id = id.child(ANCHOR_SALT)
       scroll_id = id.child(SCROLL_SALT)
@@ -193,7 +220,6 @@ module Egui
 
       width = ui.available_width
       height = @rows * line_h + inset.y * 2.0
-      vars = style_vars(ui, id)
       sized = styled_size(Vec2.new(width, height), vars, ui, id)
       rect = ui.allocate_at_least(sized)
       response = ui.interact(rect, id,
@@ -232,7 +258,19 @@ module Egui
       max_offset = {content_h - view_h, 0.0}.max
 
       # --- scrolling: kinetic, the same scheme as ScrollArea ---------
-      memory.register_scroll_area(scroll_id, rect, ui.layer)
+      # Scroll chaining (browser rule): a textarea whose content FITS
+      # the viewport cannot scroll, so it does NOT claim the wheel —
+      # the parent scrollable under the pointer gets the delta instead.
+      # Without this a page of readonly code panels would swallow every
+      # wheel notch over them. Textareas scroll vertically only. The
+      # threshold eats sub-pixel rounding dust (a row that overflows by
+      # 1-2px is not scrollable content — same leeway browsers give)
+      # and applies to READONLY panels too: an overflowing code panel
+      # scrolls its own content (the browser behavior the gallery code
+      # panels rely on), a fitting one chains the wheel to the page.
+      if max_offset > 4.0
+        memory.register_scroll_area(scroll_id, rect, ui.layer, can_h: false)
+      end
       kin = KineticScroller.new(
         memory.data.get_vec2(scroll_id, Vec2.zero).y,
         memory.data.get_f64(vel_id, 0.0),
@@ -406,6 +444,29 @@ module Egui
           single_line: false)
       changed |= menu_changed
 
+      # Unfocused clipboard shortcuts (label parity): a readonly view
+      # never holds focus, and an editable field keeps its selection
+      # painted after losing focus — both must answer the hotkeys the
+      # context menu advertises. Ctrl+C copies a live selection (any
+      # unfocused state), Ctrl+A selects all (readonly — a text VIEW,
+      # like the label). Gated on Focus#clipboard_shortcuts_free?: a
+      # focused text editor elsewhere owns the shortcuts, and this
+      # widget renders before its keyboard pass could consume the key.
+      if !response.has_focus? &&
+         ui.ctx.memory.focus.clipboard_shortcuts_free? &&
+         input.modifiers.command?
+        if input.consume_key(KeyCode::C)
+          if anchor >= 0 && anchor != cursor
+            sel_min = {cursor, anchor}.min
+            sel_max = {cursor, anchor}.max
+            Egui::SystemPorts::Clipboard.text = new_text[sel_min...sel_max]
+          end
+        elsif @readonly && input.consume_key(KeyCode::A)
+          cursor = new_text.size
+          anchor = 0
+        end
+      end
+
       # The galley was laid out from the OLD buffer before the keyboard
       # pass — after an edit the new caret index maps onto stale rows
       # (past a row end it lands on the phantom row below: the caret
@@ -465,6 +526,10 @@ module Egui
       # single-line TextEdit gets) — the box fill itself never
       # changes. `frame: false` skips the box entirely.
       visuals = style.visuals
+      # Box keys off the class bag: `fill` and `rounding` (unset keys
+      # keep the Visuals bezel defaults — same as TextEdit's box).
+      box_fill = vars.color?("fill") || visuals.button_weak
+      box_rounding = vars.f64?("rounding") || 4.0
       if @frame
         if response.has_focus?
           # The outside ring must escape the widget's own clip (the
@@ -475,13 +540,13 @@ module Egui
           ui.painter.rect(rect.expand(3.0), 7.0, nil,
             visuals.focus_ring, 3.0)
           ui.painter.clip = outer
-          ui.painter.rect(rect, 4.0, visuals.button_weak, nil, 0.0)
+          ui.painter.rect(rect, box_rounding, box_fill, nil, 0.0)
         else
           # Border styling rides the style bag: `stroke` color, and
           # per-side `stroke_width.*` overrides (unset keys keep the
           # Visuals bezel).
           stroke_color = vars.color?("stroke") || visuals.button_stroke
-          ui.painter.rect(rect, 4.0, visuals.button_weak,
+          ui.painter.rect(rect, box_rounding, box_fill,
             stroke_color, 1.0,
             stroke_sides: vars.stroke_sides?(stroke_color, 1.0))
         end
@@ -571,7 +636,7 @@ module Egui
               Rect.from_min_size(Pos2.new(inner.min.x + caret_x, top + 1.0),
                 Vec2.new(w, h)), 0.0, visuals.text_color)
             if row && (ch = row.text[col]?)
-              glyph_bg = @frame ? visuals.button_weak : visuals.window_fill
+              glyph_bg = @frame ? box_fill : visuals.window_fill
               size = row.runs.map(&.size).max? || font_size
               ui.painter.text(
                 Pos2.new(inner.min.x + caret_x, top + row.height / 2.0),
@@ -609,7 +674,13 @@ module Egui
 
       # --- scrollbar (direct control, no inertia) --------------------
       kin_velocity = kin.velocity
-      if content_h > view_h && view_h > 0.0
+      # Knife-edge guard: a panel whose content EXACTLY fits (one line
+      # in a one-row box, 8 rows in an 8-row box) sits at content_h ==
+      # view_h, and the layout leaves ~1e-13 of float dust on view_h
+      # that moves with the card's scroll position — a bare `>` blinks
+      # the bar on/off frame by frame while the card glides. Subpixel
+      # leeway, same spirit as the wheel-chaining threshold below.
+      if content_h > view_h + 0.5 && view_h > 0.0
         track = Rect.from_min_size(
           Pos2.new(rect.right - BAR_W - border, rect.top + border),
           Vec2.new(BAR_W, rect.height - border * 2.0))

@@ -257,6 +257,20 @@ module Egui
     def lost_focus?(id : Id) : Bool
       @id_previous_frame == id && @id != id
     end
+
+    # Are the clipboard shortcuts (Ctrl+C / Ctrl+A) free for label-style
+    # text selections (labels, readonly text views)? True when nothing
+    # holds keyboard focus, or the holder is NOT a text editor and has
+    # not claimed the whole keyboard: a focused text field owns copy/
+    # paste itself, and a keyboard-locking widget (a terminal forwards
+    # Ctrl+C as SIGINT) must not have its keys stolen by a label that
+    # renders earlier in the frame. `@text`/`@lock_kb` latch from the
+    # previous frame — text widgets set them every focused frame, so
+    # this stays false the whole time one holds focus.
+    def clipboard_shortcuts_free? : Bool
+      return true if @id.nil?
+      !@text && !@lock_kb
+    end
   end
 
   # egui `AnimationManager`: smooth Id-keyed scalar animation. When the

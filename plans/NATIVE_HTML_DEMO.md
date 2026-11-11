@@ -246,8 +246,8 @@ Notch — macOS-only, отдельно и потом (на Linux-дев-маши
 | # | Этап | Статус |
 |---|------|--------|
 | 1 | Каркас: окно, sidebar, 5 страниц, плеер-состояние, тикер, клавиши, данные `library.cr` | ✅ examples/music.cr + music_components/library.cr (данные 1:1 с library.c), bin/music, скриншоты tmp/music_*.png |
-| 2 | 3.6 + 3.7: param-defaults (~полдня) + хендлеры тегов демо | ✅ частично: реестр тегов уже был; param-defaults и хендлеры Icon/Cover/Visualizer/Heading — не начаты |
-| 3 | 3.5 + темы Nocturne/Aurora/Daylight; процедурные обложки + extraction акцента | обложки ✅ (в демо); акцент-оверрайд и темы — не начаты |
+| 2 | 3.6 + 3.7: param-defaults (~полдня) + хендлеры тегов демо | ✅ 2026-11-10 вторым заходом: `examples/music_exml.cr` + `assets/music.exml` + `assets/music.ecss` + теги `examples/music_components/music_tags.cr` — оракул 1:1, RMSE 41–65, находки и расхождения в plans/music-exml-stage2.md (включая правку парсера: цифры в именах атрибутов). param-defaults не понадобились (Component не использованы). **2026-11-11: этап 3 (live)** — порт поведения oracle/oracle_live (Vue): music_library.cr + music_player.cr + music_app.cr, акцент из обложки (обход через store-интерполяцию), очередь/shuffle/repeat, поиск, коллекция альбом/плейлист, island notices, клавиши; спеки music_* 28 примеров; детали в plans/music-exml-stage2.md |
+| 3 | 3.5 + темы Nocturne/Aurora/Daylight; процедурные обложки + extraction акцента | обложки ✅; акцент в демо ✅ (2026-11-11, через make_accent + store — оверрайд каскада не потребовался); темы Aurora/Daylight — не начаты |
 | 4 | 3.1 SDF-примитивы | ✅ Rect/Shadow(outset)/Circle, флаг EGUI_SDF; хвост: inset-тени, глифы |
 | 4b | 3.2 spring-слой | ✅ инкременты 1–2 (spring() в transition, appear: + painter-transform); хвост: paint-пружины hover/press, layout-пружины, ghost, reduce-motion=env |
 | 5 | 3.3 эффекты фона; «Animate» вкл/выкл | не начато — следующий заход |

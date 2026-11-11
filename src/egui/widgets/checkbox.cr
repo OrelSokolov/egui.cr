@@ -36,11 +36,14 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
-      style = effective_style(ui, id)
+      # Class rules through the full cascade: the textlike keys
+      # (`text_color` for the label, `font_*`) apply over the theme
+      # Style; the box keys below are read from the same bag raw.
+      class_vars = style_vars(ui, id)
+      style = effective_style(ui, id, class_vars)
       sp = style.spacing
       font_size = style.font_size
       visuals = style.visuals
-      class_vars = style_vars(ui, id)
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, style.font_weight, false)
       text_size = fonts.measure(@text, font_size)
@@ -73,7 +76,8 @@ module Egui
         ui.painter.rect(icon_rect,
           class_vars.rounding_px("rounding", icon_rect, 3.0),
           box_fill,
-          class_vars.color("box_stroke", visuals.button_stroke), 1.0)
+          class_vars.color("box_stroke", visuals.button_stroke), 1.0,
+          corners: class_vars.rounding_corners?("rounding", icon_rect))
         c = icon_rect.min
         w = icon_rect.width
         h = icon_rect.height
@@ -90,7 +94,8 @@ module Egui
           class_vars.rounding_px("rounding", icon_rect, 3.0),
           state_vars.color("box_fill",
             visuals.button_fill(response.hovered?, response.active?)),
-          class_vars.color("box_stroke", visuals.button_stroke), 1.0)
+          class_vars.color("box_stroke", visuals.button_stroke), 1.0,
+          corners: class_vars.rounding_corners?("rounding", icon_rect))
       end
 
       # A clamped host squeezes the rect below the natural size:

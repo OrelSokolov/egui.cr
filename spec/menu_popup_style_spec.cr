@@ -95,7 +95,7 @@ describe "menu.popup frame styling" do
     end
 
     3.times { |i| draw.call([] of Egui::Event, 0.016 * (i + 1)) }
-    btn = ctx.memory.scroll_rects.each_value.first[0].center
+    btn = ctx.memory.scroll_rects.each_value.first.rect.center
     draw.call([Egui::Event.pointer_moved(btn),
       Egui::Event.pointer_pressed(btn)], 0.064)
     draw.call([Egui::Event.pointer_released(btn)], 0.080)

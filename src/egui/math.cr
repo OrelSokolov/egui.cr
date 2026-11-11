@@ -160,6 +160,15 @@ module Egui
       Rect.new(min + v, max + v)
     end
 
+    # Axis-aligned intersection (an empty result renders nothing —
+    # callers treat min > max as "no overlap").
+    def intersect(other : Rect) : Rect
+      Rect.new(
+        Pos2.new({min.x, other.min.x}.max, {min.y, other.min.y}.max),
+        Pos2.new({max.x, other.max.x}.min, {max.y, other.max.y}.min)
+      )
+    end
+
     def union(other : Rect) : Rect
       Rect.new(
         Pos2.new({min.x, other.min.x}.min, {min.y, other.min.y}.min),

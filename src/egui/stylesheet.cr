@@ -50,7 +50,7 @@
 module Egui
   # The closed vocabulary of stylable values (keeps `StyleVars` a plain
   # mergeable hash while still type-safe at the getter level).
-  alias StyleValue = Color32 | Float64 | Int32 | Bool | String | StyleLength
+  alias StyleValue = Color32 | Float64 | Int32 | Bool | String | StyleLength | Gradient | CornerRadii
 
   # A length with a unit (CSS-like responsive sizing): `50%`, `10vw`,
   # `4vmin`, `1.5rem`. A plain `Float64` in a `StyleVars` bag stays a
@@ -96,24 +96,45 @@ module Egui
     end
 
     def resolve(ui : Ui, axis : Symbol = :x) : Float64?
-      case @unit
-      when :px   then @value
-      when :rem  then @value * ui.ctx.style.font_size * ui.ctx.font_scale
-      when :vw   then @value / 100.0 * ui.ctx.input.screen_rect.width
-      when :vh   then @value / 100.0 * ui.ctx.input.screen_rect.height
-      when :vmin
-        r = ui.ctx.input.screen_rect
-        @value / 100.0 * {r.width, r.height}.min
-      when :vmax
-        r = ui.ctx.input.screen_rect
-        @value / 100.0 * {r.width, r.height}.max
-      when :safe_top    then @value * ui.ctx.safe_area.top
-      when :safe_right  then @value * ui.ctx.safe_area.right
-      when :safe_bottom then @value * ui.ctx.safe_area.bottom
-      when :safe_left   then @value * ui.ctx.safe_area.left
-      when :percent
+      if @unit == :percent
         base = axis == :x ? percent_base_x(ui) : percent_base_y(ui)
         base ? @value / 100.0 * base : nil
+      else
+        resolve_ctx(ui.ctx, axis)
+      end
+    end
+
+    # The same resolution against an EXPLICIT containing block (the
+    # `position` offset keys: their `%` is a percent of the block, not
+    # of the ambient Ui's region — see Ui#box_positioning). Every
+    # non-percent unit resolves against the Context exactly as in
+    # #resolve.
+    def resolve_in(base : Rect, ctx : Context, axis : Symbol = :x) : Float64?
+      if @unit == :percent
+        @value / 100.0 * (axis == :x ? base.width : base.height)
+      else
+        resolve_ctx(ctx, axis)
+      end
+    end
+
+    # Every Context-derived unit (`px`, `rem`, `vw`/`vh`/`vmin`/`vmax`,
+    # `env()` insets) — shared by #resolve and #resolve_in.
+    private def resolve_ctx(ctx : Context, axis : Symbol) : Float64?
+      case @unit
+      when :px   then @value
+      when :rem  then @value * ctx.style.font_size * ctx.font_scale
+      when :vw   then @value / 100.0 * ctx.input.screen_rect.width
+      when :vh   then @value / 100.0 * ctx.input.screen_rect.height
+      when :vmin
+        r = ctx.input.screen_rect
+        @value / 100.0 * {r.width, r.height}.min
+      when :vmax
+        r = ctx.input.screen_rect
+        @value / 100.0 * {r.width, r.height}.max
+      when :safe_top    then @value * ctx.safe_area.top
+      when :safe_right  then @value * ctx.safe_area.right
+      when :safe_bottom then @value * ctx.safe_area.bottom
+      when :safe_left   then @value * ctx.safe_area.left
       else nil
       end
     end
@@ -204,9 +225,10 @@ module Egui
   # builds its editors purely from these declarations.
   struct StyleProp
     getter key : String
-    # :color | :number | :box | :bool | :string | :weight | :enum —
-    # picks the inspector editor (:enum renders a SelectBox over
-    # #options, "не в списке" values still display).
+    # :color | :number | :box | :bool | :string | :weight | :enum |
+    # :gradient — picks the inspector editor (:enum renders a SelectBox
+    # over #options, "не в списке" values still display; :gradient is a
+    # free-text editor parsed by `Gradient.parse?`).
     getter kind : Symbol
     getter label : String
     # True when the key also makes sense as a `:hover`/`:active` state
@@ -268,6 +290,12 @@ module Egui
         # fill. Editable per state like `background` itself.
         StyleProp.new("background2", :color, states: true,
           label: "background 2 (gradient)"),
+        # A full CSS-like gradient — linear/radial, any angle, any
+        # number of stops (`linear-gradient(135deg, #a, #b 60%)` …).
+        # A deliberate ECSS deviation from CSS (which packs gradients
+        # into `background-image` layers): here it is a property of its
+        # own, and it WINS over background/background2 when set.
+        StyleProp.new("background-gradient", :gradient, states: true),
         StyleProp.new("stroke", :color, states: true),
         # Border thickness, per-side box (`stroke_width.top: 0` hides
         # one side — CSS `border-style: solid none none none`). Shared
@@ -305,6 +333,12 @@ module Egui
       color?(key) || fallback
     end
 
+    # A gradient value (`background-gradient`): nil when the key is
+    # unset or holds something else (typos degrade to "unset").
+    def gradient?(key : String) : Gradient?
+      self[key]?.as?(Gradient)
+    end
+
     # Integers coerce (CSS vibes: `{"height" => 24}` reads as 24.0).
     def f64?(key : String) : Float64?
       case v = self[key]?
@@ -325,15 +359,41 @@ module Egui
     # stadium shape macOS paints on switch tracks, progress fills and
     # pill inputs. The backends clamp any radius to min(w,h)/2 anyway,
     # so the keyword just names that limit instead of hardcoding a px
-    # value that breaks the moment the widget resizes. Any other value
-    # (or none) falls back like #f64.
+    # value that breaks the moment the widget resizes. A per-corner
+    # value (the CSS `border-radius: a b c d` shorthand) reads as its
+    # largest corner (already fit to the rect). Any other value (or
+    # none) falls back like #f64.
     def rounding_px(key : String, rect : Rect, fallback : Float64) : Float64
       case v = self[key]?
-      when Float64 then v
-      when Int32   then v.to_f64
-      when String  then v == "capsule" ? {rect.width, rect.height}.min / 2.0 : fallback
-      else              fallback
+      when Float64     then v
+      when Int32       then v.to_f64
+      when CornerRadii then v.fit(rect).max
+      when String      then v == "capsule" ? {rect.width, rect.height}.min / 2.0 : fallback
+      else                  fallback
       end
+    end
+
+    # The per-corner form of #rounding_px (the CSS `border-radius: a b
+    # c d` shorthand): a CornerRadii value resolves against the rect
+    # via `CornerRadii#fit` (the standard's corner-conflict rule);
+    # scalars and "capsule" behave exactly like #rounding_px. nil when
+    # the key holds no per-corner value — callers that only ever set a
+    # scalar keep their uniform path untouched.
+    def rounding_corners?(key : String, rect : Rect) : CornerRadii?
+      case v = self[key]?
+      when CornerRadii then v.fit(rect)
+      else nil
+      end
+    end
+
+    # #rounding_corners? with the scalar fallbacks of #rounding_px
+    # resolved — the one-call form for paint sites that pass
+    # `corners:` straight to `Painter#rect` (uniform values come back
+    # as a uniform CornerRadii).
+    def rounding_corners(key : String, rect : Rect,
+                         fallback : Float64) : CornerRadii
+      rounding_corners?(key, rect) ||
+        CornerRadii.uniform(rounding_px(key, rect, fallback))
     end
 
     # A length key resolved to logical points against the widget's
@@ -356,6 +416,21 @@ module Egui
     def length_px(key : String, ui : Ui, fallback : Float64,
                   axis : Symbol = :x) : Float64
       length_px?(key, ui, axis) || fallback
+    end
+
+    # #length_px? against an explicit containing block: plain numbers
+    # pass through, `%` resolves to the BLOCK's side (not the ambient
+    # Ui's region — the `position` offset keys, see Ui#box_positioning),
+    # every other unit resolves against the Context as usual. nil when
+    # the key is unset or holds a non-length.
+    def length_px_in?(key : String, base : Rect, ctx : Context,
+                      axis : Symbol = :x) : Float64?
+      case v = self[key]?
+      when Float64     then v
+      when Int32       then v.to_f64
+      when StyleLength then v.resolve_in(base, ctx, axis)
+      else nil
+      end
     end
 
     # String values (font families, class names…).
@@ -1186,6 +1261,13 @@ module Egui
       when {Color32, Color32} then a.lerp(b, u)
       when {Float64, Float64} then a + (b - a) * u
       when {Int32, Int32}     then (a + (b - a) * u).round.to_i32
+      when {CornerRadii, CornerRadii}
+        # Per-corner rounding lerps corner-wise (a `rounding` key
+        # animating between two border-radius shorthands).
+        CornerRadii.new(a.top_left + (b.top_left - a.top_left) * u,
+          a.top_right + (b.top_right - a.top_right) * u,
+          a.bottom_right + (b.bottom_right - a.bottom_right) * u,
+          a.bottom_left + (b.bottom_left - a.bottom_left) * u)
       else
         u < 0.5 ? (a || b).not_nil! : (b || a).not_nil!
       end

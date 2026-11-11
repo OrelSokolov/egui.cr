@@ -59,6 +59,23 @@ describe "html vocabulary" do
     html_texts(ctx).first.color.should eq(red)
   end
 
+  it "p with inline background paints the swatch fill" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        # the html_gallery "fill palette strip" idiom: a label sized
+        # through the universal width/height attrs, filled inline.
+        ui.p(" ", style: "background: #e01b4c", width: 44, height: 26)
+      end
+    end
+    red = Egui::Color32.rgb(224, 27, 76)
+    swatches = ctx.painter.commands.select(Egui::RectCmd)
+      .select { |r| r.fill == red }
+    swatches.size.should eq(1)
+    swatches.first.rect.width.should be_close(44.0, 0.01)
+    swatches.first.rect.height.should be_close(26.0, 0.01)
+  end
+
   it "hidden: skips rendering entirely" do
     ctx = Egui::Context.new
     html_frame(ctx) do |c|
@@ -112,6 +129,75 @@ describe "html vocabulary" do
     texts.find { |t| t.text == "mono" }.not_nil!.family.should eq("monospace")
   end
 
+  it "sub/sup shift the baseline below/above the line" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.span do |s|
+          s.label("H")
+          s.sub("2")
+          s.label("O")
+          s.sup("2")
+        end
+      end
+    end
+    texts = html_texts(ctx)
+    texts.map(&.text).should eq(["H", "2", "O", "2"])
+    h, sub2, o, sup2 = texts
+    f = ctx.style.font_size
+    # 0.75em script size on both
+    sub2.size.should be_close(f * 0.75, 0.01)
+    sup2.size.should be_close(f * 0.75, 0.01)
+    # the base letters share one line (one em center)…
+    h.pos.y.should be_close(o.pos.y, 0.01)
+    # …the subscript drops below it (0.25em baseline drop plus the
+    # em-center delta), the superscript rises above it
+    sub2.pos.y.should be > h.pos.y + f * 0.25
+    sup2.pos.y.should be < h.pos.y - f * 0.2
+    # the script hugs its base letter: no item_spacing word gap
+    # between "H" and "2" — just the glyph advance
+    sub2.pos.x.should be < h.pos.x + f * 0.75
+  end
+
+  it "br is a hard break inside span (a no-wrap row)" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.span do |s|
+          s.label("before break")
+          s.br
+          s.label("after break")
+        end
+      end
+    end
+    texts = html_texts(ctx)
+    texts.map(&.text).should eq(["before break", "after break"])
+    after = texts[1].pos
+    # the second run starts on a fresh line: same left edge, below
+    # the first — not pinned at the row's right edge.
+    after.x.should eq(texts[0].pos.x)
+    after.y.should be > texts[0].pos.y
+  end
+
+  it "br in a wrapping row and in vertical flow" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.horizontal do |row|
+          row.label("one")
+          row.br
+          row.label("two")
+        end
+        ui.br # vertical flow: a no-op, the next widget is its own line
+        ui.label("three")
+      end
+    end
+    texts = html_texts(ctx).map { |t| {t.text, t.pos} }
+    texts.map(&.[0]).should eq(["one", "two", "three"])
+    texts[1][1].y.should be > texts[0][1].y
+    texts[2][1].x.should eq(texts[1][1].x)
+  end
+
   it "ol numbers its li rows; ul does not" do
     ctx = Egui::Context.new
     html_frame(ctx) do |c|
@@ -124,6 +210,50 @@ describe "html vocabulary" do
     texts.should contain("1.")
     texts.should contain("2.")
     texts.should contain("•")
+  end
+
+  it "a ul nested inside an ol shows bullets and keeps outer numbering" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.ol do |list|
+          list.li("one")
+          list.li do |row|
+            row.ul { |inner| inner.li("inner a"); inner.li("inner b") }
+          end
+          list.li("three")
+        end
+      end
+    end
+    texts = html_texts(ctx).map(&.text)
+    texts.count("•").should eq(2)
+    texts.should contain("1.")
+    texts.should contain("2.")
+    texts.should contain("3.")
+    texts.should_not contain("3.1.")
+  end
+
+  it "an ol nested inside an ol restarts at 1 (plain HTML numbering)" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.ol do |list|
+          list.li("one")
+          list.li do |row|
+            row.ol { |inner| inner.li("inner a"); inner.li("inner b") }
+          end
+          list.li("three")
+        end
+      end
+    end
+    texts = html_texts(ctx).map(&.text)
+    # the nested ol numbers its own rows from 1 — hierarchical
+    # "2.1." markers are CSS counters, not HTML
+    texts.count("1.").should eq(2) # outer item one + inner item one
+    texts.count("2.").should eq(2) # outer item two + inner item two
+    texts.should contain("3.")     # outer numbering restored after the nested ol
+    texts.should_not contain("2.1.")
+    texts.should_not contain("2.2.")
   end
 
   it "blockquote paints a left accent stroke frame" do
@@ -148,6 +278,28 @@ describe "html vocabulary" do
       end
     end
     html_texts(ctx).map(&.text).join.should contain("Docs")
+  end
+
+  it "fieldset paints the frame with the legend on the top border" do
+    ctx = Egui::Context.new
+    stroke = ctx.style.visuals.window_stroke
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.fieldset("Legend caption") { |f| f.p("content") }
+      end
+    end
+    # the frame: per-side stroke, top off (the caption breaks the line)
+    frames = ctx.painter.commands.select(Egui::RectCmd)
+      .select(&.stroke_sides).reject(&.stroke_sides.not_nil!.left.width.zero?)
+    frames.size.should be > 0
+    sides = frames.first.stroke_sides.not_nil!
+    sides.top.on?.should be_false
+    sides.left.color.should eq(stroke)
+    # the top border redrawn as two segments around the caption text
+    segs = ctx.painter.commands.select(Egui::LineCmd)
+      .select { |l| l.color == stroke }
+    segs.size.should eq(2)
+    html_texts(ctx).map(&.text).join.should contain("Legend caption")
   end
 
   it "progress renders the bar track" do

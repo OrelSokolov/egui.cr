@@ -61,15 +61,27 @@ module Egui
     # (Win95 pages a little less than a full page so context stays
     # visible at the jump).
     PAGE = 0.8
+    # Virtualization: how far past the viewport edge a cached row is
+    # still built (straddling rows must not pop in), and the extent
+    # cache cap (a filtered list leaves stale keys behind; wholesale
+    # clear at the cap).
+    VIRTUAL_MARGIN  = 128.0
+    VIRTUAL_ROWS_MAX = 8192
 
     # `id:` pins the offset/content cells to a STABLE Id instead of the
     # hosting Ui's child counter — for hosts that need to reach the
     # scroll state directly (SelectBox's follow-the-active-row).
+    # `virtual: true` enables row virtualization (Ui#virtual_row): the
+    # content block still enumerates every row, but rows cached as
+    # offscreen are not built — the scroll replays their extent (see
+    # VirtualRowState). Heights are invalidated wholesale when the
+    # viewport width changes.
     def initialize(@max_height : Float64? = nil,
                    @scrollbar : Symbol = :overlay,
                    @vbar : Symbol = :right,
                    @hbar : Symbol? = nil,
-                   @id : Id? = nil)
+                   @id : Id? = nil,
+                   @virtual : Bool = false)
     end
 
     def classic? : Bool
@@ -111,7 +123,10 @@ module Egui
           {height - hbar_h, 0.0}.max))
 
       offset = memory.data.get_vec2(id, Vec2.zero)
-      prev_content = memory.data.get_vec2(id.child(0), Vec2.new(0.0, height))
+      # Sentinel content (negative) = first frame: the real content size
+      # is written at the END of the first render, so "never measured"
+      # must count as scrollable (the sink registers from frame one).
+      prev_content = memory.data.get_vec2(id.child(0), Vec2.new(-1.0, -1.0))
       kin_id = id.child(3)
       h_kin_id = id.child(6)
       memory.use_id(kin_id)
@@ -172,7 +187,23 @@ module Egui
       end
       offset = Vec2.new(h_kin.try(&.offset) || 0.0, v_kin.offset)
 
-      memory.register_scroll_area(id, viewport, ui.layer)
+      # Scroll chaining (browser rule): a viewport whose content fits
+      # (neither axis can scroll) does not claim the wheel — the sink
+      # UNDER it gets the delta instead. Each axis is declared separately
+      # (an hbar-only strip leaves the vertical wheel to the parent).
+      # First frame (sentinel prev_content) counts as scrollable on both
+      # axes. The offset/content cells stay marked used either way, so
+      # the scroll position survives a temporarily-shrinking content.
+      first_frame = prev_content.y < 0.0
+      can_v = first_frame || max_v_prev > 0.0
+      can_h = !@hbar.nil? && (first_frame || max_h_prev > 0.0)
+      if can_v || can_h
+        memory.register_scroll_area(id, viewport, ui.layer,
+          can_v: can_v, can_h: can_h)
+      else
+        memory.use_id(id)
+        memory.use_id(id.child(0))
+      end
 
       # Lay the content out inside the viewport shifted by the offset;
       # clip painting to the viewport (intersected with the ambient
@@ -198,6 +229,22 @@ module Egui
       inner.v_overflow = true
       inner.layer = ui.layer
       inner.clip = Rect.new(clip_min, clip_max)
+      if @virtual
+        # Row virtualization state (Ui#virtual_row): the extent cache
+        # lives in Memory (survives frames), keyed by this scroll's
+        # id; the visible band is padded by VIRTUAL_MARGIN so a row
+        # straddling the edge is built (no pop-in at the fold). A
+        # viewport width change invalidates every height — the next
+        # frame re-measures all rows once.
+        heights = memory.virtual_rows[id] ||= {} of UInt64 => Tuple(Float64, UInt64)
+        if memory.virtual_row_widths[id]? != viewport.width
+          heights.clear
+          memory.virtual_row_widths[id] = viewport.width
+        end
+        heights.clear if heights.size > VIRTUAL_ROWS_MAX
+        inner.virtual_rows = VirtualRowState.new(heights,
+          viewport.min.y - VIRTUAL_MARGIN, viewport.max.y + VIRTUAL_MARGIN)
+      end
       yield inner
 
       content_size = inner.min_rect.size
@@ -217,7 +264,10 @@ module Egui
       covering = viewport.union(vbar_rect(viewport))
       covering = covering.union(hbar_rect(viewport)) if @hbar
       v_direct = false
-      if content_size.y > viewport.height && viewport.height > 0.0
+      # Same knife-edge guard as TextArea's bar: content_size carries
+      # ~1e-13 of layout float dust — a bare `>` blinks the bar on an
+      # exactly-fitting page.
+      if content_size.y > viewport.height + 0.5 && viewport.height > 0.0
         if classic?
           _bar, v_direct = classic_vbar(ui, id, viewport, content_size.y,
             max_v, offset, v_kin)
@@ -232,7 +282,7 @@ module Egui
       end
       h_direct = false
       if (hk = h_kin)
-        if content_size.x > viewport.width && viewport.width > 0.0
+        if content_size.x > viewport.width + 0.5 && viewport.width > 0.0
           if classic?
             _bar, h_direct = classic_hbar(ui, id, viewport, content_size.x,
               max_h, offset, hk)

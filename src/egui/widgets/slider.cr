@@ -139,7 +139,12 @@ module Egui
 
     private def render(ui : Ui) : Response
       id = resolve_id(ui)
-      style = effective_style(ui, id)
+      # Class rules ride the full cascade: textlike keys (`text_color`
+      # for the label line, `font_*`) land in the effective Style —
+      # the raw box keys (`stroke`, `fill`, `handle_size`) are read
+      # from the same bag below.
+      class_vars = style_vars(ui, id)
+      style = effective_style(ui, id, class_vars)
       sp = style.spacing
       thickness = sp.interact_size.y
 
@@ -173,7 +178,7 @@ module Egui
       width = {sp.slider_width, ui.available_width}.max
       outer_size = Vec2.new(width,
         above_h + label_h + thickness + tick_h + tips_h)
-      outer_size = styled_size(outer_size, style_vars(ui, id), ui, id)
+      outer_size = styled_size(outer_size, class_vars, ui, id)
       width = outer_size.x
       outer = ui.allocate_at_least(outer_size)
       # The rail row sits under the label line and the up-tick band, at
@@ -190,7 +195,6 @@ module Egui
 
       # Paint: rail + handle circle at the value position.
       visuals = style.visuals
-      class_vars = style_vars(ui, id)
       rail_y = rect.center.y
       rail = Rect.from_min_size(
         Pos2.new(rect.left, rail_y - sp.slider_rail_width / 2.0),

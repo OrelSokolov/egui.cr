@@ -491,6 +491,9 @@ module Egui
       # is that menu's last item, not a second popup).
       @inspector.try &.after_update if @inspector_enabled
       @in_frame = false
+      # A frame closed — the layout cache's generations age by one (its
+      # stale eviction runs on this clock; see Fonts#tick_layout_cache).
+      @fonts.tick_layout_cache
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
       Egui::Bench.span("Painter#commands_in_layer_order") do
         @painter.commands_in_layer_order
@@ -1224,6 +1227,7 @@ module Egui
         Rect.from_min_size(anchor + Vec2.new(pad.x, pad.y),
           Vec2.new(width - 2 * pad.x, 1e6)))
       ui.layer = layer
+      clip_from = {@painter.commands.size, Order::Foreground.z}
       yield ui
 
       outer = Rect.new(
@@ -1246,9 +1250,12 @@ module Egui
       # shadow radius follows the frame's.
       stroke = nil if stroke_w <= 0.0
       rounding = vars.try(&.rounding_px("rounding", outer, 4.0)) || 4.0
+      # Per-corner rounding (CSS `border-radius: a b c d`) rides the
+      # same key; the shadow below keeps the scalar (largest corner).
+      corners = vars.try(&.rounding_corners?("rounding", outer))
       @painter.set(bg_index,
         RectCmd.new(outer, outer, rounding, fill, stroke, stroke_w,
-          stroke_sides: sides))
+          stroke_sides: sides, corners: corners))
       if (spec = vars.try(&.shadow?)) && !spec.inset?
         # Wide clip: the shadow bleeds past the frame's own rect, and
         # the popup rides the Foreground layer anyway (no host viewport
@@ -1258,6 +1265,10 @@ module Egui
           ShadowCmd.new(wide, outer, rounding, spec.blur, spec.spread,
             spec.offset, spec.color, false))
       end
+      # The popup frame's rounded corners clip its content (menus,
+      # combo lists — the same engine-level rule as Ui#box).
+      radii = corners || CornerRadii.uniform(rounding)
+      @painter.clip_apply(clip_from, outer, radii) if radii.max > 0.0
       @painter.layer = prev_layer
       @painter.clip = prev_clip
     end

@@ -82,7 +82,7 @@ class Egui::Capybara::Raster
           next if x < 0 || x >= width
           a = cov[row * w + col].to_f64 / 255.0
           next if a <= 0.0
-          blend_px(x, y, cmd.color, a, cmd.clip)
+          blend_px(x, y, cmd.color, a, cmd.clip, corners: cmd.clip_corners)
         end
       end
     end

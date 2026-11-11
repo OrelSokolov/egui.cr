@@ -193,7 +193,7 @@ module Egui
       # box
       getter box_row : Bool
       getter box_wrap : Bool
-      getter box_fill : Color32?
+      getter box_fill : Color32 | Gradient?
       getter box_stroke : Color32?
       getter box_rounding : Float64
       getter box_padding : Float64?
@@ -233,7 +233,8 @@ module Egui
         @box_row = @attrs["direction"]? == "row"
         @box_wrap = @attrs["wrap"]? != "false"
         @box_fill = Exml.parse_box_color(@attrs["fill"]?)
-        @box_stroke = Exml.parse_box_color(@attrs["border"]?)
+        # border stays a plain color — gradients are a fill concern
+        @box_stroke = @attrs["border"]?.try { |b| Exml.parse_box_stroke(b) }
         @box_rounding = @attrs["rounding"]?.try(&.to_f?) || 6.0
         @box_padding = @attrs["padding"]?.try(&.to_f?)
         @box_class = @attrs["class"]?
@@ -257,11 +258,22 @@ module Egui
     # ── parser ─────────────────────────────────────────────────────────
 
     # `fill=`/`border=` color for `<box>`: #rgb / #rrggbb / #rrggbbaa,
-    # parsed once at Node build time (nil for absent or malformed —
-    # the linter flags the malformed ones at validate time).
-    def self.parse_box_color(s : String?) : Color32?
+    # or a full gradient spelling (`linear-gradient(…)`/`radial-
+    # gradient(…)`, the same grammar as the ECSS `background-gradient`
+    # key) — parsed once at Node build time (nil for absent or
+    # malformed — the linter flags the malformed ones at validate time).
+    def self.parse_box_color(s : String?) : Color32 | Gradient?
       return nil unless s
-      return nil unless s.starts_with?('#')
+      if (g = Gradient.parse?(s))
+        g
+      elsif s.starts_with?('#')
+        parse_hex_color(s)
+      else
+        nil
+      end
+    end
+
+    private def self.parse_hex_color(s : String) : Color32?
       hex = s[1..]
       hex = hex.chars.map { |c| "#{c}#{c}" }.join if hex.size == 3
       return nil unless hex.size == 6 || hex.size == 8
@@ -270,6 +282,12 @@ module Egui
       a = hex.size == 8 ? pair.call(6).to_u8 : 255u8
       Color32.new(pair.call(0).to_u8, pair.call(2).to_u8,
         pair.call(4).to_u8, a)
+    end
+
+    # `border=` is a plain color key (nil for malformed/absent).
+    def self.parse_box_stroke(s : String) : Color32?
+      return nil unless s.starts_with?('#')
+      parse_hex_color(s)
     end
 
     # ── codegen (plans/NativeHTML.md §6, Route A) ──────────────────────
@@ -449,10 +467,13 @@ module Egui
       return {nil, nil} unless name
       attrs = {} of String => String
       if rest = parts[1]?
-        rest.scan(/([a-zA-Z_]+)\s*=\s*"([^"]*)"/) do |m|
+        # Attribute names: letter/underscore first, then letters/digits/
+        # underscores (HTML rules — `c1=`/`s20=` are valid names; a
+        # digit-less class silently dropped them as "junk").
+        rest.scan(/([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"/) do |m|
           attrs[m[1].downcase] = unescape(m[2])
         end
-        stray = rest.gsub(/\s*([a-zA-Z_]+)\s*=\s*"[^"]*"/, "").strip
+        stray = rest.gsub(/\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"[^"]*"/, "").strip
         STDERR.puts "exml: junk in <#{name}> tag: #{stray}" unless stray.empty?
       end
       {name, attrs}

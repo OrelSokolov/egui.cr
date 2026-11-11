@@ -2,9 +2,10 @@
 # `stroke_width.<side>` overrides the scalar `stroke_width` per side
 # (width 0 = side off), `stroke.<side>` overrides the shared `stroke`
 # color — the same key scheme `padding` uses. Resolved by
-# `StyleVars#stroke_sides?`, carried by `RectCmd#stroke_sides`, painted
-# per side by both backends (sokol bars + corner rings; the CPU raster
-# mirrors them via segment/arc distances).
+# `StyleVars#stroke_sides?`, carried by `RectCmd#stroke_sides` and
+# painted by the standard two-rect overlay in both backends
+# (`Egui.border_overlay_layers`: outer border plate(s) + the inset
+# background, corner radius r − adjacent border).
 
 require "spec"
 require "../src/egui"

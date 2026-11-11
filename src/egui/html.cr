@@ -92,29 +92,62 @@ module Egui
     end
 
     # The mutable box paint parameters an inline `style:` may touch
-    # on a container (nil = keep the call-site default).
+    # on a container (nil = keep the call-site default). The
+    # `position`/offset fields stay RAW strings (unit spellings like
+    # "10%" pass through) — `ui.div` forwards them to `Ui#box`, whose
+    # #box_positioning resolves them against the containing block.
     class BoxParams
       property fill : Color32?
       property stroke : Color32?
       property rounding : Float64?
+      property corners : CornerRadii?
       property margin : Vec2?
+      property position : String?
+      property top : String?
+      property right : String?
+      property bottom : String?
+      property left : String?
 
       def initialize(@fill = nil, @stroke = nil, @rounding = nil,
-                     @margin = nil)
+                     @corners = nil, @margin = nil,
+                     @position = nil, @top = nil, @right = nil,
+                     @bottom = nil, @left = nil)
+      end
+    end
+
+    # The CSS `position` keywords, inline `style:` spelling → the
+    # `Ui#box(position:)` symbols ("static"/unset read as nil — the
+    # plain flow path).
+    def self.position_sym(s : String?) : Symbol?
+      case s
+      when "relative" then :relative
+      when "absolute" then :absolute
+      when "fixed"    then :fixed
+      else nil
       end
     end
 
     # The container-level `style:` vocabulary — the box (div) paint
     # parameters (CSS spellings accepted alongside the engine keys).
-    def self.box_style(style : String, base : BoxParams) : BoxParams
-      declarations(style).each do |key, val|
+    def self.box_style(style : String, base : BoxParams) : BoxParams      declarations(style).each do |key, val|
         case key
         when "background", "background-color"
           base.fill = color(val)
         when "stroke", "border-color"
           base.stroke = color(val)
         when "border-radius", "rounding"
-          base.rounding = val.to_f64?
+          # The CSS shorthand (1-4 radii, `px` optional): multi-value
+          # parses per-corner, a single value stays the scalar it
+          # always was.
+          if (c = CornerRadii.parse?(val))
+            if c.uniform?
+              base.rounding = c.top_left
+            else
+              base.corners = c
+            end
+          else
+            base.rounding = val.to_f64?
+          end
         when "padding"
           if (n = val.to_f64?)
             base.margin = Vec2.new(n, n)
@@ -129,6 +162,16 @@ module Egui
             m = base.margin || Vec2.zero
             base.margin = Vec2.new(m.x, n)
           end
+        when "position"
+          base.position = val
+        when "top"
+          base.top = val
+        when "right"
+          base.right = val
+        when "bottom"
+          base.bottom = val
+        when "left"
+          base.left = val
         end
       end
       base
@@ -164,10 +207,31 @@ module Egui
   end
 
   class Context
-    # The `<ol>` frame-local counter (nil outside an ol — `li` shows
-    # the bullet marker then). Lives on the Context because the list
-    # body renders through child Ui instances.
-    property html_ol_counter : Int32? = nil
+    # One open list (`<ul>`/`<ol>`) in the frame — the innermost list
+    # is the stack's last entry, one per nesting level. `li` reads the
+    # top entry: bullet marker for a `ul`, the next number of its own
+    # `ol` for an `ol` (a nested `ol` restarts at its `start`, like
+    # the browser — hierarchical "2.1." markers are CSS counters, not
+    # HTML). Lives on the Context because list bodies render through
+    # child Ui instances; a stack — not a single counter — is what
+    # keeps nested lists independent: a `ul` inside an `ol` shows
+    # glyphs, and closing the nested list restores the outer
+    # numbering untouched.
+    class HTMLListScope
+      # The number shown by this list's most recent `li` (start - 1
+      # before any li).
+      property counter : Int32
+
+      def initialize(@ordered : Bool, start : Int32)
+        @counter = start - 1
+      end
+
+      def ordered? : Bool
+        @ordered
+      end
+    end
+
+    property html_list_scopes : Array(HTMLListScope) = Array(HTMLListScope).new
 
     # `data_testid:` registry (the HTML `data-testid` attribute):
     # testid → the widget's Id, last writer wins, stable across
@@ -292,7 +356,10 @@ module Egui
 
     # `<div>` — the plain block container: `ui.box` in column flow.
     # `classes:` styles the box under the class path; inline `style:`
-    # touches the box paint (background/border/padding/rounding).
+    # touches the box paint (background/border/padding/rounding) and
+    # positioning — `position: fixed; top: 10; left: 10` (CSS §position,
+    # `absolute`/`fixed` take the box out of the flow, `relative`
+    # shifts it; offsets take units: `10`, `"10%"`, `"2vw"`).
     def div(**attrs, &block : Ui ->) : Rect?
       return html_skip(attrs) if html_hidden?(attrs)
       params = Html::BoxParams.new
@@ -304,8 +371,12 @@ module Egui
         rect = ui.box(
           style_class: html_class_path(attrs),
           fill: params.fill, stroke: params.stroke,
-          rounding: params.rounding || 6.0,
+          rounding: params.rounding || params.corners.try(&.max) || 6.0,
           margin: params.margin,
+          corners: params.corners,
+          position: Html.position_sym(params.position),
+          top: params.top, right: params.right,
+          bottom: params.bottom, left: params.left,
           &block
         )
       end
@@ -408,8 +479,8 @@ module Egui
 
     # `<strong>`/`<em>`/`<code>`/`<mark>`/`<small>`/`<sub>`/`<sup>` —
     # styled text runs (RichText). `mark` tints with the text
-    # selection color; `sub`/`sup` shrink to 0.75em (the engine does
-    # not shift baselines yet — SPEC.md records the deviation).
+    # selection color; `sub`/`sup` shrink to 0.75em and shift the
+    # baseline below/above the line (see #html_script_run).
     def strong(text : String, **attrs) : Response?
       html_widget(Label.new(RichText.new(text).bold), attrs)
     end
@@ -432,22 +503,55 @@ module Egui
         .small(style.font_size)), attrs)
     end
 
+    # sub: baseline dropped 0.25em below the parent line's; sup:
+    # raised 0.35em above it (browser ballpark for
+    # `vertical-align: sub/super` at a 0.75em script size).
     def sub(text : String, **attrs) : Response?
-      html_widget(Label.new(RichText.new(text)
-        .size(style.font_size * 0.75)), attrs)
+      html_script_run(text, style.font_size * 0.25, attrs)
     end
 
     def sup(text : String, **attrs) : Response?
-      html_widget(Label.new(RichText.new(text)
-        .size(style.font_size * 0.75)), attrs)
+      html_script_run(text, -style.font_size * 0.35, attrs)
+    end
+
+    # sub/sup core: the 0.75em run on a FULL line-height rect (via
+    # Label#line_height inflation), so the row's cross-axis centering
+    # (#allocate_space centers every widget by its rect height)
+    # aligns its em center with the sibling labels' — and the galley
+    # shifted by the baseline delta: the parent line's baseline sits
+    # (asc+desc)/2 below the row-box center (WrapState#emit_row's
+    # shared-baseline formula), so the shift is that offset plus the
+    # drop/raise, minus the small run's own em-center offset. In a
+    # horizontal row the script also hugs its base letter: the row's
+    # item_spacing.x is a WORD gap, an inline script box has none.
+    private def html_script_run(text : String, drop : Float64,
+                                attrs) : Response?
+      size = style.font_size
+      asc, desc = fonts.metrics_at(size)
+      s_asc, s_desc = fonts.metrics_at(size * 0.75)
+      label = Label.new(RichText.new(text).size(size * 0.75))
+      label.line_height = Fonts::LINE_H_FACTOR / 0.75
+      label.baseline_shift =
+        (asc + desc) / 2.0 + drop - (s_asc + s_desc) / 2.0
+      if layout.horizontal? && cursor.x > max_rect.min.x
+        self.cursor = Pos2.new(
+          cursor.x - style.spacing.item_spacing.x, cursor.y)
+      end
+      html_widget(label, attrs)
     end
 
     # `<pre>` — preformatted monospace text, no soft wrap, in its own
-    # horizontal scroll region (`hbar: :bottom`).
+    # horizontal scroll region (`hbar: :bottom`). The height is the
+    # text's own (one line height per source line, plus padding) — a
+    # content-sized block like the browser's `<pre>`, NOT the full
+    # available height a bare scroll area would take (in an unbounded
+    # parent that would swallow the rest of the page).
     def pre(text : String, **attrs) : Rect?
+      line_h = style.font_size * Fonts::LINE_H_FACTOR
+      height = text.count('\n') * line_h + line_h + 8.0
       rect = nil
       html_block(attrs) do |ui|
-        rect = ui.scroll_area(hbar: :bottom) do |area|
+        rect = ui.scroll_area(max_height: height, hbar: :bottom) do |area|
           area.rich(RichText.new(text).code, wrap: false)
         end
       end
@@ -455,12 +559,12 @@ module Egui
     end
 
     # `<br>` — a hard wrap break: pushes the rest of the row to the
-    # next line (a no-op in vertical flow, where every widget already
-    # starts its own line).
+    # next line through #end_line, the requested-break layout
+    # primitive (works in no-wrap rows like span, where the implicit
+    # wrap of #allocate_space never fires). A no-op in vertical flow,
+    # where every widget already starts its own line.
     def br : Nil
-      if layout.horizontal?
-        allocate_space(Vec2.new(available_width, 0.0))
-      end
+      end_line
     end
 
     # `<hr>` — the horizontal rule.
@@ -488,37 +592,74 @@ module Egui
       rect
     end
 
-    # `<fieldset>` — a framed group with its `<legend>` caption on
-    # the first row (bold, slightly smaller — inside the frame).
+    # `<fieldset>` — a framed group with its `<legend>` caption riding
+    # the TOP border, the browser's geometry: the box's top side stays
+    # off (width 0) and is redrawn manually as two segments around the
+    # caption — bold text vertically centered on the border line. The
+    # painter commands land after the box's, so the caption draws on
+    # top of the frame. `fieldset { stroke: dim }` in the gallery's
+    # ECSS: the frame is the theme's dim window stroke.
     def fieldset(legend : String, **attrs, &block : Ui ->) : Rect?
       rect = nil
       html_block(attrs, scoped: false) do |ui|
-        rect = ui.box(style_class: html_class_path(attrs),
+        stroke = ui.style.visuals.window_stroke
+        off = SideStroke.new(0.0, stroke)
+        on = SideStroke.new(1.0, stroke)
+        legend_size = ui.ctx.fonts_for(nil, bold: true)
+          .measure(legend, ui.style.font_size * 0.9)
+        rect = ui.box(
+          stroke_sides: StrokeSides.new(off, on, on, on),
+          style_class: html_class_path(attrs),
           margin: Vec2.new(10.0, 8.0)) do |inner|
-          inner.rich(RichText.new(legend)
-            .size(inner.style.font_size * 0.9).bold)
+          # the caption's lower half hangs into the frame: content
+          # clears it by half a legend line
+          inner.allocate_space(Vec2.new(0.0, legend_size.y * 0.5))
           block.call(inner)
         end
+        paint_legend_on_border(ui, rect.not_nil!, legend, legend_size, stroke)
       end
       rect
+    end
+
+    # The two top-border segments + the caption between them. The line
+    # sits at edge + width/2 (the same centerline an ON top side would
+    # occupy) and is shortened by the corner rounding like the sides.
+    private def paint_legend_on_border(ui : Ui, frame : Rect, legend : String,
+                                       legend_size : Vec2,
+                                       stroke : Color32) : Nil
+      gap = 4.0
+      rad = 6.0
+      y = frame.min.y + 0.5
+      x0 = frame.min.x + 14.0
+      x1 = x0 + legend_size.x
+      left_end = x0 - gap
+      right_start = x1 + gap
+      seg_left = frame.min.x + rad
+      seg_right = frame.max.x - rad
+      if left_end > seg_left
+        ui.painter.line(Pos2.new(seg_left, y), Pos2.new(left_end, y),
+          1.0, stroke)
+      end
+      if right_start < seg_right
+        ui.painter.line(Pos2.new(right_start, y), Pos2.new(seg_right, y),
+          1.0, stroke)
+      end
+      ui.painter.text(Pos2.new(x0, y), legend,
+        ui.style.font_size * 0.9, ui.style.visuals.text_color, bold: true)
     end
 
     # === lists (§5.3 — the one new primitive) ========================
 
     # `<ul>` — an indented list of `li` rows (bullet markers).
     def ul(**attrs, &block : Ui ->) : Rect?
-      list_block(attrs, &block)
+      list_block(attrs, ordered: false, start: 1, &block)
     end
 
     # `<ol start: 1>` — a numbered list; `li` rows number themselves
-    # through the frame-local counter.
+    # through the list scope stack (a nested `ol` restarts at its own
+    # `start`, like the browser).
     def ol(start : Int32 = 1, **attrs, &block : Ui ->) : Rect?
-      ctx.html_ol_counter = start
-      begin
-        list_block(attrs, &block)
-      ensure
-        ctx.html_ol_counter = nil
-      end
+      list_block(attrs, ordered: true, start: start, &block)
     end
 
     # `<li>` — one list row: a marker (bullet or the `ol` counter)
@@ -537,31 +678,48 @@ module Egui
       rect
     end
 
-    private def list_block(attrs, &block : Ui ->) : Rect?
-      rect = nil
-      html_block(attrs, scoped: false) do |ui|
-        rect = ui.box(margin: Vec2.new(14.0, 2.0),
-          style_class: html_class_path(attrs)) do |inner|
-          block.call(inner)
+    private def list_block(attrs, ordered, start, &block : Ui ->) : Rect?
+      ctx.html_list_scopes.push(Context::HTMLListScope.new(ordered, start))
+      begin
+        rect = nil
+        html_block(attrs, scoped: false) do |ui|
+          rect = ui.box(margin: Vec2.new(14.0, 2.0),
+            style_class: html_class_path(attrs)) do |inner|
+            block.call(inner)
+          end
         end
+        rect
+      ensure
+        ctx.html_list_scopes.pop
       end
-      rect
     end
 
+    # Marker-to-content gap, HTML style: a browser's outside marker
+    # hugs the text (its right edge sits at the content box edge), so
+    # the gap is a small fixed tab — not the layout's item_spacing.
+    LI_MARKER_GAP = 5.0
+
     private def li_row(attrs, &block : Ui ->)
-      marker = if (n = ctx.html_ol_counter)
-                 ctx.html_ol_counter = n + 1
-                 "#{n}."
-               else
-                 "•"
-               end
       html_scope(html_class_path(attrs)) do |ui|
         ui.horizontal(wrap: false) do |row|
-          row.label(marker)
-          row.allocate_space(Vec2.new(6.0, 0.0))
+          row.label(li_marker)
+          # The label already advanced the cursor by item_spacing.x —
+          # pull it back so the net gap is exactly LI_MARKER_GAP.
+          row.cursor = row.layout.advance(row.cursor, Vec2.zero,
+            Vec2.new(LI_MARKER_GAP - row.style.spacing.item_spacing.x, 0.0))
           block.call(row)
         end
       end
+    end
+
+    # The innermost open list decides the marker: a bullet in a `ul`
+    # (or outside any list), otherwise that `ol`'s own counter —
+    # plain HTML numbering, a nested list restarts at its `start`.
+    private def li_marker : String
+      scopes = ctx.html_list_scopes
+      return "•" if scopes.empty? || !scopes.last.ordered?
+      scopes.last.counter += 1
+      "#{scopes.last.counter}."
     end
 
     # === links, media, forms (§5.2 direct aliases) ===================

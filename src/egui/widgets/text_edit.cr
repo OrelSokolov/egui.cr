@@ -69,20 +69,26 @@ module Egui
     end
 
     def style_properties : Array(StyleProp)
-      [StyleProp.new("fill", :color),
-       StyleProp.new("stroke", :color, states: true),
-       # Per-side border widths (`stroke_width.top: 0` …) on top of
-       # the shared `stroke` color.
-       StyleProp.new("stroke_width", :box),
-       StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
-       StyleProp.new("padding", :box)]
+      StyleProps.textlike + [
+        StyleProp.new("fill", :color),
+        StyleProp.new("stroke", :color, states: true),
+        # Per-side border widths (`stroke_width.top: 0` …) on top of
+        # the shared `stroke` color.
+        StyleProp.new("stroke_width", :box),
+        StyleProp.new("rounding", :number, fallback: 4.0, min: 0.0),
+        StyleProp.new("padding", :box)]
     end
 
     def ui(ui : Ui) : Response
-      style = effective_style(ui)
+      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
+      # Class rules through the full cascade (like TextArea): the
+      # textlike keys (`text_color`, `font_*`) land in the effective
+      # Style; the box keys (`fill`, `stroke`, `rounding`) are read
+      # raw from the same bag at the paint sites.
+      vars = style_vars(ui, id)
+      style = effective_style(ui, id, vars)
       font_size = style.font_size
       fonts = ui.ctx.fonts_for(style.font_family)
-      id = @focus_id ? ui.named_id(@focus_id.not_nil!) : ui.next_widget_id
       anchor_id = id.child(0x5EED_u64)
       scroll_id = id.child(0x5C20_u64)
       # The anchor cell has no #interact of its own — mark it used or
@@ -238,7 +244,7 @@ module Egui
       # `text_edit` class keys (fill/stroke/rounding) fall back to the
       # Visuals slots — a platform theme makes the field white with a
       # gray border (macOS) without touching the default look.
-      te_vars = style_vars(ui, id)
+      te_vars = vars
       bg = te_vars.color?("fill") ||
            (response.has_focus? ? visuals.button_active : visuals.button_weak)
       # `frame: false` (an embedded field — SelectBox's search entry):
@@ -254,14 +260,16 @@ module Egui
         # ring). 3pt wide, corner radius +3 to hug the box's curve.
         if response.has_focus?
           box_round = te_vars.rounding_px("rounding", rect, 4.0)
+          corners = te_vars.rounding_corners?("rounding", rect)
           ui.painter.rect(rect.expand(3.0), box_round + 3.0, nil,
-            visuals.focus_ring, 3.0)
+            visuals.focus_ring, 3.0, corners: corners.try(&.expanded(3.0)))
         end
         stroke_color = te_vars.color?("stroke") ||
                        (response.has_focus? ? visuals.selection_fill : visuals.button_stroke)
         ui.painter.rect(rect, te_vars.rounding_px("rounding", rect, 4.0),
           bg, stroke_color, 1.0,
-          stroke_sides: te_vars.stroke_sides?(stroke_color, 1.0))
+          stroke_sides: te_vars.stroke_sides?(stroke_color, 1.0),
+          corners: te_vars.rounding_corners?("rounding", rect))
       end
 
       inner = rect.min + inset

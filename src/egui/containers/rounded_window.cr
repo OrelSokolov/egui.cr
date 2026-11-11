@@ -69,7 +69,14 @@ module Egui
       ui = Ui.new(@ctx, Id.from("rounded_window/#{id}"),
         @rect.shrink(pad), Layout.top_down)
       ui.clip = @rect
+      clip_from = painter.clip_mark
       block.call(ui)
+      # The rounded window is the one container whose shape is known
+      # BEFORE the content runs — clip the subtree to it right away
+      # (platform window shapes only cut the window itself; content
+      # scrolling under the curve stays inside). The mark rides the
+      # painter's ambient layer, exactly where the content painted.
+      painter.clip_apply(clip_from, @rect, CornerRadii.uniform(@radius))
 
       painter.layer = Order::Background
       painter.clip = Rect.infinite

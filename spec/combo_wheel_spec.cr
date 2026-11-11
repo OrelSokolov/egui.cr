@@ -13,7 +13,7 @@ end
 
 # The only widget on screen that registers a scroll sink: its rect.
 def cb_center(ctx : Egui::Context) : Egui::Pos2
-  ctx.memory.scroll_rects.each_value.first[0].center
+  ctx.memory.scroll_rects.each_value.first.rect.center
 end
 
 describe "wheel-stepping the combos" do
@@ -138,7 +138,7 @@ describe "the open ComboBox list" do
 
     # The list viewport registered on the popup layer (Foreground).
     list_id = Egui::Id.from("cb/list")
-    rect = ctx.memory.scroll_rects[list_id]?.try(&.[0])
+    rect = ctx.memory.scroll_rects[list_id]?.try &.rect
     rect.should_not be_nil
     rect.not_nil!.height.should be <= 121.0
 

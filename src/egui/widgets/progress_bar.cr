@@ -34,25 +34,30 @@ module Egui
 
     def ui(ui : Ui) : Response
       id = resolve_id(ui)
-      style = effective_style(ui, id)
+      # Class rules through the full cascade: textlike keys (`text_color`
+      # for the bar text, `font_*`) land in the effective Style; the box
+      # keys (`selection_fill`, `stroke`, `rounding`) are read raw below.
+      vars = style_vars(ui, id)
+      style = effective_style(ui, id, vars)
       height = {style.spacing.interact_size.y * 1.25,
                 style.font_size * 1.5}.max
       size = Vec2.new(ui.available_width, height)
-      size = styled_size(size, style_vars(ui, id), ui, id)
+      size = styled_size(size, vars, ui, id)
       rect = ui.allocate_at_least(size)
 
       fraction = @fraction.clamp(0.0, 1.0)
       fraction = ui.ctx.animate_value_with_time(id, fraction, 0.3) if @animate
 
       visuals = style.visuals
-      vars = style_vars(ui, id)
       track_rounding = vars.rounding_px("rounding", rect, 4.0)
+      track_corners = vars.rounding_corners?("rounding", rect)
       stroke = vars.color?("stroke")
       if stroke
-        ui.painter.rect(rect, track_rounding, visuals.button_weak, stroke, 1.0)
+        ui.painter.rect(rect, track_rounding, visuals.button_weak, stroke, 1.0,
+          corners: track_corners)
       else
         ui.painter.rect(rect, track_rounding, visuals.button_weak,
-          visuals.button_stroke, 1.0)
+          visuals.button_stroke, 1.0, corners: track_corners)
       end
       if fraction > 0.0
         fill_rect = Rect.from_min_size(rect.min,

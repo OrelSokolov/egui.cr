@@ -6,6 +6,23 @@
 # `allocate_at_least` → `interact` → paint → return Response.
 
 module Egui
+  # Virtualization bookkeeping a `virtual:` ScrollArea pushes onto its
+  # inner Ui (consumed by `Ui#virtual_row`): the per-row extent cache
+  # (shared with Memory — it survives frames) and the visible band, in
+  # the inner Ui's own coordinates, padded by the scroll's margin.
+  class VirtualRowState
+    getter heights : Hash(UInt64, Tuple(Float64, UInt64))
+    getter band_top : Float64
+    getter band_bottom : Float64
+
+    def initialize(@heights, @band_top, @band_bottom)
+    end
+
+    def visible?(top : Float64, bottom : Float64) : Bool
+      bottom >= @band_top && top <= @band_bottom
+    end
+  end
+
   class Ui
     getter ctx : Context
     getter id : Id
@@ -30,12 +47,22 @@ module Egui
     # stays bounded by `max_rect`, so fill-height widgets keep sizing
     # to the viewport. Set by `ScrollArea#show` on its inner Ui.
     property v_overflow : Bool = false
+    # Virtual-scroll state (see ScrollArea `virtual:`): set on the
+    # scroll's inner Ui, inherited by child regions — #virtual_row
+    # reads it. Nil outside a virtual scroll.
+    property virtual_rows : VirtualRowState? = nil
     # CSS-like style scope (see #with_style_scope): the dotted class
     # prefix widgets added through this Ui style under — nil = no
     # scope, widgets ride their plain `style_class`. A child Ui
     # inherits it (see #child_ui), so scoping is opt-in per container
     # and flows down the whole subtree.
     getter style_scope : String?
+    # CSS containing block for `position: absolute` descendants (see
+    # Ui#box_positioning): the rect of the nearest positioned (`position:
+    # relative|absolute|fixed`) ancestor box, inherited by child Ui's —
+    # nil = none yet, `absolute` then falls back to the viewport
+    # (`fixed` always uses the viewport, CSS semantics).
+    property pos_context : Rect?
 
     # Horizontal-row line wrapping (CSS `flex-wrap: wrap`, on by
     # default in #horizontal): when the next widget does not fit the
@@ -269,6 +296,23 @@ module Egui
       allocate_space(size)
     end
 
+    # End the current horizontal row: the cursor breaks to a fresh
+    # line below (above in an up-flowing row) — upstream
+    # `Layout::end_line`, the layout primitive behind the HTML `<br>`
+    # hard break. Unlike the wrap branch of #allocate_space this is a
+    # REQUESTED break: it fires in no-wrap rows too (span, toolbars),
+    # where nothing else can move the cursor off the line, and even at
+    # a line's start (`<br>` on its own line yields an empty line). A
+    # no-op in vertical flow, where every widget already starts its
+    # own line.
+    def end_line : Nil
+      return unless @layout.horizontal?
+      step = @row_h + style.spacing.item_spacing.y
+      @cursor = Pos2.new(@max_rect.min.x,
+        @cursor.y + (@cross_up ? -step : step))
+      @row_h = 0.0
+    end
+
     # egui `Ui::interact` — delegates to Context/Memory.
     def interact(rect : Rect, id : Id, sense : Sense) : Response
       @ctx.interact(id, rect, sense, @layer, @clip)
@@ -291,10 +335,12 @@ module Egui
       child.layer = @layer
       child.clip = @clip
       child.v_overflow = @v_overflow
+      child.virtual_rows = @virtual_rows
       # Menu rows inside a child Ui (e.g. `Ui#enabled` blocks grouping
       # disabled items) must still close their popup on click.
       child.menu_popup_key = @menu_popup_key
       child.set_style_scope(@style_scope)
+      child.pos_context = @pos_context
       child
     end
 
@@ -489,8 +535,46 @@ module Egui
     # on horizontal scrolling with the bar on that edge (see ScrollArea).
     def scroll_area(max_height : Float64? = nil, scrollbar : Symbol = :overlay,
                     vbar : Symbol = :right, hbar : Symbol? = nil,
-                    &block : Ui ->) : Rect
-      ScrollArea.new(max_height, scrollbar, vbar, hbar).show(self, &block)
+                    virtual : Bool = false, &block : Ui ->) : Rect
+      ScrollArea.new(max_height, scrollbar, vbar, hbar, nil, virtual).show(self, &block)
+    end
+
+    # A virtualized row of a `virtual:` ScrollArea: the row's extent
+    # and widget-id span are cached across frames by `key` (stable
+    # across the frame's content — a filtered list reuses the same
+    # keys for the surviving rows). A row falling entirely outside the
+    # visible band is NOT built — the cached extent is replayed into
+    # the flow (cursor + min_rect) and the child-id counter advanced
+    # by the row's recorded span, so the widget ids of LATER rows
+    # never shift when rows are skipped (their Memory state — hover,
+    # textarea scroll — is pruned with any other unseen widget, which
+    # is the same contract as scrolling a virtualized table).
+    #
+    # The first frame — and the frame after a viewport width change,
+    # which invalidates every cached height — builds all rows once to
+    # measure them. Outside a virtual scroll the call is a plain block.
+    #
+    # Returns true when the row ran, false when it was skipped.
+    def virtual_row(key : String, &) : Bool
+      state = @virtual_rows
+      unless state
+        yield self
+        return true
+      end
+      kh = Id.from(key).value
+      top = @cursor.y
+      if (cached = state.heights[kh]?) && !state.visible?(top, top + cached[0])
+        h, id_span = cached
+        @cursor = Pos2.new(@cursor.x, top + h)
+        @min_rect = @min_rect.union(Rect.from_min_size(
+          Pos2.new(@max_rect.min.x, top), Vec2.new(@max_rect.width, h)))
+        @child_counter += id_span
+        return false
+      end
+      counter_before = @child_counter
+      yield self
+      state.heights[kh] = {@cursor.y - top, @child_counter - counter_before}
+      true
     end
 
     # A region-anchored floating block (`position: fixed`-style, see
@@ -1023,18 +1107,27 @@ module Egui
     # per-side `StyleBox` (`StyleBox.new(top: 1, left: 3)` — CSS
     # `border-width`), `stroke_sides` additionally carries per-side
     # colors (usually resolved from style keys by
-    # `StyleVars#stroke_sides?`). `appear`/`appear_delay` override the
+    # `StyleVars#stroke_sides?`). `corners` carries the per-corner
+    # CSS `border-radius: a b c d` shorthand (nil = uniform
+    # `rounding`). `appear`/`appear_delay` override the
     # `appear:`/`appear-delay:` style keys with a named transition
     # played when the box first shows up (see AppearAnims). Returns the
     # outer rect.
     def box(direction : Symbol = :column, wrap : Bool = true,
-            fill : Color32? = nil, stroke : Color32? = nil,
+            fill : Color32 | Gradient? = nil, stroke : Color32? = nil,
             rounding : Float64 = 6.0, margin : Vec2? = nil,
             stroke_width : Float64 | StyleBox = 1.0,
             style_class : String? = nil,
             stroke_sides : StrokeSides? = nil,
+            corners : CornerRadii? = nil,
             appear : String | Symbol? = nil,
             appear_delay : Float64? = nil,
+            position : Symbol? = nil,
+            top : Float64 | Int32 | String? = nil,
+            right : Float64 | Int32 | String? = nil,
+            bottom : Float64 | Int32 | String? = nil,
+            left : Float64 | Int32 | String? = nil,
+            z : Int32? = nil,
             &block : Ui ->) : Rect
       sides = stroke_sides ||
               (sw = stroke_width.as?(StyleBox)) && stroke.try do |c|
@@ -1044,26 +1137,88 @@ module Egui
                   SideStroke.new(sw.bottom, c),
                   SideStroke.new(sw.left, c))
               end
-      painted = fill || stroke || sides
+      # `fill` may be a full CSS-like gradient (`<box fill="linear-
+      # gradient(…)">` / `#box(fill: …)`): it rides the RectCmd's
+      # gradient slot, the flat fill stays nil.
+      grad = fill.as?(Gradient)
+      flat_fill = fill.as?(Color32)
+      painted = flat_fill || grad || stroke || sides
       m = margin || (painted ? style.spacing.window_padding : Vec2.new(0.0, 0.0))
+      # CSS `position` (see #box_positioning): `absolute`/`fixed` take
+      # the box out of the flow entirely (#placed_box); `relative`
+      # shifts the in-flow rect (the `rel` offset threaded through the
+      # child-rect sites below, space still reserved — siblings never
+      # move). Values come from the explicit arguments over the box's
+      # class chain, so `ui.box(style_class: "hud")` positions straight
+      # from an ECSS `.hud { position: fixed; top: 10 }` rule — and
+      # `ui.div` forwards the inline `style:` spellings the same way.
+      positioning = box_positioning(style_class, position, top, right,
+        bottom, left, z)
+      if positioning.is_a?(BoxPlacement)
+        return placed_box(positioning, direction, wrap, style_class,
+          flat_fill, grad, stroke, sides, rounding, corners, m,
+          stroke_width, &block)
+      end
+      rel = positioning || Vec2.zero
       bg_index = painter.add_noop
+      # Rounded-clip bracket (see Painter#clip_apply): everything the
+      # subtree paints is re-clipped to the box's ROUNDED outer rect
+      # once it exists — scrolled/nested content cannot bleed past the
+      # curved corners. Taken after the chrome slot so the background
+      # itself (which paints the shape) is not re-clipped.
+      clip_from = painter.clip_mark
       row = direction == :row
 
-      w = {@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max
+      # A column box inline in a HORIZONTAL row participates in the
+      # row's line wrap (#wrap_x) like any widget: a box cannot know its
+      # natural width before its content runs, so the break decision
+      # uses the width measured last frame
+      # (Memory#inline_box_widths, refreshed in the tail below) — when
+      # it does not fit the remainder but fits a fresh line, break the
+      # line BEFORE laying the content out (the same break as the wrap
+      # branch of #allocate_space / #end_line).
+      inline_row = @layout.horizontal? && !row
+      inline_id : Id? = nil
+      if inline_row
+        inline_id = next_widget_id
+        if (nat = @ctx.memory.inline_box_widths[inline_id]?)
+          remaining = @max_rect.right - @cursor.x
+          if @wrap_x && @cursor.x > @max_rect.min.x && nat > remaining &&
+             nat <= @max_rect.width + style.spacing.item_spacing.x
+            step = @row_h + style.spacing.item_spacing.y
+            @cursor = Pos2.new(@max_rect.min.x,
+              @cursor.y + (@cross_up ? -step : step))
+            @row_h = 0.0
+          end
+        end
+      end
+      w = if inline_row
+        # Measure against the FULL line width — the same rule a
+        # wrap-capable label wraps by (its `wrap_base`, see Label#ui):
+        # a sliver-bounded region would word-break the content and the
+        # cache below would record the BROKEN width as "natural",
+        # freezing the box out of the wrap decision (the wrapping-row
+        # regression: a chip that did not fit stayed a squeezed
+        # multi-line column forever). Content that fits the remainder
+        # renders identically — only the wrap bound widens.
+        {@max_rect.width - 2 * m.x, 0.0}.max
+      else
+        {@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max
+      end
       child =
         if @layout.bottom_up?
           if row
             # Up flow: the row hugs the flow line from ABOVE (#horizontal)
             row_ui = child_ui(Rect.new(
-              Pos2.new(@cursor.x + m.x, @max_rect.min.y),
+              Pos2.new(@cursor.x + m.x + rel.x, @max_rect.min.y + rel.y),
               Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y)),
               layout: Layout.left_to_right)
             row_ui.cross_up = true
-            row_ui.cursor = Pos2.new(@cursor.x + m.x, @cursor.y - m.y)
+            row_ui.cursor = Pos2.new(@cursor.x + m.x + rel.x, @cursor.y - m.y + rel.y)
             row_ui
           else
             child_ui(Rect.new(
-              Pos2.new(@cursor.x + m.x, @cursor.y - m.y - 1e6),
+              Pos2.new(@cursor.x + m.x + rel.x, @cursor.y - m.y - 1e6 + rel.y),
               Pos2.new(@cursor.x + m.x + w, @cursor.y - m.y)))
           end
         else
@@ -1075,10 +1230,28 @@ module Egui
           else
             @cursor
           end
-          child_ui(Rect.from_min_size(origin + m, Vec2.new(w, 1e6)),
+          child_ui(Rect.from_min_size(origin + m + rel, Vec2.new(w, 1e6)),
+            id: inline_id,
             layout: row ? Layout.left_to_right
               : (@layout.bottom_up? ? Layout.bottom_up : Layout.top_down))
         end
+
+      # A `relative` box is the containing block for its `absolute`
+      # descendants (CSS). The box's final rect exists only after the
+      # children run, so the block rides the same settle scheme as
+      # the out-of-flow branch: last frame's measured size under a
+      # stable id (#box_pos_id); the width comes from the definite
+      # flow region. `positioning` non-nil ⇒ relative here (the
+      # absolute/fixed cases returned into #placed_box already).
+      box_pos_id : Id? = nil
+      if positioning
+        box_pos_id = next_widget_id
+        last_h = @ctx.memory.layer_sizes[box_pos_id]?.try(&.y) ||
+                 Overlay::ESTIMATE.y
+        child.pos_context = Rect.from_min_size(child.max_rect.min - m,
+          Vec2.new(child.max_rect.width + 2 * m.x, last_h))
+        @ctx.memory.use_id(box_pos_id)
+      end
 
       # Appear transition (plans/NATIVE_HTML_DEMO.md §3.2): the whole
       # subtree — children and the back-patched chrome — paints through
@@ -1103,24 +1276,73 @@ module Egui
         end
 
         outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
-        outer = Rect.new(
-          Pos2.new({outer.min.x, @cursor.x}.min, {outer.min.y, @cursor.y}.min),
-          Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
-        min_rect = @min_rect.union(outer)
-        @cursor = @layout.advance(@cursor, outer.size,
-          style.spacing.item_spacing)
-        @min_rect = min_rect
+        if inline_row
+          # Inline shrink-to-fit: instead of the block fill (expanding
+          # to max_rect's right edge — a vertical-flow contract, kept in
+          # the else branch) the box hugs its content and flows along
+          # the line like any row widget, with the same band
+          # bookkeeping as #allocate_space's horizontal branch (row
+          # height tracker, full-band min_rect, cursor pinned at the far
+          # edge).
+          cid = inline_id.not_nil!
+          # Natural-width cache refresh: the region above is the FULL
+          # line width, so the measurement is the box's natural width
+          # (a box wider than a whole line measured its wrapped extent
+          # — it never fits a fresh line, and the break guard leaves
+          # it on the current line, wrapped, like any oversized
+          # widget).
+          @ctx.memory.inline_box_widths[cid] = outer.width
+          @row_h = {@row_h, outer.height}.max
+          max_x = {@cursor.x + outer.width, @max_rect.right}.min
+          if @cross_up
+            frame_top = @v_overflow ? @cursor.y - @row_h
+                                    : {@cursor.y - @row_h, @max_rect.min.y}.max
+            @min_rect = @min_rect.union(
+              Rect.new(Pos2.new(@cursor.x, {frame_top, @cursor.y}.min),
+                Pos2.new(max_x, @cursor.y)))
+          else
+            frame_bottom = @v_overflow ? @cursor.y + @row_h
+                                       : {@cursor.y + @row_h, @max_rect.bottom}.min
+            @min_rect = @min_rect.union(
+              Rect.new(@cursor, Pos2.new(max_x, {frame_bottom, @cursor.y}.max)))
+          end
+          @cursor = Pos2.new(
+            {@cursor.x + outer.width + style.spacing.item_spacing.x,
+             @max_rect.right}.min, @cursor.y)
+        else
+          # `relative` shifts the flow slot (`rel`): the clamp keeps a
+          # plain box from starting left/up of its slot, so it must
+          # compare against the SHIFTED slot, not the raw cursor —
+          # otherwise the clamp eats the shift.
+          slot = Pos2.new(@cursor.x + rel.x, @cursor.y + rel.y)
+          outer = Rect.new(
+            Pos2.new({outer.min.x, slot.x}.min, {outer.min.y, slot.y}.min),
+            Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
+          min_rect = @min_rect.union(outer)
+          @cursor = @layout.advance(@cursor, outer.size,
+            style.spacing.item_spacing)
+          @min_rect = min_rect
+        end
         @row_h = 0.0 if row && @layout.horizontal?
+        # The relative box's measured size feeds next frame's
+        # containing block (the settle scheme above).
+        @ctx.memory.layer_sizes[box_pos_id] = outer.size if box_pos_id
 
         if painted
           painter.set(bg_index,
-            RectCmd.new(painter.clip, outer, rounding, fill, stroke,
-              stroke_width.as?(Float64) || 1.0, nil, sides))
+            RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
+              stroke_width.as?(Float64) || 1.0, nil, sides, corners,
+              gradient: grad))
         end
         outer_rect = outer
       ensure
         painter.pop_transform(outer_rect.try(&.center) || @cursor) if xf
       end
+      # A non-zero border radius clips the subtree to the rounded
+      # shape (engine-level `overflow: hidden` semantics — any nested
+      # element, scroll content included, stays inside the curve).
+      radii = corners || CornerRadii.uniform(rounding)
+      painter.clip_apply(clip_from, outer_rect.not_nil!, radii) if radii.max > 0.0
       outer_rect.not_nil!
     end
 
@@ -1228,6 +1450,208 @@ module Egui
       # block — its line-height tracker starts over.
       @row_h = 0.0 if @layout.horizontal?
       self
+    end
+
+    # The out-of-flow branch of #box (`position: absolute|fixed`), CSS
+    # semantics: the cursor does not advance, the parent's bounds do
+    # not grow — the content lays out ON TOP at the rect computed from
+    # the offsets against the containing block (`fixed` → the
+    # viewport, `absolute` → Ui#pos_context, the nearest positioned
+    # ancestor). Offsets follow CSS per axis: BOTH sides set → stretch
+    # between them; only `left`/`top` → pin the near edge (content
+    # hugs its natural size below/right of it); neither → the static
+    # position (the flow cursor's coordinate on that axis). One
+    # deviation from retained-mode CSS, shared with Overlay: pinning
+    # `right`/`bottom` alone needs the box's natural size BEFORE the
+    # content runs, so it anchors on last frame's measured size
+    # (Memory#layer_sizes) and settles the frame after the first
+    # measure — the estimate is `Overlay::ESTIMATE`.
+    #
+    # `z` (argument or the class rule's `z` key) lifts the box into an
+    # explicit layer, exactly like Overlay: later paint, stronger
+    # hit-test. The content's paint scope (style_class) behaves as in
+    # any box. The parent's scroll extent does NOT include the box
+    # (fixed content ignores scroll, like CSS).
+    private def placed_box(placement : BoxPlacement, direction : Symbol,
+                           wrap : Bool, style_class : String?,
+                           flat_fill : Color32?,
+                           grad : Gradient?, stroke : Color32?,
+                           sides : StrokeSides?, rounding : Float64,
+                           corners : CornerRadii?, m : Vec2,
+                           stroke_width : Float64 | StyleBox,
+                           &block : Ui ->) : Rect
+      ctx = @ctx
+      ctx.memory.use_id(placement.id)
+      size = ctx.memory.layer_sizes[placement.id]? || Overlay::ESTIMATE
+
+      cb = placement.containing
+      x, x_edge =
+        if (l = placement.left) && (r = placement.right)
+          {cb.min.x + l, cb.max.x - r}
+        elsif (l = placement.left)
+          {cb.min.x + l, cb.max.x}
+        elsif (r = placement.right)
+          {cb.max.x - r - size.x, cb.max.x - r}
+        else
+          {@cursor.x, cb.max.x}
+        end
+      y, y_edge =
+        if (t = placement.top) && (b = placement.bottom)
+          {cb.min.y + t, cb.max.y - b}
+        elsif (t = placement.top)
+          {cb.min.y + t, cb.max.y}
+        elsif (b = placement.bottom)
+          {cb.max.y - b - size.y, cb.max.y - b}
+        else
+          {@cursor.y, cb.max.y}
+        end
+      # The pinned point is the OUTER rect's top-left; the content
+      # region insets by the chrome margin exactly like the normal box
+      # path (#box lays content at origin + m and wraps the chrome
+      # around it), so a right/bottom-pinned box settles precisely on
+      # its offsets. Stretched axes bound the content; hugged axes
+      # stay generous downward/rightward.
+      stretch_x = !!(placement.left && placement.right)
+      stretch_y = !!(placement.top && placement.bottom)
+      content_min = Pos2.new(x + m.x, y + m.y)
+      content_w = {x_edge - m.x - content_min.x, 1.0}.max
+      content_h = stretch_y ? {y_edge - m.y - content_min.y, 1.0}.max : 1e6
+
+      layer = placement.z ?
+        LayerId.new(@layer.order, placement.id, z: placement.z.not_nil!) : @layer
+      child = child_ui(Rect.from_min_size(content_min,
+        Vec2.new(content_w, content_h)),
+        layout: direction == :row ? Layout.left_to_right : nil)
+      child.layer = layer
+      # The positioned box is the containing block for ITS absolute
+      # descendants. The final rect exists only after the content
+      # runs, so the block rides the same settle scheme as the
+      # right/bottom pinning — last frame's measured size — while a
+      # stretched axis is definite right away (the offsets give it).
+      pc_size = Vec2.new(stretch_x ? x_edge - x : size.x,
+                         stretch_y ? y_edge - y : size.y)
+      child.pos_context = Rect.from_min_size(Pos2.new(x, y), pc_size)
+      child.wrap_x = wrap if direction == :row
+
+      # The chrome noop must be recorded INSIDE the box's layer (the
+      # painter is global state, the command's layer is fixed at add
+      # time): switch around the block like Overlay/#window do.
+      painter = ctx.painter
+      prev_layer = painter.layer
+      prev_clip = painter.clip
+      painter.layer = layer.z
+      painter.clip = @clip
+      bg_index = painter.add_noop
+      clip_from = painter.clip_mark
+      begin
+        if (sc = style_class)
+          child.with_style_scope(sc) { |c| yield c }
+        else
+          yield child
+        end
+      ensure
+        painter.layer = prev_layer
+        painter.clip = prev_clip
+      end
+
+      outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
+      # Both offsets on an axis STRETCH the box to span them (CSS
+      # width/height from the offsets) — content hugs, the box (and
+      # its paint) spans the full stretched rect.
+      if placement.left && placement.right
+        outer = Rect.new(outer.min, Pos2.new(x_edge, outer.max.y))
+      end
+      if placement.top && placement.bottom
+        outer = Rect.new(outer.min, Pos2.new(outer.max.x, y_edge))
+      end
+      painted = flat_fill || grad || stroke || sides
+      if painted
+        painter.set(bg_index,
+          RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
+            stroke_width.as?(Float64) || 1.0, nil, sides, corners,
+            gradient: grad))
+      end
+      # Same rounded-subtree clip as #box (the absolute variant's
+      # children ride `layer`; the mark recorded it).
+      radii = corners || CornerRadii.uniform(rounding)
+      painter.clip_apply(clip_from, outer, radii) if radii.max > 0.0
+      ctx.memory.layer_sizes[placement.id] = outer.size
+      outer
+    end
+
+    # Resolve the box's CSS `position` from the explicit #box arguments
+    # over the class chain (the same "*"/class/scoped paths the appear
+    # cascade uses — #appear_transform). Returns a BoxPlacement for
+    # `absolute`/`fixed` (containing block + resolved offsets + z + the
+    # stable id the natural size is remembered under), a Vec2 shift for
+    # `relative` (left-right / top-bottom; percent resolves against the
+    # containing block — a pragmatic stand-in for CSS's percent-of-own-
+    # size, which immediate mode cannot know before the content runs),
+    # nil for `static`/unset. Offset spellings: numbers, or strings
+    # with units ("10%", "2vw", "1rem") — the inline `style:` forms
+    # pass through here as strings.
+    private def box_positioning(style_class : String?, position : Symbol?,
+                                top : Float64 | Int32 | String?,
+                                right : Float64 | Int32 | String?,
+                                bottom : Float64 | Int32 | String?,
+                                left : Float64 | Int32 | String?,
+                                z : Int32?) : BoxPlacement | Vec2 | Nil
+      paths = ["*"]
+      if (sc = style_class)
+        paths << sc
+        paths << "#{@style_scope}.#{sc}" if @style_scope
+      elsif (scope = @style_scope)
+        paths << scope
+      end
+      vars = @ctx.stylesheet.resolve_chain(paths)
+      pos = position.try(&.to_s) || vars.str?("position")
+      return nil unless {"relative", "absolute", "fixed"}.includes?(pos)
+
+      viewport = @ctx.input.screen_rect
+      base = pos == "fixed" ? viewport : (@pos_context || viewport)
+      mk_off = ->(explicit : Float64 | Int32 | String?, key : String, axis : Symbol) {
+        case e = explicit
+        when Float64 then e
+        when Int32   then e.to_f64
+        when String
+          (l = StyleLength.parse?(e)) ? l.resolve_in(base, @ctx, axis) : e.to_f64?
+        when Nil then vars.length_px_in?(key, base, @ctx, axis)
+        end
+      }
+      top_px = mk_off.call(top, "top", :y)
+      right_px = mk_off.call(right, "right", :x)
+      bottom_px = mk_off.call(bottom, "bottom", :y)
+      left_px = mk_off.call(left, "left", :x)
+
+      if pos == "relative"
+        Vec2.new((left_px || 0.0) - (right_px || 0.0),
+          (top_px || 0.0) - (bottom_px || 0.0))
+      else
+        lift = z || vars.f64?("z").try(&.round.to_i)
+        BoxPlacement.new(base, top_px, right_px, bottom_px, left_px,
+          lift, next_widget_id)
+      end
+    end
+  end
+
+  # A `position: absolute|fixed` box's resolved placement (the
+  # #box_positioning output Ui#box's out-of-flow branch consumes):
+  # the containing block, the four side offsets in logical points
+  # (nil = auto → static position on that axis), the explicit layer
+  # lift and the stable id the box's natural size is remembered under
+  # (Memory#layer_sizes — the `right:`/`bottom:`-only anchoring).
+  struct BoxPlacement
+    getter containing : Rect
+    getter top : Float64?
+    getter right : Float64?
+    getter bottom : Float64?
+    getter left : Float64?
+    getter z : Int32?
+    getter id : Id
+
+    def initialize(@containing : Rect, @top : Float64?, @right : Float64?,
+                   @bottom : Float64?, @left : Float64?, @z : Int32?,
+                   @id : Id)
     end
   end
 end

@@ -93,15 +93,30 @@ module Egui
     end
 
     # Memoized layouts (upstream caches galleys in Fonts too): a
-    # widget re-layouts its text every frame, which is fine for labels
-    # but pins a textarea with a multi-megabyte buffer to a full
-    # re-wrap (measure per word) at every frame. Keys compare by
-    # String identity first (`==` short-circuits on the same object),
-    # so an unchanged buffer hits in O(1). Small MRU ring — enough for
-    # the handful of texts on screen at one size and wrap width.
-    LAYOUT_CACHE_MAX = 8
+    # widget re-layouts its text every frame, so the cache must hold
+    # the WHOLE on-screen working set (a real screen shows hundreds of
+    # distinct texts — the html gallery holds ~400 galleys / ~200 KiB)
+    # or nearly every frame is a full re-wrap.
+    #
+    # Bounded by a BYTE budget, not an entry count: entries range from
+    # ~0.1 KiB (a label) to megabytes (one big document galley), so an
+    # entry-count cap would either starve small texts or admit a
+    # handful of huge ones. Eviction is generational (epaint
+    # GalleyCache policy + the byte budget upstream lacks): entries
+    # not used for LAYOUT_STALE_FRAMES frames go first, oldest first;
+    # if still over budget the coldest go regardless of age; both
+    # down to 3/4 of the budget (hysteresis, no boundary thrash). The
+    # purge runs only when over budget — a frame that fits costs
+    # nothing. `Context#end_frame` ticks the frame generation.
+    LAYOUT_STALE_FRAMES = 3
+    LAYOUT_MAX_ENTRIES  = 65_536
+    DEFAULT_LAYOUT_BUDGET = 4 * 1024 * 1024 # 4 MiB — 20× a 4K text screen
 
-    private class LayoutCacheEntry
+    # The whole key a galley bakes in (see #layout): run style rides
+    # the key because it is baked into the rows — a recolor of the
+    # same text must never hit the differently-styled entry
+    # (spec/layout_cache_spec.cr).
+    struct LayoutKey
       getter text : String
       getter size : Float64
       getter max_width : Float64?
@@ -111,14 +126,48 @@ module Egui
       getter? bold : Bool
       getter? italic : Bool
       getter line_height : Float64?
-      getter galley : Galley
 
       def initialize(@text, @size, @max_width, @color, @underline,
-                     @family, @bold, @italic, @line_height, @galley)
+                     @family, @bold, @italic, @line_height)
       end
     end
 
-    @layout_cache = [] of LayoutCacheEntry
+    private class LayoutCacheEntry
+      getter galley : Galley
+      getter bytes : Int64
+      property last_used : UInt32
+
+      def initialize(@galley, @bytes, @last_used)
+      end
+    end
+
+    @layout_cache = {} of LayoutKey => LayoutCacheEntry
+    @layout_bytes = 0_i64
+    @layout_gen = 0_u32
+    # Byte budget of the layout cache (EGUI_LAYOUT_CACHE_BYTES overrides).
+    property layout_cache_budget : Int64 = Fonts.default_layout_cache_budget
+
+    # Cache stats (tests, the inspector, EGUI_LAYOUT_DEBUG reports).
+    def layout_cache_entries : Int32
+      @layout_cache.size
+    end
+
+    def layout_cache_bytes : Int64
+      @layout_bytes
+    end
+
+    @@default_budget : Int64? = nil
+
+    def self.default_layout_cache_budget : Int64
+      @@default_budget ||= ENV["EGUI_LAYOUT_CACHE_BYTES"]?.try(&.to_i64?) ||
+                            DEFAULT_LAYOUT_BUDGET.to_i64
+    end
+
+    # One more frame passed (Context#end_frame ticks this) — the age
+    # basis for stale eviction.
+    def tick_layout_cache : Nil
+      @layout_gen &+= 1
+    end
 
     # Lay styled runs out into rows. `max_width` nil = never wrap.
     # `resolve` maps a run's `family` + bold/italic flags to its font
@@ -129,40 +178,78 @@ module Egui
     # `line_height` nil = the LINE_H_FACTOR default; a paragraph-style
     # label passes a roomier factor (markdown body: 1.5) so decorated
     # runs (the inline-code chip) fit inside the line box.
+    #
+    # Single-run jobs (labels, textareas — the frame's volume) go
+    # through the cache; multi-run jobs (rich text) still build fresh
+    # every frame (their LayoutKey would span runs — a later increment).
     def layout(runs : Array(TextRun),
                max_width : Float64? = nil,
                resolve : ((String?, Bool, Bool) -> Fonts)? = nil,
                line_height : Float64? = nil) : Galley
       if runs.size == 1
         run = runs.first
-        # The style rides the key: run color and underline are baked
-        # into the galley's rows, so a state-recolor of the same text
-        # (a hovered link) must not hit a differently-styled entry.
-        @layout_cache.each do |e|
-          if e.size == run.size && e.max_width == max_width &&
-             e.text == run.text && e.color == run.color &&
-             e.underline? == run.underline? && e.family == run.family &&
-             e.bold? == run.bold? && e.italic? == run.italic? &&
-             e.line_height == line_height
-            Egui::Bench.count("fonts.layout.hit")
-            hit = e.galley
-            @layout_cache.delete(e)
-            @layout_cache.push(e) # MRU last
-            return hit
-          end
+        key = LayoutKey.new(run.text, run.size, max_width, run.color,
+          run.underline?, run.family, run.bold?, run.italic?, line_height)
+        if (entry = @layout_cache[key]?)
+          entry.last_used = @layout_gen
+          Egui::Bench.count("fonts.layout.hit")
+          return entry.galley
         end
         Egui::Bench.count("fonts.layout.miss")
         galley = Egui::Bench.span("Fonts#layout(miss)") { build_galley(runs, max_width, resolve, line_height) }
         {% if env("EGUI_LAYOUT_DEBUG") %}
-          STDERR.puts "layout MISS bytes=#{run.text.bytesize} size=#{run.size} mw=#{max_width}"
+          STDERR.puts "layout MISS bytes=#{run.text.bytesize} size=#{run.size} mw=#{max_width} " \
+                      "entries=#{@layout_cache.size} cache=#{@layout_bytes}"
         {% end %}
-        @layout_cache.shift if @layout_cache.size >= LAYOUT_CACHE_MAX
-        @layout_cache << LayoutCacheEntry.new(
-          run.text, run.size, max_width, run.color, run.underline?,
-          run.family, run.bold?, run.italic?, line_height, galley)
+        bytes = galley_bytes(galley)
+        @layout_cache[key] = LayoutCacheEntry.new(galley, bytes, @layout_gen)
+        @layout_bytes += bytes
+        purge_layout_cache
         galley
       else
         build_galley(runs, max_width, resolve, line_height)
+      end
+    end
+
+    # Estimated heap cost of a cached galley (Boehm, 16-byte blocks):
+    # String ≈ 48+bytes, Array ≈ 40+cap·8, Row ≈ 88, RowRun ≈ 112.
+    # The order matters, not the exact byte.
+    private def galley_bytes(galley : Galley) : Int64
+      bytes = 112_i64 + galley.rows.size * 8
+      galley.rows.each do |row|
+        bytes += 88 + row.runs.size * 8
+        row.runs.each { |r| bytes += 112 + r.text.bytesize }
+      end
+      bytes
+    end
+
+    # Over budget: stale (unused for LAYOUT_STALE_FRAMES) entries out
+    # first, oldest first; then the coldest whatever their age — both
+    # down to 3/4 of the budget so the boundary does not thrash.
+    private def purge_layout_cache : Nil
+      return if @layout_bytes <= @layout_cache_budget &&
+                @layout_cache.size < LAYOUT_MAX_ENTRIES
+      target = @layout_cache_budget * 3 // 4
+      gen = @layout_gen.to_i32
+      @layout_cache.select { |_k, e| gen - e.last_used.to_i32 >= LAYOUT_STALE_FRAMES }
+        .to_a.sort_by! { |_k, e| e.last_used }
+        .each do |k, _e|
+          break if @layout_bytes <= target
+          evict_layout(k)
+        end
+      if @layout_bytes > target || @layout_cache.size >= LAYOUT_MAX_ENTRIES
+        @layout_cache.to_a.sort_by! { |_k, e| e.last_used }
+          .each do |k, _e|
+            break if @layout_bytes <= target && @layout_cache.size < LAYOUT_MAX_ENTRIES
+            evict_layout(k)
+          end
+      end
+    end
+
+    private def evict_layout(key : LayoutKey) : Nil
+      if (entry = @layout_cache.delete(key))
+        @layout_bytes -= entry.bytes
+        Egui::Bench.count("fonts.layout.evict")
       end
     end
 

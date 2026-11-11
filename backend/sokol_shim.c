@@ -810,7 +810,8 @@ static int sh_run_direct(void);
 // begin/end_pass and the sdf entry points drive it)
 static void sh_sdf_reset(void);
 static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
-                         float ch, const float* inst, int count, int copy);
+                         float ch, const float* inst, int count, int copy,
+                         int stencil);
 static void sh_sdf_frame(float w_pts, float h_pts);
 // pixels-per-point scale. Detached platforms: set from Crystal via
 // egui_cr_set_ppp every produced frame. Direct path (macOS): set_ppp is
@@ -842,7 +843,12 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
                                int x, int y, int w, int h, int count,
                                const unsigned char* verts);
 static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
-                            int count);
+                            int count, int stencil);
+static void egui_cr_pkt_clip_mask(float x, float y, float w, float h,
+                                  float rtl, float rtr, float rbr,
+                                  float rbl, float ppp);
+static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
+                                    float ppp);
 #if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
@@ -892,8 +898,18 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
     (void)count; (void)verts;
 }
 static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
-                            int count) {
-    (void)clip4; (void)instances; (void)count;
+                            int count, int stencil) {
+    (void)clip4; (void)instances; (void)count; (void)stencil;
+}
+static void egui_cr_pkt_clip_mask(float x, float y, float w, float h,
+                                  float rtl, float rtr, float rbr,
+                                  float rbl, float ppp) {
+    (void)x; (void)y; (void)w; (void)h; (void)rtl; (void)rtr; (void)rbr;
+    (void)rbl; (void)ppp;
+}
+static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
+                                    float ppp) {
+    (void)x; (void)y; (void)w; (void)h; (void)ppp;
 }
 static void egui_cr_pkt_pipe(int kind) { (void)kind; }
 static void egui_cr_pkt_pipe_pop(void) {}
@@ -1592,6 +1608,14 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         // for uncapped frame rate — the perf-measuring demos want
         // that (an FPS meter reading vsync is measuring the monitor,
         // not the app).
+        // Stencil for the rounded content clip (see egui_cr_clip_mask):
+        // the mask/unmask raw draws REPLACE stencil values the content
+        // pipelines then test (EQUAL 1). Skipped for transparent
+        // windows — the ARGB fbconfigs GLX offers are scarce enough
+        // without a stencil constraint (their rounded corners fall
+        // back to the platform window shape + rect scissor).
+        .depth_format = transparent ? SAPP_PIXELFORMAT_DEPTH
+                                    : SAPP_PIXELFORMAT_DEPTH_STENCIL,
         .swap_interval = swap_interval,
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .enable_dragndrop = true, // Event.dropped_files (drop.enabled gates the FILES_DROPPED event)
@@ -2172,11 +2196,44 @@ void egui_cr_present_clear(void) {}
 static sgl_pipeline g_alpha_pip;
 static sgl_pipeline g_replace_pip; // defined with its section below
 static sgl_pipeline g_text_pip;
+// Stencil-testing twins (the rounded content clip — see
+// egui_cr_clip_mask): identical blend state, plus stencil EQUAL ref 1
+// so content recorded inside a mask bracket only lands where the mask
+// wrote 1. Loaded by the push entries whenever a mask is active.
+static sgl_pipeline g_alpha_pip_st, g_replace_pip_st, g_text_pip_st;
+// Rounded-clip bracket state (direct path + the A side of packets):
+// set while commands of a masked group are being recorded, so the
+// pipeline pushes pick the stencil-testing twins. The packet REPLAY
+// keeps its own copy in a local (same op stream, render thread).
+static int g_clip_on;
 
 // Create the three replay pipelines if not yet present (idempotent;
 // GL objects may only be made on the thread that owns the context —
 // the render-thread init calls this, the push paths only load).
 static void sh_ensure_pipelines(void);
+
+// True when the swapchain carries a stencil attachment (the
+// rounded-clip masks have nowhere to write otherwise — content keeps
+// the plain rect-scissor behavior, which is what it did before).
+static bool sh_stencil_ok(void) {
+    return sapp_depth_format() == SAPP_PIXELFORMAT_DEPTH_STENCIL;
+}
+
+// The stencil-test block shared by every content pipeline variant.
+static sg_stencil_state sh_clip_stencil(void) {
+    return (sg_stencil_state){
+        .enabled = true,
+        .front = { .compare = SG_COMPAREFUNC_EQUAL,
+                   .fail_op = SG_STENCILOP_KEEP,
+                   .depth_fail_op = SG_STENCILOP_KEEP,
+                   .pass_op = SG_STENCILOP_KEEP },
+        .back = { .compare = SG_COMPAREFUNC_EQUAL,
+                  .fail_op = SG_STENCILOP_KEEP,
+                  .depth_fail_op = SG_STENCILOP_KEEP,
+                  .pass_op = SG_STENCILOP_KEEP },
+        .read_mask = 0xFF, .write_mask = 0xFF, .ref = 1,
+    };
+}
 
 static sgl_pipeline sh_make_blend_pip(const char* label) {
     return sgl_make_pipeline(&(sg_pipeline_desc){
@@ -2208,15 +2265,39 @@ static sgl_pipeline g_pip_3d;
 static sgl_pipeline g_pip_3d_blend;
 
 static void sh_ensure_pipelines(void) {
-    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id) return;
+    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id &&
+        g_alpha_pip_st.id) return;
     SH_LAZY_LOCK();
-    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id) {
+    if (g_alpha_pip.id && g_text_pip.id && g_pip_3d.id && g_pip_3d_blend.id &&
+        g_alpha_pip_st.id) {
         SH_LAZY_UNLOCK();
         return;
     }
     if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; }
     if (!g_alpha_pip.id)   g_alpha_pip = sh_make_blend_pip("egui-cr-alpha-pip");
     if (!g_text_pip.id)    g_text_pip = sh_make_blend_pip("egui-cr-text-pip");
+    if (!g_alpha_pip_st.id) {
+        sg_pipeline_desc d = {
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = {
+                    .enabled = true,
+                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                },
+            },
+            .stencil = sh_clip_stencil(),
+            .label = "egui-cr-alpha-pip-st",
+        };
+        g_alpha_pip_st = sgl_make_pipeline(&d);
+        d.label = "egui-cr-text-pip-st";
+        g_text_pip_st = sgl_make_pipeline(&d);
+        d.colors[0].blend.enabled = false; // replace twin: overwrite dst
+        d.label = "egui-cr-replace-pip-st";
+        g_replace_pip_st = sgl_make_pipeline(&d);
+    }
     if (!g_pip_3d.id) {
         g_pip_3d = sgl_make_pipeline(&(sg_pipeline_desc){
             .depth = {
@@ -2262,7 +2343,8 @@ void egui_cr_alpha_pipeline_push(void) {
     if (!sh_run_direct()) { egui_cr_pkt_pipe(0); return; }
     sh_ensure_pipelines();
     sgl_push_pipeline();
-    sgl_load_pipeline(g_alpha_pip);
+    sgl_load_pipeline(g_clip_on && sh_stencil_ok() ? g_alpha_pip_st
+                                                   : g_alpha_pip);
 }
 
 void egui_cr_alpha_pipeline_pop(void) {
@@ -2279,7 +2361,8 @@ void egui_cr_replace_pipeline_push(void) {
     if (!sh_run_direct()) { egui_cr_pkt_pipe(1); return; }
     sh_ensure_pipelines();
     sgl_push_pipeline();
-    sgl_load_pipeline(g_replace_pip);
+    sgl_load_pipeline(g_clip_on && sh_stencil_ok() ? g_replace_pip_st
+                                                    : g_replace_pip);
 }
 
 void egui_cr_replace_pipeline_pop(void) {
@@ -2375,6 +2458,12 @@ static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
 
 static sg_shader g_sdf_shd;
 static sg_pipeline g_sdf_pip;
+// Rounded-clip twins (see egui_cr_clip_mask): g_sdf_pip_st tests
+// stencil EQUAL 1 for batches recorded inside a mask bracket;
+// g_sdf_mask_pip / g_sdf_unmask_pip WRITE the bracket itself — the
+// same SDF rounded-rect shape, color mask off, stencil REPLACE 1
+// (mask) / REPLACE 0 (unmask, square bbox).
+static sg_pipeline g_sdf_pip_st, g_sdf_mask_pip, g_sdf_unmask_pip;
 static sg_buffer g_sdf_quad; // static corner quad (-1..1), 6 × vec2
 static sg_buffer g_sdf_ring[SH_SDF_RING];
 static int g_sdf_ring_next;
@@ -2609,7 +2698,35 @@ static void sh_sdf_ensure(void) {
         };
     pd.label = "egui-cr-sdf-pip";
     g_sdf_pip = sg_make_pipeline(&pd);
-    bool ok = g_sdf_pip.id != 0 && g_sdf_quad.id != 0;
+    // The rounded-clip set: content twin first (same blend, + stencil
+    // test), then the writers (color off, stencil REPLACE ref 1/0).
+    pd.stencil = sh_clip_stencil();
+    pd.label = "egui-cr-sdf-pip-st";
+    g_sdf_pip_st = sg_make_pipeline(&pd);
+    pd.stencil = (sg_stencil_state){
+        .enabled = true,
+        .front = { .compare = SG_COMPAREFUNC_ALWAYS,
+                   .fail_op = SG_STENCILOP_KEEP,
+                   .depth_fail_op = SG_STENCILOP_KEEP,
+                   .pass_op = SG_STENCILOP_REPLACE },
+        .back = { .compare = SG_COMPAREFUNC_ALWAYS,
+                  .fail_op = SG_STENCILOP_KEEP,
+                  .depth_fail_op = SG_STENCILOP_KEEP,
+                  .pass_op = SG_STENCILOP_REPLACE },
+        .read_mask = 0xFF, .write_mask = 0xFF, .ref = 1,
+    };
+    pd.colors[0].write_mask = SG_COLORMASK_NONE;
+    pd.colors[0].blend.enabled = false;
+    pd.label = "egui-cr-sdf-mask-pip";
+    g_sdf_mask_pip = sg_make_pipeline(&pd);
+    pd.stencil.ref = 0;
+    pd.label = "egui-cr-sdf-unmask-pip";
+    g_sdf_unmask_pip = sg_make_pipeline(&pd);
+    pd.stencil = (sg_stencil_state){0};
+    pd.colors[0].write_mask = SG_COLORMASK_RGBA;
+    pd.colors[0].blend.enabled = true;
+    bool ok = g_sdf_pip.id != 0 && g_sdf_quad.id != 0 &&
+              g_sdf_pip_st.id != 0 && g_sdf_mask_pip.id != 0;
     for (int i = 0; i < SH_SDF_RING; i++) ok = ok && g_sdf_ring[i].id != 0;
     g_sdf_state = ok ? 1 : -1;
 #else // Vulkan/D3D11/Metal/WGPU: no GLSL source path — SDF unavailable
@@ -2635,7 +2752,7 @@ static void sh_sdf_ensure(void) {
 // frame draws up to three packet replays' worth of batches.
 static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
                         float ch, const float* inst, int count,
-                        float w_pts, float h_pts) {
+                        float w_pts, float h_pts, int stencil) {
     if (!inst || count <= 0) return;
     if (count > SH_SDF_MAX_INST) count = SH_SDF_MAX_INST;
     sh_sdf_ensure();
@@ -2646,7 +2763,7 @@ static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
     if (w_pts <= 0.0f || h_pts <= 0.0f) return;
     if (apply_clip)
         sg_apply_scissor_rectf(cx, cy, cw, ch, true);
-    sg_apply_pipeline(g_sdf_pip);
+    sg_apply_pipeline(stencil ? g_sdf_pip_st : g_sdf_pip);
     // sgl_ortho(0, w, h, 0, -1, 1) as a column-major mat4 (y-down).
     float mvp[16];
     memset(mvp, 0, sizeof mvp);
@@ -2688,6 +2805,12 @@ typedef struct {
     float cx, cy, cw, ch; // framebuffer px (replay: already sx/sy-scaled)
     const float* inst;    // op stream (replay) / frame arena (direct)
     int count;
+    int stencil;     // 1 = drawn with the stencil-testing twin
+    // kind 1/2 = rounded-clip bracket edge (egui_cr_clip_mask): the
+    // segment is a single-instance mask draw, not an SDF batch.
+    int kind;        // 0 batch, 1 mask (REPLACE 1), 2 unmask (REPLACE 0)
+    float rtl, rtr, rbr, rbl; // mask corner radii (POINTS)
+    float ppp;       // px/point the mask geometry converts with
 } sh_sdf_seg_t;
 static sh_sdf_seg_t g_sdf_segs[SH_SDF_MAX_SEGS];
 static int g_sdf_segs_n;
@@ -2698,10 +2821,26 @@ static int g_sdf_layer; // layer of the sgl segment being recorded
 static float* g_sdf_arena;
 static int g_sdf_arena_n, g_sdf_arena_cap;
 
+// Rounded-clip bracket state — declared with the pipeline twins above.
+
+// Swap the CURRENT base pipeline when a bracket opens/closes. The
+// frame's alpha pipeline is loaded once at frame start (before any
+// mask exists), and plain fills (rects/lines/circles) never re-push
+// anything — they ride that base pipeline. Without this reload their
+// quads keep the non-stencil pipeline and bleed straight through the
+// mask (text/images push per command and picked the twins up already).
+// Called between commands only, so the sgl push/pop stack is at its
+// base — a bare load is safe and invisible to it.
+static void sh_clip_base_pip(int on) {
+    sh_ensure_pipelines();
+    sgl_load_pipeline(on && sh_stencil_ok() ? g_alpha_pip_st : g_alpha_pip);
+}
+
 static void sh_sdf_reset(void) {
     g_sdf_segs_n = 0;
     g_sdf_layer = 0;
     g_sdf_arena_n = 0;
+    g_clip_on = 0;
 }
 
 // Record a flush point: the batch draws after the sgl segment currently
@@ -2711,7 +2850,7 @@ static void sh_sdf_reset(void) {
 // frame arena on the direct path (copy=1).
 static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
                          float ch, const float* inst, int count,
-                         int copy) {
+                         int copy, int stencil) {
     if (count <= 0 || !inst) return;
     if (g_sdf_segs_n >= SH_SDF_MAX_SEGS) return; // drop, keep drawing
     const float* src = inst;
@@ -2731,19 +2870,89 @@ static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
         g_sdf_arena_n += count * SH_SDF_INST_FLOATS;
     }
     sh_sdf_seg_t* s = &g_sdf_segs[g_sdf_segs_n++];
+    memset(s, 0, sizeof *s);
     s->layer = g_sdf_layer;
     s->apply_clip = apply_clip;
     s->cx = cx; s->cy = cy; s->cw = cw; s->ch = ch;
     s->inst = src;
     s->count = count;
+    s->stencil = stencil;
     sgl_layer(++g_sdf_layer);
+}
+
+// Record a rounded-clip bracket edge (mask or unmask). `x..h` is the
+// clip's bounding box in FRAMEBUFFER px, the radii are POINTS (converted
+// with `ppp` at draw time). Bumps the sgl layer like a batch flush, so
+// the bracket edge interleaves with the content around it.
+static void sh_clip_stash(int kind, int apply_clip, float x, float y,
+                          float w, float h, float rtl, float rtr,
+                          float rbr, float rbl, float ppp) {
+    if (g_sdf_segs_n >= SH_SDF_MAX_SEGS) return; // drop, keep drawing
+    sh_sdf_seg_t* s = &g_sdf_segs[g_sdf_segs_n++];
+    memset(s, 0, sizeof *s);
+    s->layer = g_sdf_layer;
+    s->apply_clip = apply_clip;
+    s->kind = kind;
+    s->cx = x; s->cy = y; s->cw = w; s->ch = h;
+    s->rtl = rtl; s->rtr = rtr; s->rbr = rbr; s->rbl = rbl;
+    s->ppp = ppp > 0.0f ? ppp : 1.0f;
+    sgl_layer(++g_sdf_layer);
+}
+
+// Draw one mask/unmask instance: the SDF rounded-rect quad with the
+// color mask off and stencil REPLACE — the bracket the content
+// pipelines test against. The unmask (radii 0) clears the whole bbox.
+static void sh_draw_seg_mask(const sh_sdf_seg_t* s, float w_pts,
+                             float h_pts) {
+    sh_sdf_ensure();
+    if (g_sdf_state <= 0) return;
+    if (w_pts <= 0.0f || h_pts <= 0.0f) return;
+    if (s->cw <= 0.0f || s->ch <= 0.0f) return;
+    float ppp = s->ppp;
+    float inst[SH_SDF_INST_FLOATS];
+    memset(inst, 0, sizeof inst);
+    inst[0] = (s->cx + s->cw / 2.0f) / ppp;
+    inst[1] = (s->cy + s->ch / 2.0f) / ppp;
+    inst[2] = s->cw / 2.0f / ppp;
+    inst[3] = s->ch / 2.0f / ppp;
+    inst[4] = s->rtl; inst[5] = s->rtr;
+    inst[6] = s->rbr; inst[7] = s->rbl;
+    inst[20] = inst[2]; // shape half == quad half (no margin wanted)
+    inst[21] = inst[3];
+    inst[25] = ppp;     // ext: ppp for the AA band
+    if (s->apply_clip)
+        sg_apply_scissor_rectf(s->cx, s->cy, s->cw, s->ch, true);
+    sg_apply_pipeline(s->kind == 1 ? g_sdf_mask_pip : g_sdf_unmask_pip);
+    float mvp[16];
+    memset(mvp, 0, sizeof mvp);
+    mvp[0] = 2.0f / w_pts;
+    mvp[5] = -2.0f / h_pts;
+    mvp[10] = -1.0f;
+    mvp[12] = -1.0f;
+    mvp[13] = 1.0f;
+    mvp[15] = 1.0f;
+    sg_range ur = {.ptr = mvp, .size = sizeof mvp};
+    sg_apply_uniforms(0, &ur);
+    sg_buffer buf = g_sdf_ring[g_sdf_ring_next];
+    g_sdf_ring_next = (g_sdf_ring_next + 1) % SH_SDF_RING;
+    sg_range data = {.ptr = inst, .size = SH_SDF_INST_BYTES};
+    sg_update_buffer(buf, &data);
+    sg_bindings b;
+    memset(&b, 0, sizeof b);
+    b.vertex_buffers[0] = g_sdf_quad;
+    b.vertex_buffers[1] = buf;
+    sg_apply_bindings(&b);
+    sg_draw(0, 6, 1);
 }
 
 // Draw phase: walk the layers in order, interleaving the stashed raw
 // batches. Replaces the frame's final sgl_draw() whenever any batch was
 // recorded (plain sgl_draw() would only draw layer 0).
 static void sh_sdf_frame(float w_pts, float h_pts) {
-    if (g_sdf_segs_n == 0) {
+    // g_sdf_layer > 0 without stashed batches = the bench overlay's
+    // layer (sh_bench_overlay) — the layer walk below must still run,
+    // plain sgl_draw() would only draw layer 0.
+    if (g_sdf_segs_n == 0 && g_sdf_layer == 0) {
         sgl_draw();
         return;
     }
@@ -2752,11 +2961,64 @@ static void sh_sdf_frame(float w_pts, float h_pts) {
         for (int i = 0; i < g_sdf_segs_n; i++) {
             const sh_sdf_seg_t* s = &g_sdf_segs[i];
             if (s->layer != l) continue;
-            sh_draw_sdf(s->apply_clip, s->cx, s->cy, s->cw, s->ch,
-                        s->inst, s->count, w_pts, h_pts);
+            if (s->kind)
+                sh_draw_seg_mask(s, w_pts, h_pts);
+            else
+                sh_draw_sdf(s->apply_clip, s->cx, s->cy, s->cw, s->ch,
+                            s->inst, s->count, w_pts, h_pts, s->stencil);
         }
     }
     g_sdf_segs_n = 0; // the arena rides until the next reset
+}
+
+// --- rounded content clip (border-radius bracket) ------------------------
+//
+// Engine-level rounded clipping on GL: a subtree under a rounded clip
+// draws with stencil-testing pipelines, bracketed by a mask (the SDF
+// rounded rect writing stencil=1) and an unmask (bbox, stencil=0).
+// Called by the Sokol driver at rounded-clip group boundaries in the
+// command stream. POINTS geometry: x..h in framebuffer px, radii in
+// points, `ppp` px/point. Without a stencil attachment (transparent
+// window / backend without DEPTH_STENCIL) the calls are no-ops and
+// content falls back to the plain rect scissor.
+
+void egui_cr_clip_mask(float x, float y, float w, float h,
+                       float rtl, float rtr, float rbr, float rbl,
+                       float ppp) {
+    static int dbg = -1;
+    if (dbg < 0) {
+        dbg = getenv("EGUI_CLIP_DEBUG") ? 1 : 0;
+        if (dbg) {
+            GLint sbits = -1;
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+            glGetIntegerv(GL_STENCIL_BITS, &sbits);
+#endif
+            fprintf(stderr,
+                    "[clip] stencil_ok=%d depth_fmt=%d stencil_bits=%d\n",
+                    (int)sh_stencil_ok(), (int)sapp_depth_format(), sbits);
+        }
+    }
+    if (!sh_stencil_ok() || w <= 0.0f || h <= 0.0f) return;
+    if (!sh_run_direct()) {
+        egui_cr_pkt_clip_mask(x, y, w, h, rtl, rtr, rbr, rbl, ppp);
+        g_clip_on = 1; // A-side: picks the sdf batch twin below
+        return;
+    }
+    sh_clip_stash(1, 1, x, y, w, h, rtl, rtr, rbr, rbl, ppp);
+    g_clip_on = 1;
+    sh_clip_base_pip(1);
+}
+
+void egui_cr_clip_unmask(float x, float y, float w, float h, float ppp) {
+    if (!sh_stencil_ok() || w <= 0.0f || h <= 0.0f) return;
+    if (!sh_run_direct()) {
+        egui_cr_pkt_clip_unmask(x, y, w, h, ppp);
+        g_clip_on = 0;
+        return;
+    }
+    sh_clip_stash(2, 1, x, y, w, h, 0.0f, 0.0f, 0.0f, 0.0f, ppp);
+    g_clip_on = 0;
+    sh_clip_base_pip(0);
 }
 
 // --- textures -------------------------------------------------------------
@@ -3003,13 +3265,13 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
 void egui_cr_sdf_batch(const float* clip4, const float* instances,
                        int count) {
     if (!sh_run_direct()) {
-        egui_cr_pkt_sdf(clip4, instances, count);
+        egui_cr_pkt_sdf(clip4, instances, count, g_clip_on);
         return;
     }
     // Direct path: stash (instance copy into the frame arena) — the
     // batch draws interleaved at end_pass (see sh_sdf_frame).
     sh_sdf_stash(1, clip4[0], clip4[1], clip4[2], clip4[3], instances,
-                 count, 1);
+                 count, 1, g_clip_on);
 }
 #else /* not a detached platform (macOS): straight pass-throughs */
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
@@ -3078,8 +3340,8 @@ int egui_cr_image_info_mem(const unsigned char* bytes, int len, int* w, int* h) 
 // The sokol_gl default pipeline has NO blending (write mask RGB only), so
 // the text quads need their own pipeline — same setup the fontstash backend
 // used (sfons): straight alpha blend, swapchain sample count.
+// (g_text_pip / g_text_pip_st live with the pipeline block above.)
 
-static sgl_pipeline g_text_pip;
 void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8);
 
 void egui_cr_text_pipeline_init(void) {
@@ -3092,7 +3354,8 @@ void egui_cr_text_pipeline_push(void) {
     if (!sh_run_direct()) { egui_cr_pkt_pipe(2); return; }
     sh_ensure_pipelines();
     sgl_push_pipeline();
-    sgl_load_pipeline(g_text_pip);
+    sgl_load_pipeline(g_clip_on && sh_stencil_ok() ? g_text_pip_st
+                                                   : g_text_pip);
 }
 
 void egui_cr_text_pipeline_pop(void) {
@@ -5147,7 +5410,7 @@ typedef struct {
 enum {
     SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
-    SH_OP_MESH3D, SH_OP_SDF,
+    SH_OP_MESH3D, SH_OP_SDF, SH_OP_CLIP_MASK, SH_OP_CLIP_UNMASK,
 };
 
 typedef struct {
@@ -5369,18 +5632,20 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
 }
 
 // One SDF rounded-rect batch (EGUI_SDF=1): [op, clip x/y/w/h (f32
-// bits), count], then count×28 instance floats riding the word stream
-// as raw bits — same cost model as MESH3D vertices. The clip is in
-// PACKET pixels; the replay scales it by sx/sy like SH_OP_SCISSOR.
+// bits), count, stencil], then count×28 instance floats riding the
+// word stream as raw bits — same cost model as MESH3D vertices. The
+// clip is in PACKET pixels; the replay scales it by sx/sy like
+// SH_OP_SCISSOR. `stencil` = recorded inside a rounded-clip bracket.
 static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
-                            int count) {
+                            int count, int stencil) {
     if (count <= 0 || !instances) return;
     if (count > SH_SDF_MAX_INST) count = SH_SDF_MAX_INST;
-    uint32_t head[6] = {
+    uint32_t head[7] = {
         SH_OP_SDF, sh_f2u(clip4[0]), sh_f2u(clip4[1]),
         sh_f2u(clip4[2]), sh_f2u(clip4[3]), (uint32_t)count,
+        (uint32_t)(stencil ? 1 : 0),
     };
-    sh_push_words(head, 6);
+    sh_push_words(head, 7);
     int words = count * SH_SDF_INST_FLOATS;
     sh_build_ensure();
     sh_grow((void**)&g_build->ops, &g_build->ops_cap,
@@ -5388,6 +5653,25 @@ static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
     memcpy(g_build->ops + g_build->ops_len, instances,
            (size_t)words * 4);
     g_build->ops_len += words;
+}
+
+// Rounded-clip bracket edge (see egui_cr_clip_mask): bbox in PACKET
+// pixels (replay scales by sx/sy), radii + ppp in points/px-per-point
+// captured at build time. The replay re-stashes it as a mask segment.
+static void egui_cr_pkt_clip_mask(float x, float y, float w, float h,
+                                  float rtl, float rtr, float rbr,
+                                  float rbl, float ppp) {
+    uint32_t o[10] = { SH_OP_CLIP_MASK, sh_f2u(x), sh_f2u(y), sh_f2u(w),
+                       sh_f2u(h), sh_f2u(rtl), sh_f2u(rtr), sh_f2u(rbr),
+                       sh_f2u(rbl), sh_f2u(ppp) };
+    sh_push_words(o, 10);
+}
+
+static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
+                                    float ppp) {
+    uint32_t o[6] = { SH_OP_CLIP_UNMASK, sh_f2u(x), sh_f2u(y), sh_f2u(w),
+                      sh_f2u(h), sh_f2u(ppp) };
+    sh_push_words(o, 6);
 }
 
 // ---- R-side texture table -----------------------------------------------------
@@ -5490,6 +5774,204 @@ static void sh_tex_run(const sh_texop_t* op) {
     }
 }
 
+// ---- EGUI_BENCH: sokol-side frame-time overlay (render thread, C) ----------
+//
+// The render-thread half of the live bench (the Crystal half is the
+// egui HUD in src/egui/driver/sokol.cr, module FrameBench — same env
+// var). While EGUI_BENCH is set, every vsync tick samples four numbers:
+//   gap  — entry→entry time: the WHOLE tick (vsync wait + swap stall
+//          included; the swap runs after the callback returns)
+//   tick — time spent inside the frame callback
+//   tex  — texture deltas (creates/updates/destroys → sg_update_image)
+//   rep  — the packet replay (sgl emission + sg_commit)
+// and sh_bench_overlay paints the history as stacked bars over the
+// replayed frame: green replay / yellow tex / blue wait+swap (gap−tick)
+// / red line = 16.7 ms budget; a magenta top edge warns the newest tick
+// replayed past 75% of the sgl vertex cap (1<<18 — geometry past the
+// cap is silently dropped, see sgl_setup).
+#define SH_BN 240
+static int sh_b_on = -1;
+static double sh_b_gap[SH_BN], sh_b_tick[SH_BN], sh_b_tex[SH_BN],
+              sh_b_rep[SH_BN];
+static int sh_b_verts[SH_BN];
+static int sh_b_n, sh_b_head;
+static double sh_b_last_entry, sh_b_tex_acc, sh_b_rep_acc;
+static int sh_b_verts_acc;
+
+static int sh_bench_on(void) {
+    if (sh_b_on < 0) {
+        const char* e = getenv("EGUI_BENCH");
+        sh_b_on = (e && *e && strcmp(e, "0") != 0) ? 1 : 0;
+        if (sh_b_on)
+            fprintf(stderr, "[bench] sokol-side overlay on (render thread): "
+                    "one bar per vsync tick — green replay / yellow tex / "
+                    "blue wait+swap / red line 16.7ms / "
+                    "magenta edge = sgl vertex overflow\n");
+    }
+    return sh_b_on;
+}
+
+static void sh_bench_quad(float x, float y, float w, float h,
+                          unsigned char r, unsigned char g, unsigned char b,
+                          unsigned char a) {
+    sgl_begin_quads();
+    sgl_v2f_c4b(x, y, r, g, b, a);
+    sgl_v2f_c4b(x + w, y, r, g, b, a);
+    sgl_v2f_c4b(x + w, y + h, r, g, b, a);
+    sgl_v2f_c4b(x, y + h, r, g, b, a);
+    sgl_end();
+}
+
+// --- tiny 3x5 pixel font (legend labels) ----------------------------------
+// The shim has no text stack (fontstash is vendored but unwired, and
+// wiring a TTF into C just for bench labels is not worth it), so the
+// legend uses a hand-rolled 3x5 font: one glyph = 15 chars of '0'/'1',
+// row-major, top row first. Unknown chars advance a blank cell.
+static const char* sh_bf(char c) {
+    switch (c) {
+    case 'a': return "011" "101" "111" "101" "101";
+    case 'e': return "011" "100" "110" "100" "011";
+    case 'i': return "010" "000" "010" "010" "010";
+    case 'l': return "100" "100" "100" "100" "110";
+    case 'm': return "101" "111" "111" "101" "101";
+    case 'p': return "111" "101" "111" "100" "100";
+    case 'r': return "111" "100" "110" "100" "100";
+    case 's': return "011" "100" "010" "001" "110";
+    case 't': return "010" "111" "010" "010" "010";
+    case 'w': return "101" "101" "101" "111" "101";
+    case 'x': return "101" "101" "010" "101" "101";
+    case 'y': return "101" "101" "111" "001" "110";
+    case '+': return "000" "010" "111" "010" "000";
+    case '1': return "010" "110" "010" "010" "111";
+    case '5': return "111" "100" "111" "001" "111";
+    case '6': return "011" "100" "111" "101" "111";
+    case '7': return "111" "001" "010" "010" "010";
+    case '0': return "111" "101" "101" "101" "111";
+    case '.': return "000" "000" "000" "000" "010";
+    case ' ': return "000" "000" "000" "000" "000";
+    default:  return NULL;
+    }
+}
+
+// Draw `s` at (x, y) top-left, `cell` points per font pixel. Returns
+// the x just past the text (char pitch = 4 cells: 3 + 1 spacing).
+static float sh_bench_text(float x, float y, float cell, const char* s,
+                           unsigned char r, unsigned char g, unsigned char b,
+                           unsigned char a) {
+    for (; *s; s++) {
+        const char* gl = sh_bf(*s);
+        if (gl) {
+            for (int row = 0; row < 5; row++)
+                for (int col = 0; col < 3; col++)
+                    if (gl[row * 3 + col] == '1')
+                        sh_bench_quad(x + (float)col * cell, y + (float)row * cell,
+                                      cell, cell, r, g, b, a);
+        }
+        x += 4.0f * cell;
+    }
+    return x;
+}
+
+static float sh_bench_text_w(const char* s, float cell) {
+    return (float)strlen(s) * 4.0f * cell;
+}
+
+// Record the overlay as one fresh sgl layer AFTER every replay pass —
+// sh_sdf_frame's layer walk then draws it last, over the frame. Called
+// from sh_replay, before the draw phase (sokol_gl uploads its vertex
+// buffer once per frame, so this must be recorded, not drawn).
+static void sh_bench_overlay(sh_packet_t* p) {
+    if (sh_b_on <= 0 || sh_b_n < 2) return;
+    float w = (float)p->fb_w / p->ppp, h = (float)p->fb_h / p->ppp;
+    if (w < 160.0f || h < 140.0f) return;
+    const float bw = 4.0f, gp = 2.0f, gh = 100.0f, margin = 12.0f;
+    // Bar count: history depth, capped by ~45% of the frame width so
+    // the graph never reaches over the Crystal-side HUD on the left.
+    int n_max = (int)(0.45f * w / (bw + gp));
+    if (n_max > 132) n_max = 132;
+    const int N = sh_b_n < n_max ? sh_b_n : n_max;
+    if (N < 2) return;
+    const float graph_w = (float)N * (bw + gp);
+    const float x0 = w - margin - graph_w, y0 = margin;
+
+    // Autoscale to the tallest visible tick (floor 20 ms so a quiet
+    // trace doesn't magnify noise into full-height bars).
+    double max_s = 0.020;
+    for (int i = 0; i < N; i++) {
+        double g = sh_b_gap[(sh_b_head + SH_BN - 1 - i) % SH_BN];
+        if (g > max_s) max_s = g;
+    }
+    const float scale = gh / (float)max_s;
+
+    sgl_layer(++g_sdf_layer); // above every replay-pass layer
+    sgl_viewport(0, 0, p->fb_w, p->fb_h, true);
+    sgl_scissor_rectf(0.0f, 0.0f, (float)p->fb_w, (float)p->fb_h, true);
+    // The ortho of the (last) replay pass still maps points 1:1 — the
+    // bars below are in point space.
+    sgl_push_pipeline();
+    sgl_load_pipeline(g_alpha_pip);
+
+    // Legend strip under the bars (3x5 pixel font, see sh_bf).
+    const float cell = 2.0f;            // font pixel in points
+    const float leg_h = 5.0f * cell + 2.0f;
+    sh_bench_quad(x0 - 4.0f, y0 - 4.0f, graph_w + 8.0f,
+                  gh + 8.0f + leg_h + 4.0f, 16, 16, 24, 200);
+    float lx = x0;
+    const float ly = y0 + gh + 6.0f;
+    const float gap = 10.0f;
+    // green = replay
+    sh_bench_quad(lx, ly, 5.0f, 5.0f, 90, 220, 120, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "replay", 220, 220, 230, 255);
+    lx += 7.0f + sh_bench_text_w("replay", cell) + gap;
+    // yellow = tex uploads
+    sh_bench_quad(lx, ly, 5.0f, 5.0f, 235, 200, 60, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "tex", 220, 220, 230, 255);
+    lx += 7.0f + sh_bench_text_w("tex", cell) + gap;
+    // blue = wait + swap (time outside the frame callback)
+    sh_bench_quad(lx, ly, 5.0f, 5.0f, 90, 140, 235, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "wait+swap", 220, 220, 230, 255);
+    lx += 7.0f + sh_bench_text_w("wait+swap", cell) + gap;
+    // red line = 16.7 ms frame budget (60 Hz), orange = 11.1 ms (90 Hz)
+    sh_bench_quad(lx, ly + 2.0f, 5.0f, 1.0f, 235, 80, 80, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "16.7ms", 220, 220, 230, 255);
+    lx += 7.0f + sh_bench_text_w("16.7ms", cell) + gap;
+    sh_bench_quad(lx, ly + 2.0f, 5.0f, 1.0f, 255, 150, 50, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "11.1ms", 220, 220, 230, 255);
+    lx += 7.0f + sh_bench_text_w("11.1ms", cell) + gap;
+    sh_bench_quad(lx, ly + 2.0f, 5.0f, 1.0f, 60, 220, 235, 255);
+    sh_bench_text(lx + 7.0f, ly, cell, "5.0ms", 220, 220, 230, 255);
+    // Bars oldest → newest. Vertex y grows down: replay (green) at the
+    // bottom, tex (yellow) above it, wait+swap (blue) on top.
+    for (int i = N - 1; i >= 0; i--) {
+        int idx = (sh_b_head + SH_BN - 1 - i) % SH_BN;
+        float rh = (float)(sh_b_rep[idx] * (double)scale);
+        float th = (float)(sh_b_tex[idx] * (double)scale);
+        double out = sh_b_gap[idx] - sh_b_tick[idx];
+        if (out < 0.0) out = 0.0;
+        float oh = (float)(out * (double)scale);
+        float bx = x0 + (float)(N - 1 - i) * (bw + gp);
+        float yb = y0 + gh;
+        if (rh > 0.0f) sh_bench_quad(bx, yb - rh, bw, rh, 90, 220, 120, 230);
+        if (th > 0.0f) sh_bench_quad(bx, yb - rh - th, bw, th, 235, 200, 60, 230);
+        if (oh > 0.0f) sh_bench_quad(bx, yb - rh - th - oh, bw, oh,
+                                     90, 140, 235, 230);
+    }
+    // 16.7 ms budget line (the 60 Hz frame)…
+    sh_bench_quad(x0 - 4.0f, y0 + gh - 0.0167f * scale, graph_w + 8.0f,
+                  1.0f, 235, 80, 80, 255);
+    // …and 11.1 ms (the 90 Hz frame)…
+    sh_bench_quad(x0 - 4.0f, y0 + gh - 0.0111f * scale, graph_w + 8.0f,
+                  1.0f, 255, 150, 50, 255);
+    // …and 5.0 ms (the 200 Hz frame).
+    sh_bench_quad(x0 - 4.0f, y0 + gh - 0.005f * scale, graph_w + 8.0f,
+                  1.0f, 60, 220, 235, 255);
+    // sgl vertex-cap warning on the newest tick (>75% of 1<<18).
+    if (sh_b_verts[(sh_b_head + SH_BN - 1) % SH_BN] > (1 << 18) / 4 * 3)
+        sh_bench_quad(x0 - 4.0f, y0 - 4.0f, graph_w + 8.0f, 2.0f,
+                      255, 60, 255, 255);
+    sgl_pop_pipeline();
+}
+
 // ---- R-side replay ------------------------------------------------------------
 
 static void sh_ensure_pipelines(void);
@@ -5507,6 +5989,10 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
     float sy = (float)vp_h / (float)p->fb_h;
     float w = (float)p->fb_w / p->ppp;
     float h = (float)p->fb_h / p->ppp;
+    // Replay-side rounded-clip state (the pkt twin of g_clip_on):
+    // SH_OP_CLIP_MASK/UNMASK flip it, SH_OP_PIPE/SDF consume it — one
+    // op stream, one thread, no cross-thread state.
+    int clip_on = 0;
     // A fresh sgl layer per pass keeps a stashed SDF batch of a LATER
     // pass from drawing after this pass's head commands (one batch per
     // layer — see sh_sdf_frame). Layer 0 on the first pass.
@@ -5540,8 +6026,10 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             op += 4;
             break;
         case SH_OP_PIPE: {
-            sgl_pipeline pip = op[0] == 1 ? g_replace_pip
-                            : op[0] == 2 ? g_text_pip : g_alpha_pip;
+            int st = clip_on && sh_stencil_ok();
+            sgl_pipeline pip = op[0] == 1 ? (st ? g_replace_pip_st : g_replace_pip)
+                            : op[0] == 2 ? (st ? g_text_pip_st : g_text_pip)
+                                         : (st ? g_alpha_pip_st : g_alpha_pip);
             sgl_push_pipeline();
             sgl_load_pipeline(pip);
             op += 1;
@@ -5566,6 +6054,7 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
         case SH_OP_END:     sgl_end(); break;
         case SH_OP_V: {
             uint32_t c = op[2];
+            if (sh_b_on > 0 && !strip) sh_b_verts_acc++;
             sgl_v2f_c4b(sh_u2f(op[0]), sh_u2f(op[1]),
                         c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF,
                         (c >> 24) & 0xFF);
@@ -5574,6 +6063,7 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
         }
         case SH_OP_VT: {
             uint32_t c = op[4];
+            if (sh_b_on > 0 && !strip) sh_b_verts_acc++;
             sgl_v2f_t2f_c4b(sh_u2f(op[0]), sh_u2f(op[1]), sh_u2f(op[2]),
                             sh_u2f(op[3]), c & 0xFF, (c >> 8) & 0xFF,
                             (c >> 16) & 0xFF, (c >> 24) & 0xFF);
@@ -5599,13 +6089,47 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             float cx = sh_u2f(op[0]), cy = sh_u2f(op[1]);
             float cw = sh_u2f(op[2]), ch = sh_u2f(op[3]);
             int count = (int)op[4];
-            op += 5;
+            int stencil = (int)op[5];
+            op += 6;
             // Not drawn here: the batch is stashed and drawn between
             // the sgl layers at the end of sh_replay (sh_sdf_frame) —
             // the instance floats ride the op stream until then.
             sh_sdf_stash(!strip, cx * sx, cy * sy, cw * sx, ch * sy,
-                         (const float*)op, count, 0);
+                         (const float*)op, count, 0, stencil);
             op += (size_t)count * SH_SDF_INST_FLOATS;
+            break;
+        }
+        case SH_OP_CLIP_MASK: {
+            // Rounded-clip bracket (pkt twins of egui_cr_clip_mask):
+            // bbox in packet px → replay px via sx/sy; the geometry
+            // ppp magnifies with the same sx. Strip passes skip masks
+            // like they skip scissors (their content is unmasked).
+            float x = sh_u2f(op[0]), y = sh_u2f(op[1]);
+            float w = sh_u2f(op[2]), h = sh_u2f(op[3]);
+            float rtl = sh_u2f(op[4]), rtr = sh_u2f(op[5]);
+            float rbr = sh_u2f(op[6]), rbl = sh_u2f(op[7]);
+            float ppp = sh_u2f(op[8]);
+            op += 9;
+            if (!strip && sh_stencil_ok()) {
+                sh_clip_stash(1, 1, x * sx, y * sy, w * sx, h * sy,
+                              rtl, rtr, rbr, rbl, ppp * ((sx + sy) * 0.5f));
+                clip_on = 1;
+                sh_clip_base_pip(1);
+            }
+            break;
+        }
+        case SH_OP_CLIP_UNMASK: {
+            float x = sh_u2f(op[0]), y = sh_u2f(op[1]);
+            float w = sh_u2f(op[2]), h = sh_u2f(op[3]);
+            float ppp = sh_u2f(op[4]);
+            op += 5;
+            if (!strip && sh_stencil_ok()) {
+                sh_clip_stash(2, 1, x * sx, y * sy, w * sx, h * sy,
+                              0.0f, 0.0f, 0.0f, 0.0f,
+                              ppp * ((sx + sy) * 0.5f));
+                clip_on = 0;
+                sh_clip_base_pip(0);
+            }
             break;
         }
         default: // corrupted stream — drop the rest of the frame
@@ -5647,6 +6171,7 @@ static void sh_replay(sh_packet_t* p) {
         if (ch > p->fb_h) sh_replay_pass(p, cw, ch, 2);
     }
     sh_resize_dbg_check(p);
+    sh_bench_overlay(p); // EGUI_BENCH: bar history, top layer (see above)
     // Draw phase: sgl layers interleaved with the stashed SDF batches
     // (plain sgl_draw() when the frame has none — sh_sdf_frame).
     sh_sdf_frame((float)p->fb_w / p->ppp, (float)p->fb_h / p->ppp);
@@ -5725,7 +6250,50 @@ static void sh_shot(sh_packet_t* p) {
     static const char* dir;
     static int idx;
     if (!dir) { dir = getenv("EGUI_SHOT"); if (!dir) dir = (const char*)-1; }
-    if ((intptr_t)dir == -1 || idx >= 3) return;
+    // Strip mode (EGUI_SHOT_STRIP=1): capture EVERY presented frame (up
+    // to EGUI_SHOT_N, default 400), writing only a vertical strip
+    // (EGUI_SHOT_X0..EGUI_SHOT_X1, packet pixels) — enough to watch one
+    // widget column across frames at full present rate without a
+    // screen grabber. Bumps the {3,8,20} default mode entirely.
+    static int strip_mode = -1, strip_max, strip_x0, strip_x1;
+    static uint32_t strip_n;
+    if (strip_mode < 0) {
+        strip_mode = getenv("EGUI_SHOT_STRIP") ? 1 : 0;
+        strip_max = 400;
+        if (const char* n = getenv("EGUI_SHOT_N")) strip_max = atoi(n);
+        strip_x0 = 500; strip_x1 = 600;
+        if (const char* v = getenv("EGUI_SHOT_X0")) strip_x0 = atoi(v);
+        if (const char* v = getenv("EGUI_SHOT_X1")) strip_x1 = atoi(v);
+    }
+    if ((intptr_t)dir == -1) return;
+    if (strip_mode) {
+        if ((int)strip_n >= strip_max) return;
+        char* px = (char*)malloc((size_t)p->fb_w * p->fb_h * 3);
+        if (!px) return;
+        #if !defined(_SAPP_WIN32)
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        #endif
+        glPixelStorei(GL_PACK_ALIGNMENT, 1);
+        glReadPixels(0, 0, p->fb_w, p->fb_h, GL_RGB, GL_UNSIGNED_BYTE, px);
+        int x0 = strip_x0 < 0 ? 0 : strip_x0;
+        int x1 = strip_x1 > p->fb_w ? p->fb_w : strip_x1;
+        if (x1 > x0) {
+            char path[512];
+            snprintf(path, sizeof path, "%s/strip_%06u.ppm", dir, strip_n);
+            FILE* f = fopen(path, "wb");
+            if (f) {
+                fprintf(f, "P6\n%d %d\n255\n", x1 - x0, p->fb_h);
+                for (int y = p->fb_h - 1; y >= 0; y--)
+                    fwrite(px + (size_t)y * p->fb_w * 3 + (size_t)x0 * 3,
+                           1, (size_t)(x1 - x0) * 3, f);
+                fclose(f);
+            }
+        }
+        free(px);
+        strip_n++;
+        return;
+    }
+    if (idx >= 3) return;
     int tick = sh_shot_ticks[idx];
     static uint32_t replay_count;
     replay_count++;
@@ -5822,6 +6390,7 @@ static void sh_rt_frame(void) {
                     fresh->ops_len, fresh->pre_n);
         // destroys deferred from the previous packet — its draws are done
         if (g_post_pending_n > 0) {
+            double bt = sh_now();
             for (int i = 0; i < g_post_pending_n; i++) {
                 sh_tex_run(&g_post_pending[i]);
                 free(g_post_pending[i].data);
@@ -5829,12 +6398,15 @@ static void sh_rt_frame(void) {
             free(g_post_pending);
             g_post_pending = NULL;
             g_post_pending_n = 0;
+            if (sh_b_on > 0) sh_b_tex_acc += sh_now() - bt;
         }
+        double bt = sh_now();
         for (int i = 0; i < fresh->pre_n; i++) {
             sh_tex_run(&fresh->pre[i]);
             free(fresh->pre[i].data);
             fresh->pre[i].data = NULL;
         }
+        if (sh_b_on > 0) sh_b_tex_acc += sh_now() - bt;
         sh_packet_free(g_pkt_last); // replaced content
         g_pkt_last = fresh;
         // this packet's destroys run before the NEXT packet's draws
@@ -5844,7 +6416,9 @@ static void sh_rt_frame(void) {
         fresh->post_n = 0;
     }
     if (g_pkt_last) {
+        double bt = sh_now();
         sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
+        if (sh_b_on > 0) sh_b_rep_acc += sh_now() - bt;
         sh_shot(g_pkt_last);
     } else {
         // No packet yet (before the first Crystal frame): present the
@@ -5872,6 +6446,27 @@ static void sh_rt_init_cb(void) {
 }
 
 static void sh_rt_frame_cb(void) {
+    // EGUI_BENCH: open this tick's slot (gap vs the previous entry,
+    // last tick's accumulated tex/rep samples); the in-callback time
+    // lands in the same slot after the work below.
+    int slot = -1;
+    double enter = 0.0;
+    if (sh_bench_on()) {
+        enter = sh_now();
+        if (sh_b_last_entry > 0.0) {
+            slot = sh_b_head;
+            sh_b_gap[slot] = enter - sh_b_last_entry;
+            sh_b_tick[slot] = 0.0;
+            sh_b_tex[slot] = sh_b_tex_acc;
+            sh_b_rep[slot] = sh_b_rep_acc;
+            sh_b_verts[slot] = sh_b_verts_acc;
+            sh_b_head = (slot + 1) % SH_BN;
+            if (sh_b_n < SH_BN) sh_b_n++;
+        }
+        sh_b_last_entry = enter;
+        sh_b_tex_acc = sh_b_rep_acc = 0.0;
+        sh_b_verts_acc = 0;
+    }
     egui_cr_wd_on_frame_begin();
     sh_rt_frame();
     egui_cr_wd_on_frame_end();
@@ -5887,6 +6482,7 @@ static void sh_rt_frame_cb(void) {
     sh_x11_sync_request_confirm(
         g_pkt_last ? sapp_width() : 0, g_pkt_last ? sapp_height() : 0);
 #endif
+    if (slot >= 0) sh_b_tick[slot] = sh_now() - enter;
     // Present-ack: sokol swaps right after this callback returns, so
     // this byte lands ~one present later. It paces A's frame
     // production to the actual present rate (the display's vsync) —
@@ -5917,6 +6513,15 @@ static void* sh_render_thread(void* unused) {
         .window_title = g_rt_title,
         .high_dpi = true,
         .sample_count = (g_transparent || !g_msaa) ? 1 : 4,
+        // Stencil for the rounded content clip (egui_cr_clip_mask) —
+        // same request as the legacy desc in egui_cr_sapp_run. Without
+        // it the detached swapchain (the DEFAULT on Linux/Win32) has no
+        // stencil attachment and every mask is a no-op: content falls
+        // back to the plain rect scissor. Transparent windows keep the
+        // depth-only format (their scarce ARGB fbconfigs must not gain
+        // a stencil constraint).
+        .depth_format = g_transparent ? SAPP_PIXELFORMAT_DEPTH
+                                      : SAPP_PIXELFORMAT_DEPTH_STENCIL,
         .swap_interval = g_rt_swap,
         .enable_clipboard = true,
         .enable_dragndrop = true,

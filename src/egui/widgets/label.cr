@@ -10,11 +10,13 @@
 # Selectable by default (`userselect: true`, upstream
 # `interaction.selectable_labels`): the label senses click+drag, a
 # press places the caret, dragging selects a range, double-click
-# selects a word, Ctrl/Cmd+C copies the selection through the
-# Clipboard system port while no widget holds keyboard focus, and a
-# secondary press (right-click) or long-press opens a Copy / Select
-# all context menu. `userselect: false` reverts to the inert
-# paint-only label (upstream `Sense::hover()`).
+# selects a word, Ctrl/Cmd+C copies the selection and Ctrl/Cmd+A
+# selects all through the Clipboard system port while no text editor
+# owns the keyboard (a focused non-text widget does not block them —
+# see Focus#clipboard_shortcuts_free?), and a secondary press (right
+# click) or long-press opens a Copy / Select all context menu.
+# `userselect: false` reverts to the inert paint-only label (upstream
+# `Sense::hover()`).
 #
 # CSS-wise the label styles under the "label" class and reads the
 # box-model `padding` (per-side `padding.top/…` or the scalar shorthand):
@@ -45,6 +47,13 @@ module Egui
     # as the CSS-like `text_align` key ("left" / "center" / "right")
     # — the explicit parameter wins.
     property align : Symbol?
+    # Vertical offset of the galley inside the allocated rect
+    # (positive = down) — the sub/sup baseline shift: the label keeps
+    # its flow-driven rect (a full line height) and the TEXT moves
+    # within it, so a horizontal row still centers it like any
+    # sibling label while the glyphs sit below/above the line's
+    # baseline.
+    property baseline_shift : Float64 = 0.0
 
     def initialize(text : String, size : Float64? = nil, wrap : Bool? = nil,
                    userselect : Bool = true, id : String? = nil,
@@ -100,6 +109,10 @@ module Egui
     def style_properties : Array(StyleProp)
       StyleProps.textlike + StyleProps.sizable +
         [StyleProp.new("padding", :box),
+         # A flat fill behind the text (CSS `background` on a text
+         # element) — resolved through the one cascade order in
+         # Label#ui, painted only when a layer actually sets it.
+         StyleProp.new("background", :color),
          StyleProp.new("text_align", :string)]
     end
 
@@ -205,6 +218,17 @@ module Egui
       response = ui.interact(rect, id,
         @userselect ? Sense.click_and_drag : Sense.none)
 
+      # CSS `background` on a text element: a value resolved through
+      # the one cascade order (inline `style:` → the inspector's
+      # per-element override → the class chain) paints a flat rect
+      # over the whole allocated box, behind the text. Nothing in the
+      # default themes sets it, so an ordinary label never paints one
+      # — this is the NativeHTML swatch idiom
+      # (`ui.p(" ", style: "background: …", width:, height:)`).
+      if (bg = cascade_color?("background", ui, id, nil))
+        ui.painter.rect(rect, 0.0, bg)
+      end
+
       # The text lives in the content box (rect minus padding),
       # vertically centered. A host may clamp the rect below the
       # galley's height (the max-size rule at a region edge — a status
@@ -222,6 +246,7 @@ module Egui
       else
         text_top = rect.center.y - galley.size.y / 2.0
       end
+      text_top += @baseline_shift
       # Horizontal placement (#align, or the `text_align` style key):
       # the galley shifts by the free slack of the content box — a
       # label stretched by a width key (or sharing a row with taller
@@ -290,7 +315,8 @@ module Egui
       # ON a menu row must not kill the selection Copy acts on.
       if ctx.input.pointer_pressed? && !response.hovered? && !menu_open
         anchor = -1
-      elsif anchor >= 0 && anchor != cursor && ctx.memory.focus.id.nil? &&
+      elsif anchor >= 0 && anchor != cursor &&
+            ctx.memory.focus.clipboard_shortcuts_free? &&
             ctx.input.consume_key(KeyCode::Escape)
         anchor = -1
       end
@@ -316,16 +342,24 @@ module Egui
         cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
       end
 
-      # Ctrl/Cmd+C copies the selection (upstream `Modifiers::command`)
-      # — only while no widget holds keyboard focus (a focused TextEdit
-      # owns the clipboard), and #consume_key picks the first label
+      # Clipboard shortcuts while no text editor owns the keyboard (a
+      # focused TextEdit/TextArea keeps them — see Focus#
+      # clipboard_shortcuts_free?; a focused combo box does NOT block a
+      # label copy, the browser rule): Ctrl+C copies the selection,
+      # Ctrl+A selects all — both advertised by the context menu, so
+      # the hotkeys must work too. #consume_key picks the first label
       # with a selection.
-      if anchor >= 0 && anchor != cursor && ctx.memory.focus.id.nil? &&
-         ctx.input.modifiers.command? && ctx.input.consume_key(KeyCode::C)
-        sel_min = {cursor, anchor}.min
-        sel_max = {cursor, anchor}.max
-        Egui::SystemPorts::Clipboard.text =
-          original_slice(@rich.text, sel_min, sel_max)
+      if ctx.memory.focus.clipboard_shortcuts_free? &&
+         ctx.input.modifiers.command?
+        if anchor >= 0 && anchor != cursor && ctx.input.consume_key(KeyCode::C)
+          sel_min = {cursor, anchor}.min
+          sel_max = {cursor, anchor}.max
+          Egui::SystemPorts::Clipboard.text =
+            original_slice(@rich.text, sel_min, sel_max)
+        elsif ctx.input.consume_key(KeyCode::A)
+          cursor = flat.size
+          anchor = 0
+        end
       end
 
       # Mouse copy: a secondary press (right-click) or a touch

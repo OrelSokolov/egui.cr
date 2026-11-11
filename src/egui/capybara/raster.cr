@@ -64,13 +64,23 @@ module Egui
       # -- primitive sinks ---------------------------------------------------
 
       # Blend one pixel (straight-alpha src-over), multiplied by an
-      # antialiasing coverage in 0..1.
+      # antialiasing coverage in 0..1. `corners` (when set) rounds the
+      # clip's corners: the pixel must be inside the clip rect AND —
+      # inside a corner square — inside the corner arc (the per-pixel
+      # half of the engine's rounded subtree clip; only pixels in a
+      # corner square pay the distance test).
       def blend_px(x : Int32, y : Int32, c : Color32, cov : Float64,
-                   clip : Rect? = nil, replace : Bool = false) : Nil
+                   clip : Rect? = nil, replace : Bool = false,
+                   corners : CornerRadii? = nil) : Nil
         return unless cov > 0.0
-        if clip && !(x >= clip.min.x && x < clip.max.x &&
-                     y >= clip.min.y && y < clip.max.y)
-          return
+        if clip
+          px = x + 0.5
+          py = y + 0.5
+          return unless px >= clip.min.x && px < clip.max.x &&
+                        py >= clip.min.y && py < clip.max.y
+          if corners && !rounded_clip_contains?(px, py, clip, corners)
+            return
+          end
         end
         a = c.a.to_f64 * cov
         return if a <= 0.0
@@ -99,6 +109,41 @@ module Egui
           .round.clamp(0.0, 255.0).to_u8
       end
 
+      # Is the point inside `clip` rounded by `corners`? The rect part
+      # is already tested by the caller; here only the four corner
+      # squares matter — outside them the shape is the plain rect.
+      # Pixel-exact fast path: no SDF, one squared-distance compare in
+      # the corner square the point falls into.
+      def rounded_clip_contains?(px : Float64, py : Float64, clip : Rect,
+                                 corners : CornerRadii) : Bool
+        lim = {clip.width, clip.height}.min / 2.0
+        tl = {corners.top_left, lim}.min
+        tr = {corners.top_right, lim}.min
+        br = {corners.bottom_right, lim}.min
+        bl = {corners.bottom_left, lim}.min
+        if px < clip.min.x + tl && py < clip.min.y + tl
+          dx = px - (clip.min.x + tl)
+          dy = py - (clip.min.y + tl)
+          return dx * dx + dy * dy <= tl * tl
+        end
+        if px > clip.max.x - tr && py < clip.min.y + tr
+          dx = px - (clip.max.x - tr)
+          dy = py - (clip.min.y + tr)
+          return dx * dx + dy * dy <= tr * tr
+        end
+        if px > clip.max.x - br && py > clip.max.y - br
+          dx = px - (clip.max.x - br)
+          dy = py - (clip.max.y - br)
+          return dx * dx + dy * dy <= br * br
+        end
+        if px < clip.min.x + bl && py > clip.max.y - bl
+          dx = px - (clip.min.x + bl)
+          dy = py - (clip.max.y - bl)
+          return dx * dx + dy * dy <= bl * bl
+        end
+        true
+      end
+
       private def text_cmd(cmd : TextCmd) : Nil
         if renderer = @@text_renderer
           renderer.call(cmd, self)
@@ -118,13 +163,22 @@ module Egui
           (r.left.to_i..r.right.to_i).each do |x|
             edge = (y - r.top < 1) || (r.bottom - y <= 1) ||
                    (x - r.left < 1) || (r.right - x <= 1)
-            blend_px(x, y, cmd.color, edge ? 0.8 : 0.12, cmd.clip)
+            blend_px(x, y, cmd.color, edge ? 0.8 : 0.12, cmd.clip, corners: cmd.clip_corners)
           end
         end
       end
 
       private def rect_cmd(cmd : RectCmd) : Nil
-        return if cmd.fill.nil? && cmd.stroke_color.nil?
+        # The standard border algorithm: a bordered background paints
+        # as the overlay of nested fills (`.border_overlay_layers`) —
+        # outer border plate(s) + the inset background — straight
+        # through the plain fill path below. Stroke-only rects (no
+        # background under the border) keep the stroke band code.
+        if (overlay = Egui.border_overlay_layers(cmd))
+          overlay.each { |sub| rect_cmd(sub) }
+          return
+        end
+        return if cmd.fill.nil? && cmd.stroke_color.nil? && cmd.gradient.nil?
         r = cmd.rect
         x0 = {(r.left - 2).floor.to_i, 0}.max
         y0 = {(r.top - 2).floor.to_i, 0}.max
@@ -136,35 +190,45 @@ module Egui
           py = y + 0.5
           (x0...x1).each do |x|
             px = x + 0.5
-            d = sd_rounded_rect(px, py, r, rounding)
-            # Per-corner rounding applies to the FILL (the inner rect
-            # of the two-rect border algorithm); strokes keep the
-            # uniform `rounding`.
-            fd = if (cs = cmd.corners) && (cmd.fill || cmd.fill2)
+            # Per-corner rounding (CSS `border-radius: a b c d`) drives
+            # both the FILL and the stroke band; the uniform
+            # `rounding` stays the fallback (and the per-side border
+            # path's corner radius).
+            d = if (cs = cmd.corners)
               sd_rounded_corners(px, py, r, cs)
             else
-              d
+              sd_rounded_rect(px, py, r, rounding)
             end
-            if (fill = cmd.fill) || (g2 = cmd.fill2)
-              cov = cov_from_sdf(fd)
+            if (grad = cmd.gradient) || (fill = cmd.fill) || (g2 = cmd.fill2)
+              cov = cov_from_sdf(d)
               if cov > 0.0
-                c = fill || cmd.fill2.not_nil!
-                if (g2 = cmd.fill2) && fill
-                  t = r.height > 0 ? ((py - r.top) / r.height).clamp(0.0, 1.0) : 0.0
-                  c = lerp_color(fill, g2, t)
+                c = if (grad = cmd.gradient)
+                  # background-gradient: exact per-pixel evaluation —
+                  # the CPU path is the reference the GPU approximates.
+                  grad.color_at(px, py, r)
+                else
+                  base = fill || cmd.fill2.not_nil!
+                  if (g2 = cmd.fill2) && fill
+                    t = r.height > 0 ? ((py - r.top) / r.height).clamp(0.0, 1.0) : 0.0
+                    base = lerp_color(fill, g2, t)
+                  end
+                  base
                 end
-                blend_px(x, y, c, cov, cmd.clip, cmd.replace?)
+                blend_px(x, y, c, cov, cmd.clip, cmd.replace?, cmd.clip_corners)
               end
             end
             if (sides = cmd.stroke_sides)
-              # Per-side borders: each side contributes its own geometry
-              # (a shortened edge segment, plus a corner arc where both
-              # adjacent sides are on — the join takes the wider side's
-              # width/color); the nearest one wins the pixel. The CPU
-              # mirror of sokol's per-side bars + corner rings.
+              # Per-side borders on a stroke-only rect (no background
+              # under the border): each side contributes its own
+              # geometry (a shortened edge segment, plus a corner arc
+              # where both adjacent sides are on — the join takes the
+              # wider side's width/color); the nearest one wins the
+              # pixel. The CPU mirror of sokol's per-side bars + corner
+              # rings. Bordered backgrounds take the overlay path above.
               if (band = side_band(px, py, r, rounding, sides))
                 blend_px(x, y, band[:side].color,
-                  band_cov(band[:d], band[:side].width), cmd.clip)
+                  band_cov(band[:d], band[:side].width), cmd.clip,
+                  corners: cmd.clip_corners)
               end
             elsif (sc = cmd.stroke_color) && cmd.stroke_width > 0.0
               # Band INSIDE the outline (the CSS two-rect model: the
@@ -174,7 +238,7 @@ module Egui
               # matching sokol's edge-inward bars.
               w = cmd.stroke_width
               band = band_cov(d + w / 2.0, w)
-              blend_px(x, y, sc, band, cmd.clip) if band > 0.0
+              blend_px(x, y, sc, band, cmd.clip, corners: cmd.clip_corners) if band > 0.0
             end
           end
         end
@@ -245,11 +309,11 @@ module Egui
                 cmd.radius
             if (fill = cmd.fill)
               cov = cov_from_sdf(d)
-              blend_px(x, y, fill, cov, cmd.clip) if cov > 0.0
+              blend_px(x, y, fill, cov, cmd.clip, corners: cmd.clip_corners) if cov > 0.0
             end
             if (sc = cmd.stroke) && cmd.stroke_width > 0.0
               band = band_cov(d, cmd.stroke_width)
-              blend_px(x, y, sc, band, cmd.clip) if band > 0.0
+              blend_px(x, y, sc, band, cmd.clip, corners: cmd.clip_corners) if band > 0.0
             end
           end
         end
@@ -270,7 +334,7 @@ module Egui
           (x0...x1).each do |x|
             px = x + 0.5
             cov = cov_from_sdf(sd_segment(px, py, cmd.p1, cmd.p2) - half)
-            blend_px(x, y, cmd.color, cov, cmd.clip) if cov > 0.0
+            blend_px(x, y, cmd.color, cov, cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end
         end
       end
@@ -288,7 +352,7 @@ module Egui
             px = x + 0.5
             d = sd_triangle(px, py, cmd.a, cmd.b, cmd.c)
             cov = cov_from_sdf(d)
-            blend_px(x, y, cmd.fill, cov, cmd.clip) if cov > 0.0
+            blend_px(x, y, cmd.fill, cov, cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end
         end
       end
@@ -314,7 +378,7 @@ module Egui
             in_arc = a1 - a0 >= 2 * Math::PI ||
                      (ang >= a0 && ang <= a1)
             cov = in_arc ? ring : 0.0
-            blend_px(x, y, cmd.color, cov, cmd.clip) if cov > 0.0
+            blend_px(x, y, cmd.color, cov, cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end
         end
       end
@@ -350,7 +414,7 @@ module Egui
             # ease the ramp a touch so the band reads gaussian-ish
             cov = t * t * (3.0 - 2.0 * t)
             blend_px(x, y, cmd.color, cov * cmd.color.a.to_f64 / 255.0,
-              cmd.clip) if cov > 0.0
+              cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end
         end
       end
@@ -378,7 +442,7 @@ module Egui
               (cmd.tint.r.to_f64 * base / 255.0).to_i,
               (cmd.tint.g.to_f64 * base / 255.0).to_i,
               (cmd.tint.b.to_f64 * base / 255.0).to_i, 255)
-            blend_px(x, y, c, 1.0, cmd.clip)
+            blend_px(x, y, c, 1.0, cmd.clip, corners: cmd.clip_corners)
           end
         end
       end

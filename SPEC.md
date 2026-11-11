@@ -89,7 +89,9 @@ Thin sugar: `p`, `h1`..`h6` (CSS 2em…0.67em scale, bold),
 `strong`/`em`/`code`/`mark`/`small`/`sub`/`sup` (RichText runs), `pre`
 (mono, no wrap, hbar scroll), `blockquote` (left-accent frame),
 `fieldset`/`legend`, `br`, `ul`/`ol`/`li` (markers over box+label) —
-all ✅.
+all ✅. Text elements honor `background` (inline `style:` or a class
+rule) as a flat fill painted behind the text — CSS semantics, the
+swatch idiom `ui.p(" ", style: "background: …", width:, height:)`.
 
 ## 4. Attributes
 
@@ -165,10 +167,25 @@ Deviations (🔶):
   direction normal/reverse/alternate/alternate-reverse). NOT wired:
   `animation.fill` (fill-mode none is the only behavior), per-stop
   easing functions.
-- `sub`/`sup`: 0.75em size only — the engine does not shift baselines.
+- `sub`/`sup`: 0.75em size, baseline shifted — sub drops 0.25em
+  below the parent line's baseline, sup rises 0.35em above it.
 - `mark`: text tinted with the selection color — no background runs.
-- `fieldset`: legend renders inside the frame's first row, not on the
-  border itself.
+- `background-gradient` (engine property, no CSS name): a full
+  CSS-like gradient as its OWN ecss key instead of a
+  `background-image` layer — `linear-gradient(135deg, #a, #b 60%)`,
+  `radial-gradient(circle at 30% 20%, #a, #b)` with extent keywords.
+  Multi-stop, any angle, `to`-directions, `at %` centers; hex colors
+  only. Set on a class rule (state-scoped like `background`) or the
+  exml `<box fill="linear-gradient(…)">`; wins over
+  `background`/`background2` when present. Rendering: CPU raster is
+  per-pixel exact; sokol paints linear gradients as exact stop-banded
+  Gouraud and radial as concentric rings. Not transition-animated
+  (a state switch snaps).
+- `fieldset`: the legend rides the top border like the browser's —
+  two stroke segments around the caption text (no fill gap behind
+  the text; the frame's top side is simply not drawn under it).
+  The frame is a flat 1px stroke; the browser's `groove` 3D style is
+  not emulated.
 - `br`: acts in horizontal (wrapping) flow; vertical flow already
   breaks per widget.
 - `hidden:` without an explicit `id:` does not preserve state (no
@@ -188,3 +205,4 @@ Deviations (🔶):
 | svg, lottie, icons | ✅ |
 | first frame (exml codegen) | ✅ Route A: `egui-gen` (scripts/egui_gen.cr) emits the literal Node tree; `Document.hybrid` picks live file (dev) → literals (release) |
 | `@keyframes` | ✅ `animation:*` rule keys + `StyleSheet#keyframes` / ecss `@keyframes` blocks (deviations §5) |
+| `position` | ✅ `relative`/`absolute`/`fixed` + `top/right/bottom/left` (px, `%` of the containing block, vw/vh/rem) on `Ui#box` / `ui.div`, from arguments, inline `style:` or ECSS class rules (see `Ui#box_positioning`); `sticky` ⏳ |

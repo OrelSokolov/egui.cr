@@ -1,0 +1,639 @@
+<exml>
+  <!-- Raven Music — порт live-оракула (oracle/oracle_live, Vue 3) на exml.
+       Разметка параметризована: все обложки/цвета/тексты идут из store,
+       приложение (music_exml.cr) синхронизирует туда MusicPlayer каждый
+       кадр — вычисляемые списки (сайдбар, поиск, коллекция, очередь) как
+       computed у Vue. Встроенные теги: column/box/repeat/use/partial;
+       остальные — кастомные (examples/music_components/music_tags.cr).
+       Акцент следует за обложкой: теги читают hex из store ({accent}). -->
+
+  <!-- ════════════════════════════════ ХРОМ (одинаков на всех окнах) ═══════ -->
+
+  <partial id="header">
+    <hbar h="56" pad="12">
+      <logo/>
+      <gap w="8"/>
+      <t text="Raven Music" size="16" bold="1"/>
+      <gap w="36"/>
+      <ibtn icon="back" on_click="nav_back"/>
+      <gap w="8"/>
+      <ibtn icon="home" size="20" on_click="go_home"/>
+      <gap w="8"/>
+      <searchinput bind="query" w="280"/>
+      <spring/>
+      <ibtn icon="settings" size="20" on_click="go_settings"/>
+      <gap w="4"/>
+      <avatar/>
+    </hbar>
+  </partial>
+
+  <partial id="sidebar">
+    <panel w="300">
+      <panel class="nav-box" h="120">
+        <navitem icon="home" text="Home" active="{nav_home}" on_click="go_home"/>
+        <gap h="2"/>
+        <navitem icon="search" text="Search" active="{nav_search}" on_click="go_search"/>
+        <gap h="2"/>
+        <navitem icon="settings" text="Settings" active="{nav_settings}" on_click="go_settings"/>
+      </panel>
+      <gap h="11"/>
+      <panel class="lib-box">
+        <hbar h="32">
+          <navitem icon="library" text="Your library" pad="4"
+                   active="{nav_library}" on_click="go_library"/>
+          <spring/>
+          <ibtn icon="plus" btn="28" on_click="not_in_demo"/>
+        </hbar>
+        <gap h="10"/>
+        <hbar h="30" pad="6">
+          <chip text="All" on="{chip_s_all}" on_click="chip_side_0"/><gap w="8"/><chip text="Playlists" on="{chip_s_playlists}" on_click="chip_side_1"/><gap w="8"/><chip text="Albums" on="{chip_s_albums}" on_click="chip_side_2"/>
+        </hbar>
+        <gap h="10"/>
+        <repeat for="r" in="lib_rows">
+          <panel class="lib-row" dir="row" h="54" on_click="open_side_row">
+            <cover c1="{r.c1}" c2="{r.c2}" txt="{r.txt}" s="46" round="{r.round}" fs="15"/>
+            <gap w="12"/>
+            <col w="190">
+              <t text="{r.t}" size="14"/>
+              <gap h="3"/>
+              <t text="{r.s}" size="12" color="#a3a3b4"/>
+            </col>
+          </panel>
+          <gap h="2"/>
+        </repeat>
+      </panel>
+    </panel>
+  </partial>
+
+  <partial id="nowplaying">
+    <panel class="nowplaying" w="320" scroll="1" if="np_visible">
+      <hbar h="28">
+        <t text="From {context_str}" size="15" bold="1"/>
+        <spring/>
+        <ibtn icon="more" btn="28" on_click="not_in_demo"/>
+        <ibtn icon="close" btn="28" on_click="toggle_np"/>
+      </hbar>
+      <gap h="14"/>
+      <cover c1="{np_c1}" c2="{np_c2}" txt="{np_txt}" s="288" r="10" fs="60" shadow="1"/>
+      <gap h="14"/>
+      <hbar h="48">
+        <col w="200">
+          <t text="{np_title}" size="22" bold="1"/>
+          <gap h="3"/>
+          <t text="{np_artist}" size="15" color="#a3a3b4"/>
+        </col>
+        <spring/>
+        <ibtn icon="share" btn="28" size="20" on_click="not_in_demo"/>
+        <ibtn icon="{heart_icon}" color="{heart_col}" btn="28" size="20" on_click="like_current"/>
+      </hbar>
+      <gap h="14"/>
+      <vis n="36" h="56" w="288" min="4" mode="np"/>
+      <gap h="14"/>
+      <panel class="np-artist-card" h="182" rblob="{np_rb}">
+        <t text="ABOUT THE ARTIST" size="12" bold="1" color="#ffffff"/>
+        <gap h="6"/>
+        <t text="{np_artist}" size="20" bold="1" color="#ffffff"/>
+        <gap h="6"/>
+        <t text="2,341,992 monthly listeners" size="14" color="#ffffffcc"/>
+        <gap h="6"/>
+        <t text="An indie rock band known for wide, slow songs and long instrumental passages. Their eleventh album, Tides, came out in 2026." size="13" color="#ffffffd9" w="256" wrap="1" lh="1.5"/>
+      </panel>
+      <gap h="14"/>
+      <panel class="np-queue-card" h="0">
+        <hbar h="22">
+          <t text="Next in queue" size="15" bold="1"/>
+          <spring/>
+          <t text="Open queue" size="14" color="#a3a3b4"/>
+        </hbar>
+        <gap h="8"/>
+        <t if="queue_empty" text="Nothing after this song." size="14" color="#a3a3b4"/>
+        <repeat for="q" in="queue">
+          <panel class="q-row" dir="row" h="42" on_click="jump_queue">
+            <cover c1="{q.c1}" c2="{q.c2}" txt="{q.txt}" s="36" r="4" fs="12"/>
+            <gap w="10"/>
+            <col w="190">
+              <t text="{q.t}" size="14"/>
+              <gap h="2"/>
+              <t text="{q.s}" size="12" color="#a3a3b4"/>
+            </col>
+          </panel>
+          <gap h="6"/>
+        </repeat>
+      </panel>
+    </panel>
+  </partial>
+
+  <partial id="playerbar">
+    <pbar>
+      <hbar h="88">
+        <cover c1="{np_c1}" c2="{np_c2}" txt="{np_txt}" s="58" r="6" fs="20"/>
+        <gap w="14"/>
+        <col w="200">
+          <t text="{np_title}" size="15"/>
+          <gap h="3"/>
+          <t text="{np_artist}" size="13" color="#a3a3b4"/>
+        </col>
+        <gap w="14"/>
+        <ibtn icon="{heart_icon}" color="{heart_col}" on_click="like_current"/>
+      </hbar>
+      <column>
+        <hbar h="40">
+          <spring/>
+          <ibtn icon="shuffle" size="18" color="{shuffle_col}" on_click="shuffle"/>
+          <gap w="12"/>
+          <ibtn icon="prev" on_click="prev_track"/>
+          <gap w="12"/>
+          <playround icon="{play_icon}" s="40" size="18" on_click="toggle_play"/>
+          <gap w="12"/>
+          <ibtn icon="next" on_click="next_track"/>
+          <gap w="12"/>
+          <ibtn icon="{repeat_icon}" size="18" color="{repeat_col}" on_click="cycle_repeat"/>
+          <spring/>
+        </hbar>
+        <hbar h="16">
+          <t text="{elapsed}" size="12" color="#a3a3b4" w="40" align="r"/>
+          <gap w="10"/>
+          <oslider bind="seek_frac" w="-1" on_change="seek"/>
+          <gap w="10"/>
+          <t text="{length}" size="12" color="#a3a3b4" w="40"/>
+        </hbar>
+      </column>
+      <hbar h="88">
+        <spring/>
+        <vis n="5" h="16" min="2"/>
+        <gap w="8"/>
+        <ibtn icon="mic" btn="30" on_click="not_in_demo"/>
+        <gap w="6"/>
+        <ibtn icon="panel" btn="30" on_click="toggle_np"/>
+        <gap w="6"/>
+        <ibtn icon="queue" btn="30" on_click="not_in_demo"/>
+        <gap w="6"/>
+        <ibtn icon="{vol_icon}" btn="30" on_click="toggle_mute"/>
+        <gap w="4"/>
+        <oslider bind="volume_frac" w="120" on_change="set_volume"/>
+      </hbar>
+    </pbar>
+  </partial>
+
+  <!-- ════════════════════════════════ СТРАНИЦЫ ЦЕНТРА ═══════ -->
+
+  <!-- Home -->
+  <partial id="p_home">
+    <panel class="center-page" scroll="1">
+      <hbar h="30" pad="0">
+        <chip text="All" on="1"/><gap w="8"/><chip text="Music" on_click="chip_home"/><gap w="8"/>
+        <chip text="Podcasts" on_click="chip_home"/><gap w="8"/><chip text="Audiobooks" on_click="chip_home"/>
+      </hbar>
+      <gap h="14"/>
+      <t text="{greeting}" size="30" bold="1" h="46"/>
+      <gap h="6"/>
+      <panel dir="row" h="60">
+        <repeat for="qrow" in="quick_a">
+          <panel class="quick" dir="row" w="210" h="60" on_click="open_quick_a">
+            <cover c1="{qrow.c1}" c2="{qrow.c2}" txt="{qrow.txt}" s="60" r="6" fs="18"/>
+            <gap w="12"/>
+            <t text="{qrow.t}" size="14" bold="1" w="98"/>
+            <spring/>
+            <vis n="4" h="14" min="2" show="{qrow.vis}"/>
+            <gap w="12"/>
+          </panel>
+          <gap w="10"/>
+        </repeat>
+      </panel>
+      <gap h="10"/>
+      <panel dir="row" h="60">
+        <repeat for="qrow" in="quick_b">
+          <panel class="quick" dir="row" w="210" h="60" on_click="open_quick_b">
+            <cover c1="{qrow.c1}" c2="{qrow.c2}" txt="{qrow.txt}" s="60" r="6" fs="18"/>
+            <gap w="12"/>
+            <t text="{qrow.t}" size="14" bold="1" w="98"/>
+            <spring/>
+            <vis n="4" h="14" min="2" show="{qrow.vis}"/>
+            <gap w="12"/>
+          </panel>
+          <gap w="10"/>
+        </repeat>
+      </panel>
+      <gap h="14"/>
+      <hbar h="36">
+        <t text="Made for you" size="22" bold="1"/>
+        <spring/>
+        <t text="Show all" size="14" color="#a3a3b4"/>
+      </hbar>
+      <crow>
+        <repeat for="c" in="made_cards">
+          <panel class="album-card" w="188" h="234" on_click="open_made">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <hbar h="36">
+        <t text="Recently played" size="22" bold="1"/>
+        <spring/>
+        <t text="Show all" size="14" color="#a3a3b4"/>
+      </hbar>
+      <crow>
+        <repeat for="c" in="recent_cards">
+          <panel class="album-card" w="188" h="234" on_click="open_recent">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <hbar h="36">
+        <t text="Your favorite artists" size="22" bold="1"/>
+        <spring/>
+      </hbar>
+      <crow>
+        <repeat for="c" in="artist_cards">
+          <panel class="album-card" w="188" h="234" on_click="open_artist">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <hbar h="36">
+        <t text="New releases" size="22" bold="1"/>
+        <spring/>
+        <t text="Show all" size="14" color="#a3a3b4"/>
+      </hbar>
+      <crow>
+        <repeat for="c" in="release_cards">
+          <panel class="album-card" w="188" h="234" on_click="open_release">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+    </panel>
+  </partial>
+
+  <!-- Search: пустой query → Browse all; иначе живые результаты -->
+  <partial id="p_search">
+    <panel class="center-page" scroll="1">
+      <column unless="searching">
+        <t text="Browse all" size="26" bold="1"/>
+        <gap h="14"/>
+        <box direction="row">
+          <repeat for="g" in="genres">
+            <gtile g="{g.g}" t="{g.t}" c1="{g.c1}" c2="{g.c2}" txt="{g.txt}" on_click="search_genre"/>
+            <gap w="16"/>
+          </repeat>
+        </box>
+      </column>
+      <column if="searching">
+        <t text="Results" size="26" bold="1"/>
+        <gap h="10"/>
+        <column if="no_results">
+          <t text="Nothing matches «{query}». Try another word: a genre, a city, a color…" size="15" color="#a3a3b4" w="600" wrap="1" lh="1.5"/>
+        </column>
+        <column unless="no_results">
+        <t text="Top result" size="22" bold="1"/>
+        <gap h="10"/>
+        <panel class="top-card" dir="row" h="116" w="480" on_click="top_open">
+          <cover c1="{top_c1}" c2="{top_c2}" txt="{top_txt}" s="92" r="8" fs="30"/>
+          <gap w="16"/>
+          <col w="340">
+            <t text="{top_t}" size="22" bold="1"/>
+            <gap h="4"/>
+            <t text="Album · {top_s}" size="14" color="#a3a3b4"/>
+          </col>
+        </panel>
+        <gap h="10"/>
+        <t text="Songs" size="22" bold="1"/>
+        <gap h="10"/>
+        <repeat for="tr" in="search_songs">
+          <panel class="track-row" dir="row" h="56" padx="12" on_click="play_song">
+            <t text="{tr.n}" size="14" color="{tr.tc}" w="26" align="r"/>
+            <gap w="14"/>
+            <cover c1="{tr.c1}" c2="{tr.c2}" txt="{tr.txt}" s="40" r="4" fs="13"/>
+            <gap w="12"/>
+            <col w="260">
+              <t text="{tr.tt}" size="15" color="{tr.tc}"/>
+              <gap h="2"/>
+              <t text="{tr.ta}" size="13" color="#a3a3b4"/>
+            </col>
+            <spring/>
+            <t text="{tr.al}" size="13" color="#a3a3b4" w="197"/>
+            <ibtn icon="{tr.hicon}" color="{tr.hcol}" btn="32" size="16" on_click="like_song"/>
+            <t text="{tr.time}" size="13" color="#a3a3b4" w="44" align="r"/>
+          </panel>
+        </repeat>
+        <gap h="10"/>
+        <t text="Albums" size="22" bold="1"/>
+        <crow>
+          <repeat for="c" in="search_albums">
+            <panel class="album-card" w="188" h="234" on_click="open_search_album">
+              <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+              <gap h="6"/>
+              <t text="{c.t}" size="14" bold="1"/>
+              <gap h="2"/>
+              <t text="{c.s}" size="13" color="#a3a3b4"/>
+            </panel>
+            <gap w="4"/>
+          </repeat>
+        </crow>
+        </column>
+      </column>
+    </panel>
+  </partial>
+
+  <!-- Settings: живые переключатели/комбо (меняют MusicPlayer) -->
+  <partial id="p_settings">
+    <panel class="center-page" scroll="1">
+      <panel class="settings-col" w="-1">
+          <t text="Settings" size="30" bold="1"/>
+          <gap h="20"/>
+          <t text="APPEARANCE" size="12" bold="1" color="#d6d6e2"/>
+          <gap h="20"/>
+          <hbar h="60">
+            <col w="500">
+              <t text="Look" size="15"/>
+              <gap h="3"/>
+              <t text="A theme of the player, or a look of Raven: Windows, macOS, GNOME, glass, high contrast." size="13" color="#a3a3b4" w="500" wrap="1" lh="1.4"/>
+            </col>
+            <spring/>
+            <ocombo bind="combo_look" w="260" on_change="look_change"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Accent from the cover" size="15"/><gap h="3"/>
+              <t text="The color of the controls follows the cover of what plays." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <oswitch bind="sw_accent_follow" on="{sw_accent_follow}" on_click="sw_accent"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Accent" size="15"/><gap h="3"/>
+              <t text="The color of the controls, when it does not follow the cover." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <swatch/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Background" size="15"/><gap h="3"/>
+              <t text="What moves behind the panels, in the colors of the cover." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <ocombo bind="combo_bg" w="160" on_change="effect_change"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="60">
+            <col w="500"><t text="Animate the background" size="15"/><gap h="3"/>
+              <t text="Off, the background stays still and the window draws only when something changes." size="13" color="#a3a3b4" w="500" wrap="1" lh="1.4"/></col>
+            <spring/>
+            <oswitch bind="sw_animate" on="{sw_animate}" on_click="sw_animate"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Now playing panel" size="15"/><gap h="3"/>
+              <t text="The panel on the right, with the cover and what comes next." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <oswitch bind="sw_np_setting" on="{sw_np_setting}" on_click="toggle_np"/>
+          </hbar>
+          <gap h="20"/>
+          <hline/>
+          <gap h="20"/>
+          <t text="PLAYBACK" size="12" bold="1" color="#d6d6e2"/>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Crossfade" size="15"/><gap h="3"/>
+              <t text="Songs fade into each other." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <oslider bind="crossfade_frac" w="180" on_change="crossfade_change"/>
+            <gap w="10"/>
+            <t text="{crossfade_text}" size="14" w="36"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Normalize the volume" size="15"/><gap h="3"/>
+              <t text="The same loudness for every song." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <oswitch bind="sw_normalize" on="{sw_normalize}" on_click="sw_normalize"/>
+          </hbar>
+          <gap h="20"/>
+          <hbar h="46">
+            <col w="500"><t text="Streaming quality" size="15"/><gap h="3"/>
+              <t text="Nothing is streamed: the songs of this player are made up." size="13" color="#a3a3b4"/></col>
+            <spring/>
+            <ocombo bind="combo_quality" w="160" on_change="quality_change"/>
+          </hbar>
+          <gap h="20"/>
+          <hline/>
+          <gap h="20"/>
+          <t text="ABOUT" size="12" bold="1" color="#d6d6e2"/>
+          <gap h="20"/>
+          <panel class="about-card" h="190">
+            <t text="Raven Music is a showcase of Raven: no server, no sound, only the interface." size="14" w="748" wrap="1" lh="1.55"/>
+            <gap h="8"/>
+            <t text="• every part is an XML file of ui/, brought in with Include" size="14" color="#d6d6e2"/>
+            <gap h="4"/>
+            <t text="• the cards, the rows and the tiles are tags declared in widgets.xml" size="14" color="#d6d6e2"/>
+            <gap h="4"/>
+            <t text="• Icon, Cover, Visualizer and Heading are made by the application" size="14" color="#d6d6e2"/>
+            <gap h="4"/>
+            <t text="• the themes are files of themes/; the accent follows the cover playing" size="14" color="#d6d6e2"/>
+            <gap h="4"/>
+            <t text="• the island at the top lives in the notch of a MacBook" size="14" color="#d6d6e2"/>
+          </panel>
+        </panel>
+    </panel>
+  </partial>
+
+  <!-- Library: живые счётчики, плейлисты + все альбомы (ряды по 3) -->
+  <partial id="p_library">
+    <panel class="center-page" scroll="1">
+      <t text="Your library" size="30" bold="1" h="46"/>
+      <t text="{lib_summary}" size="14" color="#a3a3b4"/>
+      <hbar h="37">
+        <t text="Playlists" size="22" bold="1"/>
+        <spring/>
+        <t text="Show all" size="14" color="#a3a3b4"/>
+      </hbar>
+      <crow h="225">
+        <repeat for="c" in="playlists">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_playlist">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <hbar h="37">
+        <t text="Albums" size="22" bold="1"/>
+        <spring/>
+        <t text="Show all" size="14" color="#a3a3b4"/>
+      </hbar>
+      <crow>
+        <repeat for="c" in="albums_r0">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r0">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <crow>
+        <repeat for="c" in="albums_r1">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r1">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <crow>
+        <repeat for="c" in="albums_r2">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r2">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <crow>
+        <repeat for="c" in="albums_r3">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r3">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+      <crow>
+        <repeat for="c" in="albums_r4">
+          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r4">
+          <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
+          <gap h="6"/>
+          <t text="{c.t}" size="14" bold="1"/>
+          <gap h="2"/>
+          <t text="{c.s}" size="13" color="#a3a3b4"/>
+        </panel>
+        <gap w="4"/>
+      </repeat>
+      </crow>
+    </panel>
+  </partial>
+
+  <!-- Collection: альбом ИЛИ плейлист (col_* из MusicPlayer) -->
+  <partial id="p_collection">
+    <panel class="col-page" scroll="1">
+      <hero c1="{col_h1}" c2="{col_h2}">
+        <cover c1="{col_c1}" c2="{col_c2}" txt="{col_txt}" s="232" r="8" fs="48" shadow="1"/>
+        <gap w="26"/>
+        <col w="380">
+          <t text="{col_kind_label}" size="12" bold="1" color="#ffffff"/>
+          <gap h="8"/>
+          <t text="{col_title}" size="56" bold="1" color="#ffffff"/>
+          <gap h="8" if="col_is_playlist"/>
+          <t if="col_is_playlist" text="{col_desc}" size="14" color="#ffffffcc" w="360" wrap="1" lh="1.5"/>
+          <gap h="8"/>
+          <hbar h="24">
+            <cover c1="{col_c1}" c2="{col_c2}" txt="{col_txt}" s="24" r="12" fs="9"/>
+            <gap w="8"/>
+            <t text="{col_artist}" size="14" bold="1" color="#ffffff"/>
+            <gap w="8"/>
+            <t text="{col_meta}" size="14" color="#ffffffbf"/>
+          </hbar>
+        </col>
+      </hero>
+      <hbar h="76" pad="24">
+        <playround icon="{col_play_icon}" s="56" size="24" big="1" on_click="col_play"/>
+        <gap w="14"/>
+        <ibtn icon="shuffle" btn="40" size="24" color="{shuffle_col}" on_click="col_shuffle"/>
+        <gap w="14"/>
+        <ibtn icon="{col_heart_icon}" btn="40" size="24" color="{col_heart_col}" on_click="like_collection"/>
+        <gap w="14"/>
+        <ibtn icon="download" btn="40" size="24" on_click="not_in_demo"/>
+        <gap w="14"/>
+        <ibtn icon="more" btn="40" size="24" on_click="not_in_demo"/>
+        <spring/>
+        <t text="List" size="14" color="#a3a3b4"/>
+        <gap w="8"/>
+        <icon name="queue" size="18" color="#a3a3b4b3"/>
+      </hbar>
+      <gap h="6"/>
+      <hbar h="29" pad="12">
+        <t text="#" size="13" color="#a3a3b4" w="26" align="r"/>
+        <gap w="14"/>
+        <t text="Title" size="13" color="#a3a3b4"/>
+        <spring/>
+        <t text="{album_head}" size="13" color="#a3a3b4" w="197"/>
+        <gap w="32"/>
+        <icon name="clock" size="16" color="#a3a3b4b3"/>
+      </hbar>
+      <gap h="4"/>
+      <hline pad="12"/>
+      <gap h="6"/>
+      <repeat for="tr" in="tracks">
+        <panel class="track-row" dir="row" h="56" padx="12" on_click="play_track">
+          <t text="{tr.n}" size="14" color="{tr.tc}" w="26" align="r"/>
+          <gap w="14"/>
+          <cover c1="{tr.c1}" c2="{tr.c2}" txt="{tr.txt}" s="40" r="4" fs="13"/>
+          <gap w="12"/>
+          <col w="260">
+            <t text="{tr.tt}" size="15" color="{tr.tc}"/>
+            <gap h="2"/>
+            <t text="{tr.ta}" size="13" color="#a3a3b4"/>
+          </col>
+          <spring/>
+          <t text="{tr.al}" size="13" color="#a3a3b4" w="197"/>
+          <ibtn icon="{tr.hicon}" color="{tr.hcol}" btn="32" size="16" on_click="like_track"/>
+          <t text="{tr.time}" size="13" color="#a3a3b4" w="44" align="r"/>
+        </panel>
+      </repeat>
+    </panel>
+  </partial>
+
+  <!-- ════════════════════════════════ ОКНО ═══════ -->
+  <page id="root/root">
+    <mesh c1="{m1}" c2="{m2}" c3="{m3}" animate="{animate_bg}" if="mesh_on"/>
+    <use partial="header"/>
+    <mainarea pad="8" reserve="88">
+      <use partial="sidebar"/>
+      <gap w="8"/>
+      <panel class="center" w="708" bounded="1">
+        <column if="page_home"><use partial="p_home"/></column>
+        <column if="page_search"><use partial="p_search"/></column>
+        <column if="page_settings"><use partial="p_settings"/></column>
+        <column if="page_library"><use partial="p_library"/></column>
+        <column if="page_collection"><use partial="p_collection"/></column>
+      </panel>
+      <gap w="8"/>
+      <use partial="nowplaying"/>
+    </mainarea>
+    <use partial="playerbar"/>
+    <island c1="{np_c1}" c2="{np_c2}" txt="{np_txt}" title="{island_text}"/>
+  </page>
+</exml>

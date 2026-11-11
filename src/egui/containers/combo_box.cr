@@ -52,6 +52,22 @@ module Egui
       self
     end
 
+    # Styled through the `combo` class: the textlike keys (`text_color`
+    # for the closed label, `font_*`) plus the box keys `fill` (with
+    # hover/active states), `stroke` and `rounding` of the closed
+    # trigger — unset keys keep the Visuals slots. The open list keeps
+    # the native popup look, like a browser <select> dropdown.
+    def style_class : String?
+      "combo"
+    end
+
+    def style_properties : Array(StyleProp)
+      StyleProps.textlike + [
+        StyleProp.new("fill", :color, states: true),
+        StyleProp.new("stroke", :color),
+        StyleProp.new("rounding", :number, fallback: 3.0, min: 0.0)]
+    end
+
     # The Widget-protocol form: attach the pick handler with
     # `#on_select` and `ui.add(combo_box)` — `#ui` returns the BUTTON
     # Response (hover/click of the dropdown trigger); `#show` stays
@@ -77,7 +93,9 @@ module Egui
     end
 
     private def render(ui : Ui, on_select : (String ->)) : Bool
-      style = ui.style
+      id = ui.next_widget_id
+      class_vars = style_vars(ui, id)
+      style = effective_style(ui, id, class_vars)
       font_size = style.font_size
       # Placeholder while nothing is picked; the selection takes over
       # as soon as one exists.
@@ -104,7 +122,6 @@ module Egui
       height = {glyph_h + 2 * style.spacing.button_padding.y,
         style.spacing.interact_size.y}.max
       rect = ui.allocate_at_least(Vec2.new(width, height))
-      id = ui.next_widget_id
       # Focusable like an editable select (SelectBox's field): while
       # focused, Up/Down walk the options and Enter confirms — the
       # arrows are locked so focus navigation can't steal them.
@@ -186,11 +203,21 @@ module Egui
       # The placeholder reads as a hint — faded like TextEdit's.
       text_color = @selected.empty? && @label ? visuals.fade_color(visuals.text_color, 0.55) : visuals.text_color
 
+      # `combo` class keys (state-scoped `fill`, `stroke`, `rounding`)
+      # with the Visuals slots as fallback — same arrangement as
+      # Checkbox's box.
+      state = response.active? ? "active" : response.hovered? ? "hover" : nil
+      state_vars = style_vars(ui, id, state)
+      trigger_fill = state_vars.color?("fill") ||
+                     visuals.button_fill(response.hovered?, response.active?)
+      trigger_stroke = class_vars.color?("stroke") || visuals.button_stroke
+
       case @variant
       when :field
         # Idle text-field frame (TextEdit's look)…
-        ui.painter.rect(rect, 4.0, visuals.button_weak,
-          visuals.button_stroke, 1.0)
+        ui.painter.rect(rect, class_vars.f64("rounding", 4.0),
+          state_vars.color?("fill") || visuals.button_weak,
+          trigger_stroke, 1.0)
         # …with a raised select button pinned inside the right edge.
         btn = Rect.from_min_size(
           Pos2.new(rect.right - 1.0 - arrow_zone, rect.top + 1.0),
@@ -204,17 +231,15 @@ module Egui
           Vec2.new(arrow_h, arrow_h))
       when :plain
         # One rigid piece: no strip, the chevron sits at the right edge.
-        ui.painter.rect(rect, 3.0,
-          visuals.button_fill(response.hovered?, response.active?),
-          visuals.button_stroke, 1.0)
+        ui.painter.rect(rect, class_vars.f64("rounding", 3.0),
+          trigger_fill, trigger_stroke, 1.0)
         arrow_box = Rect.from_min_size(
           Pos2.new(rect.right - pad_x - arrow_h,
             rect.center.y - arrow_h / 2.0),
           Vec2.new(arrow_h, arrow_h))
       else # :button
-        ui.painter.rect(rect, 3.0,
-          visuals.button_fill(response.hovered?, response.active?),
-          visuals.button_stroke, 1.0)
+        ui.painter.rect(rect, class_vars.f64("rounding", 3.0),
+          trigger_fill, trigger_stroke, 1.0)
 
         # The arrow strip: a sub-button of its own pinned inside the
         # right edge (like the system dropdowns) — one fill step

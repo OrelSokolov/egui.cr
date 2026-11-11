@@ -155,6 +155,17 @@ module Egui
       vars_for(ui, id, class_path ? [class_path] : [] of String, state)
     end
 
+    # The cascaded `background-gradient` (class rules + element
+    # override + keyframes, state-scoped like `background` — see
+    # #style_vars). nil = the plain fill path. NOT transition-animated
+    # in v1: a state switch snaps to the new gradient (animating a
+    # stop list is interpolation of variable-length structures —
+    # deferred until the transition engine grows it).
+    protected def background_gradient?(ui : Ui, id : Id,
+                                       state : String?) : Gradient?
+      style_vars(ui, id, state).gradient?("background-gradient")
+    end
+
     private def vars_for(ui : Ui, id : Id, paths : Array(String),
                          state : String?) : StyleVars
       # Touch devices have no hover (Этап 6 of

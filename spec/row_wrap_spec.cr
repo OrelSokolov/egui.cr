@@ -46,6 +46,39 @@ describe "horizontal row wrap" do
     ys.uniq.size.should be > 1
   end
 
+  it "a column box inline in a wrapping row shrink-wraps and breaks lines" do
+    # Regression (html gallery "wrapping row" card): a column box
+    # (#box → html div) inline in a horizontal row used to expand to
+    # the row's right edge (block fill) and push the cursor past it —
+    # every later box collapsed into a stub beyond the edge instead of
+    # wrapping. The break decision needs the natural width measured the
+    # PREVIOUS frame (Memory#inline_box_widths), so pin the second
+    # frame's layout.
+    ctx = Egui::Context.new
+    rects = [] of Egui::Rect
+    2.times do
+      rects.clear
+      wrap_frame(ctx) do |c|
+        c.central_panel do |ui|
+          ui.horizontal do |row|
+            7.times do |i|
+              rects << row.box(fill: Egui::Color32.rgb(51, 51, 60),
+                margin: Egui::Vec2.new(4.0, 4.0)) { |d| d.label("chip #{i}") }
+            end
+          end
+        end
+      end
+    end
+    panel_right = rects.map(&.right).max
+    rects.each do |r|
+      r.width.should be > 10.0            # real rects, not edge stubs
+      r.right.should be <= panel_right + 0.01
+    end
+    # At ~400pt seven chips cannot share one line — some broke to a
+    # fresh line.
+    rects.map(&.top).uniq.size.should be > 1
+  end
+
   it "wrap: false keeps the single-line behavior" do
     ctx = Egui::Context.new
     rects = [] of Egui::Rect
