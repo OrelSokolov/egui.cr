@@ -82,11 +82,10 @@ module Egui
       abstract def metrics_at(size : Float64) : {Float64, Float64}
       protected abstract def build_glyph(gid : Int32, size : Float64) : Glyph
 
-      # Extra spacing between letters (px) — added BETWEEN glyphs only,
-      # never after the last one, so `measure` widths stay exact.
-      # Backends whose glyph placement reads tighter than their
-      # reference open this up (live-tunable: fontpreview exposes it).
-      property letter_spacing : Float64 = 0.0
+      # `letter_spacing` lives on `Egui::Fonts` (per-text tracking;
+      # backends whose glyph placement reads tighter than their
+      # reference open the global up — live-tunable: fontpreview
+      # exposes it).
 
       # Pixels per point the draw path rasterizes at (set by the backend
       # each frame; 1.0 headless). Hinted advances are per-ppem, NOT

@@ -714,7 +714,7 @@ explicit id to persist element overrides"
       def self.enable(ctx : Context, app_id : String) : Session
         # A FLAT file next to the binary — no per-app subdirectory: the
         # natural dir name (<bin_dir>/<app_id>) collides with the app's
-        # own binary (bin/notepad is a FILE), so the id rides in the
+        # own binary (bin/apps/notepad is a FILE), so the id rides in the
         # file name instead: style_<app_id>.ecss.
         dir = File.dirname(File.expand_path(PROGRAM_NAME))
         session = new(ctx, File.join(dir, "style_#{app_id}.ecss"))

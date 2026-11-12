@@ -112,7 +112,10 @@ module Egui
     # OBJECTS — their identity already encodes class set + state +
     # rule revisions) and the constraints it laid out under. Ui#add
     # adds the id, focus flag, font scale and ppp on top; hover and
-    # active state enter through the state bag's identity.
+    # active state enter through the state bag's identity. The return
+    # is an already-folded UInt64 hash — the Ui-level wrapper then
+    # hashes only the small outer tuple, not the whole nested key
+    # (halves the per-widget key cost on hot paths).
     def paint_cache_key(ui : Ui)
       nil
     end

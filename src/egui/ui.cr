@@ -70,7 +70,22 @@ module Egui
     # cursor breaks to a new line instead of pinning the widget at
     # the region edge as a zero-remainder rect. Mobile-safe default:
     # nothing runs off the screen edge just because a row overflows.
+    # (The FULL flexbox — direction/justify/align/grow/order/gap — is
+    # `Ui#flex` / `Egui::Flex`, SPEC.md §8; this is the cursor-flow
+    # wrap the default layout uses.)
     property wrap_x : Bool = false
+
+    # Set while a `display: flex` container's declaration block runs
+    # (see Ui#flex / Html `div(style: "display:flex")`): every widget
+    # (#add/#add_sized) and container (#box/#horizontal) added through
+    # this Ui becomes a FLEX ITEM of the captured Flex instead of
+    # flowing by the cursor — the Ui-level flex interception. Cleared
+    # around the flex container's own box, so the container itself
+    # stays in its parent's flow; child Ui's inherit the capture
+    # (#enabled/#scope blocks inside a flex div route too). The Flex
+    # child cells never carry it (they are created from the flex's
+    # inner region), so routing cannot recurse.
+    property flex_capture : Flex? = nil
 
     # Cross-axis growth direction of a horizontal row (see #horizontal
     # and #allocate_space): true only for a row opened inside an
@@ -98,6 +113,15 @@ module Egui
     # a row whose baseline height is known upfront.
     def seed_row_height(h : Float64) : Nil
       @row_h = {@row_h, h}.max
+    end
+
+    # The current row band's cross extent — the tallest widget seen on
+    # the line so far (seeded at `interact_size.y`). A cross-axis
+    # consumer that cannot use the region's 1e6 content-driven extent
+    # (a vertical `Separator` inside a horizontal row) sizes to this
+    # instead of blowing the flow past the panel.
+    def row_band_height : Float64
+      {@row_h, style.spacing.interact_size.y}.max
     end
 
     # The exact-size cell of #add_sized, when this Ui is one (nil for
@@ -324,6 +348,15 @@ module Egui
       @ctx.interact(id, rect, sense, @layer, @clip)
     end
 
+    # True inside a two-pass container's measure pass (see
+    # `Context#measure`): paint is discarded and `#interact` returns
+    # dead verdicts. App code with side effects NOT gated on a
+    # Response guards them with this — a flex child block runs twice,
+    # once to measure and once for real.
+    def measuring? : Bool
+      @ctx.measuring?
+    end
+
     # egui `Ui::new_child`: a child region with its own cursor/layout.
     # Inherits the parent's layer, clip rect, vertical-overflow mode
     # (`v_overflow` — the CSS overflow-y semantics of a scroll
@@ -347,6 +380,7 @@ module Egui
       child.menu_popup_key = @menu_popup_key
       child.set_style_scope(@style_scope)
       child.pos_context = @pos_context
+      child.flex_capture = @flex_capture
       child
     end
 
@@ -382,15 +416,34 @@ module Egui
     # inspector records kind/class/properties per id from it (nil for
     # interact calls not coming from an `Ui#add`).
     def add(widget : Widget) : Response
+      # Flex interception (see #flex_capture): the widget becomes a
+      # flex item, laid out in its own cell by the Flex algorithm.
+      # The Response is a placeholder absorbed by each pass (see
+      # Response#absorb) — real after the container block closes.
+      if (f = @flex_capture)
+        holder = Response.container(@ctx, next_widget_id, Rect.zero)
+        f.child { |cell| holder.absorb(cell.add(widget)) }
+        return holder
+      end
       parent = @ctx.current_widget
       @ctx.current_widget = widget
       begin
         # Retained paint (FPS_OPTIMIZATION.md §1, stage 2): when the
         # widget offers a cache key and nothing volatile is in play,
         # a hit replays the recorded paint instead of running the
-        # widget; a miss runs it and captures the emitted span.
-        resp = if (key = widget.paint_cache_key(self)) &&
-                  paint_cache_usable?(widget, key)
+        # widget; a miss runs it and captures the emitted span. Inside
+        # a two-pass MEASURE bracket (Flex) a hit IS the natural size:
+        # allocate it and skip the run — the paint would be truncated
+        # and the interaction is dead anyway, so the measure pass
+        # becomes a cache lookup (this is the cross-frame measure memo
+        # the per-frame Flex memo can't be).
+        resp = if @ctx.measuring? &&
+                  (mkey = widget.paint_cache_key(self)) &&
+                  (mentry = paint_cache_hit(widget, mkey))
+                rect = allocate_at_least(mentry.size)
+                interact(rect, mentry.id, mentry.sense)
+              elsif (key = widget.paint_cache_key(self)) &&
+                    paint_cache_usable?(widget, key)
                 paint_cache_add(widget, key, exact: false)
               else
                 Egui::Bench.span(widget.class.name) { widget.ui(self) }
@@ -413,7 +466,18 @@ module Egui
 
     # (No `private`: #add_sized calls these on its exact-size cell —
     # another Ui instance.)
+
+    # The full cache key (widget key + Ui-level extensions) and a
+    # lookup — shared by the replay path and the measure-only path.
+    def paint_cache_hit(widget : Widget, key)
+      id = widget.cache_id(self)
+      full = {key, id, @ctx.memory.focus.id == id, @ctx.font_scale,
+              @ctx.pixels_per_point}.hash
+      @ctx.paint_cache.lookup(full, @ctx.measuring?)
+    end
+
     def paint_cache_usable?(widget : Widget, key) : Bool
+      return false if @ctx.measuring?
       id = widget.cache_id(self)
       # Per-widget animation gate: cells owned by THIS widget (its
       # salted transition cells included — see
@@ -453,7 +517,14 @@ module Egui
             rect = exact ? allocate_space(entry.size)
                          : allocate_at_least(entry.size)
             r = interact(rect, entry.id, entry.sense)
-            PaintCache.replay(entry, rect, painter)
+            # Fully outside the ambient clip → emit nothing, matching
+            # the galley culling of the uncached path (replayed
+            # commands with degenerate clips would still show up in
+            # the command list).
+            clip = painter.clip
+            outside = rect.max.x <= clip.min.x || rect.min.x >= clip.max.x ||
+                      rect.max.y <= clip.min.y || rect.min.y >= clip.max.y
+            PaintCache.replay(entry, rect, painter) unless outside
             widget.cache_replay(self, r.not_nil!)
           end
           r.not_nil!
@@ -467,8 +538,16 @@ module Egui
       epoch0 = painter.xform_epoch
       clip0 = painter.clip
       resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
+      # Store only fully clip-contained captures: galley paint culls
+      # rows against the ambient clip (Painter#paint_galley), so a
+      # partially/fully culled widget's bucket is position-dependent —
+      # replaying an empty (fully culled) bucket would blank the row
+      # when it scrolls into view. Contained captures are complete;
+      # the backend clip still trims their replay at edges.
       if !@ctx.memory.appear_anims.run?(id) &&
          painter.xform_epoch == epoch0 &&
+         clip0.min.x <= resp.rect.min.x && clip0.max.x >= resp.rect.max.x &&
+         clip0.min.y <= resp.rect.min.y && clip0.max.y >= resp.rect.max.y &&
          (bucket = painter.take_bucket(cmd0)) &&
          !bucket[0].any?(&.is_a?(Mesh3DCmd))
         cmds, layers = bucket
@@ -1018,6 +1097,12 @@ module Egui
     # cell (the Inspector's ✕) lets the natural-size button inside
     # grow past the row and overlap what's below.
     def add_sized(size : Vec2, widget : Widget) : Response
+      # Flex interception (see #flex_capture) — same routing as #add.
+      if (f = @flex_capture)
+        holder = Response.container(@ctx, next_widget_id, Rect.zero)
+        f.child { |cell| holder.absorb(cell.add_sized(size, widget)) }
+        return holder
+      end
       rect = allocate_space(size)
       # Upstream `allocate_ui` keeps the PARENT layout for the cell: in
       # a horizontal row the cell is left_to_right too, so its content
@@ -1212,7 +1297,10 @@ module Egui
     # colors (usually resolved from style keys by
     # `StyleVars#stroke_sides?`). `corners` carries the per-corner
     # CSS `border-radius: a b c d` shorthand (nil = uniform
-    # `rounding`). `appear`/`appear_delay` override the
+    # `rounding`). `shadow` is the CSS `box-shadow` (an explicit
+    # argument over the box's class chain — the same `shadow.*` keys
+    # widgets read); outset paints under the fill, inset over it, in
+    # both cases under the contents. `appear`/`appear_delay` override the
     # `appear:`/`appear-delay:` style keys with a named transition
     # played when the box first shows up (see AppearAnims). Returns the
     # outer rect.
@@ -1223,6 +1311,7 @@ module Egui
             style_class : String? = nil,
             stroke_sides : StrokeSides? = nil,
             corners : CornerRadii? = nil,
+            shadow : BoxShadowSpec? = nil,
             appear : String | Symbol? = nil,
             appear_delay : Float64? = nil,
             position : Symbol? = nil,
@@ -1231,7 +1320,28 @@ module Egui
             bottom : Float64 | Int32 | String? = nil,
             left : Float64 | Int32 | String? = nil,
             z : Int32? = nil,
+            width : Float64 | Int32 | String? = nil,
+            height : Float64 | Int32 | String? = nil,
             &block : Ui ->) : Rect
+      # Flex interception (see #flex_capture): the box becomes ONE
+      # flex item — laid out in its own cell, chrome and all. The
+      # flex container itself never passes here (its capture is set
+      # only inside its own box block, after this entry). The return
+      # is a placeholder Rect (the real outer exists only after the
+      # Flex passes — read it after the flex container's block).
+      if (f = @flex_capture)
+        f.child do |cell|
+          cell.box(direction: direction, wrap: wrap, fill: fill,
+            stroke: stroke, rounding: rounding, margin: margin,
+            stroke_width: stroke_width, style_class: style_class,
+            stroke_sides: stroke_sides, corners: corners, shadow: shadow,
+            appear: appear,
+            appear_delay: appear_delay, position: position, top: top,
+            right: right, bottom: bottom, left: left, z: z,
+            width: width, height: height, &block)
+        end
+        return Rect.zero
+      end
       sides = stroke_sides ||
               (sw = stroke_width.as?(StyleBox)) && stroke.try do |c|
                 StrokeSides.new(
@@ -1260,10 +1370,20 @@ module Egui
       if positioning.is_a?(BoxPlacement)
         return placed_box(positioning, direction, wrap, style_class,
           flat_fill, grad, stroke, sides, rounding, corners, m,
-          stroke_width, &block)
+          stroke_width, shadow, &block)
       end
       rel = positioning || Vec2.zero
+      # CSS `box-shadow`: explicit argument over the box's class chain
+      # (the same resolve as `width`/`height` below — a `shadow.color`
+      # rule on the box's class works without Crystal-side plumbing).
+      size_vars = @ctx.stylesheet.resolve_chain(style_chain_paths(style_class))
+      sh = shadow || size_vars.shadow?
+      # Outset paints UNDER the fill, inset OVER it (CSS); both stay
+      # under the contents — slots reserved before/after the chrome
+      # one, back-patched once `outer` exists (the #frame trick).
+      sh_under = sh.try { |s| painter.add_noop unless s.inset? }
       bg_index = painter.add_noop
+      sh_over = sh.try { |s| painter.add_noop if s.inset? }
       # Rounded-clip bracket (see Painter#clip_apply): everything the
       # subtree paints is re-clipped to the box's ROUNDED outer rect
       # once it exists — scrolled/nested content cannot bleed past the
@@ -1308,6 +1428,15 @@ module Egui
       else
         {@max_rect.right - @cursor.x - 2 * m.x, 0.0}.max
       end
+      # CSS `width`/`height` (explicit argument or the box's class
+      # chain): a definite extent instead of the flow remainder /
+      # content-driven 1e6 region. `%` resolves against this Ui's
+      # region (the flow containing block); `height` is what makes a
+      # column flex container's main axis definite (see Flex).
+      w = box_extent(width, :x) ||
+          size_vars.length_px_in?("width", @max_rect, @ctx, :x) || w
+      h = box_extent(height, :y) ||
+          size_vars.length_px_in?("height", @max_rect, @ctx, :y) || 1e6
       child =
         if @layout.bottom_up?
           if row
@@ -1333,7 +1462,7 @@ module Egui
           else
             @cursor
           end
-          child_ui(Rect.from_min_size(origin + m + rel, Vec2.new(w, 1e6)),
+          child_ui(Rect.from_min_size(origin + m + rel, Vec2.new(w, h)),
             id: inline_id,
             layout: row ? Layout.left_to_right
               : (@layout.bottom_up? ? Layout.bottom_up : Layout.top_down))
@@ -1437,6 +1566,14 @@ module Egui
               stroke_width.as?(Float64) || 1.0, nil, sides, corners,
               gradient: grad))
         end
+        if (s = sh)
+          # The reserved slot on the right side of the fill (nil slot =
+          # wrong-sided shadow was never reserved — nothing to paint).
+          slot = s.inset? ? sh_over : sh_under
+          painter.set(slot.not_nil!,
+            ShadowCmd.new(painter.clip, outer, rounding, s.blur, s.spread,
+              s.offset, s.color, s.inset?))
+        end
         outer_rect = outer
       ensure
         painter.pop_transform(outer_rect.try(&.center) || @cursor) if xf
@@ -1501,6 +1638,7 @@ module Egui
     # clip rect — a horizontal row inside a window/scroll area must stay
     # in that layer's z-order and viewport clip.
     # egui `ui.horizontal` — a left-to-right row. WRAPS by default
+
     # (CSS `flex-wrap: wrap`): a widget that cannot fit the remaining
     # row width breaks onto a new line instead of collapsing at the
     # region edge — the mobile-safe default. `wrap: false` restores
@@ -1511,6 +1649,12 @@ module Egui
     # is only known after the content runs — the parent's remaining
     # sliver must not cramp it) and the parent's flow continues below.
     def horizontal(wrap : Bool = true, &block : Ui ->) : self
+      # Flex interception (see #flex_capture): the row becomes one
+      # flex item of the captured Flex.
+      if (f = @flex_capture)
+        f.child { |cell| cell.horizontal(wrap: wrap, &block) }
+        return self
+      end
       row_rect = if @layout.horizontal?
         Pos2.new(@max_rect.min.x,
           @cursor.y + @row_h + style.spacing.item_spacing.y)
@@ -1555,6 +1699,109 @@ module Egui
       self
     end
 
+    # CSS flexbox (see `Flex` — the full algorithm, all modes). The
+    # chrome is #box's (fill/stroke/rounding/clip/appear/position);
+    # the CONTENT lays out by flexbox instead of the cursor flow:
+    # children are measured (a paint-discarded pass), then placed at
+    # computed slots — exact from the first frame, no one-frame
+    # settle. `direction`/`wrap`/`justify`/`align`/`align_content`/
+    # `gap` default from the ECSS class chain (`flex-direction`,
+    # `flex-wrap`, `justify-content`, `align-items`, `align-content`,
+    # `gap`); explicit arguments win. Children declare per-child
+    # `flex-grow`/`shrink`/`basis`/`order`/`align-self` at
+    # `f.child(…)`. A child block runs TWICE per frame (measure +
+    # real): response-gated callbacks fire once, anything else must be
+    # idempotent or guard with `#measuring?`.
+    #
+    #   ui.flex(justify: :space_between) do |f|
+    #     f.child { |ui| ui.label("left") }
+    #     f.child(grow: 1) { |ui| ui.text_field(state, :q) }
+    #   end
+    def flex(direction : Symbol? = nil, wrap : Symbol? = nil,
+             justify : Symbol? = nil, align : Symbol? = nil,
+             align_content : Symbol? = nil,
+             gap : Vec2 | Float64? = nil, id : String? = nil,
+             fill : Color32 | Gradient? = nil, stroke : Color32? = nil,
+             rounding : Float64 = 6.0, margin : Vec2? = nil,
+             stroke_width : Float64 | StyleBox = 1.0,
+             style_class : String? = nil,
+             stroke_sides : StrokeSides? = nil,
+             corners : CornerRadii? = nil,
+             appear : String | Symbol? = nil,
+             appear_delay : Float64? = nil,
+             position : Symbol? = nil,
+             top : Float64 | Int32 | String? = nil,
+             right : Float64 | Int32 | String? = nil,
+             bottom : Float64 | Int32 | String? = nil,
+             left : Float64 | Int32 | String? = nil,
+             z : Int32? = nil,
+             width : Float64 | Int32 | String? = nil,
+             height : Float64 | Int32 | String? = nil,
+             &block : Flex ->) : Rect
+      vars = @ctx.stylesheet.resolve_chain(style_chain_paths(style_class))
+      f = Flex.new(id || next_widget_id)
+      f.direction = direction || Flex.parse_direction(vars.str?("flex-direction")) || :row
+      f.wrap = wrap || Flex.parse_wrap(vars.str?("flex-wrap")) || :nowrap
+      f.justify = justify || Flex.parse_justify(vars.str?("justify-content")) || :start
+      f.align = align || Flex.parse_cross_align(vars.str?("align-items")) || :stretch
+      f.align_content = align_content ||
+                        Flex.parse_align_content(vars.str?("align-content")) || :stretch
+      f.gap = case g = gap
+              when Vec2     then g
+              when Float64  then Vec2.new(g, g)
+              else
+                (n = vars.f64?("gap")) ? Vec2.new(n, n) : Vec2.zero
+              end
+      box(:column, wrap: false, fill: fill, stroke: stroke,
+        rounding: rounding, margin: margin, stroke_width: stroke_width,
+        style_class: style_class, stroke_sides: stroke_sides,
+        corners: corners, appear: appear, appear_delay: appear_delay,
+        position: position, top: top, right: right, bottom: bottom,
+        left: left, z: z, width: width, height: height) do |inner|
+        # Flex interception (see #flex_capture): while the declaration
+        # block runs, widgets and containers added through THIS Ui
+        # become flex items — the Html `div(style: "display:flex")`
+        # path, where children are plain `ui.*` calls. The capture is
+        # set after the container's own box was entered (no routing of
+        # the flex itself) and cleared before #render (its cells are
+        # clean, no recursion).
+        prev_capture = @flex_capture
+        @flex_capture = f
+        begin
+          block.call(f)
+        ensure
+          @flex_capture = prev_capture
+        end
+        f.render(inner)
+      end
+    end
+
+    # The class-chain paths a box's style resolves through (the same
+    # ladder #box_positioning and #flex build).
+    private def style_chain_paths(style_class : String?) : Array(String)
+      paths = ["*"]
+      if (sc = style_class)
+        paths << sc
+        paths << "#{@style_scope}.#{sc}" if @style_scope
+      elsif (scope = @style_scope)
+        paths << scope
+      end
+      paths
+    end
+
+    # An explicit `width:`/`height:` box argument: a px number or a
+    # StyleLength string ("50%", "12rem") resolved against this Ui's
+    # region (the flow containing block).
+    private def box_extent(v : Float64 | Int32 | String?,
+                           axis : Symbol) : Float64?
+      case e = v
+      when Float64 then e
+      when Int32   then e.to_f64
+      when String
+        (l = StyleLength.parse?(e)) ? l.resolve_in(@max_rect, @ctx, axis) : e.to_f64?
+      end
+    end
+
     # The out-of-flow branch of #box (`position: absolute|fixed`), CSS
     # semantics: the cursor does not advance, the parent's bounds do
     # not grow — the content lays out ON TOP at the rect computed from
@@ -1582,6 +1829,7 @@ module Egui
                            sides : StrokeSides?, rounding : Float64,
                            corners : CornerRadii?, m : Vec2,
                            stroke_width : Float64 | StyleBox,
+                           shadow : BoxShadowSpec? = nil,
                            &block : Ui ->) : Rect
       ctx = @ctx
       ctx.memory.use_id(placement.id)
@@ -1644,7 +1892,13 @@ module Egui
       prev_clip = painter.clip
       painter.layer = layer.z
       painter.clip = @clip
+      # CSS box-shadow slots — the same under-fill/over-fill scheme as
+      # #box (explicit argument over the class chain).
+      size_vars = @ctx.stylesheet.resolve_chain(style_chain_paths(style_class))
+      sh = shadow || size_vars.shadow?
+      sh_under = sh.try { |s| painter.add_noop unless s.inset? }
       bg_index = painter.add_noop
+      sh_over = sh.try { |s| painter.add_noop if s.inset? }
       clip_from = painter.clip_mark
       begin
         if (sc = style_class)
@@ -1673,6 +1927,12 @@ module Egui
           RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
             stroke_width.as?(Float64) || 1.0, nil, sides, corners,
             gradient: grad))
+      end
+      if (s = sh)
+        slot = s.inset? ? sh_over : sh_under
+        painter.set(slot.not_nil!,
+          ShadowCmd.new(painter.clip, outer, rounding, s.blur, s.spread,
+            s.offset, s.color, s.inset?))
       end
       # Same rounded-subtree clip as #box (the absolute variant's
       # children ride `layer`; the mark recorded it).

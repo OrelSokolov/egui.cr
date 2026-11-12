@@ -35,6 +35,27 @@ module Egui
 
     abstract def measure(text : String, size : Float64) : Vec2
 
+    # Extra tracking between glyphs (px) — CSS `letter-spacing`. The
+    # ATLAS backends fold it into `#measure`/`#walk` (added BETWEEN
+    # glyphs, never after the last, so widths stay exact); headless
+    # estimate stacks ignore it. Per-text overrides ride `TextCmd` and
+    # temporarily swap this property (`#with_letter_spacing`) so
+    # measurement and painting agree.
+    property letter_spacing : Float64 = 0.0
+
+    # Run `block` with the stack's tracking temporarily set to `ls`
+    # (points) — measure/fit a spaced run exactly as `TextCmd` will
+    # rasterize it. Restores the previous value afterwards.
+    def with_letter_spacing(ls : Float64, &)
+      saved = @letter_spacing
+      @letter_spacing = ls
+      begin
+        yield
+      ensure
+        @letter_spacing = saved
+      end
+    end
+
     # {ascender, descender} in px at a size (descender negative) — the
     # baseline geometry `#layout` bakes into each row. The estimate here
     # (em = 1.3×size) matches MonospaceFonts#measure's height; real

@@ -1,4 +1,4 @@
-# egui-cr Windows XP Paint demo — bin/paint.
+# egui-cr Windows XP Paint demo — bin/apps/paint.
 #
 # A 1:1-arranged clone of MS Paint (XP era, tool set and button icons
 # taken from jspaint's classic theme, see assets/paint/README.md):

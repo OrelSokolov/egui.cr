@@ -265,7 +265,7 @@ describe "widget inspector" do
 
   # The one-menu rule: a widget with its own context menu gets the
   # «Inspect …» row appended as that menu's LAST item — never a second
-  # popup beside it. Reproduces the bin/terminal double-menu bug: the
+  # popup beside it. Reproduces the bin/apps/terminal double-menu bug: the
   # central panel renders DEFERRED (inside end_frame), so the pick
   # decision must run after it to see the widget's own menu claim the
   # press.

@@ -64,6 +64,7 @@ module MusicTags
     when "avatar"     then f(node, rt, "s", 30.0)
     when "logo"       then f(node, rt, "s", 30.0)
     when "searchpill" then f(node, rt, "w", 280.0)
+    when "searchinput" then f(node, rt, "w", 280.0)
     when "chip"       then fonts.measure(a(node, rt, "text") || "", f(node, rt, "fs", 13.0)).x + 28.0
     when "navitem"    then fonts.measure(a(node, rt, "text") || "", f(node, rt, "fs", 15.0)).x + f(node, rt, "size", 24.0) + 16.0 + 2 * f(node, rt, "pad", 6.0)
     when "col", "panel" then w = f(node, rt, "w", -1.0); {w, 0.0}.max
@@ -81,7 +82,8 @@ module MusicTags
     when "vis"   then f(node, rt, "h", 12.0)
     when "cover" then f(node, rt, "h", f(node, rt, "s", 46.0))
     when "icon"  then f(node, rt, "size", 18.0)
-    when "col"   then node.children.sum { |c| estimate_height(c, rt) }
+    when "col", "column" then node.children.sum { |c| estimate_height(c, rt) }
+    when "hbar" then f(node, rt, "h", 56.0)
     else 20.0
     end
   end
@@ -165,22 +167,95 @@ module MusicTags
     levels
   end
 
-  # радиальный градиент CSS ≠ поддерживается: аппроксимация
-  # концентрическими кругами (наружу — прозрачнее).
-  def self.radial(p : Egui::Painter, clip : Egui::Rect, cx : Float64,
-                  cy : Float64, r : Float64, color : Egui::Color32,
-                  steps : Int32 = 10, strength : Float64 = 0.28) : Nil
-    prev = p.clip
-    p.clip = clip
-    steps.times do |k|
-      frac = k.to_f64 / steps               # 0 центр → 1 край
-      r_k = r * (1.0 - frac * 0.82)
-      a_k = (color.a * strength * (1.0 - frac) ** 1.6).to_u8.clamp(0, 255)
-      next if a_k == 0
-      p.circle_filled(Egui::Pos2.new(cx, cy), r_k,
-        Egui::Color32.new(color.r, color.g, color.b, a_k.to_u8))
+  # радиальный градиент CSS теперь честный: Gradient с эллиптическими
+  # радиусами (400px 200px at 80% 0%) тесселлируется Gouraud-кольцами
+  # (sokol #gradient_fill) — вместо концентрических кругов.
+
+  # Мягкое пятно = «div с border-radius:50% + radial-gradient(closest-
+  # side, var(--m), transparent 90%) + filter:blur(Npx)» (oracle_live
+  # .blob): цвет ЛИНЕЙНО спадает к 90% радиуса ещё внутри элемента, blur
+  # лишь размывает этот спад (σ = blur/2) и выпускает хвост за границу.
+  # box_shadow здесь не годился — у тени нутро кастера сплошное, и в
+  # щелях между панелями mesh читался как плоские полосы. Профиль
+  # (свёртка треугольного спада с гауссом) сэмплится в стопы радиального
+  # градиента с эллиптическими радиусами (w/2+3σ, h/2+3σ). `opacity` —
+  # CSS-opacity блоба (цвет несёт alpha).
+  def self.blob(p : Egui::Painter, cx : Float64, cy : Float64,
+                w : Float64, h : Float64, color : Egui::Color32,
+                opacity : Float64, blur : Float64) : Nil
+    a = (color.a.to_f64 * opacity).round.clamp(0.0, 255.0).to_u8
+    return if a.zero?
+    rect = Egui::Rect.from_min_size(
+      Egui::Pos2.new(cx - w / 2.0, cy - h / 2.0), Egui::Vec2.new(w, h))
+    p.box_shadow(rect,
+      Egui::Color32.new(color.r, color.g, color.b, a), blur,
+      {w, h}.min / 2.0)
+  end
+
+  # Радиальное пятно-градиент поверх `rect` (radial-gradient у hero и
+  # np-artist-card): явные эллиптические радиусы, центр — доли rect,
+  # спад к прозрачному на `fade` (0.7 = transparent 70%).
+  def self.spot(p : Egui::Painter, rect : Egui::Rect, cx : Float64,
+                cy : Float64, rx : Float64, ry : Float64,
+                color : Egui::Color32, fade : Float64) : Nil
+    return if rect.width < 1.0 || rect.height < 1.0
+    grad = Egui::Gradient.new(:radial,
+      [Egui::Gradient::Stop.new(0.0, color),
+       Egui::Gradient::Stop.new(fade,
+         Egui::Color32.new(color.r, color.g, color.b, 0u8))],
+      cx: cx, cy: cy, rx: rx, ry: ry)
+    p.rect(rect, 0.0, gradient: grad)
+  end
+
+  # ── CSS-переходы (style.css: transition … .12–.18s) ────────────────
+  # Обёртки над Context#animate_style_*: значение мягко едет к цели
+  # (первое появление — snap, как в CSS); пока едет, контекст сам
+  # просит перерисовку.
+
+  def self.fade(ctx : Egui::Context, id : Egui::Id, key : String,
+                target : Egui::Color32, ms : Float64 = 150.0) : Egui::Color32
+    ctx.animate_style_color(id, key, target, ms)
+  end
+
+  def self.glide(ctx : Egui::Context, id : Egui::Id, key : String,
+                 target : Float64, ms : Float64 = 150.0) : Float64
+    ctx.animate_style_scalar(id, key, target, ms)
+  end
+
+  def self.lerp(a : Float64, b : Float64, t : Float64) : Float64
+    a + (b - a) * t.clamp(0.0, 1.0)
+  end
+
+  def self.lerp_color(a : Egui::Color32, b : Egui::Color32,
+                      t : Float64) : Egui::Color32
+    f = t.clamp(0.0, 1.0)
+    Egui::Color32.new(
+      MusicTags.lerp(a.r, b.r, f).round.to_u8,
+      MusicTags.lerp(a.g, b.g, f).round.to_u8,
+      MusicTags.lerp(a.b, b.b, f).round.to_u8,
+      MusicTags.lerp(a.a, b.a, f).round.to_u8)
+  end
+
+  # appear=/appear-delay=/appear-stagger= панели: входная анимация
+  # (Egui::AppearAnims — общий движок с `appear:` в ECSS). Задержка
+  # stagger умножается на индекс строки repeat-а — волна входа карточек
+  # как CSS animation-delay у nth-child. Transform чисто визуальный:
+  # layout панели на месте с первого кадра.
+  def self.appear_xf(node, rt, ctx : Egui::Context)
+    aname = MusicTags.a(node, rt, "appear")
+    return nil unless aname && !ctx.reduced_motion?
+    kind = Egui::AppearAnims.kind?(aname)
+    return nil unless kind
+    delay = MusicTags.f(node, rt, "appear-delay", 0.0) / 1000.0
+    stagger = MusicTags.f(node, rt, "appear-stagger", 0.0) / 1000.0
+    if rt.is_a?(Egui::Exml::ScopedRuntime) && (idx = rt.repeat_index)
+      delay += idx * stagger
     end
-    p.clip = prev
+    id = Egui::Id.from("#{node.path}/appear")
+    xf = ctx.memory.appear_anims.drive(id, kind, delay, ctx.input.time)
+    ctx.memory.use_id(id)
+    ctx.request_repaint if xf
+    xf
   end
 
   # иконки: имена — из oracle index.html (#i-…), файлы — lucide/bootstrap
@@ -287,7 +362,11 @@ widget :spring do |node, ui, ctx, rt, r|
   end
 end
 
-# <t text= size= color= bold= w= h= align=l|c|r wrap= lh=/> — painted text.
+# <t text= size= color= bold= w= h= align=l|c|r wrap= lh= ls=/> — painted text.
+# ls — letter-spacing в em (CSS .08em): трекинг применяется и к метрике
+# (Fonts#with_letter_spacing), и к отрисовке (TextCmd#letter_spacing).
+# С явным w= длинный текст усечывается с «…» (text-overflow: ellipsis,
+# Fonts#fit) — не жёсткой обрезкой клипа.
 widget :t do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   text = MusicTags.a(node, rt, "text") || ""
@@ -297,13 +376,15 @@ widget :t do |node, ui, ctx, rt, r|
   w = MusicTags.f(node, rt, "w", 0.0)
   h = MusicTags.f(node, rt, "h", 0.0)
   align = MusicTags.a(node, rt, "align") || "l"
+  ls_px = MusicTags.f(node, rt, "ls", 0.0) * size
+  fonts = ui.fonts
 
   if MusicTags.b(node, rt, "wrap") && w > 0
     lh = size * MusicTags.f(node, rt, "lh", 1.5)
-    lines = MusicTags.wrap_lines(ui.fonts, text, size, w)
+    lines = MusicTags.wrap_lines(fonts, text, size, w)
     rect = ui.allocate_space(Egui::Vec2.new(w, {h, lines.size * lh}.max))
     lines.each_with_index do |line, i|
-      lw = ui.fonts.measure(line, size).x
+      lw = fonts.measure(line, size).x
       x = case align
           when "c" then rect.center.x - lw / 2.0
           when "r" then rect.right - lw
@@ -313,9 +394,16 @@ widget :t do |node, ui, ctx, rt, r|
         line, size, color, bold: bold)
     end
   else
-    m = ui.fonts.measure(text, size)
-    # явный w= — жёсткий слот: длинный текст рисуется дальше и обрезается
-    # clip'ом панели (CSS overflow:hidden), а не переносит строку
+    # слот w= с усечением: сначала fit («…»), потом метрика усечённого
+    if w > 0
+      text = fonts.with_letter_spacing(ls_px) { fonts.fit(text, size, w) }
+    end
+    m = if ls_px != 0.0
+          fonts.with_letter_spacing(ls_px) { fonts.measure(text, size) }
+        else
+          fonts.measure(text, size)
+        end
+    # явный w= — жёсткий слот: метрика не шире слота после fit
     tw = w > 0 ? w : m.x
     rect = ui.allocate_space(Egui::Vec2.new(
       tw, {h, size * 1.35}.max))
@@ -327,7 +415,7 @@ widget :t do |node, ui, ctx, rt, r|
         else          rect.left
         end
     ui.painter.text(Egui::Pos2.new(x, rect.center.y), text, size, color,
-      bold: bold)
+      bold: bold, letter_spacing: ls_px != 0.0 ? ls_px : nil)
   end
 end
 
@@ -348,7 +436,8 @@ widget :icon do |node, ui, ctx, rt, r|
 end
 
 # <ibtn icon= size= btn= on_click=/> — круглая кнопка-иконка (.icon-btn):
-# 34×34, hover → control-подложка, иконка 18.
+# 34×34, hover → control-подложка, иконка 18. Переходы CSS .15s —
+# подложка и цвет глифа мягко едут (animate_style_*).
 widget :ibtn do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "icon") || "circle"
@@ -356,15 +445,20 @@ widget :ibtn do |node, ui, ctx, rt, r|
   btn = MusicTags.f(node, rt, "btn", 34.0)
   rect = ui.allocate_space(Egui::Vec2.new(btn, btn))
   MusicTags.geom!("ibtn:#{name}", rect)
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
-  # .icon-btn:hover — подложка --control #ffffff12 (не control-hover)
-  if resp.hovered? || resp.active?
-    ui.painter.circle_filled(rect.center, btn / 2.0, MusicTags::CONTROL)
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
+  # .icon-btn:active — pressed #ffffff2b, hover — #ffffff12 (transition)
+  hov = MusicTags.glide(ctx, id, "hov",
+    resp.active? ? 0x2B : (resp.hovered? ? 0x12 : 0x00), 150.0)
+  if hov >= 0.5
+    ui.painter.circle_filled(rect.center, btn / 2.0,
+      Egui::Color32.new(255, 255, 255, hov.round.to_u8))
   end
   # color= — постоянный тон глифа (активный shuffle/repeat, лайкнутое
-  # сердце — цвет акцента, как .active/.liked у live-оракула)
+  # сердце — цвет акцента); hover мягко ведёт к #fff (.icon-btn:hover)
   tint = MusicTags.hex(MusicTags.a(node, rt, "color"))
-  color = resp.hovered? ? MusicTags::WHITE : (tint || MusicTags::ICON_FG)
+  base = tint || MusicTags::ICON_FG
+  color = MusicTags.lerp_color(base, MusicTags::WHITE, hov / 0x12)
   inner = Egui::Rect.from_min_size(
     Egui::Pos2.new(rect.center.x - isz / 2.0, rect.center.y - isz / 2.0),
     Egui::Vec2.new(isz, isz))
@@ -395,11 +489,17 @@ widget :navitem do |node, ui, ctx, rt, r|
     w = ui.available_width
   end
   rect = ui.allocate_space(Egui::Vec2.new(w, h))
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
-  if resp.hovered? && !active
-    ui.painter.rect(rect, 6.0, fill: MusicTags::ROW_HOVER)
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
+  # hover-полоса и цвет — transition .15s (style.css .nav-item)
+  hov = MusicTags.glide(ctx, id, "hov",
+    (resp.hovered? && !active) ? 0x10 : 0x00, 150.0)
+  if hov >= 0.5
+    ui.painter.rect(rect, 6.0,
+      fill: Egui::Color32.new(255, 255, 255, hov.round.to_u8))
   end
-  fg = (active || resp.hovered?) ? MusicTags::WHITE : MusicTags::MUTED
+  fg = active ? MusicTags::WHITE
+    : MusicTags.lerp_color(MusicTags::MUTED, MusicTags::WHITE, hov / 0x10)
   cx = rect.left + pad
   MusicTags.icon(name, fg).paint(ui, Egui::Rect.from_min_size(
     Egui::Pos2.new(cx, rect.center.y - isz / 2.0),
@@ -420,9 +520,13 @@ widget :chip do |node, ui, ctx, rt, r|
   m = ui.fonts.measure(text, fs)
   w = m.x + 28.0
   rect = ui.allocate_space(Egui::Vec2.new(w, 30.0))
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
-  bg = on ? MusicTags::TEXT
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
+  # .chip { transition: background .15s, color .15s } — фон мягко едет
+  # между control / control-hover / включённым состоянием
+  target = on ? MusicTags::TEXT
     : (resp.hovered? ? MusicTags::CONTROL_HOV : MusicTags::CONTROL)
+  bg = MusicTags.fade(ctx, id, "bg", target, 150.0)
   fg = on ? MusicTags::WINDOW : MusicTags::TEXT
   ui.painter.rect(rect, 15.0, fill: bg)
   ui.painter.text(Egui::Pos2.new(rect.center.x - m.x / 2.0, rect.center.y),
@@ -473,6 +577,7 @@ widget :vis do |node, ui, ctx, rt, r|
   playing = !MusicTags.b(node, rt, "paused")
   color = MusicTags.hex(MusicTags.a(node, rt, "color")) || MusicTags.accent(rt)
   mode = MusicTags.a(node, rt, "mode") || "mini"
+
   t = ctx.input.time
   levels = MusicTags.vis_step(node.path, n, playing, t)
 
@@ -507,11 +612,14 @@ widget :vis do |node, ui, ctx, rt, r|
   ctx.request_repaint if playing
 end
 
-# <mesh c1= c2= c3=/> — mesh-фон (.mesh): радиальные пятна в цветах
-# играющей обложки (app.js: meshStyle — c1×0.55, c2×0.35, c1×0.35);
-# аппроксимация радиальных градиентов концентрическими кругами.
-# «Animate the background» (animate=1): позиции пятен медленно плывут
-# по времени (аналог CSS-анимации блобов), окно перерисовывается.
+# <mesh c1= c2= c3= fx= animate=/> — mesh-фон (.mesh + .fx1–.fx4):
+# мягкие пятна в цветах играющей обложки (app.js: meshStyle —
+# c1×0.55, c2×0.35, c1×0.35). Каждое пятно — #blob: радиальный
+# градиент closest-side с размытием (radial-gradient(…, transparent 90%)
+# + filter:blur — как .blob в style.css). fx= — вариант фона из настроек (EFFECTS: 0 Mesh,
+# 1 Aurora, 2 Plasma, 3 Spotlight, 4 Shimmer; 5 None — панель скрыта
+# if=-ом). animate=1 — пятна плывут (CSS keyframes drift1-3: амплитуда
+# и период — из style.css), окно перерисовывается.
 widget :mesh do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   rect = Egui::Rect.new(ui.cursor,
@@ -524,30 +632,73 @@ widget :mesh do |node, ui, ctx, rt, r|
        Egui::Color32.rgba(0x0e, 0x3b, 0x4a, 0xB3)
   c3 = MusicTags.hex(MusicTags.a(node, rt, "c3")) ||
        Egui::Color32.rgba(0x2d, 0x1b, 0x4e, 0x99)
+  fx = MusicTags.f(node, rt, "fx", 0.0).to_i.clamp(0, 4)
   t = ctx.input.time
   animate = MusicTags.b(node, rt, "animate")
-  # амплитуды дрейфа (px, за ~60 с цикл — заметно, не суетливо)
-  dx1 = animate ? Math.sin(t * 0.10) * 90.0 : 0.0
-  dy1 = animate ? Math.cos(t * 0.07) * 60.0 : 0.0
-  dx2 = animate ? Math.cos(t * 0.06) * 110.0 : 0.0
-  dy2 = animate ? Math.sin(t * 0.09) * 50.0 : 0.0
-  dx3 = animate ? Math.sin(t * 0.05) * 80.0 : 0.0
-  dy3 = animate ? Math.cos(t * 0.11) * 40.0 : 0.0
-  MusicTags.radial(p, rect,
-    rect.left + rect.width * 0.18 + dx1, rect.top + rect.height * 0.12 + dy1,
-    900.0 * 0.72, c1)
-  MusicTags.radial(p, rect,
-    rect.left + rect.width * 0.85 + dx2, rect.top + rect.height * 0.25 + dy2,
-    1000.0 * 0.72, c2)
-  MusicTags.radial(p, rect,
-    rect.left + rect.width * 0.55 + dx3, rect.top + rect.height * 0.95 + dy3,
-    800.0 * 0.72, c3)
+
+  # Блоб: базовый прямоугольник (x, y — центр), цвета/прозрачность и
+  # параметры дрейфа (амплитуды в px; ω = π/T — полупериод, как CSS
+  # alternate). Геометрия — 1:1 из style.css (.blob, .fx1–.fx4).
+  bx = ->(cx : Float64, cy : Float64, w : Float64, h : Float64,
+          color : Egui::Color32, op : Float64, blur : Float64,
+          ax : Float64, ay : Float64, period : Float64, ph : Float64,
+          scale_amp : Float64) do
+    s = Math.sin(t * Math::PI / period + ph)
+    dx = animate ? s * ax : 0.0
+    dy = animate ? Math.cos(t * Math::PI / period + ph) * ay : 0.0
+    k = 1.0 + (animate ? scale_amp * (1.0 + s) / 2.0 : scale_amp / 2.0)
+    MusicTags.blob(p, cx + dx, cy + dy, w * k, h * k, color, op, blur)
+  end
+
+  w = rect.width
+  hgt = rect.height
+  case fx
+  when 1 # Aurora (.fx1): широкие плоские полосы, медленнее
+    bx.call(rect.left - 240.0 + 700.0, rect.top - 60.0 + 210.0,
+      1400.0, 420.0, c1, 0.8, 90.0, 140.0, 70.0, 70.0, 0.0, 0.09)
+    bx.call(rect.left + w + 300.0 - 750.0, rect.top + 300.0 + 190.0,
+      1500.0, 380.0, c2, 0.75, 90.0, -120.0, 90.0, 80.0, 2.0, 0.09)
+    bx.call(rect.left + w * 0.30 + 390.0, rect.top + hgt + 340.0 - 390.0,
+      780.0, 780.0, c3, 0.3, 90.0, -160.0, -80.0, 52.0, 4.0, 0.15)
+  when 2 # Plasma (.fx2): четвёртое пятно, всё быстрее и резче
+    bx.call(rect.left - 160.0 + 430.0, rect.top - 200.0 + 320.0,
+      860.0, 640.0, c1, 0.8, 70.0, 140.0, 70.0, 30.0, 0.0, 0.09)
+    bx.call(rect.left + w + 220.0 - 500.0, rect.top - 140.0 + 360.0,
+      1000.0, 720.0, c2, 0.75, 70.0, -120.0, 90.0, 30.0, 2.0, 0.09)
+    bx.call(rect.left + w * 0.30 + 390.0, rect.top + hgt + 340.0 - 390.0,
+      780.0, 780.0, c3, 0.5, 70.0, -160.0, -80.0, 30.0, 4.0, 0.15)
+    bx.call(rect.left + w * 0.55 + 320.0, rect.top + hgt * 0.30 + 320.0,
+      640.0, 640.0, c2, 0.45, 70.0, 140.0, -70.0, 26.0, 1.0, 0.18)
+  when 3 # Spotlight (.fx3): одно огромное пятно сверху
+    bx.call(rect.left + w * 0.32 + 600.0, rect.top - 320.0 + 450.0,
+      1200.0, 900.0, c1, 0.9, 90.0, 140.0, 70.0, 46.0, 0.0, 0.09)
+  when 4 # Shimmer (.fx4): всё тусклее, шире и медленнее
+    bx.call(rect.left - 160.0 + 430.0, rect.top - 200.0 + 320.0,
+      860.0, 640.0, c1, 0.3, 120.0, 140.0, 70.0, 90.0, 0.0, 0.09)
+    bx.call(rect.left + w + 220.0 - 500.0, rect.top - 140.0 + 360.0,
+      1000.0, 720.0, c2, 0.3, 120.0, -120.0, 90.0, 90.0, 2.0, 0.09)
+    bx.call(rect.left + w * 0.30 + 390.0, rect.top + hgt + 340.0 - 390.0,
+      780.0, 780.0, c3, 0.3, 120.0, -160.0, -80.0, 90.0, 4.0, 0.15)
+  else   # Mesh (по умолчанию): геометрия .blob из style.css
+    bx.call(rect.left - 160.0 + 430.0, rect.top - 200.0 + 320.0,
+      860.0, 640.0, c1, 0.8, 90.0, 140.0, 70.0, 46.0, 0.0, 0.09)
+    bx.call(rect.left + w + 220.0 - 500.0, rect.top - 140.0 + 360.0,
+      1000.0, 720.0, c2, 0.75, 90.0, -120.0, 90.0, 58.0, 2.0, 0.09)
+    bx.call(rect.left + w * 0.30 + 390.0, rect.top + hgt + 340.0 - 390.0,
+      780.0, 780.0, c3, 0.5, 90.0, -160.0, -80.0, 52.0, 4.0, 0.15)
+  end
   ctx.request_repaint if animate
 end
 
-# <panel class= w= h= dir=row|column pad=/> — контейнер, красящий своё
-# «хромовое» покрытие из ECSS-правила класса (background/stroke/
-# stroke-width/rounding/padding.*) — аналог .surface оракула.
+# <panel class= w= h= dir=row|column pad= appear= appear-delay=
+# appear-stagger= rgrad=/> — контейнер, красящий своё «хромовое»
+# покрытие из ECSS-правила класса (background/stroke/stroke-width/
+# rounding/padding.*, :hover-правило, transition: background <ms>,
+# background-gradient) — аналог .surface оракула. appear= — входная
+# анимация (appear: rise/fade/…, Egui::AppearAnims); appear-stagger=
+# умножается на индекс строки repeat-а (волна карточек CSS
+# card-in с задержками nth-child). rgrad= — радиальный градиент
+# поверх фона (radial-gradient(...) из store, следует за обложкой).
 widget :panel do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   cls = MusicTags.a(node, rt, "class") || ""
@@ -583,20 +734,45 @@ widget :panel do |node, ui, ctx, rt, r|
   clickable = node.attrs["on_click"]?
   resp = ui.interact(rect, Egui::Id.from("#{node.path}/hover"),
     Egui::Sense::Click)
-  vars = ctx.stylesheet.resolve(cls, resp.hovered? ? "hover" : nil)
+  hovered = resp.hovered?
+  cvars = ctx.stylesheet.resolve(cls)
+  hvars = ctx.stylesheet.resolve(cls, "hover")
+  vars = hovered ? hvars : cvars
   p = ui.painter
   prev_clip = p.clip
   p.clip = rect
-  if (bg = vars.color?("background"))
+  # фон: базовый ↔ hover с переходом `transition: background <ms>`
+  # (ECSS); без правила — snap, как в CSS
+  bg_base = cvars.color?("background")
+  bg_hover = hvars.color?("background") || bg_base
+  tms = hvars.f64?("transition.background") || hvars.f64?("transition") ||
+        cvars.f64?("transition.background") || cvars.f64?("transition") ||
+        0.0
+  bg = nil
+  if bg_hover
+    # цели перехода: при отведении фона нет — едем к прозрачному
+    rest = bg_base ||
+      Egui::Color32.new(bg_hover.r, bg_hover.g, bg_hover.b, 0u8)
+    target = hovered ? bg_hover : rest
+    bg = if tms > 0.0
+          MusicTags.fade(ctx, Egui::Id.from("#{node.path}/hover"), "bg",
+            target, tms)
+        else
+          target
+        end
+  end
+  grad = vars.gradient?("background-gradient") ||
+         MusicTags.a(node, rt, "rgrad").try { |s| Egui::Gradient.parse?(s) }
+  if bg || grad
     p.rect(rect, vars.f64("rounding", 8.0), fill: bg,
       stroke_color: vars.color?("stroke"),
-      stroke_width: vars.f64("stroke_width", 1.0))
-    # rblob= — радиальное пятно поверх фона (аппроксимация
-    # radial-gradient у .np-artist-card), из верхнего угла
-    if (blob = MusicTags.hex(MusicTags.a(node, rt, "rblob")))
-      MusicTags.radial(p, rect, rect.left + rect.width * 0.8, rect.top,
-        rect.width * 1.1, blob, steps: 12, strength: 1.0)
-    end
+      stroke_width: vars.f64("stroke_width", 1.0), gradient: grad)
+  end
+  # appear= — входная анимация (paint-only transform, layout на месте)
+  xf = MusicTags.appear_xf(node, rt, ctx)
+  if xf
+    p.push_transform(rect.center, xf[:sx], xf[:sy], xf[:dx], xf[:dy],
+      xf[:opacity])
   end
   pad = vars.box("padding")
   padx = MusicTags.f(node, rt, "padx", -1.0)
@@ -617,6 +793,7 @@ widget :panel do |node, ui, ctx, rt, r|
     holder.scroll_area do |scroll|
       r.render_each(node, scroll, ctx, rt)
     end
+    p.pop_transform(rect.center) if xf
     p.clip = prev_clip
     next
   end
@@ -651,6 +828,7 @@ widget :panel do |node, ui, ctx, rt, r|
   else
     r.render_each(node, child, ctx, rt)
   end
+  p.pop_transform(rect.center) if xf
   p.clip = prev_clip
   if resp.clicked? && (act = clickable)
     rt.fire(rt.interpolate(act))
@@ -805,7 +983,8 @@ widget :logo do |node, ui, ctx, rt, r|
 end
 
 # <playround icon= s=/> — круглая кнопка play/pause (.play-round) или
-# большая (.play-big, s=56).
+# большая (.play-big, s=56). Hover — scale(1.06)+brightness, :active —
+# scale(.95/.97): transition .12s, масштаб мягко едет.
 widget :playround do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "icon") || "pause"
@@ -814,13 +993,32 @@ widget :playround do |node, ui, ctx, rt, r|
   big = MusicTags.b(node, rt, "big")
   rect = ui.allocate_space(Egui::Vec2.new(s, s))
   MusicTags.geom!("playround:#{name}", rect)
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
   bg = big ? MusicTags.accent(rt) : MusicTags::TEXT
-  fg = big ? MusicTags::WINDOW : MusicTags::WINDOW
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
-  ui.painter.circle_filled(rect.center, s / 2.0, bg)
+  fg = MusicTags::WINDOW
+  sc = MusicTags.glide(ctx, id, "scale",
+    resp.active? ? (big ? 0.97 : 0.95) : (resp.hovered? ? 1.06 : 1.0), 120.0)
+  # filter: brightness — play-big светлеет (+8%), play-round чуть
+  # темнеет (−4%); глубина = доля hover-масштаба
+  lift = big ? 0.08 : -0.04
+  depth = MusicTags.lerp(0.0, 1.0, (sc - 1.0) / 0.06)
+  bg = Egui::Color32.new(
+    (bg.r.to_f64 * (1.0 + lift * depth)).round.clamp(0, 255).to_u8,
+    (bg.g.to_f64 * (1.0 + lift * depth)).round.clamp(0, 255).to_u8,
+    (bg.b.to_f64 * (1.0 + lift * depth)).round.clamp(0, 255).to_u8, bg.a)
+  rs = s / 2.0 * sc
+  # transform:scale не клипается родителем (overflow visible): кругу с
+  # hover/active-масштабом нужен запас по clip сверх своего бокса
+  grow = (rs - s / 2.0).abs
+  saved_clip = ui.painter.clip
+  ui.painter.clip = saved_clip.expand(grow)
+  ui.painter.circle_filled(rect.center, rs, bg)
   MusicTags.icon(name, fg).paint(ui, Egui::Rect.from_min_size(
-    Egui::Pos2.new(rect.center.x - isz / 2.0, rect.center.y - isz / 2.0),
-    Egui::Vec2.new(isz, isz)))
+    Egui::Pos2.new(rect.center.x - isz * sc / 2.0,
+      rect.center.y - isz * sc / 2.0),
+    Egui::Vec2.new(isz * sc, isz * sc)))
+  ui.painter.clip = saved_clip
   if resp.clicked? && (act = MusicTags.a(node, rt, "on_click"))
     rt.fire(act)
   end
@@ -842,22 +1040,37 @@ widget :gtile do |node, ui, ctx, rt, r|
   rect = Egui::Rect.from_min_size(rect.min, Egui::Vec2.new(w, h))
   MusicTags.geom!("gtile:#{title}", rect)
   p = ui.painter
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
+  # hover: scale(1.03) + brightness(1.1) — transition .15s; клик-зона
+  # остаётся на базовом прямоугольнике (transform — только визуально)
+  sc = MusicTags.glide(ctx, id, "scale", resp.hovered? ? 1.03 : 1.0, 150.0)
   prev = p.clip
-  p.clip = rect
-  # hover: подсветка +~8% (цвет в Int32 — UInt8-арифметика переполняется)
+  clip_base = p.clip
+  vis = Egui::Rect.from_min_size(
+    Egui::Pos2.new(rect.center.x - rect.width * sc / 2.0,
+      rect.center.y - rect.height * sc / 2.0),
+    Egui::Vec2.new(rect.width * sc, rect.height * sc))
+  p.clip = Egui::Rect.new(
+    Egui::Pos2.new({clip_base.min.x, vis.min.x}.min,
+      {clip_base.min.y, vis.min.y}.min),
+    Egui::Pos2.new({clip_base.max.x, vis.max.x}.max,
+      {clip_base.max.y, vis.max.y}.max))
+  depth = MusicTags.lerp(0.0, 1.0, (sc - 1.0) / 0.03)
   fill = g
-  if resp.hovered?
-    lift = ->(c : UInt8) { {(c.to_i32 * 255 // 235 + 20), 255}.min.to_u8 }
-    fill = Egui::Color32.rgba(lift.call(g.r), lift.call(g.g),
-      lift.call(g.b), 255u8)
+  if depth > 0.0
+    k = 1.0 + 0.085 * depth
+    fill = Egui::Color32.new(
+      (g.r.to_f64 * k).round.clamp(0, 255).to_u8,
+      (g.g.to_f64 * k).round.clamp(0, 255).to_u8,
+      (g.b.to_f64 * k).round.clamp(0, 255).to_u8, g.a)
   end
-  p.rect(rect, 10.0, fill: fill)
-  p.text(Egui::Pos2.new(rect.left + 16.0, rect.top + 14.0 + 11.0),
+  p.rect(vis, 10.0, fill: fill)
+  p.text(Egui::Pos2.new(vis.left + 16.0, vis.top + 14.0 + 11.0),
     title, 22.0, MusicTags::WHITE, bold: true)
   MusicTags.cover(p, ui.fonts,
     Egui::Rect.from_min_size(
-      Egui::Pos2.new(rect.right - 70.0, rect.bottom - 72.0),
+      Egui::Pos2.new(vis.right - 70.0, vis.bottom - 72.0),
       Egui::Vec2.new(80.0, 80.0)),
     c1, c2, txt, 6.0, 18.0)
   p.clip = prev
@@ -882,10 +1095,11 @@ widget :hero do |node, ui, ctx, rt, r|
        Egui::Color32.rgba(0xe9, 0x22, 0x36, 0xFF)
   c2 = MusicTags.hex(MusicTags.a(node, rt, "c2")) ||
        Egui::Color32.rgba(0x57, 0x1d, 0xc6, 0xFF)
-  MusicTags.radial(p, rect, rect.left + rect.width * 0.75, rect.top,
-    1200.0 * 0.6, c1)
-  MusicTags.radial(p, rect, rect.left + rect.width * 0.15, rect.bottom,
-    900.0 * 0.6, c2)
+  # heroStyle: два эллиптических radial-gradient (1200x500 у 75%/-10%,
+  # 900x500 у 15%/120%, transparent 70%) — честные градиенты движка
+  # (Gradient с явными радиусами, Gouraud-кольца), не пятна-круги
+  MusicTags.spot(p, rect, 0.75, -0.10, 1200.0, 500.0, c1, 0.70)
+  MusicTags.spot(p, rect, 0.15, 1.20, 900.0, 500.0, c2, 0.70)
   inner = Egui::Rect.new(
     Egui::Pos2.new(rect.left + 28.0, rect.top + 40.0),
     Egui::Pos2.new(rect.right - 28.0, rect.bottom - 26.0))
@@ -896,13 +1110,15 @@ widget :hero do |node, ui, ctx, rt, r|
   p.clip = prev
 end
 
-# <oswitch on=/> — тумблер настроек (.switch), 44×24.
+# <oswitch on=/> — тумблер настроек (.switch), 44×24. Ползунок и фон
+# едут за .18s (CSS transition), а не прыгают.
 widget :oswitch do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   on = MusicTags.b(node, rt, "on")
   act = MusicTags.a(node, rt, "on_click")
   rect = ui.allocate_space(Egui::Vec2.new(44.0, 24.0))
-  resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
   p = ui.painter
   # лёгкое свечение при hover (live)
   if resp.hovered?
@@ -910,9 +1126,11 @@ widget :oswitch do |node, ui, ctx, rt, r|
       Egui::Vec2.new(rect.width, rect.height)), 12.0,
       fill: MusicTags::ROW_HOVER)
   end
-  p.rect(rect, 12.0,
-    fill: on ? MusicTags.accent(rt) : MusicTags::CONTROL)
-  kx = on ? rect.left + 22.0 : rect.left + 2.0
+  pos = MusicTags.glide(ctx, id, "knob", on ? 1.0 : 0.0, 180.0)
+  bg = MusicTags.fade(ctx, id, "bg",
+    on ? MusicTags.accent(rt) : MusicTags::CONTROL, 180.0)
+  p.rect(rect, 12.0, fill: bg)
+  kx = MusicTags.lerp(rect.left + 2.0, rect.left + 22.0, pos)
   p.circle_filled(Egui::Pos2.new(kx + 10.0, rect.center.y), 10.0, MusicTags::WHITE)
   if resp.clicked?
     # с on_click состояние меняет приложение (player), без — сам store
@@ -937,8 +1155,14 @@ end
 widget :ocombo do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   key = node.attrs["bind"]?
-  options = node.attrs["options"]?.to_s.split(",").map(&.strip)
-    .reject(&.empty?)
+  # опции — из store (rt.rows["<key>_opts"], как <option v-for> у Vue),
+  # фолбэк — статичный атрибут options="a,b,c"
+  options = if key && (rows = rt.rows["#{key}_opts"]?)
+              rows.map { |row| row["t"]? || "" }
+            else
+              node.attrs["options"]?.to_s.split(",").map(&.strip)
+                .reject(&.empty?)
+            end
   text = key ? rt.string(key)
     : (MusicTags.a(node, rt, "text") || "")
   w = MusicTags.f(node, rt, "w", 160.0)
@@ -1030,7 +1254,9 @@ widget :oslider do |node, ui, ctx, rt, r|
   end
   p = ui.painter
   cy = rect.center.y
-  kw = resp.hovered? || resp.dragged? ? 7.5 : 6.0
+  # knob:hover scale(1.25) — transition .1s, радиус мягко растёт
+  kw = MusicTags.glide(ctx, Egui::Id.from(node.path), "kw",
+    resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
   p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
     Egui::Vec2.new(w, 4.0)), 2.0,
     fill: Egui::Color32.rgba(255, 255, 255, 0x33))
@@ -1072,6 +1298,8 @@ widget :island do |node, ui, ctx, rt, r|
   title = MusicTags.a(node, rt, "title") || ""
   ui.overlay(:top_center, margin: Egui::StyleBox.new(top: 6.0)) do |o|
     o.painter.clip = o.clip
+    # .island .title: max-width 220 + text-overflow: ellipsis
+    title = o.fonts.fit(title, 12.0, 220.0)
     tw = o.fonts.measure(title, 12.0).x
     w = 10.0 + 20.0 + 8.0 + tw + 8.0 + (4 * 2.5 + 3 * 2) + 10.0
     rect = o.allocate_space(Egui::Vec2.new(w, 28.0))
@@ -1095,7 +1323,12 @@ widget :island do |node, ui, ctx, rt, r|
       Egui::Sense::Click, layer, rect)
     expanded ||= hresp.hovered?
     p = o.painter
-    p.rect(rect, 14.0, fill: MusicTags::POPUP,
+    # .island { transition: border-radius .18s ease }: скругление пилюли
+    # (100px капсула → 14px панели) мягко едет; высота/контент, как в
+    # CSS height:auto, переключаются сразу
+    radius = MusicTags.glide(ctx, Egui::Id.from("#{node.path}/rad"),
+      "radius", expanded ? 14.0 : 100.0, 180.0)
+    p.rect(rect, radius, fill: MusicTags::POPUP,
       stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
     x = rect.left + 10.0
     MusicTags.cover(p, o.fonts,
@@ -1276,7 +1509,7 @@ widget :mainarea do |node, ui, ctx, rt, r|
 end
 
 # <pbar> — нижний бар плеера (.playerbar): фон bar-bg, три колонки
-# 1fr/1.3fr/1fr (grid), дети по порядку.
+# 1fr/1.3fr/1fr (grid, align-items:center), дети по порядку.
 widget :pbar do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 88.0)
@@ -1291,11 +1524,17 @@ widget :pbar do |node, ui, ctx, rt, r|
   ws = {c13, c2w, c13}
   node.children.each_with_index do |child_node, i|
     next if i > 2
-    col = Egui::Rect.from_min_size(Egui::Pos2.new(xs[i], rect.top),
-      Egui::Vec2.new(ws[i], h))
+    # вертикальное центрирование контента колонки (align-items:center)
+    ch = {MusicTags.estimate_height(child_node, rt), h}.min
+    col = Egui::Rect.from_min_size(
+      Egui::Pos2.new(xs[i], rect.top + (h - ch) / 2.0),
+      Egui::Vec2.new(ws[i], ch))
     cui = ui.child_ui(col, Egui::Id.from("#{node.path}/col#{i}"),
       layout: Egui::Layout.top_down)
-    cui.clip = col
+    cui.clip = Egui::Rect.from_min_size(
+      Egui::Pos2.new(xs[i], rect.top), Egui::Vec2.new(ws[i], h))
     r.render(child_node, cui, ctx, rt)
   end
 end
+
+

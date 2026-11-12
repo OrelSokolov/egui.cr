@@ -4,8 +4,8 @@
 # of a frame BEFORE any FFI/GPU work — where the Crystal side of
 # "cursor moves over a full screen of icons" actually spends its time.
 #
-#   crystal build bench/lucide_bench.cr -o bin/lucide_bench \
-#     --link-flags "-L$(pwd)/lib" && ./bin/lucide_bench
+#   crystal build bench/lucide_bench.cr -o bin/benchmarks/lucide_bench \
+#     --link-flags "-L$(pwd)/lib" && ./bin/benchmarks/lucide_bench
 #
 # The real font backend (the freetype-cr port) is mandatory:
 # the headless monospace estimate would make measure() free and the

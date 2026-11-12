@@ -10,9 +10,9 @@
 # responsible and the standard permission prompt shows up.
 #
 # Usage: scripts/make_camera_app.sh [binary] [app-name]
-#   scripts/make_camera_app.sh bin/camera Camera
+#   scripts/make_camera_app.sh bin/apps/camera Camera
 set -euo pipefail
-BIN="${1:-bin/camera}"
+BIN="${1:-bin/apps/camera}"
 NAME="${2:-Camera}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/builds/$NAME.app"

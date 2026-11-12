@@ -42,7 +42,16 @@ module Egui
       # there cannot, since `width` now means the layout width).
       width = vars.f64?("stroke_width") || vars.f64?("width") || 1.0
       size = if ui.layout.horizontal?
-               Vec2.new(width, ui.available_height)
+               # A vertical hairline inside a horizontal row spans the
+               # ROW BAND (the tallest sibling so far) — the same cross
+               # extent every other row child centers into. Spanning
+               # the remaining panel height instead (the pre-fix
+               # behavior) grew the row's min_rect to the panel bottom,
+               # so everything after the row landed below the visible
+               # edge — `horizontal { label; separator; label }` ate
+               # the rest of the panel. A taller rule is a style
+               # concern (`min_height` through the sizable keys).
+               Vec2.new(width, ui.row_band_height)
              else
                Vec2.new(ui.available_width, width)
              end

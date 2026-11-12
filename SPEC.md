@@ -206,3 +206,126 @@ Deviations (🔶):
 | first frame (exml codegen) | ✅ Route A: `egui-gen` (scripts/egui_gen.cr) emits the literal Node tree; `Document.hybrid` picks live file (dev) → literals (release) |
 | `@keyframes` | ✅ `animation:*` rule keys + `StyleSheet#keyframes` / ecss `@keyframes` blocks (deviations §5) |
 | `position` | ✅ `relative`/`absolute`/`fixed` + `top/right/bottom/left` (px, `%` of the containing block, vw/vh/rem) on `Ui#box` / `ui.div`, from arguments, inline `style:` or ECSS class rules (see `Ui#box_positioning`); `sticky` ⏳ |
+| Vue template syntax (exml `v-*` aliases) | ✅ contract §7 — parse-time desugar, one canonical tree |
+
+## 7. Vue directive subset (exml aliases)
+
+exml accepts the Vue **writing** of directives as parse-time aliases:
+after desugar the tree is canonical, so the renderer, the linter
+(`Exml.validate`), codegen (`egui-gen`) and hot reload never see an
+alias. The formula: **Vue's form, our values** — a directive's value
+is a bare slot/action/field name, never a JS expression
+(`v-if="count > 0"` is a warned parse issue in `Exml.warnings`, not a
+silent misrender). Canonical spellings stay valid forever; the aliases
+are additive (plans/vue-aliases.md).
+
+| Vue | canonical | Rule |
+|---|---|---|
+| `v-if="flag"` | `if="flag"` | bare slot (optionally `{slot}`) |
+| `v-show="flag"` | `if="flag"` | rendering skipped, widget memory lives on by Id-path — Vue's display:none semantics, state kept |
+| `v-model="name"` | `bind="name"` | modifiers below |
+| `v-model.number="x"` | `bind="x" numeric="true"` | the input writes the FLOAT slot (`rt.floats`); unparseable text just doesn't write |
+| `v-model.trim="x"` | `bind="x" trim="true"` | the write-back is stripped; `.number.trim` combines; `.lazy` warns + drops (on_change already fires on commit) |
+| `v-text="name"` | `text="{name}"` | |
+| `ref="name"` | `id="name"` | Vue's template-ref IS the ref registry (`renderer.ref(name)`); a real `id=` wins (warned) |
+| `@click="save"` / `v-on:click="save"` | `on_click="save"` | bare action name; any event maps `on_<event>` |
+| `@change="save"` / `v-on:change` | `on_change="save"` | |
+| `@keyup.enter="save"` | `hotkey="enter" on_keyup="save"` | key events' dotted suffix is a KEY (`Hotkey` spelling: `enter`, `esc`, `ctrl+enter` via `@keyup.ctrl.enter`) — the key fires the action WINDOW-globally through the regular HotkeyMap, no focus needed; the binding lives while the node is visible and lapses with it |
+| `v-bind:title="x"` / `:title="x"` | `title="{x}"` | value is a slot name; a literal (`:x="5"`) warns and applies as `x="5"` |
+| `v-for="item in items"` | synthesized `<repeat for="item" in="items">` | the wrapper takes the element's path; `:key`/`key` and `index` ride the wrapper |
+| `v-for="(item, i) in items"` | …+ `index="i"` | `{i}` interpolates next to `{_i}` |
+| `:key="item.id"` (inside v-for) | `key="id"` | `<var>.` prefix dropped; a bare value is a warned issue |
+| `v-else` | `unless=`/`if=` mirrored from the previous sibling | the sibling's inverted condition |
+| `<template v-if="flag">A B</template>` | A and B spliced in place, `if=` copied onto each | parse-time group wrapper, no node of its own; a child's own gate of the same kind wins (warned — the AND of two slots is an expression) |
+| `<template v-for="d in list">A B</template>` | `<repeat>` wrapping BOTH children | the GROUP repeats; `:key`/`index` ride the wrapper, children keep their parse paths |
+
+`v-if` on the same element as `v-for` applies **per row** (the child
+keeps `if=` — Vue 2 semantics). Rewriting an EXISTING canonical
+document into v-for syntax shifts paths one level (widget state
+resets); a document born in v-for syntax is stable. `<template>`
+splices keep every child's parsed path (namespaced under the
+template), so siblings never shift and no id ever collides.
+
+Markup hotkeys (`@keyup.<key>`) conflict with app `ctx.hotkeys`
+bindings by ORDER: the markup binding lands during the render walk
+(later than app setup), so markup wins while the node is visible and
+the key is freed the frame the node hides; the app re-binds on its
+own next frame. Firing is routed through the store action
+(`rt.fire(name)`), namespaced `exml:<name>` on the HotkeyMap — an
+app's own `HotkeyAction`s never collide.
+
+NOT in the subset (warned parse issues, the absence is explicit):
+`v-html` (no raw HTML), `v-else-if` (needs slot inversion; ONE
+`v-else-if` after `v-if` could ride `if= unless=` — kept out until a
+live port wants it), `v-once`/`v-memo`/`v-pre` (interpolation caching
+already exists), `v-slot`/`<slot>` (components take use-site props),
+`<script setup>` (logic is compiled Crystal — a feature, not a gap),
+non-key event modifiers (`@click.stop` and friends — a key NAME after
+`keyup`/`keydown` is the one accepted modifier form), `v-model.lazy`.
+JS expression values (space/operator/call syntax) are rejected
+everywhere — publish a store slot and name it.
+
+## 8. Flexbox (`ui.flex` / `display: flex`)
+
+Full CSS flexbox (`src/egui/containers/flex.cr`), exact from the
+FIRST frame — no one-frame settle: the container runs a measure pass
+(`Context#measure` — paint discarded, `Context#interact` returning
+dead verdicts), distributes, then lays the children out at computed
+slots.
+
+Two-pass contract: a child block runs TWICE per frame (measure +
+real). Response-gated callbacks (`if resp.clicked? …`) fire exactly
+once (the measure pass sees dead verdicts); widget state writes are
+idempotent (same id, same inputs). Side effects NOT gated on a
+Response must guard with `ui.measuring?`. In the html layer
+(`div(style: "display:flex")`), where children are plain `ui.*`
+calls intercepted via `Ui#flex_capture`, a flex child's Response is a
+placeholder until the container block closes — consult it after the
+div, not between (the placeholder absorbs the real verdicts, see
+`Response#absorb`); the same applies to a nested container's return
+rect.
+
+Nesting cost (the exponential guard): a flex rendering inside an
+ancestor's measure pass runs in MEASURE MODE — one pass over its
+children (their real pass would be discarded paint anyway), reporting
+its natural content extent upward; the real pass reuses a per-frame
+measure memo (`Context#flex_measure`) when the available width
+matches. Cost is linear in nesting depth, not 2^depth — a
+depth-d leaf block runs ≈ d+1 times, not 2^d.
+
+Supported (CSS spelling → `ui.flex` symbol):
+
+| Property | Values |
+| --- | --- |
+| `flex-direction` | `row` `row-reverse` `column` `column-reverse` |
+| `flex-wrap` | `nowrap` `wrap` `wrap-reverse` |
+| `justify-content` | `flex-start` `center` `flex-end` `space-between` `space-around` `space-evenly` |
+| `align-items` | `stretch` `flex-start` `center` `flex-end` `baseline` |
+| `align-content` | the `align-items` set minus `baseline`, plus the `space-*` modes |
+| `flex-grow` / `flex-shrink` | numbers (per child: `f.child(grow: …)` / EXML `<flex-item>`) |
+| `flex-basis` | px, `%` (definite main axis only), `auto` |
+| `order` | integer, stable |
+| `gap` | one number (both axes) |
+
+Entry points: `Ui#flex` (Crystal; every container mode also cascades
+from the ECSS class chain — `flex-direction`, `flex-wrap`,
+`justify-content`, `align-items`, `align-content`, `gap`), `<box
+flex="true" …>` + `<flex-item grow="1" …>` (EXML), and
+`div(style: "display:flex; …")` (NativeHTML — container modes; the
+per-child factors are the Crystal/EXML API's). An explicit argument
+beats the cascade. `box(width:/height:)` (px or `%` of the flow
+region) makes a column container's main axis definite — in flow only
+the width is, so grow/justify on an auto-height column are inert
+(CSS `height: auto` semantics: the container grows with content).
+
+Deviations (🔶):
+
+- `align-items: baseline` is approximated as bottom-alignment (the
+  label center-line already covers the common text-row case).
+- Shrinking floors at 0, not min-content (no min-content pass).
+- An `auto`-basis child never grows past its natural size (CSS caps
+  content-based items at max-content — here natural IS max-content;
+  `basis: 0` + grow gives the `flex: 1` behavior).
+- In the html layer, `Grid`/`ScrollArea`-style `show` containers
+  inside a flex div are not intercepted as items (widgets, `box` and
+  `horizontal` are).

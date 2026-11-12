@@ -6,8 +6,8 @@
 # page — what hello world shows — is "root/root", notepad's settings
 # are "root/settings":
 #
-#   bin/notepad --page root/settings       # open straight into settings
-#   bin/notepad --page root/settings#theme # …and focus the theme field
+#   bin/apps/notepad --page root/settings       # open straight into settings
+#   bin/apps/notepad --page root/settings#theme # …and focus the theme field
 #
 # The route is framework state, not per-app flags: the same mechanism
 # drives debugging, CLI deep links and (later) screenshot generation

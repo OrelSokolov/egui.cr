@@ -67,9 +67,10 @@ module Egui
       @gen = 1
       @hits = 0
       @misses = 0
+      @real_misses = 0
     end
 
-    def lookup(key : UInt64) : Entry?
+    def lookup(key : UInt64, measuring : Bool = false) : Entry?
       if (e = @entries[key]?)
         e.last_gen = @gen
         @hits += 1
@@ -77,6 +78,10 @@ module Egui
         e
       else
         @misses += 1
+        # Misses of MEASURE-only lookups (a Flex measure cell wider
+        # than the real slot) are routine, not content changes — the
+        # flex memo invalidates on REAL misses only.
+        @real_misses += 1 unless measuring
         Egui::Bench.count("paintcache.miss")
         nil
       end
@@ -104,6 +109,7 @@ module Egui
 
     getter hits : Int32
     getter misses : Int32
+    getter real_misses : Int32
 
     def clear : Nil
       @entries.clear

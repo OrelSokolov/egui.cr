@@ -710,6 +710,56 @@ nest-c { background: #f5c211; padding: 10 }</textarea>
   </div>
 </section>
 
+<section class="card">
+  <div class="chead"><span class="title">box-shadow — outset</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.div(style: "padding: 14") do |w|
+  w.div(style: "background: #26262d; border-radius: 8;
+        padding: 12;
+        box-shadow: 0 4px 12px rgba(0,0,0,.5)") do |d|
+    d.p("floating")
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">floaty {
+  background: #26262d; rounding: 8; padding: 12;
+  shadow.color: #00000080;
+  shadow.blur: 12; shadow.y: 4;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><floaty><label text="floating"/></floaty></textarea>
+    </div>
+    <div class="result"><div style="padding:14px"><div style="background:#26262d;border-radius:8px;padding:12px;box-shadow:0 4px 12px rgba(0,0,0,.5)">floating</div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">box-shadow — inset</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.div(style: "padding: 14") do |w|
+  w.div(style: "background: #1e1e24; border-radius: 8;
+        padding: 12;
+        box-shadow: inset 0 2px 8px rgba(0,0,0,.6)") do |d|
+    d.p("pressed in")
+  end
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="4" spellcheck="false">well {
+  background: #1e1e24; rounding: 8; padding: 12;
+  shadow.color: #00000099;
+  shadow.blur: 8; shadow.y: 2; shadow.inset: true;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><well><label text="pressed in"/></well></textarea>
+    </div>
+    <div class="result"><div style="padding:14px"><div style="background:#1e1e24;border-radius:8px;padding:12px;box-shadow:inset 0 2px 8px rgba(0,0,0,.6)">pressed in</div></div></div>
+  </div>
+</section>
+
 <!-- ======================= GRADIENTS ======================= -->
 <h2>Gradients</h2>
 
@@ -1116,6 +1166,40 @@ overlay.front { anchor: center; z: 20 }</textarea>
 </overlay></textarea>
     </div>
     <div class="result"><div style="position:relative;width:220px;height:96px;background:#1e1e24;border:1px solid #3a3a44;border-radius:6px"><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;background:#e01b4c;border-radius:6px;padding:14px 18px;font-size:12px">z: 10</span><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;background:#3584e4bb;border-radius:6px;padding:6px 10px;font-size:12px">z: 20 — on top</span></div><p class="note">engine: ui.overlay(..., z:) — higher z paints later</p></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">z-index — painted out of order</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="14" spellcheck="false">rect = sized_block(ui, "background: #1e1e24; stroke: #3a3a44", 220, 96)
+# the HIGHER overlay is painted FIRST, the lower
+# AFTER it — insertion order is not z order: the
+# painter's layer sort still puts red under blue
+ui.overlay(:center, rect: rect, z: 20,
+    pass_through: true) do |o|
+  o.span { |s| s.div(style: "background: #3584e4bb;
+    padding-x: 10; padding-y: 6") { |d| d.small("z: 20") } }
+end
+ui.overlay(:center, rect: rect, z: 10,
+    pass_through: true) do |o|
+  o.span { |s| s.div(style: "background: #e01b4c;
+    padding-x: 18; padding-y: 14") { |d| d.small("z: 10") } }
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false">/* the same stacking as z-index — the ECSS side
+   is order-independent, z decides */</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="6" spellcheck="false"><overlay anchor="center" z="20">
+  <box text="z: 20"/>
+</overlay>
+<overlay anchor="center" z="10">
+  <box text="z: 10"/>
+</overlay></textarea>
+    </div>
+    <div class="result"><div style="position:relative;width:220px;height:96px;background:#1e1e24;border:1px solid #3a3a44;border-radius:6px"><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:20;background:#3584e4bb;border-radius:6px;padding:6px 10px;font-size:12px">z: 20</span><span style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:10;background:#e01b4c;border-radius:6px;padding:14px 18px;font-size:12px">z: 10</span></div><p class="note">engine: the DOM order here is blue first, red second — z, not source order, stacks them</p></div>
   </div>
 </section>
 

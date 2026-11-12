@@ -145,7 +145,11 @@ def capture(wid: int, out: str, crop_top: int | None = None) -> None:
 def shoot(name: str, binary: str, title: str, outdir: str,
           args: list[str] | None = None, settle: float = 1.2,
           draw: bool = False, crop_top: int | None = None) -> None:
-    """Launch one app, optionally draw into it, capture, terminate."""
+    """Launch one app, optionally draw into it, capture, terminate.
+
+    `binary` is the path under bin/ (class-qualified: apps/notepad,
+    html/box_shadow, …).
+    """
     app = subprocess.Popen([f"bin/{binary}", *(args or [])])
     try:
         wid = wait_window(title)
@@ -266,33 +270,33 @@ def main() -> None:
         build(apps)
 
     # Notepad — the editor (root page) in both themes.
-    shoot("notepad-dark", "notepad", "egui-cr — notepad", outdir,
+    shoot("notepad-dark", "apps/notepad", "egui-cr — notepad", outdir,
           args=["--theme", "Dark", "README.md"])
-    shoot("notepad-light", "notepad", "egui-cr — notepad", outdir,
+    shoot("notepad-light", "apps/notepad", "egui-cr — notepad", outdir,
           args=["--theme", "Light", "README.md"])
 
     # Borderless — the four client-side window frames (top strip only:
     # the caption + the look switcher is what differs between them).
     for frame in ("windows", "xp", "ubuntu", "macos"):
-        shoot(f"frame-{frame}", "borderless", "egui-cr — borderless", outdir,
+        shoot(f"frame-{frame}", "apps/borderless", "egui-cr — borderless", outdir,
               args=["--frame", frame], crop_top=170)
 
     # Widget gallery — default dark, then the custom stylesheet theme.
-    shoot("widgets-dark", "widgets_gallery", "egui-cr — widget gallery",
+    shoot("widgets-dark", "apps/widgets_gallery", "egui-cr — widget gallery",
           outdir)
-    shoot("widgets-styled", "widgets_gallery", "egui-cr — widget gallery",
+    shoot("widgets-styled", "apps/widgets_gallery", "egui-cr — widget gallery",
           outdir, args=["--styled"])
 
     # Paint — with a couple of synthetic strokes on the canvas.
-    shoot("paint", "paint", "untitled - Paint", outdir, settle=2.0, draw=True)
+    shoot("paint", "apps/paint", "untitled - Paint", outdir, settle=2.0, draw=True)
 
     # Gradients & shadows — the Bootstrap 2.0.4 button replica (gradient
     # fills, inset sheen, pressed inset shadow, dropdown shadow).
-    shoot("box-shadow", "box_shadow",
+    shoot("box-shadow", "html/box_shadow",
           "egui.cr — box-shadow (bootstrap 2.0.4)", outdir, settle=1.5)
 
     # Icon catalog — the searchable lucide/bootstrap browser.
-    shoot("icons", "icons_browser",
+    shoot("icons", "apps/icons_browser",
           "egui-cr — icons (lucide · bootstrap)", outdir, settle=2.5)
 
     # The gallery page embedding everything shot above.

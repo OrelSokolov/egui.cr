@@ -138,6 +138,7 @@ class MusicExmlApp < Egui::App
     rt.strings["m3"] = MusicLibrary.scale_hex(album.c1, 0.35)
     rt.bools["mesh_on"] = p.effect != 5 # None
     rt.bools["animate_bg"] = p.animate
+    rt.floats["effect"] = p.effect.to_f64
     rt.strings["np_rb"] = MusicLibrary.scale_hex(album.c1, 0.7)
 
     # плеер
@@ -163,6 +164,11 @@ class MusicExmlApp < Egui::App
     rt.floats["volume_frac"] = p.muted ? 0.0 : p.volume
     rt.strings["island_text"] = p.island_text(now)
     rt.bools["np_visible"] = p.panel
+    # ширина центра — computed (Vue .center{flex:1} без flex-движка):
+    # окно − паддинги mainarea (2×8) − sidebar 300 − зазор 8 − np-панель
+    # (320 + зазор 8, когда видна); центр всегда занимает остаток строки
+    rt.floats["center_w"] = ctx.input.screen_rect.width - 2 * 8 - 300 - 8 -
+                            (p.panel ? 320 + 8 : 0)
 
     # очередь в now playing (до 4 строк, прыжок по клику)
     queue = p.queue[p.queue_pos + 1..].first(4)
@@ -318,6 +324,10 @@ class MusicExmlApp < Egui::App
     rt.strings["look_name"] = rt.string("combo_look")
     rt.strings["combo_bg"] = MusicLibrary::EFFECTS[p.effect]? || MusicLibrary::EFFECTS[0]
     rt.strings["combo_quality"] = ["Low", "Normal", "High", "Very high"][p.quality]? || "High"
+    # опции комбо — как <option v-for> у оракула (looks/effects/quality)
+    rt.rows["combo_look_opts"] = MusicLibrary::LOOKS.map { |l| {"t" => l} }
+    rt.rows["combo_bg_opts"] = MusicLibrary::EFFECTS.map { |l| {"t" => l} }
+    rt.rows["combo_quality_opts"] = %w[Low Normal High Very high].map { |l| {"t" => l} }
     rt.floats["crossfade_frac"] = p.crossfade / 12.0
     rt.strings["crossfade_text"] = "#{p.crossfade} s"
 

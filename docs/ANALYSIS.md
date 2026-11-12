@@ -176,7 +176,7 @@ the next backend step.
 - `crystal spec` — frame loop, paint list, hover, click
   (press+release), click suppression when press began outside,
   state-driven label change. All headless.
-- `bin/hello` — real window on X11: window + title, `Hello World!`
+- `bin/apps/hello` — real window on X11: window + title, `Hello World!`
   heading, `Click me` button (hover/active states), `Clicked N times`
   label that changes on click. Verified by running on a live display
   and pixel-analyzing a screenshot (clear color, window fill, button
@@ -347,7 +347,7 @@ the runtime path. Three backends share it:
   libfreetype is a build/run dep only when the dev accelerator (or
   the fontpreview example) is in play; shipped binaries are pure
   Crystal.
-- `bin/fontpreview` (`examples/fontpreview.cr`): full Latin + Cyrillic
+- `bin/apps/fontpreview` (`examples/fontpreview.cr`): full Latin + Cyrillic
   alphabets, digits, punctuation at sizes 12–32 — the visual test bed,
   with two live-switchable backend tabs (C FreeType vs the Crystal
   port, both loaded and swapped via `Sokol.select_fonts`) and a font
@@ -499,7 +499,7 @@ background). Two subtleties covered:
 sampler (`egui_cr_sgl_texture_nearest`) instead of the shared linear
 one. Without it a zoomed pixel canvas blurs under fractional DPI.
 
-Demo: `examples/paint.cr` (bin/paint) — a Windows XP Paint clone: the
+Demo: `examples/paint.cr` (bin/apps/paint) — a Windows XP Paint clone: the
 16-tool jspaint toolbox (icons 1:1 from jspaint's classic theme,
 `assets/paint/tools.png`, MIT), per-tool option strips, 28-color
 palette with the overlapped fg/bg swatch (right-click sets bg,

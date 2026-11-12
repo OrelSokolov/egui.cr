@@ -29,8 +29,37 @@ PTY_LIB    = WINDOWS ? "lib/egui_cr_pty.lib"   : "lib/libegui_cr_pty.a"
 # side; the flag is dev-only: it builds the rlottie shim + archive
 # (the vendor tree lands via `rake download:rlottie`, network, once).
 LOTTIE_FEATURE = ENV["LOTTIE"] == "1"
-EXAMPLES   = ["hello", "widgets_gallery", "html_gallery", "html_positions", "openfiledialog", "fontpreview", "fontbrowser", "logos", "counter_reactive", "chat", "chat_100k", "notepad", "notepad_with_exml", "borderless", "splash", "terminal", "win_properties_demo", "box_shadow", "video", "inspector_demo", "icons_browser", "svg_rasterizer", "paint", "system_monitor", "markdown", "mdvsfonts", "formulas", "crystal3d", "rounded_window", "tableview", "text_input", "ios_demo", "multitouch_demo", "responsive_demo", "oval_progress", "camera", "device_api", "audio", "remote_image", "tray", "voice_echo", "wizard", "lottie_crystal", "macos_gallery", "gnome_gallery", "kde_gallery", "resize_dbg", "partial_border", "border_radius", "clipping", "clip_child_demo", "music_exml", "spring", "appear"] +
-             (LOTTIE_FEATURE ? ["lottie_native"] : [])
+# bin/ is class-partitioned: every example builds into bin/<class>/<name>
+# (the same paths the shard.yml `binaries:` carat keys spell).
+#   apps/    standalone demos and tools
+#   html/    CSS-feature and component proofs (box-shadow, flex, …)
+#   clones/  replicas of third-party UIs (the oracle galleries, Raven Music)
+#   dbg/     debug probes
+# Benchmarks (bench/*.cr) build manually into bin/benchmarks/ — see the
+# header comment of each bench file.
+BIN_APPS   = %w[
+  hello widgets_gallery openfiledialog fontpreview fontbrowser logos
+  counter_reactive chat chat_100k notepad notepad_with_exml borderless
+  splash terminal win_properties_demo video inspector_demo icons_browser
+  svg_rasterizer paint system_monitor markdown mdvsfonts formulas
+  crystal3d rounded_window tableview text_input ios_demo multitouch_demo
+  responsive_demo camera device_api audio remote_image tray voice_echo
+  wizard lottie_crystal
+]
+BIN_HTML   = %w[
+  html_gallery html_positions box_shadow box_shadow_showcase oval_progress
+  partial_border border_radius clipping clip_child_demo spring appear
+  flex_demo
+]
+BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml]
+BIN_DBG    = %w[resize_dbg]
+BIN_DIR    = (BIN_APPS.product(["apps"]) + BIN_HTML.product(["html"]) +
+              BIN_CLONES.product(["clones"]) + BIN_DBG.product(["dbg"])).to_h
+EXAMPLES   = BIN_APPS + BIN_HTML + BIN_CLONES + BIN_DBG
+if LOTTIE_FEATURE
+  EXAMPLES << "lottie_native"
+  BIN_DIR["lottie_native"] = "apps"
+end
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
 # windows-msvc target links against the MSVC/Windows-SDK runtimes, so the
@@ -276,7 +305,7 @@ end
 # compilers race on the shared ~/.cache/crystal (tmp-file renames).
 # opt_flags: "" (dev), "-O3 " (optimized iteration), "--release ".
 def build_examples(names, opt_flags, label)
-  FileUtils.mkdir_p("bin")
+  FileUtils.mkdir_p(BIN_DIR.values.uniq.map { |c| File.join("bin", c) })
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.
   # lib/minaudio/lib: the audio shard's static lib (only pulled in when
@@ -330,7 +359,8 @@ def build_examples(names, opt_flags, label)
         name = queue.synchronize { queue.empty? ? nil : queue.shift }
         break unless name
         puts "▶ crystal build #{name}#{label.empty? ? "" : " (#{label})"}"
-        cmd = "crystal build examples/#{name}.cr -o bin/#{name} #{opt_flags}--link-flags \"#{lib_flag}\""
+        out = "bin/#{BIN_DIR.fetch(name)}/#{name}"
+        cmd = "crystal build examples/#{name}.cr -o #{out} #{opt_flags}--link-flags \"#{lib_flag}\""
         unless system(env, cmd)
           lock.synchronize { failures << name }
         end
@@ -354,7 +384,7 @@ end
 
 # --release: these are the shipped demo binaries; a debug build is
 # 10-100x slower (the notepad-on-big-files lesson).
-desc "Build all examples into bin/ (--release)"
+desc "Build all examples into bin/ class subdirs (--release)"
 task "build:examples" => ["build:native"] do
   build_examples(EXAMPLES, "--release ", "")
 end
@@ -398,7 +428,7 @@ end
 # example_names_for, so the invoke below is a no-op there (rake tasks
 # run once).
 EXAMPLES.each do |name|
-  desc "Dev-build examples/#{name}.cr into bin/ (rake build:dev[#{name}])"
+  desc "Dev-build examples/#{name}.cr into bin/#{BIN_DIR[name]}/ (rake build:dev[#{name}])"
   task name => ["build:native"] do
     Rake::Task["build:dev"].invoke(name)
   end

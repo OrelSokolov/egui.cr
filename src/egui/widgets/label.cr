@@ -106,30 +106,74 @@ module Egui
       "label"
     end
 
-    # Retained paint (see paint_cache.cr): everything Label#ui's
-    # output depends on. Selectable labels opt out (the text-selection
-    # highlight lives in interaction state the key can't see) and so
-    # do preset runs (syntax highlighting mutates per paint). The
-    # RichText folds in BY VALUE — immediate-mode apps build a fresh
-    # Label every frame, so object identity would never hit; the text
-    # and its formatting flags are the stable identity. The wrap
-    # decision's inputs (layout orientation, wrap capability, room
-    # widths) are key inputs too: they pick the galley the paint
-    # replays.
+    # Retained paint (see paint_cache.cr): content = text + formatting
+    # (BY VALUE — immediate-mode apps build a fresh Label every
+    # frame). Selectable labels cache too, but only in the inert
+    # selection state: no highlight (anchor < 0 or empty), menu
+    # closed, and a frame with no pointer press/drag or ⌘-modifier —
+    # the gesture/copy handling in #paint_selectable must run for
+    # real whenever input exists. Cursor/anchor values and the menu
+    # flag are key inputs, so a selection starting lands as a miss.
+    # A `wrap: false` label without responsive width keys is
+    # WIDTH-INDEPENDENT (the galley is natural, `fit` is a no-op in an
+    # unclamped cell) — its key drops the width terms, which is what
+    # lets a flex MEASURE cell (full container width) hit the entry
+    # the real (slot-width) pass stored.
     def paint_cache_key(ui : Ui)
-      return nil if @userselect
       return nil if @preset_runs
       id = cache_id(ui)
-      state = ui.ctx.memory.interaction_state(id)
+      ctx = ui.ctx
+      cursor = 0
+      anchor = -1
+      menu_open = false
+      if @userselect
+        # press/drag frames place the caret, the RELEASE frame fires
+        # the click/double-click selection — all must run for real.
+        return nil if ctx.input.pointer_pressed? ||
+                      ctx.input.pointer_down? ||
+                      ctx.input.pointer_released? ||
+                      ctx.input.modifiers.command?
+        anchor_id = id.child(0x5EED_u64)
+        cursor = ctx.memory.data.get_int(id, 0)
+        anchor = ctx.memory.data.get_int(anchor_id, -1)
+        menu_open = ctx.popup_open?("context_menu_#{id.value}")
+        return nil if menu_open
+        return nil if anchor >= 0 && anchor != cursor
+      end
+      state = ctx.memory.interaction_state(id)
       base = style_vars(ui, id)
-      stated = style_vars(ui, id, state)
-      {"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
-       @rich.italic?, @rich.underline?, @rich.strikethrough?,
-       @wrap, @align, @userselect,
-       @line_height, ui.layout.vertical?, ui.wrap_x,
-       ui.max_rect.width, ui.available_width, base.object_id,
-       stated.object_id, ui.style.object_id,
-       @style_override.try(&.hash)}
+      stated = state.nil? ? base : style_vars(ui, id, state)
+      # Width terms only when the output depends on the width:
+      # wrapping labels and responsive-sized ones.
+      width_terms = @wrap != false ||
+                    base.f64?("width") || base.str?("width") ||
+                    base.f64?("min_width") || base.str?("min_width") ||
+                    base.f64?("max_width") || base.str?("max_width")
+      if width_terms
+        ({"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
+         @rich.italic?, @rich.underline?, @rich.strikethrough?,
+         @wrap, @align, @userselect, @line_height,
+         ui.layout.vertical?, ui.wrap_x, ui.max_rect.width,
+         ui.available_width, base.object_id, stated.object_id,
+         ui.style.object_id, @style_override.try(&.hash),
+         cursor, anchor}).hash
+      else
+        ({"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
+         @rich.italic?, @rich.underline?, @rich.strikethrough?,
+         @wrap, @align, @userselect, @line_height,
+         ui.layout.vertical?, ui.wrap_x, base.object_id,
+         stated.object_id, ui.style.object_id,
+         @style_override.try(&.hash), cursor, anchor}).hash
+      end
+    end
+
+    # #ui's non-paint side effects on the selectable path: the text
+    # cursor over hovered labels, and the selection anchor cell's
+    # keep-alive (end-frame pruning would drop the selection).
+    def cache_replay(ui : Ui, response : Response) : Nil
+      return unless @userselect
+      ui.ctx.set_cursor_icon(Egui::CursorIcon::Text) if response.hovered?
+      ui.ctx.memory.use_id(cache_id(ui).child(0x5EED_u64))
     end
 
     def style_properties : Array(StyleProp)

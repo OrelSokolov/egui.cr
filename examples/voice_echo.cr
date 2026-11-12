@@ -1,4 +1,4 @@
-# egui-cr voice echo demo — a separate binary (bin/voice_echo).
+# egui-cr voice echo demo — a separate binary (bin/apps/voice_echo).
 #
 # Framework side: the VoiceRecorder seam (src/egui/voice_recorder.cr,
 # minaudio capture behind it) + SystemPorts::Audio for playback. Device

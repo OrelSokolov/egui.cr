@@ -1,4 +1,4 @@
-# egui-cr video player demo — a separate binary (bin/video).
+# egui-cr video player demo — a separate binary (bin/apps/video).
 #
 # Framework side: the egui-cr stream-texture seam
 # (TextureRegistry#create_stream / #update / #destroy, backed by the

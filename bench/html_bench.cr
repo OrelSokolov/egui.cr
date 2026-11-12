@@ -4,8 +4,8 @@
 # bench/chat_bench.cr: Egui::Bench drives update()/end_frame, no
 # sokol backend. 79 cards × 3 readonly code panels + the live demos.
 #
-#   crystal build --release bench/html_bench.cr -o bin/html_bench && ./bin/html_bench
-#   SCROLL=1 ./bin/html_bench   # start scrolled to the middle
+#   crystal build --release bench/html_bench.cr -o bin/benchmarks/html_bench && ./bin/benchmarks/html_bench
+#   SCROLL=1 ./bin/benchmarks/html_bench   # start scrolled to the middle
 
 require "../src/egui"
 require "../src/egui/driver/crystalfonts"

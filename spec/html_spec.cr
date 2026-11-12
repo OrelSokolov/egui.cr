@@ -345,3 +345,44 @@ describe "html vocabulary" do
     html_texts(ctx).map(&.text).join.should contain("Two")
   end
 end
+
+describe "html display:flex" do
+  it "lays div children out by flexbox (justify-content: center)" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.div(style: "display: flex; justify-content: center; gap: 10") do |d|
+          d.add(Egui::Label.new("l"))
+          d.add(Egui::Label.new("r"))
+        end
+      end
+    end
+    # Read the real geometry AFTER the frame (the flex child responses
+    # are placeholders until the container block closes).
+    texts = html_texts(ctx).select { |t| t.text == "l" || t.text == "r" }
+    texts.size.should eq 2
+    left, right = texts.map(&.pos.x).minmax
+    # two labels centered in the 400-wide panel: the pair straddles
+    # the middle, kept apart by the gap.
+    left.should be < 200.0
+    right.should be > 200.0
+    (right - left).should be > 15.0 # label width + the 10px gap
+  end
+
+  it "a nested div is one flex item (column direction stacks)" do
+    ctx = Egui::Context.new
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.div(style: "display: flex; flex-direction: column") do |d|
+          d.div { |inner| inner.add(Egui::Label.new("b")) }
+          d.add(Egui::Label.new("x"))
+        end
+      end
+    end
+    texts = html_texts(ctx).select { |t| t.text == "b" || t.text == "x" }
+    texts.size.should eq 2
+    b_y = texts.find { |t| t.text == "b" }.not_nil!.pos.y
+    x_y = texts.find { |t| t.text == "x" }.not_nil!.pos.y
+    x_y.should be > b_y
+  end
+end

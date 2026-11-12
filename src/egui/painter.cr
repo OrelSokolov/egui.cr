@@ -331,17 +331,24 @@ module Egui
     # the base face's own glyphs, no emulation).
     getter? bold : Bool
     getter? italic : Bool
+    # Per-text tracking (CSS `letter-spacing`, px between glyphs): nil
+    # inherits the font stack's global `letter_spacing` property, a
+    # number overrides it for this one run. Measurement must pass the
+    # same value (`Fonts#with_letter_spacing`) or centered/right-
+    # aligned text drifts off its slot.
+    getter letter_spacing : Float64?
     getter clip_corners : CornerRadii?
 
     def initialize(@clip : Rect, @pos : Pos2, @text : String,
                    @size : Float64, @color : Color32, @family : String? = nil,
                    @bold : Bool = false, @italic : Bool = false,
+                   @letter_spacing : Float64? = nil,
                    @clip_corners : CornerRadii? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       TextCmd.new(clip, @pos, @text, @size, @color, @family, bold?,
-        italic?, clip_corners)
+        italic?, @letter_spacing, clip_corners)
     end
   end
 
@@ -625,7 +632,7 @@ module Egui
         when TextCmd
           TextCmd.new(cmd.clip, pt(cmd.pos), cmd.text, cmd.size * k,
             fade(cmd.color), cmd.family, cmd.bold?, cmd.italic?,
-            cmd.clip_corners)
+            cmd.letter_spacing, cmd.clip_corners)
         when CircleCmd
           CircleCmd.new(cmd.clip, pt(cmd.center), cmd.radius * k,
             fade_opt(cmd.fill), fade_opt(cmd.stroke), cmd.stroke_width * k,
@@ -785,11 +792,25 @@ module Egui
       @commands.size - 1
     end
 
-    # Command-list length — the paint-cache capture span start.
+    # --- measure-pass bracket (see Context#measure) ---------------------
+    #
+    # A two-pass container (Flex) runs its children once to MEASURE —
+    # paint emitted on that pass is provisional and must vanish. A
+    # snapshot of the command-list length before the pass and a
+    # truncate back to it after drops every command (and layer tag)
+    # the pass added, while #set slots reserved BEFORE the snapshot
+    # stay valid for the real pass. Index-based brackets taken inside
+    # the pass (clip_mark, transform starts) live below the cut and
+    # go with it.
+
     def snapshot : Int32
       @commands.size
     end
 
+    def truncate_to(size : Int32) : Nil
+      @commands.truncate(0...size)
+      @layers.truncate(0...size)
+    end
 
     # Reserve a slot now, fill it later (egui `Painter::set`).
     def add_noop : Int32
@@ -989,9 +1010,11 @@ module Egui
     # the base face — no emulation).
     def text(pos : Pos2, text : String, size : Float64, color : Color32,
              family : String? = nil, bold : Bool = false,
-             italic : Bool = false) : Nil
+             italic : Bool = false,
+             letter_spacing : Float64? = nil) : Nil
       return if text.empty? # nothing to rasterize (Fonts#fit gave up)
-      add(TextCmd.new(@clip, pos, text, size, color, family, bold, italic))
+      add(TextCmd.new(@clip, pos, text, size, color, family, bold, italic,
+        letter_spacing))
     end
 
     # Paint a laid-out Galley with `pos` as its top-left corner

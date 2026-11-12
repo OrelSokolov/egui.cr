@@ -58,6 +58,7 @@ album-card:hover {
 quick {
   background: #ffffff12;
   rounding: 6;
+  transition.background: 150;
 }
 
 np-artist-card {
@@ -80,6 +81,7 @@ about-card {
 
 lib-row {
   padding: 4;
+  transition.background: 120;
 }
 
 lib-cards { }
@@ -94,4 +96,8 @@ quick:hover {
 
 track-row:hover {
   background: #ffffff10;
+}
+
+track-row {
+  transition.background: 120;
 }

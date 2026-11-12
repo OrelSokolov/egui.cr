@@ -51,7 +51,7 @@ Or manually:
 ```bash
 rake spec                  # headless core specs
 rake build:examples        # vendor C + crystal build
-./bin/widgets_gallery
+./bin/apps/widgets_gallery
 ```
 
 ### Optimized iteration: `-O3` instead of `--release`
@@ -316,6 +316,16 @@ lands its index in the root store as `_i`:
 </repeat>
 ```
 
+Porting Vue templates? The directive spellings parse as aliases and
+desugar to the canonical attributes above — `v-if`/`v-show` → `if=`,
+`v-model` → `bind=`, `v-text` → `text=`, `@click`/`v-on:click` →
+`on_click=`, `:title`/`v-bind:title` → `title="{title}"`,
+`v-for="item in items"` (+`:key="item.id"`, the `(item, i)` index) →
+a synthesized `<repeat>`, `v-else` → the sibling's inverted
+condition. The values stay ours — a bare slot/action name, never a JS
+expression (`v-if="count > 0"` warns at parse). SPEC.md §7 carries
+the full subset table.
+
 Components take props from their use-site attributes (seeded into the
 scope before `setup`, interpolated against the app store), and any
 widget with `id="name"` registers its `Response` for the frame —
@@ -369,7 +379,7 @@ end
   handlers (input events already drive repaints); use `reactive` for
   out-of-frame mutations and `computed` inputs.
 
-Runnable demo: `bin/counter_reactive` (fiber-driven ticking signal,
+Runnable demo: `bin/apps/counter_reactive` (fiber-driven ticking signal,
 computed run counters in the status panel).
 
 ## Routing (pages, modals, deep links)
@@ -409,8 +419,8 @@ end
   "Page not found" page with a back button — never a crash.
 
 The same mechanism drives debugging and (later) screenshot generation
-in arbitrary app states. Runnable demos: `bin/hello` (`root/root`),
-`bin/notepad --page root/settings#search` (editor, settings page and
+in arbitrary app states. Runnable demos: `bin/apps/hello` (`root/root`),
+`bin/apps/notepad --page root/settings#search` (editor, settings page and
 a modal confirm-close page). Demo screenshots for those states:
 `python3 scripts/make_notepad_screenshots.py` (Linux/X11 — launches
 the app, deep-links each route, drives the modal with synthetic
@@ -424,7 +434,7 @@ VT500 engine (parser, grid with scrollback, SGR, selection, key
 encoding), the `TermView` widget (`ui.terminal(session)`), and a
 native PTY — POSIX ptys on Linux/macOS, ConPTY on Windows — compiled
 from `backend/pty_shim.c` into the existing native library by
-`rake build:native`. `./bin/terminal` is a tabbed terminal: per-tab
+`rake build:native`. `./bin/apps/terminal` is a tabbed terminal: per-tab
 shells, OSC-driven tab titles, closable tabs, mouse selection and
 scrollback. The engine is headless-spec'd (`spec/terminal_spec.cr`,
 `spec/terminal_widget_spec.cr`).
@@ -439,7 +449,7 @@ ordinary text labels to 3D points. Geometry is packed SoA (x,y,z f32 +
 rgba u8 per vertex) and rides the same paint commands / detached
 packets as everything else (`Painter#mesh3d`); the math lives in
 `egui/math3d.cr` (`Vec3`, column-major `Mat4`). Runnable demo:
-`./bin/crystal3d` — a flat-shaded crystal spinning around its axis,
+`./bin/apps/crystal3d` — a flat-shaded crystal spinning around its axis,
 with speed/wireframe controls.
 
 ## Status

@@ -2,7 +2,7 @@
 # banner header, body, footer navigation. Colors follow the active
 # theme; only the LAYOUT is the classic wizard template.
 #
-#   bin/wizard
+#   bin/apps/wizard
 
 require "../src/egui/driver_selector"
 

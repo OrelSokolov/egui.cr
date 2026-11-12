@@ -7,7 +7,7 @@
 # NanoSVG port. One code path for icons and formulas, no replay layer,
 # no MathJax TeX font files: the outlines ride inside the SVG.
 #
-#   bin/formulas   # GUI: a handful of formulas + a size slider
+#   bin/apps/formulas   # GUI: a handful of formulas + a size slider
 
 require "mathjax"
 require "../src/egui/driver_selector"

@@ -1,4 +1,4 @@
-# egui-cr camera demo — a separate binary (bin/camera).
+# egui-cr camera demo — a separate binary (bin/apps/camera).
 #
 # Framework side: the Camera seam (src/egui/camera.cr) — AVFoundation on
 # macOS, camera2 NDK on Android, V4L2 on Linux, "not implemented" on iOS

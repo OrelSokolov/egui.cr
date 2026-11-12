@@ -383,9 +383,10 @@ module Egui
         end
       end
 
-      # Box-shadow approximation: a linear alpha ramp over `blur` from the
-      # (spread-inflated, offset-shifted) caster contour — the same shape
-        # language the backend builds from Gouraud bands.
+      # Box-shadow approximation: an alpha falloff from the
+      # (spread-inflated, offset-shifted) caster contour — outset rides
+      # the same centered gaussian as the GL backends (see
+        # driver/sokol.cr #shadow_stop), inset a smooth inward ramp.
       private def shadow_cmd(cmd : ShadowCmd) : Nil
         caster = Rect.from_min_size(
           Pos2.new(cmd.rect.min.x + cmd.offset.x - cmd.spread,
@@ -400,19 +401,35 @@ module Egui
         rounding = cmd.rounding.clamp(0.0,
           {caster.width, caster.height}.min / 2.0)
         blur = {cmd.blur, 0.5}.max
+        reach = blur * 1.5
+        rim = Math.exp(-4.5) # exp(-2*(1.5)^2): the tail at d = reach
         (y0...y1).each do |y|
           py = y + 0.5
           (x0...x1).each do |x|
             px = x + 0.5
             d = sd_rounded_rect(px, py, caster, rounding)
             t = if cmd.inset?
-                  # fade INWARD from the widget's own edge
-                  d >= 0.0 ? 0.0 : (-d / blur).clamp(0.0, 1.0)
+                  # fade INWARD from the widget's own edge; the wall
+                  # coverage is HALF the color alpha (gaussian centered
+                  # on the wall — same rule as the outset edge), the
+                  # reach grows with the offset's push and spread.
+                  reach_in = blur * 0.7 + cmd.spread +
+                    {cmd.offset.x.abs, cmd.offset.y.abs}.max
+                  d >= 0.0 ? 0.0 : (-d / reach_in).clamp(0.0, 1.0)
                 else
-                  (1.0 - d / blur).clamp(0.0, 1.0)
+                  # CSS falloff: the gaussian (sigma = blur/2) is
+                  # CENTERED on the caster edge — half the color alpha
+                  # just outside, solid inside, 0 at 1.5*blur.
+                  (1.0 - d / reach).clamp(0.0, 1.0)
                 end
-            # ease the ramp a touch so the band reads gaussian-ish
-            cov = t * t * (3.0 - 2.0 * t)
+            cov = if cmd.inset?
+                    0.5 * (Math.exp(-2.0 * t * t) - Math.exp(-2.0)) /
+                      (1.0 - Math.exp(-2.0))
+                  elsif d <= 0.0
+                    1.0
+                  else
+                    0.5 * (Math.exp(-4.5 * t * t) - rim) / (1.0 - rim)
+                  end
             blend_px(x, y, cmd.color, cov * cmd.color.a.to_f64 / 255.0,
               cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end

@@ -175,6 +175,19 @@ class HtmlGalleryApp < Egui::App
       "font_family" => "monospace",
       "rounding"    => 6.0,
     })
+    # The `.code textarea` trio from the HTML reference: one dark box
+    # (#17171c fill, #3a3a44 hairline, 6px rounding), text color per
+    # mode — Crystal green, ECSS lilac, EXML blue.
+    {"code-cr"   => Egui::Color32.rgb(205, 227, 200),
+     "code-ecss" => Egui::Color32.rgb(219, 199, 232),
+     "code-exml" => Egui::Color32.rgb(200, 217, 240)}.each do |cls, color|
+      sheet.rule("#{cls}.textarea", Egui::StyleVars{
+        "text_color" => color,
+        "fill"       => Egui::Color32.rgb(23, 23, 28),
+        "stroke"     => Egui::Color32.rgb(58, 58, 68),
+        "rounding"   => 6.0,
+      })
+    end
     # The float:right demo: the paragraph's own right padding reserves
     # the gutter the overlay block pins into ("fright" scope).
     sheet.rule("fright.label", Egui::StyleVars{
@@ -204,15 +217,20 @@ class HtmlGalleryApp < Egui::App
 
   # The left side: the three code panels — Crystal, ECSS and EXML —
   # each a tiny dim caption over a readonly textarea, all open at once.
+  # The wrapper class picks the per-mode text color from the sheet (the
+  # `.code textarea` / `.code textarea.ecss` / `.code textarea.exml`
+  # colors of the HTML reference).
   private def code_panels(ui : Egui::Ui, demo : Demo) : Nil
-    [{"Crystal", demo.crystal}, {"ECSS", demo.ecss},
-     {"EXML", demo.exml}].each_with_index do |(label, code), i|
+    [{"Crystal", demo.crystal, "code-cr"}, {"ECSS", demo.ecss, "code-ecss"},
+     {"EXML", demo.exml, "code-exml"}].each_with_index do |(label, code, cls), i|
       ui.rich(Egui::RichText.new(label)
         .size(ui.style.font_size * 0.7).weak(ui.style.visuals))
       rows = {code.count('\n') + 1, 8}.min
-      ui.add(Egui::TextArea.new(code, nil, rows, true,
-        focus_id: "code:#{demo.title}:#{i}",
-        cursor_blinks: false, readonly: true))
+      ui.div(classes: cls) do |d|
+        d.add(Egui::TextArea.new(code, nil, rows, true,
+          focus_id: "code:#{demo.title}:#{i}",
+          cursor_blinks: false, readonly: true))
+      end
     end
   end
 
@@ -502,6 +520,22 @@ class HtmlGalleryApp < Egui::App
           end
         end
       end,
+      Demo.new("box-shadow — outset",
+        %(ui.div(style: "padding: 14") do |w|\n  w.div(style: "background: #26262d; border-radius: 8;\n        padding: 12;\n        box-shadow: 0 4px 12px rgba(0,0,0,.5)") do |d|\n    d.p("floating")\n  end\nend),
+        %(floaty {\n  background: #26262d; rounding: 8; padding: 12;\n  shadow.color: #00000080;\n  shadow.blur: 12; shadow.y: 4;\n}),
+        %(<floaty><label text="floating"/></floaty>)) do |ui|
+        ui.div(style: "padding: 14") do |w|
+          w.div(style: "background: #26262d; border-radius: 8; padding: 12; box-shadow: 0 4px 12px rgba(0,0,0,.5)") { |d| d.p("floating") }
+        end
+      end,
+      Demo.new("box-shadow — inset",
+        %(ui.div(style: "padding: 14") do |w|\n  w.div(style: "background: #1e1e24; border-radius: 8;\n        padding: 12;\n        box-shadow: inset 0 2px 8px rgba(0,0,0,.6)") do |d|\n    d.p("pressed in")\n  end\nend),
+        %(well {\n  background: #1e1e24; rounding: 8; padding: 12;\n  shadow.color: #00000099;\n  shadow.blur: 8; shadow.y: 2; shadow.inset: true;\n}),
+        %(<well><label text="pressed in"/></well>)) do |ui|
+        ui.div(style: "padding: 14") do |w|
+          w.div(style: "background: #1e1e24; border-radius: 8; padding: 12; box-shadow: inset 0 2px 8px rgba(0,0,0,.6)") { |d| d.p("pressed in") }
+        end
+      end,
     ]
   end
 
@@ -720,6 +754,34 @@ class HtmlGalleryApp < Egui::App
           o.span do |s|
             s.div(style: "background: #3584e4bb; border-radius: 6; padding-x: 10; padding-y: 6") do |d|
               d.small("z: 20 — on top")
+            end
+          end
+        end
+      end,
+      Demo.new("z-index — painted out of order",
+        %(rect = sized_block(ui, "background: #1e1e24; stroke: #3a3a44", 220, 96)\n# the HIGHER overlay is painted FIRST, the lower\n# AFTER it — insertion order is not z order: the\n# painter's layer sort still puts red under blue\nui.overlay(:center, rect: rect, z: 20,\n    pass_through: true) do |o|\n  o.span { |s| s.div(style: "background: #3584e4bb;\n    padding-x: 10; padding-y: 6") { |d| d.small("z: 20") } }\nend\nui.overlay(:center, rect: rect, z: 10,\n    pass_through: true) do |o|\n  o.span { |s| s.div(style: "background: #e01b4c;\n    padding-x: 18; padding-y: 14") { |d| d.small("z: 10") } }\nend),
+        %(/* the same stacking as z-index — the ECSS side\n   is order-independent, z decides */),
+        %(<overlay anchor="center" z="20">\n  <box text="z: 20"/>\n</overlay>\n<overlay anchor="center" z="10">\n  <box text="z: 10"/>\n</overlay>)) do |ui|
+        rect = sized_block(ui, "background: #1e1e24; stroke: #3a3a44", 220, 96)
+        # The blue z:20 overlay is painted BEFORE the red z:10 one —
+        # a mid-frame layer regression (0, 20, 10) that the painter
+        # must resolve by z, not by insertion order: red still stacks
+        # under blue. Exercises the general counting-sort path of
+        # Painter#commands_in_layer_order (see the layers.unsorted
+        # counter with EGUI_BENCH/PERFORMANCE_OVERLAY).
+        ui.overlay(:center, rect: rect, z: 20, pass_through: true,
+          id: "html_gallery_oo20") do |o|
+          o.span do |s|
+            s.div(style: "background: #3584e4bb; border-radius: 6; padding-x: 10; padding-y: 6") do |d|
+              d.small("z: 20")
+            end
+          end
+        end
+        ui.overlay(:center, rect: rect, z: 10, pass_through: true,
+          id: "html_gallery_oo10") do |o|
+          o.span do |s|
+            s.div(style: "background: #e01b4c; border-radius: 6; padding-x: 18; padding-y: 14") do |d|
+              d.small("z: 10")
             end
           end
         end

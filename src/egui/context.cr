@@ -385,6 +385,18 @@ module Egui
       # section below and StyleLength#resolve).
       @reduced_motion = false
       @font_scale = 1.0
+      # Two-pass layout (Flex): >0 while a measure pass runs — see
+      # #measuring? / #measure. Guards every interaction seam.
+      @measure_depth = 0
+      # Per-frame flex measure memo (two-pass layout, exponential
+      # blow-up guard — see Flex#render): flex id → the available
+      # width its children were measured at + their natural sizes.
+      # Cleared every begin_frame; a flex rendering twice in one frame
+      # (nested inside an ancestor's measure pass, then for real)
+      # reuses the memo when the available width matches instead of
+      # re-running the child blocks.
+      @flex_measures = {} of Tuple(UInt64, Float64) => FlexMeasure
+      @flex_memo_gen = 1
       # Safe-area insets in points (notch/status bar/home indicator —
       # Этап 4 of plans/responsive-mobile.md). Backends set them from
       # the OS; zero insets reproduce the pre-safe-area layout.
@@ -455,6 +467,12 @@ module Egui
       @painter.clear
       @claimed_ids.clear
       @popup_opened_this_frame = false
+      # The flex measure memo persists ACROSS frames (a stationary
+      # frame must not re-measure): entries age by @flex_memo_gen and
+      # stale ones (≥ FLEX_MEMO_STALE frames unused) are pruned in
+      # #end_frame. Flex#render drops a memo whose real pass saw a
+      # paint-cache miss (content changed → naturals stale).
+      @flex_memo_gen += 1
       @inspector.try &.begin_frame
       # Hot reload: an externally edited .ecss file re-applies here,
       # before this frame's widgets resolve their styles.
@@ -511,6 +529,8 @@ module Egui
       @fonts.tick_layout_cache
       # Same clock for the paint cache's stale eviction.
       @paint_cache.tick
+      gen = @flex_memo_gen
+      @flex_measures.reject! { |_, m| gen - m.last_gen > 3 }
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
       cmds = Egui::Bench.span("Painter#commands_in_layer_order") do
         @painter.commands_in_layer_order
@@ -564,6 +584,78 @@ module Egui
       @cursor_icon = icon
     end
 
+    # --- two-pass layout (Flex) ------------------------------------------
+    #
+    # A flex container needs every child's natural size BEFORE it can
+    # place anything (grow/shrink/justify distribution). The measure
+    # pass runs the child blocks once inside this bracket:
+    #
+    #   * paint is provisional — #snapshot/#truncate_to drop it after;
+    #   * #interact returns dead verdicts without registration, so
+    #     response-gated callbacks (`if resp.clicked? …`) fire exactly
+    #     once, in the real pass;
+    #   * `#measuring?` lets app code guard side effects that are not
+    #     response-gated (an unconditional `count += 1` in a child
+    #     block runs twice — the documented contract of two-pass
+    #     containers).
+    #
+    # Widget state (Memory) keyed by id is written by both passes with
+    # the same inputs — idempotent, the second write is a no-op.
+
+    def measuring? : Bool
+      @measure_depth > 0
+    end
+
+    # --- flex measure memo (see @flex_measures) ---------------------------
+
+    # Keyed by (id, rounded avail): a %-sized flex renders twice per
+    # frame at different widths (a row's measure pass at full width,
+    # the real pass at its resolved %) — one slot per width keeps both
+    # stable instead of thrashing a single entry.
+    def flex_measure(id : Id, avail : Float64) : FlexMeasure?
+      if (m = @flex_measures[{id.value, avail.round(1)}]?)
+        m.last_gen = @flex_memo_gen
+        m
+      end
+    end
+
+    def set_flex_measure(id : Id, avail : Float64,
+                         measure : FlexMeasure) : Nil
+      measure.last_gen = @flex_memo_gen
+      @flex_measures[{id.value, avail.round(1)}] = measure
+    end
+
+    def drop_flex_measure(id : Id, avail : Float64) : Nil
+      @flex_measures.delete({id.value, avail.round(1)})
+    end
+
+    # What one flex's measure pass produced: the available width the
+    # children were laid out against (reuse needs the same bound) and
+    # their natural sizes, in the ordered children order.
+    class FlexMeasure
+      property avail : Float64
+      property naturals : Array(Vec2)
+      # The children's minted cell ids — reused by the real pass so a
+      # stationary frame mints no Id strings (800+/frame on a stress
+      # flex).
+      property ids : Array(Id)
+      property last_gen : Int32 = 0
+
+      def initialize(@avail, @naturals, @ids)
+      end
+    end
+
+    def measure(&block : -> _) : Nil
+      mark = @painter.snapshot
+      @measure_depth += 1
+      begin
+        yield
+      ensure
+        @measure_depth -= 1
+        @painter.truncate_to(mark)
+      end
+    end
+
     # egui `Context::set_cursor_image`: display this RGBA bitmap as the
     # OS cursor for the frame, instead of the standard #cursor_icon —
     # the CSS `cursor: url(…)` equivalent. Backends without
@@ -576,6 +668,16 @@ module Egui
     def interact(id : Id, rect : Rect, sense : Sense,
                  layer : LayerId = LayerId.background,
                  clip : Rect = Rect.infinite) : Response
+      # Measure pass (two-pass layout, see #measure): a dead verdict,
+      # with NONE of the registration side effects — no seen/used id
+      # bookkeeping (the real pass registers), no duplicate-id flag
+      # (every flex child would look duplicated), no hover cursor, no
+      # clicks (a response-gated `resp.clicked?` callback must fire
+      # exactly once, in the real pass).
+      if measuring?
+        return Response.new(self, id, rect, sense, false, false, 0,
+          false, false, false, false, false, Vec2.zero)
+      end
       if (insp = @inspector) && @inspector_enabled
         insp.record_meta(id, @current_widget)
       end

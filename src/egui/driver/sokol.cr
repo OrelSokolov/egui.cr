@@ -267,7 +267,7 @@ lib LibEguiCr
   fun mesh3d = egui_cr_mesh3d(mvp : Float32*, blend : Bool, primitive : Int32,
                               x : Int32, y : Int32, w : Int32, h : Int32,
                               count : Int32, verts : UInt8*)
-  # SDF rounded-rect batch (EGUI_SDF=1): `count` instances of 28 floats
+  # SDF rounded-rect batch (EGUI_SDF, on by default): `count` instances of 28 floats
   # each — geometry in POINTS (center.x/y, quad half_w/h, radii
   # tl/tr/br/bl, then shape half_w/h, kind, blur), colors straight
   # alpha 0..1 (fill, fill2, stroke), then stroke_w (points), ppp, 0, 0.
@@ -454,9 +454,11 @@ module Egui
       # Open rounded-clip group ({clip rect, fitted radii}) — see
       # #sync_clip_group; nil = no stencil bracket open.
       @@clip_shape : Tuple(Egui::Rect, Egui::CornerRadii)? = nil
-      # EGUI_SDF=1: analytic SDF rounded rects (see #sdf_try). Off by
-      # default — the tessellated path stays byte-for-byte.
-      @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] != "0" : false
+      # EGUI_SDF: analytic SDF rounded rects (see #sdf_try). On by
+      # default — outset box-shadows fade smoothly (exp(-2t²) in the
+      # shader) instead of the tessellated band approximation;
+      # EGUI_SDF=0 restores the old path byte-for-byte.
+      @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] != "0" : true
       # SDF batch accumulation: instance buffer (28 floats × 2048, the
       # shim's per-batch cap), fill mark, and the clip (framebuffer px,
       # the #scissor_rect tuple) the current group runs under.
@@ -1354,6 +1356,7 @@ module Egui
           FrameBench.span("update", bt)
           bt = Time.instant
           FrameBench.show(app.ctx)
+          Egui::Bench::PerfOverlay.frame(app.ctx)
           FrameBench.span("bench.hud", bt)
           bt = Time.instant
           commands = app.ctx.end_frame
@@ -1989,6 +1992,7 @@ module Egui
         FrameBench.span("update", bt)
         bt = Time.instant
         FrameBench.show(app.ctx)
+        Egui::Bench::PerfOverlay.frame(app.ctx)
         FrameBench.span("bench.hud", bt)
         bt = Time.instant
         # Inspector overlays (pick menu, color popup, selection frame)
@@ -2518,8 +2522,9 @@ module Egui
       # Outset box-shadow: the caster is the rect translated by
       # `offset` and grown by `spread` (corner radius grows with it —
       # the same shape #paint_shadow_outset builds); the shader fades
-      # alpha outward from that silhouette over `blur`, the same
-      # exp(-2t²) curve as the tessellated bands. Inset shadows need
+      # alpha outward from that silhouette, HALF the color alpha at the
+      # edge and 0 at 1.5·blur (CSS: the gaussian, σ = blur/2, is
+      # centered ON the edge). Inset shadows need
       # per-side depths one uniform SDF cannot express — they keep the
       # tessellated path.
       def self.sdf_try_shadow(cmd : Egui::ShadowCmd) : Bool
@@ -2534,9 +2539,10 @@ module Egui
         hh = base.height / 2.0
         d[0] = ((base.min.x + base.max.x) / 2.0).to_f32
         d[1] = ((base.min.y + base.max.y) / 2.0).to_f32
-        # The quad reaches past the falloff's end (t=1 at d=blur) plus
-        # one AA px, so the zero-coverage rim never cuts the curve.
-        margin = blur + 1.5 / @@pixels_per_point
+        # The quad covers the whole falloff (t=1 at d=1.5*blur — the
+        # gaussian's tail ends there) plus one AA px, so the zero-
+        # coverage rim never cuts the curve.
+        margin = blur * 1.5 + 1.5 / @@pixels_per_point
         d[2] = (hw + margin).to_f32
         d[3] = (hh + margin).to_f32
         rad = {cmd.rounding + cmd.spread, {hw, hh}.min, 0.0}.max.to_f32
@@ -3271,9 +3277,10 @@ module Egui
         # base face — never an emulated one), so the quads below are
         # plain: one pass, no shear, no double strike.
         # letter_spacing is absolute px — widen it with the draw size so
-        # the tracking reads the same at 2x as at 1x.
+        # the tracking reads the same at 2x as at 1x. A per-text value
+        # (TextCmd) replaces the stack's global for this run.
         saved_spacing = fonts.letter_spacing
-        fonts.letter_spacing = saved_spacing * ppp
+        fonts.letter_spacing = (cmd.letter_spacing || saved_spacing) * ppp
         LibEguiCr.sgl_bind_texture(view)
         LibEguiCr.sgl_enable_texture
         LibEguiCr.text_pipeline_push
@@ -3483,11 +3490,19 @@ module Egui
         pts
       end
 
-      # Gaussian-ish falloff for one band stop: full alpha at the caster
-      # edge (t=0), ~0.14 at the band rim (t=1) — a CSS blur of `b`
-      # reads as a gaussian with σ ≈ b/2, i.e. exp(-2t²) over the band.
-      def self.shadow_stop(color : Egui::Color32, t : Float64) : Egui::Color32
-        a = (color.a.to_f64 * Math.exp(-2.0 * t * t) + 0.5).floor.to_u8
+      # Gaussian-ish falloff for one band stop. `t` is the distance
+      # from the caster edge in units of the falloff reach (1 = rim);
+      # `peak` is the coverage at the edge itself — 1.0 for an inset
+      # shadow (full alpha at the wall), 0.5 for an outset one (CSS
+      # centers the gaussian, σ = blur/2, ON the silhouette, so just
+      # outside the edge only half the declared alpha shows). exp(-2t²)
+      # is that gaussian's tail, renormalized to hit exactly 0 at the
+      # rim (t=1) so the band's inner edge never steps.
+      def self.shadow_stop(color : Egui::Color32, t : Float64,
+                           peak : Float64 = 1.0) : Egui::Color32
+        a = color.a.to_f64 * peak *
+            (Math.exp(-2.0 * t * t) - Math.exp(-2.0)) / (1.0 - Math.exp(-2.0))
+        a = (a + 0.5).floor.to_u8
         Egui::Color32.new(color.r, color.g, color.b, a)
       end
 
@@ -3496,9 +3511,10 @@ module Egui
       # shadows); outward when `sign` is -1, inward when +1.
       def self.shadow_band(pts : Array(PerimPt),
                            depths : Array(Float64), t0 : Float64, t1 : Float64,
-                           color : Egui::Color32, sign : Float64) : Nil
-        c0 = shadow_stop(color, t0)
-        c1 = shadow_stop(color, t1)
+                           color : Egui::Color32, sign : Float64,
+                           peak : Float64 = 1.0) : Nil
+        c0 = shadow_stop(color, t0, peak)
+        c1 = shadow_stop(color, t1, peak)
         pts.each_with_index do |(p, n, _, _), i|
           q = pts[(i + 1) % pts.size]
           qn = q[1]
@@ -3556,27 +3572,39 @@ module Egui
         # a gap between the rect and the outward fade.
         rounded_rect_fill(base, radius, cmd.color)
         pts = rounded_perimeter_sided(base, radius)
-        # Bands cover the blur width; alpha stops follow exp(-2t²).
-        bands = {blur.ceil.to_i, 1}.max.clamp(1..4)
-        depths = Array.new(pts.size, blur)
+        # Bands cover the falloff's reach (1.5·blur — same tail as the
+        # SDF shader), ~1px each (alpha stops follow the gaussian,
+        # interpolated linearly INSIDE a band — coarser bands read as
+        # visible steps on large blurs); capped at 12. Peak 0.5: the
+        # gaussian is centered on the edge (see #shadow_stop).
+        reach = blur * 1.5
+        bands = {reach.ceil.to_i, 1}.max.clamp(1..12)
+        depths = Array.new(pts.size, reach)
         LibEguiCr.sgl_begin_quads
         bands.times do |k|
           shadow_band(pts, depths, k.to_f64 / bands,
-            (k + 1).to_f64 / bands, cmd.color, -1.0)
+            (k + 1).to_f64 / bands, cmd.color, -1.0, peak: 0.5)
         end
         LibEguiCr.sgl_end
       end
 
-      # Inset: the band lives INSIDE the rect, per-side depth = half the
-      # blur plus the offset's push towards that side (CSS `inset 0 1px`
-      # — y+1 is down — deepens the TOP band, thins the bottom one to
-      # nothing), plus `spread` everywhere. Corner depths are the mean
-      # of their two sides, clamped so the inner corner radius stays
-      # non-negative; every depth also clamps to half the rect's small
-      # side so opposing bands never cross the center.
+      # Inset: the band lives INSIDE the rect, per-side depth ≈ 0.7×blur
+      # (the measured Chrome/Skia inset reach) plus the offset's push
+      # towards that side (CSS `inset 0 1px` — y+1 is down — deepens the
+      # TOP band, thins the bottom one to nothing) and `spread`
+      # everywhere. The gaussian is centered on
+      # the wall (same rule as the outset edge): HALF the color alpha
+      # at the wall fading inward — peak 0.5 on #shadow_band. Depths
+      # clamp to half the rect's small side so opposing bands never
+      # cross the center; CORNER points additionally clamp to the
+      # corner radius (past it the inner corner is sharp in CSS — the
+      # collapsed arc points approximate that diagonal), but the
+      # straight edges take the full depth: clamping them too capped
+      # every deep blur at `rounding` px (blur 16 and 32 rendered
+      # identically).
       def self.paint_shadow_inset(cmd : Egui::ShadowCmd) : Nil
         r = cmd.rect
-        b = cmd.blur * 0.5 + cmd.spread
+        b = cmd.blur * 0.7 + cmd.spread
         d_top = {b + cmd.offset.y, 0.0}.max
         d_bottom = {b - cmd.offset.y, 0.0}.max
         d_left = {b + cmd.offset.x, 0.0}.max
@@ -3587,22 +3615,24 @@ module Egui
         pts = rounded_perimeter_sided(r, cmd.rounding)
         radius = {cmd.rounding, r.width / 2.0, r.height / 2.0}.min
         side = {r.width, r.height}.min / 2.0
+        corner_cap = {radius - 0.25, 0.0}.max
         depths = pts.map do |(_, _, s1, s2)|
           d = (side_depth(s1, d_top, d_bottom, d_left, d_right) +
                side_depth(s2, d_top, d_bottom, d_left, d_right)) / 2.0
           # radius - 0.25 keeps the inner corner non-inverted; the
           # max(0) collapses bands at near-sharp corners instead of
           # flipping them outward.
-          {d, {radius - 0.25, 0.0}.max, side}.min
+          cap = s1 == s2 ? side : {corner_cap, side}.min
+          {d, cap}.min
         end
         max_depth = depths.max
         return if max_depth <= 0.0
 
-        bands = {max_depth.ceil.to_i, 1}.max.clamp(1..4)
+        bands = {max_depth.ceil.to_i, 1}.max.clamp(1..12)
         LibEguiCr.sgl_begin_quads
         bands.times do |k|
           shadow_band(pts, depths, k.to_f64 / bands,
-            (k + 1).to_f64 / bands, cmd.color, 1.0)
+            (k + 1).to_f64 / bands, cmd.color, 1.0, peak: 0.5)
         end
         LibEguiCr.sgl_end
       end

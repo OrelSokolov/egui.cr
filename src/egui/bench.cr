@@ -27,9 +27,11 @@
 #     painted), computed with a span stack like every flamegraph
 #     profiler does.
 #
-# Spans/counters are collected only while a bench runs
-# (`Bench.collecting?`); the guard is a single class-var read and the
-# `yield` is inlined, so the hooks cost nothing in normal app frames.
+# Spans/counters are collected while a bench runs (`Bench.collecting?`)
+# or, with PERFORMANCE_OVERLAY=1, in LIVE app frames (see PerfOverlay
+# at the bottom); when neither is active the guard is a single
+# class-var read and the `yield` is inlined, so the hooks cost nothing
+# in normal app frames.
 
 module Egui
   module Bench
@@ -53,6 +55,9 @@ module Egui
     end
 
     @@collecting = false
+    # PERFORMANCE_OVERLAY=1: collect spans in live frames too (the
+    # PerfOverlay panel below); Bench.run's own flag stays untouched.
+    @@live = ENV["PERFORMANCE_OVERLAY"]? ? ENV["PERFORMANCE_OVERLAY"] != "0" : false
     @@aggregates = {} of String => Agg
     @@counters = {} of String => Int32
     @@stack = [] of OpenSpan
@@ -66,7 +71,7 @@ module Egui
     # e.g. Context#end_frame's command flatten). Overhead when not
     # collecting: one class-var read + an inlined yield.
     def self.span(name : String, &)
-      return yield unless @@collecting
+      return yield unless @@collecting || @@live
       open = OpenSpan.new
       @@stack << open
       t0 = Time.instant
@@ -359,6 +364,125 @@ module Egui
         end
         mean = s.sum.to_f64 / s.size
         {at.call(0.5), mean, at.call(0.95), s.last.to_f64}
+      end
+    end
+
+    # --- live widget profiling overlay (PERFORMANCE_OVERLAY=1) -----------
+    #
+    # EGUI_BENCH's HUD answers "which pipeline PHASE is slow";
+    # PERFORMANCE_OVERLAY answers "which widgets/spans are slow" in a
+    # running app. The span hooks above are always in place (every
+    # Widget#ui call in Ui#add, plus inner spans like Svg#paint and
+    # font layout); with PERFORMANCE_OVERLAY=<any non-"0"> they collect
+    # in LIVE frames too, aggregated over a sliding window of WINDOW
+    # full frames. The panel (top-right, painter-only like the
+    # FrameBench HUD, so it never enters its own table) lists the top
+    # spans by self time — nested spans are subtracted, so a Button's
+    # self time excludes the Svg it painted; the Svg shows up as its
+    # own row.
+    module PerfOverlay
+      WINDOW = 120 # full frames aggregated per table
+      TOP    = 20  # rows shown
+      PT     = 12.0
+      LINE   = 15.0
+
+      @@on = ENV["PERFORMANCE_OVERLAY"]? ? ENV["PERFORMANCE_OVERLAY"] != "0" : false
+      @@display = {} of String => Agg # the last completed window
+      @@display_frames = 0
+      @@frames = 0                     # frames in the current window
+
+      def self.on? : Bool
+        @@on
+      end
+
+      # End-of-frame bookkeeping from the driver loop (called between
+      # app.update and end_frame): closes the window — snapshot the
+      # aggregates, reset — once WINDOW full frames passed, then paints
+      # the panel. This frame's end_frame spans land in the NEXT
+      # window; the windows stay contiguous either way.
+      def self.frame(ctx : Context) : Nil
+        return unless @@on
+        @@frames += 1
+        if @@frames >= WINDOW
+          @@display = Bench.aggregates.dup
+          @@display_frames = @@frames
+          Bench.reset
+          @@frames = 0
+        end
+        paint(ctx)
+        # The overlay is painter-only (nothing volatile of its own), so
+        # an idle on-demand-repaint app would never reach the next
+        # window — keep full frames coming while profiling.
+        ctx.request_repaint
+      end
+
+      private def self.paint(ctx : Context) : Nil
+        screen = ctx.input.screen_rect
+        painter = ctx.painter
+        painter.layer = POPUP_LAYER_Z - 1
+        painter.clip = screen
+
+        rows = @@display.to_a.sort_by! { |_, a| -a.self_ns }.first(TOP)
+        panel_w = 436.0
+        body_h = @@display.empty? ? LINE : rows.size * LINE
+        panel_h = LINE + 22.0 + LINE + LINE + body_h + LINE + 8.0
+        x0 = screen.max.x - 8.0 - panel_w
+        y0 = screen.min.y + 8.0
+        painter.rect(Rect.from_min_size(Pos2.new(x0, y0),
+          Vec2.new(panel_w, panel_h)), 6.0,
+          Color32.rgba(16, 16, 24, 228), Color32.rgba(90, 90, 110, 255), 1.0)
+
+        white = Color32.rgba(235, 235, 245, 255)
+        dim = Color32.rgba(150, 150, 165, 255)
+        accent = Color32.rgba(120, 220, 160, 255)
+        hot = Color32.rgba(240, 160, 120, 255)
+        right = ->(text : String, size : Float64, x : Float64) do
+          x - ctx.fonts.measure_cached(text, size).x
+        end
+
+        y = y0 + 6.0
+        painter.text(Pos2.new(x0 + 10.0, y + LINE / 2),
+          "widget self time — last #{WINDOW} frames", 12.0, white, bold: true)
+        total = @@display_frames.zero? ? 0.0 :
+          @@display.values.sum(&.self_ns).to_f64 / @@display_frames / 1_000_000.0
+        sum = total > 0.0 ? "Σ self %.2f ms/frame ≈ %d fps" % {total, (1000.0 / total).round.to_i} :
+          "Σ self %.2f ms/frame" % total
+        painter.text(Pos2.new(right.call(sum, 11.0, x0 + panel_w - 10.0),
+          y + LINE / 2), sum, 11.0, accent)
+        y += LINE + 6.0
+
+        painter.text(Pos2.new(x0 + 10.0, y + LINE / 2), "span", 11.0, dim)
+        col_x = {x0 + 300.0, x0 + 360.0, x0 + 424.0}
+        {"calls/f", "µs/call", "self ms/f"}.each_with_index do |h, i|
+          painter.text(Pos2.new(right.call(h, 11.0, col_x[i]), y + LINE / 2),
+            h, 11.0, dim)
+        end
+        y += LINE
+
+        if @@display.empty?
+          painter.text(Pos2.new(x0 + 10.0, y + LINE / 2),
+            "collecting first window…", PT, dim)
+          y += LINE
+        else
+          f = @@display_frames.to_f64
+          rows.each_with_index do |(name, a), i|
+            label = name.sub(/^Egui::/, "")
+            label = label.size > 27 ? label[0, 24] + "…" : label
+            painter.text(Pos2.new(x0 + 10.0, y + LINE / 2), label, PT,
+              i < 3 ? hot : white)
+            cells = {"%.1f" % (a.calls / f),
+                     "%.1f" % a.self_per_call_ns,
+                     "%.2f" % (a.self_ns / f / 1_000_000.0)}
+            cells.each_with_index do |text, c|
+              painter.text(Pos2.new(right.call(text, PT, col_x[c]),
+                y + LINE / 2), text, PT, white)
+            end
+            y += LINE
+          end
+        end
+
+        painter.text(Pos2.new(x0 + 10.0, y + LINE / 2),
+          "self excludes nested spans · top #{TOP} of #{@@display.size}", 11.0, dim)
       end
     end
   end

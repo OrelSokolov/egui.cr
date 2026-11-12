@@ -154,10 +154,10 @@ build:
       steps:
         - crystal spec          # specs must pass — same gate as CI
         - rake build:native     # vendor C -> lib/libegui_cr_sokol.a
-        - rake build:examples   # bin/hello, bin/widgets_gallery
+        - rake build:examples   # bin/apps/hello, bin/apps/widgets_gallery, ...
       artifacts:
         from: bin
-        include: ["*"]
+        include: ["apps/*", "html/*", "clones/*"]
         to: [debian-12, ubuntu-22.04, ubuntu-24.04, ubuntu-25.10, fedora-41, arch]
 
     # macOS host target; arm64 on Apple Silicon (x86_64 hosts would build
@@ -167,10 +167,10 @@ build:
       steps:
         - crystal spec          # specs must pass — same gate as CI
         - rake build:native     # vendor C (ObjC/Cocoa) -> lib/libegui_cr_sokol.a
-        - rake build:examples   # bin/hello, bin/widgets_gallery, ...
+        - rake build:examples   # bin/apps/hello, bin/apps/widgets_gallery, ...
       artifacts:
         from: bin
-        include: ["*"]
+        include: ["apps/*", "html/*", "clones/*"]
         to: [macos]
 
     # windows-11.0 is crosspack's fixed Windows host target (version is
@@ -180,10 +180,13 @@ build:
       steps:
         - crystal spec          # specs must pass — same gate as CI
         - rake build:native     # vendor C (cl.exe) -> lib/egui_cr_sokol.lib
-        - rake build:examples   # bin/hello.exe, bin/widgets_gallery.exe
+        - rake build:examples   # bin/apps/hello.exe, bin/apps/widgets_gallery.exe
       artifacts:
         from: bin
-        include: ["*.exe", "*.dll"]   # Crystal drops gc.dll/iconv-2.dll next to exes
+        # bin/ is class-partitioned (apps/, html/, clones/) — Crystal
+        # drops gc.dll/iconv-2.dll next to the exes, same subdirs.
+        include: ["apps/*.exe", "html/*.exe", "clones/*.exe",
+                  "apps/*.dll", "html/*.dll", "clones/*.dll"]
         to: [windows-11.0]
         mode: copy              # symlinks need dev-mode/admin on Windows
 

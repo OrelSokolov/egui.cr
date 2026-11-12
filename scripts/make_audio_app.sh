@@ -9,9 +9,9 @@
 # the standard permission prompt (backend/audio.cr → egui_cr_mic_perm).
 #
 # Usage: scripts/make_audio_app.sh [binary] [app-name]
-#   scripts/make_audio_app.sh bin/audio Audio
+#   scripts/make_audio_app.sh bin/apps/audio Audio
 set -euo pipefail
-BIN="${1:-bin/audio}"
+BIN="${1:-bin/apps/audio}"
 NAME="${2:-Audio}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/builds/$NAME.app"

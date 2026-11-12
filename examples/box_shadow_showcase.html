@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<!-- box-shadow showcase — the browser reference for the
+     bin/box_shadow_showcase binary: the same cases, the same geometry
+     (120x70 cards, border-radius 8, the same backgrounds). Open next
+     to the binary and compare. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>egui.cr — box-shadow showcase (reference)</title>
+<style>
+  :root {
+    --bg: #232329; --card: #2e2e36; --text: #e8e8ec; --dim: #9a9aa6;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, sans-serif; padding: 8px 24px; }
+  h2 { font-size: 14px; color: var(--dim); font-weight: normal;
+       margin: 18px 0 4px; }
+  .row { display: flex; gap: 24px; padding: 16px 0 24px 0; }
+  .case { width: 160px; text-align: center; }
+  .card { width: 120px; height: 70px; border-radius: 8px;
+          background: var(--card); color: var(--text);
+          display: flex; align-items: center; justify-content: center;
+          margin: 16px auto 0; }
+  .lbl { color: var(--dim); font-size: 12px; margin-top: 14px; }
+  /* outset blur ladder: 0 4px B rgba(0,0,0,.5) */
+  .b0  { box-shadow: 0 4px 0px  rgba(0,0,0,.5); }
+  .b2  { box-shadow: 0 4px 2px  rgba(0,0,0,.5); }
+  .b4  { box-shadow: 0 4px 4px  rgba(0,0,0,.5); }
+  .b8  { box-shadow: 0 4px 8px  rgba(0,0,0,.5); }
+  .b16 { box-shadow: 0 4px 16px rgba(0,0,0,.5); }
+  .b32 { box-shadow: 0 4px 32px rgba(0,0,0,.5); }
+  /* outset offset ladder: 0 O 12px rgba(0,0,0,.5) */
+  .o0  { box-shadow: 0 0px  12px rgba(0,0,0,.5); }
+  .o2  { box-shadow: 0 2px  12px rgba(0,0,0,.5); }
+  .o4  { box-shadow: 0 4px  12px rgba(0,0,0,.5); }
+  .o8  { box-shadow: 0 8px  12px rgba(0,0,0,.5); }
+  .o16 { box-shadow: 0 16px 12px rgba(0,0,0,.5); }
+  /* outset spread ladder: 0 4px 12px rgba(0,0,0,.5) spread S */
+  .s-4 { box-shadow: 0 4px 12px rgba(0,0,0,.5) -4px; }
+  .s0  { box-shadow: 0 4px 12px rgba(0,0,0,.5) 0px; }
+  .s4  { box-shadow: 0 4px 12px rgba(0,0,0,.5) 4px; }
+  .s8  { box-shadow: 0 4px 12px rgba(0,0,0,.5) 8px; }
+  .s16 { box-shadow: 0 4px 12px rgba(0,0,0,.5) 16px; }
+  /* inset blur ladder: inset 0 2px B rgba(0,0,0,.6) */
+  .i2  { box-shadow: inset 0 2px 2px  rgba(0,0,0,.6); }
+  .i4  { box-shadow: inset 0 2px 4px  rgba(0,0,0,.6); }
+  .i8  { box-shadow: inset 0 2px 8px  rgba(0,0,0,.6); }
+  .i16 { box-shadow: inset 0 2px 16px rgba(0,0,0,.6); }
+  .i32 { box-shadow: inset 0 2px 32px rgba(0,0,0,.6); }
+  /* html_gallery cases */
+  .floating { width: 280px; height: 60px; background: #26262d;
+              box-shadow: 0 4px 12px rgba(0,0,0,.5); }
+  .elevated { width: 280px; height: 60px; border-radius: 12px;
+              box-shadow: 0 8px 24px rgba(0,0,0,.5) 4px; }
+</style>
+</head>
+<body>
+  <h2>outset — blur ladder (0 4px B .5)</h2>
+  <div class="row">
+    <div class="case"><div class="card b0">0</div></div>
+    <div class="case"><div class="card b2">2</div></div>
+    <div class="case"><div class="card b4">4</div></div>
+    <div class="case"><div class="card b8">8</div></div>
+    <div class="case"><div class="card b16">16</div></div>
+    <div class="case"><div class="card b32">32</div></div>
+  </div>
+
+  <h2>outset — offset ladder (0 O 12px .5)</h2>
+  <div class="row">
+    <div class="case"><div class="card o0">0</div></div>
+    <div class="case"><div class="card o2">2</div></div>
+    <div class="case"><div class="card o4">4</div></div>
+    <div class="case"><div class="card o8">8</div></div>
+    <div class="case"><div class="card o16">16</div></div>
+  </div>
+
+  <h2>outset — spread ladder (0 4px 12px .5 + S)</h2>
+  <div class="row">
+    <div class="case"><div class="card s-4">-4</div></div>
+    <div class="case"><div class="card s0">0</div></div>
+    <div class="case"><div class="card s4">4</div></div>
+    <div class="case"><div class="card s8">8</div></div>
+    <div class="case"><div class="card s16">16</div></div>
+  </div>
+
+  <h2>inset — blur ladder (inset 0 2px B .6)</h2>
+  <div class="row">
+    <div class="case"><div class="card i2">2</div></div>
+    <div class="case"><div class="card i4">4</div></div>
+    <div class="case"><div class="card i8">8</div></div>
+    <div class="case"><div class="card i16">16</div></div>
+    <div class="case"><div class="card i32">32</div></div>
+  </div>
+
+  <h2>html_gallery cases</h2>
+  <div class="row">
+    <div class="case"><div class="card floating">floating</div></div>
+    <div class="case"><div class="card elevated">elevated</div></div>
+  </div>
+</body>
+</html>

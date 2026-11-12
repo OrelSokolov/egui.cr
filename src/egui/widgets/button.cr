@@ -160,12 +160,12 @@ module Egui
       id = cache_id(ui)
       state = ui.ctx.memory.interaction_state(id)
       base = style_vars(ui, id)
-      stated = style_vars(ui, id, state)
-      {"button", @text, @icon, @icon_trailing, @vertical, @min_size,
+      stated = state.nil? ? base : style_vars(ui, id, state)
+      ({"button", @text, @icon, @icon_trailing, @vertical, @min_size,
        @rounding, @gradient, @cursor, @icon_size, @image_texture,
        @icon_svg.try(&.object_id), @style_override.try(&.hash),
        ui.available_width, base.object_id, stated.object_id,
-       ui.style.object_id}
+       ui.style.object_id}).hash
     end
 
     # The one non-paint side effect of #ui: the hover cursor.

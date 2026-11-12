@@ -89,8 +89,8 @@
       <gap h="14"/>
       <vis n="36" h="56" w="288" min="4" mode="np"/>
       <gap h="14"/>
-      <panel class="np-artist-card" h="182" rblob="{np_rb}">
-        <t text="ABOUT THE ARTIST" size="12" bold="1" color="#ffffff"/>
+      <panel class="np-artist-card" h="182" rgrad="radial-gradient(400px 200px at 80% 0%, {np_rb}, #111117 85%)">
+        <t text="ABOUT THE ARTIST" size="12" bold="1" color="#ffffff" ls="0.08"/>
         <gap h="6"/>
         <t text="{np_artist}" size="20" bold="1" color="#ffffff"/>
         <gap h="6"/>
@@ -150,6 +150,7 @@
           <ibtn icon="{repeat_icon}" size="18" color="{repeat_col}" on_click="cycle_repeat"/>
           <spring/>
         </hbar>
+        <gap h="4"/>
         <hbar h="16">
           <t text="{elapsed}" size="12" color="#a3a3b4" w="40" align="r"/>
           <gap w="10"/>
@@ -175,11 +176,11 @@
     </pbar>
   </partial>
 
-  <!-- ════════════════════════════════ СТРАНИЦЫ ЦЕНТРА ═══════ -->
+  <!-- ════════════════════════════════ СТРАНИЦЫ ЦЕНТРА ═════════════════════ -->
 
   <!-- Home -->
   <partial id="p_home">
-    <panel class="center-page" scroll="1">
+    <panel class="center-page" scroll="1" appear="fade">
       <hbar h="30" pad="0">
         <chip text="All" on="1"/><gap w="8"/><chip text="Music" on_click="chip_home"/><gap w="8"/>
         <chip text="Podcasts" on_click="chip_home"/><gap w="8"/><chip text="Audiobooks" on_click="chip_home"/>
@@ -222,12 +223,12 @@
       </hbar>
       <crow>
         <repeat for="c" in="made_cards">
-          <panel class="album-card" w="188" h="234" on_click="open_made">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_made">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -239,12 +240,12 @@
       </hbar>
       <crow>
         <repeat for="c" in="recent_cards">
-          <panel class="album-card" w="188" h="234" on_click="open_recent">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_recent">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -255,12 +256,12 @@
       </hbar>
       <crow>
         <repeat for="c" in="artist_cards">
-          <panel class="album-card" w="188" h="234" on_click="open_artist">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_artist">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -272,12 +273,12 @@
       </hbar>
       <crow>
         <repeat for="c" in="release_cards">
-          <panel class="album-card" w="188" h="234" on_click="open_release">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_release">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -287,7 +288,7 @@
 
   <!-- Search: пустой query → Browse all; иначе живые результаты -->
   <partial id="p_search">
-    <panel class="center-page" scroll="1">
+    <panel class="center-page" scroll="1" appear="fade">
       <column unless="searching">
         <t text="Browse all" size="26" bold="1"/>
         <gap h="14"/>
@@ -340,12 +341,12 @@
         <t text="Albums" size="22" bold="1"/>
         <crow>
           <repeat for="c" in="search_albums">
-            <panel class="album-card" w="188" h="234" on_click="open_search_album">
+            <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_search_album">
               <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
               <gap h="6"/>
-              <t text="{c.t}" size="14" bold="1"/>
+              <t text="{c.t}" size="14" bold="1" w="164"/>
               <gap h="2"/>
-              <t text="{c.s}" size="13" color="#a3a3b4"/>
+              <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
             </panel>
             <gap w="4"/>
           </repeat>
@@ -357,11 +358,11 @@
 
   <!-- Settings: живые переключатели/комбо (меняют MusicPlayer) -->
   <partial id="p_settings">
-    <panel class="center-page" scroll="1">
+    <panel class="center-page" scroll="1" appear="fade">
       <panel class="settings-col" w="-1">
           <t text="Settings" size="30" bold="1"/>
           <gap h="20"/>
-          <t text="APPEARANCE" size="12" bold="1" color="#d6d6e2"/>
+          <t text="APPEARANCE" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
           <gap h="20"/>
           <hbar h="60">
             <col w="500">
@@ -410,7 +411,7 @@
           <gap h="20"/>
           <hline/>
           <gap h="20"/>
-          <t text="PLAYBACK" size="12" bold="1" color="#d6d6e2"/>
+          <t text="PLAYBACK" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Crossfade" size="15"/><gap h="3"/>
@@ -437,7 +438,7 @@
           <gap h="20"/>
           <hline/>
           <gap h="20"/>
-          <t text="ABOUT" size="12" bold="1" color="#d6d6e2"/>
+          <t text="ABOUT" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
           <gap h="20"/>
           <panel class="about-card" h="190">
             <t text="Raven Music is a showcase of Raven: no server, no sound, only the interface." size="14" w="748" wrap="1" lh="1.55"/>
@@ -458,7 +459,7 @@
 
   <!-- Library: живые счётчики, плейлисты + все альбомы (ряды по 3) -->
   <partial id="p_library">
-    <panel class="center-page" scroll="1">
+    <panel class="center-page" scroll="1" appear="fade">
       <t text="Your library" size="30" bold="1" h="46"/>
       <t text="{lib_summary}" size="14" color="#a3a3b4"/>
       <hbar h="37">
@@ -468,12 +469,12 @@
       </hbar>
       <crow h="225">
         <repeat for="c" in="playlists">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_playlist">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_playlist">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -485,60 +486,60 @@
       </hbar>
       <crow>
         <repeat for="c" in="albums_r0">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r0">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_album_r0">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
       </crow>
       <crow>
         <repeat for="c" in="albums_r1">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r1">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_album_r1">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
       </crow>
       <crow>
         <repeat for="c" in="albums_r2">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r2">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_album_r2">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
       </crow>
       <crow>
         <repeat for="c" in="albums_r3">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r3">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_album_r3">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
       </crow>
       <crow>
         <repeat for="c" in="albums_r4">
-          <panel class="album-card" w="188" h="234" on_click="open_lib_album_r4">
+          <panel class="album-card" w="188" h="234" appear="rise" appear-stagger="40" on_click="open_lib_album_r4">
           <cover c1="{c.c1}" c2="{c.c2}" txt="{c.txt}" s="168" round="{c.round}" fs="34"/>
           <gap h="6"/>
-          <t text="{c.t}" size="14" bold="1"/>
+          <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4"/>
+          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -548,12 +549,12 @@
 
   <!-- Collection: альбом ИЛИ плейлист (col_* из MusicPlayer) -->
   <partial id="p_collection">
-    <panel class="col-page" scroll="1">
+    <panel class="col-page" scroll="1" appear="fade">
       <hero c1="{col_h1}" c2="{col_h2}">
         <cover c1="{col_c1}" c2="{col_c2}" txt="{col_txt}" s="232" r="8" fs="48" shadow="1"/>
         <gap w="26"/>
         <col w="380">
-          <t text="{col_kind_label}" size="12" bold="1" color="#ffffff"/>
+          <t text="{col_kind_label}" size="12" bold="1" color="#ffffff" ls="0.08"/>
           <gap h="8"/>
           <t text="{col_title}" size="56" bold="1" color="#ffffff"/>
           <gap h="8" if="col_is_playlist"/>
@@ -616,14 +617,14 @@
     </panel>
   </partial>
 
-  <!-- ════════════════════════════════ ОКНО ═══════ -->
+  <!-- ════════════════════════════════ ОКНО ═══════════════════════════ -->
   <page id="root/root">
-    <mesh c1="{m1}" c2="{m2}" c3="{m3}" animate="{animate_bg}" if="mesh_on"/>
+    <mesh c1="{m1}" c2="{m2}" c3="{m3}" fx="{effect}" animate="{animate_bg}" if="mesh_on"/>
     <use partial="header"/>
     <mainarea pad="8" reserve="88">
       <use partial="sidebar"/>
       <gap w="8"/>
-      <panel class="center" w="708" bounded="1">
+      <panel class="center" w="{center_w}" bounded="1">
         <column if="page_home"><use partial="p_home"/></column>
         <column if="page_search"><use partial="p_search"/></column>
         <column if="page_settings"><use partial="p_settings"/></column>

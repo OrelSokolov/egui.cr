@@ -18,6 +18,12 @@ shard.lock
 
 egui-upstream/
 
+# CSS-art reference clone (oracle for CSS-only behaviour), kept on disk only
+You-Dont-Need-JavaScript/
+
+# oracle/qt Makefile build artifact
+oracle/qt/render
+
 # Local profiling output
 perf.data*
 

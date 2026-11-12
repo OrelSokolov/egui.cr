@@ -64,6 +64,65 @@ module Egui
       end.reject { |k, v| k.empty? || v.empty? }
     end
 
+    # "rgb(r, g, b)" / "rgba(r, g, b, a)" → Color32 (a as 0..1 float);
+    # nil on anything else.
+    def self.rgba_color?(s : String) : Color32?
+      inner = s[/a?\((.*)\)/, 1]?
+      return nil unless inner
+      parts = inner.split(',').map(&.strip)
+      return nil unless parts.size == 3 || parts.size == 4
+      rgb = parts.first(3).map do |p|
+        p.to_f64?.try { |f| f.clamp(0.0, 255.0).to_u8 }
+      end
+      return nil unless rgb.all?
+      a = 1.0
+      if (p4 = parts[3]?)
+        f4 = p4.to_f64?
+        return nil unless f4
+        a = f4.clamp(0.0, 1.0)
+      end
+      Color32.new(rgb[0].not_nil!, rgb[1].not_nil!, rgb[2].not_nil!,
+        (a * 255.0).round.to_u8)
+    end
+
+    # The CSS `box-shadow` shorthand → BoxShadowSpec: an optional
+    # `inset`, a color (#hex like #color, or rgb()/rgba() — spaces
+    # after commas kept) and 2-4 lengths (`px` optional): x y blur
+    # spread. The color token may sit anywhere among them, like CSS.
+    # `none` or anything unparsable → nil (the declaration is
+    # skipped, not guessed).
+    def self.shadow(val : String) : BoxShadowSpec?
+      tokens = [] of String
+      val.split.each do |tok|
+        # Re-join a token with an unbalanced "(" — "rgba(0, 0, 0, .4)"
+        # split apart by the whitespace pass.
+        if tokens.any? { |t| t.count('(') > t.count(')') }
+          tokens[-1] = "#{tokens.last} #{tok}"
+        else
+          tokens << tok
+        end
+      end
+      return nil if tokens.empty? || tokens.first == "none"
+      rgba = ->(s : String) { rgba_color?(s) }
+      inset = false
+      nums = [] of Float64
+      color : Color32? = nil
+      tokens.each do |tok|
+        if tok == "inset"
+          inset = true
+        elsif (c = tok.starts_with?('#') ? color(tok) : rgba.call(tok))
+          color = c
+        elsif (n = tok.delete("px").to_f64?)
+          nums << n
+        else
+          return nil
+        end
+      end
+      return nil unless color && nums.size >= 2 && nums.size <= 4
+      BoxShadowSpec.new(color.not_nil!, nums[2]? || 0.0, nums[3]? || 0.0,
+        Vec2.new(nums[0], nums[1]), inset)
+    end
+
     # The widget-level `style:` vocabulary — exactly the WidgetStyle
     # fields (CSS spellings accepted alongside the engine keys).
     def self.widget_style(style : String) : WidgetStyle
@@ -107,6 +166,21 @@ module Egui
       property right : String?
       property bottom : String?
       property left : String?
+      # `display: flex` — the container becomes a flexbox (Ui#flex):
+      # the CSS mode spellings stay raw strings (Flex.parse_* maps
+      # them); `width`/`height` are the definite extents (px or %).
+      property flex : Bool = false
+      property flex_direction : String?
+      property flex_justify : String?
+      property flex_align : String?
+      property flex_wrap : String?
+      property gap : Float64?
+      property width : String?
+      property height : String?
+      # CSS `box-shadow` on the box itself (`Html.shadow` parses the
+      # shorthand) — painted by `Ui#box` under (outset) or over (inset)
+      # the fill.
+      property shadow : BoxShadowSpec?
 
       def initialize(@fill = nil, @stroke = nil, @rounding = nil,
                      @corners = nil, @margin = nil,
@@ -172,6 +246,24 @@ module Egui
           base.bottom = val
         when "left"
           base.left = val
+        when "display"
+          base.flex = val.strip.downcase == "flex"
+        when "flex-direction"
+          base.flex_direction = val
+        when "justify-content"
+          base.flex_justify = val
+        when "align-items"
+          base.flex_align = val
+        when "flex-wrap"
+          base.flex_wrap = val
+        when "gap"
+          base.gap = val.to_f64?
+        when "width"
+          base.width = val
+        when "height"
+          base.height = val
+        when "box-shadow", "shadow"
+          base.shadow = shadow(val)
         end
       end
       base
@@ -368,17 +460,40 @@ module Egui
       end
       rect = nil
       html_block(attrs, scoped: false) do |ui|
-        rect = ui.box(
-          style_class: html_class_path(attrs),
-          fill: params.fill, stroke: params.stroke,
-          rounding: params.rounding || params.corners.try(&.max) || 6.0,
-          margin: params.margin,
-          corners: params.corners,
-          position: Html.position_sym(params.position),
-          top: params.top, right: params.right,
-          bottom: params.bottom, left: params.left,
-          &block
-        )
+        rect = if params.flex
+          # `display: flex` — the div lays out by flexbox (Ui#flex):
+          # children added through the block's Ui (widgets, nested
+          # divs/rows) become flex items via #flex_capture. Per-child
+          # factors are the Crystal/EXML API's (`f.child(grow:)`);
+          # the html layer covers the container modes.
+          ui.flex(
+            direction: Flex.parse_direction(params.flex_direction),
+            wrap: Flex.parse_wrap(params.flex_wrap) || :nowrap,
+            justify: Flex.parse_justify(params.flex_justify),
+            align: Flex.parse_cross_align(params.flex_align),
+            gap: params.gap.try { |g| Vec2.new(g, g) },
+            fill: params.fill, stroke: params.stroke,
+            rounding: params.rounding || params.corners.try(&.max) || 6.0,
+            margin: params.margin, corners: params.corners,
+            style_class: html_class_path(attrs),
+            position: Html.position_sym(params.position),
+            top: params.top, right: params.right,
+            bottom: params.bottom, left: params.left,
+            width: params.width, height: params.height) { |_f| block.call(ui) }
+        else
+          ui.box(
+            style_class: html_class_path(attrs),
+            fill: params.fill, stroke: params.stroke,
+            rounding: params.rounding || params.corners.try(&.max) || 6.0,
+            margin: params.margin,
+            corners: params.corners,
+            shadow: params.shadow,
+            position: Html.position_sym(params.position),
+            top: params.top, right: params.right,
+            bottom: params.bottom, left: params.left,
+            &block
+          )
+        end
       end
       rect
     end

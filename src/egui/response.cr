@@ -58,6 +58,33 @@ module Egui
       @changed = true
     end
 
+    # Internal — the flex interception (Ui#flex_capture): a widget
+    # added inside a `display: flex` container returns a PLACEHOLDER
+    # Response at declaration time (its slot exists only after the
+    # measure pass); each Flex pass absorbs its real verdicts into
+    # the placeholder, so reads AFTER the container block (the normal
+    # `r = ui.button(…)` … `r.clicked?` later, or after end_frame)
+    # see the real state. Reads BETWEEN the add and the container's
+    # close see the measure pass's dead verdicts.
+    def absorb(other : Response) : Nil
+      @id = other.id
+      @rect = other.rect
+      @sense = other.sense
+      @hovered = other.hovered?
+      @clicked = other.clicked?
+      @click_count = other.click_count
+      @pressed = other.pressed?
+      @active = other.active?
+      @dragged = other.dragged?
+      @drag_started = other.drag_started?
+      @drag_stopped = other.drag_stopped?
+      @drag_delta = other.drag_delta
+      @changed = other.changed?
+      @widget_value = other.widget_value
+      @widget_text = other.widget_text
+      @widget_color = other.widget_color
+    end
+
     def clicked(&block : self ->) : self
       yield self if @clicked
       self

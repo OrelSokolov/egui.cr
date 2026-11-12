@@ -222,6 +222,76 @@ describe Egui::Exml do
     rt.strings["name"].should eq("abc")
   end
 
+  it "interpolates <box> fill/width from the store every frame" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><box fill="linear-gradient(135deg, {c1}, {c2})" height="10"><label text="g"/></box></page>
+    ))
+    rt = Egui::Exml::Runtime.new
+    rt.strings["c1"] = "#112233"
+    rt.strings["c2"] = "#445566"
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    found = ctx.painter.commands.select(Egui::RectCmd).find(&.gradient)
+    found.should_not be_nil
+    grad = found.not_nil!.gradient.not_nil!
+    grad.stops.first.color.should eq(Egui::Color32.rgb(0x11, 0x22, 0x33))
+    grad.stops.last.color.should eq(Egui::Color32.rgb(0x44, 0x55, 0x66))
+
+    # a store change re-resolves the fill next frame (dynamic covers)
+    rt.strings["c2"] = "#ff0000"
+    exml_frame(ctx, doc.pages.first.children, rt, renderer, time: 0.032)
+    found2 = ctx.painter.commands.select(Egui::RectCmd).find(&.gradient)
+    found2.should_not be_nil
+    grad2 = found2.not_nil!.gradient.not_nil!
+    grad2.stops.last.color.should eq(Egui::Color32.rgb(0xff, 0x00, 0x00))
+  end
+
+  it "places <box position=absolute> out of the flow" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <box position="absolute" top="40" left="80" width="60" height="20">
+          <label text="pin"/>
+        </box>
+        <label text="flow"/>
+      </page>
+    ))
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    text_at = ctx.painter.commands.select(Egui::TextCmd)
+      .map { |c| {c.text, c.pos.x} }.to_h
+    # the pinned label starts at left=80, the flow one does not —
+    # and the flow cursor never advanced past the pin
+    text_at["pin"].should be >= 80.0
+    text_at["flow"].should be < 80.0
+  end
+
+  it "<toggle> renders a switch and writes clicks back" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><toggle bind="on" on_change="flipped"/></page>
+    ))
+    rt = Egui::Exml::Runtime.new
+    rt.bools["on"] = false
+    fired = 0
+    rt.actions["flipped"] = ->{ fired += 1; nil }
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    # click the painted track (the first small capsule near the origin)
+    track = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |c| c.rect.height < 30 && c.rect.width < 100 }.should_not be_nil
+    pos = track.not_nil!.rect.center
+    exml_frame(ctx, doc.pages.first.children, rt, renderer,
+      events: [Egui::Event.pointer_pressed(pos)], time: 0.032)
+    exml_frame(ctx, doc.pages.first.children, rt, renderer,
+      events: [Egui::Event.pointer_released(pos)], time: 0.048)
+    rt.bools["on"].should be_true
+    fired.should eq(1)
+  end
+
   it "central panel content scrolls by default (overflow → bar + wheel)" do
     rows = 40.times.map { |i| %(<label text="row #{i}"/>) }.join
     doc = Egui::Exml.parse(%(
@@ -685,6 +755,72 @@ describe Egui::Exml do
       .map(&.text).should_not contain("x")
   end
 
+  # ── Vue directive aliases — render level ─────────────────────────
+  # Parse-level desugar checks live in vue_aliases_spec.cr; these pin
+  # the RENDER equivalence with the canonical spellings.
+
+  it "v-for synthesizes the same repeat a handwritten markup parses into" do
+    vue_doc = Egui::Exml.parse(%(
+      <page id="p">
+        <row v-for="doc in docs" :key="doc.name"><label text="{doc.name}"/></row>
+      </page>
+    ))
+    canon_doc = Egui::Exml.parse(%(
+      <page id="p">
+        <repeat for="doc" in="docs" key="name">
+          <row><label text="{doc.name}"/></row>
+        </repeat>
+      </page>
+    ))
+    Egui::Exml.warnings.should be_empty
+    wrap = vue_doc.pages.first.children.first
+    wrap.kind.repeat?.should be_true
+    wrap.repeat_for.should eq("doc")
+    wrap.repeat_in.should eq("docs")
+    wrap.repeat_key.should eq("name")
+    wrap.children.size.should eq(1)
+    child = wrap.children.first
+    child.kind.row?.should be_true
+    child.attrs.has_key?("v-for").should be_false
+    child.attrs.has_key?("key").should be_false
+    child.children.first.attrs["text"].should eq("{doc.name}")
+
+    # and renders the same pixels as the handwritten spelling
+    rt = Egui::Exml::Runtime.new
+    rt.rows["docs"] = [
+      {"name" => "alpha"}, {"name" => "beta"},
+    ]
+    texts = [vue_doc, canon_doc].map do |d|
+      ctx = Egui::Context.new
+      exml_frame(ctx, d.pages.first.children, rt, Egui::Exml::Renderer.new)
+      ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    end
+    texts[0].should eq(texts[1])
+    texts[0].should contain("alpha")
+    texts[0].should contain("beta")
+  end
+
+  it "v-for's (item, i) exposes the index as {i} next to {_i}" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <label v-for="(doc, i) in docs" text="{doc.name} {i}/{_i}"/>
+      </page>
+    ))
+    Egui::Exml.warnings.should be_empty
+    wrap = doc.pages.first.children.first
+    wrap.kind.repeat?.should be_true
+    wrap.repeat_index_alias.should eq("i")
+
+    rt = Egui::Exml::Runtime.new
+    rt.rows["docs"] = [{"name" => "alpha"}, {"name" => "beta"}]
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("alpha 0/0")
+    texts.should contain("beta 1/1")
+  end
+
   # ── props, refs, markdown ─────────────────────────────────────────
 
   it "use-site attributes become component props" do
@@ -772,5 +908,92 @@ describe Egui::Exml do
     texts.should contain("Hello ")
     texts.should contain("bold")
     texts.should contain(" world")
+  end
+end
+
+describe "exml flexbox" do
+  it "renders <box flex> with justify and <flex-item> factors" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <box flex="true" justify="space-between" width="400">
+          <flex-item order="1"><label text="right"/></flex-item>
+          <flex-item order="0" grow="1"><label text="left"/></flex-item>
+        </box>
+      </page>
+    ))
+    Egui::Exml.validate(doc).should be_empty
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("left")
+    texts.should contain("right")
+  end
+
+  it "flags bad flex attrs" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <box flex="true" direction="sideways" gap="lots">
+          <flex-item order="first"><label text="x"/></flex-item>
+        </box>
+      </page>
+    ))
+    issues = Egui::Exml.validate(doc)
+    issues.any?(&.includes?("direction=")).should be_true
+    issues.any?(&.includes?("gap=")).should be_true
+    issues.any?(&.includes?("order=")).should be_true
+  end
+end
+
+# ── Vue aliases, stage 2 render behavior (plans/vue-aliases2.md) ────
+
+describe "exml markup hotkeys" do
+  it "fires the action on the key press, no focus needed, and frees the key when hidden" do
+    doc = Egui::Exml.parse(
+      %(<page id="root/root"><input bind="q" v-if="on" @keyup.enter="save"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    rt.bools["on"] = true
+    fired = [] of String
+    rt.actions["save"] = ->{ fired << "save" }
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    enter = ->{ Egui::Event.new(:key_pressed, key: Egui::KeyCode::Enter) }
+
+    # render_routes is the frame entry — the markup-hotkey lifecycle
+    # (bind while visible, lapse when not) hangs off it
+    frame = ->(events : Array(Egui::Event)) {
+      ctx.begin_frame(Egui::RawInput.new(EXML_SCREEN, events, 0.016))
+      renderer.render_routes(ctx, doc, rt)
+      ctx.end_frame
+    }
+    2.times do |i| # bind settles on frame 1, the key fires on frame 2
+      frame.call(i == 1 ? [enter.call] of Egui::Event : [] of Egui::Event)
+    end
+    fired.should eq(["save"])
+
+    # the node's if= goes false → the binding lapses, the key is free
+    rt.bools["on"] = false
+    frame.call([enter.call] of Egui::Event)
+    frame.call([enter.call] of Egui::Event)
+    fired.should eq(["save"])
+    ctx.hotkeys.action_for(Egui::Hotkey.parse("enter")).should be_nil
+  end
+end
+
+describe "exml numeric input (v-model.number)" do
+  it "renders the float slot's value" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><input bind="age" numeric="true"/></page>)
+    )
+    Egui::Exml.validate(doc).should be_empty
+    rt = Egui::Exml::Runtime.new
+    rt.floats["age"] = 21.5
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("21.5")
   end
 end

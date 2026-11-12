@@ -47,11 +47,19 @@ module Egui
     getter cx : Float64
     getter cy : Float64
     getter extent : Symbol
+    # Radial only: EXPLICIT radii in px (`radial-gradient(400px 200px
+    # at 80% 0%, …)` — CSS's `<ellipse-size>`), overriding the extent
+    # keyword. Unlike the extent they are ABSOLUTE, not relative to the
+    # painted rect, so one spelling serves any rect size (an overlay
+    # spot painted over a panel). Two values = an ellipse.
+    getter rx : Float64?
+    getter ry : Float64?
 
     def initialize(@kind : Symbol, @stops : Array(Stop),
                    @angle_deg : Float64 = 180.0,
                    @cx : Float64 = 0.5, @cy : Float64 = 0.5,
-                   @extent : Symbol = :farthest_corner)
+                   @extent : Symbol = :farthest_corner,
+                   @rx : Float64? = nil, @ry : Float64? = nil)
     end
 
     # ── parsing ───────────────────────────────────────────────────
@@ -94,11 +102,14 @@ module Egui
       cx = 0.5
       cy = 0.5
       extent = :farthest_corner
+      rx : Float64? = nil
+      ry : Float64? = nil
       rest = args
       # Leading configuration tokens: shape (`circle`/`ellipse`), an
-      # extent keyword, and `at x% y%` — any order before the stops,
-      # possibly packed into one comma-free token (the CSS spelling
-      # `circle at 30% 20%`). All optional.
+      # extent keyword, explicit radii (`400px` / `400px 200px`) and
+      # `at x% y%` — any order before the stops, possibly packed into
+      # one comma-free token (the CSS spellings `circle at 30% 20%` and
+      # `1200px 500px at 75% -10%`). All optional.
       while rest.size > 1
         tok = rest[0].downcase
         if tok == "circle" || tok == "ellipse"
@@ -106,16 +117,65 @@ module Egui
         elsif (kw = extent_keyword(tok))
           extent = kw
           rest = rest[1..]
-        elsif (at = parse_at_clause(tok))
-          cx, cy, ext = at
-          extent = ext if ext
+        elsif (cfg = parse_size_at?(tok))
+          cfg_rx, cfg_ry, cfg_cx, cfg_cy, cfg_ext = cfg
+          rx, ry = cfg_rx, cfg_ry
+          if cfg_cx && cfg_cy
+            cx, cy = cfg_cx.not_nil!, cfg_cy.not_nil!
+          end
+          extent = cfg_ext.not_nil! if cfg_ext
           rest = rest[1..]
         else
           break
         end
       end
       stops = parse_stops(rest) || return nil
-      Gradient.new(:radial, stops, cx: cx, cy: cy, extent: extent)
+      Gradient.new(:radial, stops, cx: cx, cy: cy, extent: extent,
+        rx: rx, ry: ry)
+    end
+
+    # A leading-size/`at` configuration packed into ONE comma-free
+    # token: `[Npx [Mpx]] [shape|extent]* [at X% Y%]` — the CSS
+    # spellings `400px at 50% 50%`, `1200px 500px at 75% -10%`,
+    # `circle at 30% 20%`, `ellipse farthest-side at 50% 0%`, `at 50%
+    # 50%` and the bare `400px 200px`. Returns {rx?, ry?, cx?, cy?,
+    # extent?} (nil radii/center when absent), nil when the token is
+    # not a configuration at all.
+    private def self.parse_size_at?(tok : String) : {Float64?, Float64?, Float64?, Float64?, Symbol?}?
+      words = tok.split
+      return nil if words.empty?
+      at = words.index("at")
+      head = at ? words[0...at] : words
+      tail = at ? words[(at + 1)..] : [] of String
+      return nil if at && tail.size != 2
+      rx = ry = nil
+      ext : Symbol? = nil
+      head.each do |w|
+        case w
+        when "circle", "ellipse" then next
+        else
+          if (kw = extent_keyword(w))
+            ext = kw
+          elsif w.ends_with?("px") && (n = w[0...w.size - 2].to_f?) && n > 0.0
+            if rx.nil?
+              rx = n
+            elsif ry.nil?
+              ry = n
+            else
+              return nil
+            end
+          else
+            return nil
+          end
+        end
+      end
+      rx = ry if rx && ry.nil?
+      cx = cy = nil
+      if at
+        cx = parse_frac(words[at + 1]) || return nil
+        cy = parse_frac(words[at + 2]) || return nil
+      end
+      {rx, ry, cx, cy, ext}
     end
 
     EXTENT_KEYWORDS = {
@@ -132,29 +192,6 @@ module Egui
     # "circle at 30% 20%" / "ellipse farthest-side at 50% 0%" / "at
     # 50% 50%" — an `at` clause with optional shape/extent words in
     # front. Returns {cx, cy, extent?} fractions or nil.
-    private def self.parse_at_clause(tok : String) : {Float64, Float64, Symbol?}?
-      words = tok.split
-      at = words.index("at") || return nil
-      return nil unless words.size == at + 3
-      extent = nil
-      head_ok = words[0...at].all? do |w|
-        case w
-        when "circle", "ellipse" then true
-        else
-          if (kw = extent_keyword(w))
-            extent = kw
-            true
-          else
-            false
-          end
-        end
-      end
-      return nil unless head_ok
-      cx = parse_frac(words[at + 1]) || return nil
-      cy = parse_frac(words[at + 2]) || return nil
-      {cx, cy, extent}
-    end
-
     private def self.direction_angle(s : String) : Float64?
       words = s.split
       return nil if words.empty?
@@ -269,9 +306,15 @@ module Egui
       when :linear
         io << "linear-gradient(" << angle_deg.to_i64 << "deg"
       when :radial
-        io << "radial-gradient(circle"
-        unless extent == :farthest_corner
-          io << ' ' << EXTENT_KEYWORDS.key_for?(extent).not_nil!
+        io << "radial-gradient("
+        if (rxp = @rx) && (ryp = @ry)
+          io << (rxp % 1 == 0 ? rxp.to_i64.to_s : rxp.to_s) << "px "
+          io << (ryp % 1 == 0 ? ryp.to_i64.to_s : ryp.to_s) << "px"
+        else
+          io << "circle"
+          unless extent == :farthest_corner
+            io << ' ' << EXTENT_KEYWORDS.key_for?(extent).not_nil!
+          end
         end
         io << " at "
         io << (cx * 100).round.to_i << "% " << (cy * 100).round.to_i << "%"
@@ -307,9 +350,15 @@ module Egui
       if kind == :radial
         px = rect.left + cx * rect.width
         py = rect.top + cy * rect.height
-        dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2)
-        r = radial_radius(rect, px, py)
-        t = r > 0 ? dist / r : 1.0
+        if (rxp = @rx) && (ryp = @ry)
+          # Explicit radii: an ellipse in absolute px (CSS
+          # `<ellipse-size>`), independent of the painted rect.
+          t = Math.sqrt(((x - px) / rxp) ** 2 + ((y - py) / ryp) ** 2)
+        else
+          dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2)
+          r = radial_radius(rect, px, py)
+          t = r > 0 ? dist / r : 1.0
+        end
       else
         rad = angle_deg * Math::PI / 180.0
         dx = Math.sin(rad)

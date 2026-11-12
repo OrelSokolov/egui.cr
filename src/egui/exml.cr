@@ -27,7 +27,6 @@
 # What exml deliberately does NOT cover (the binary keeps it):
 #   * the borderless-caption hooks (TitleBarTabs et al) — callback
 #     hooks into WindowFrame, not a renderable region;
-#   * hotkey bindings — the markup shows hint text only;
 #   * derived values — the app computes stats and writes store slots;
 #     there is no expression engine;
 #   * anything needing new platform capabilities — the fixed widget
@@ -66,12 +65,13 @@
 #            auto-focusing a CHANGED id (focus follows the tab)
 #   combo    bind, options="A,B,C", on_change?
 #   separator
-#   repeat   for="doc"?, in="items", key="id"?    the v-for (Python
-#            reading order): rows from a list slot (rt.rows["…"]),
-#            one scope per row — the row's fields as {doc.field},
-#            "_i" the row index; actions fired from a row write "_i"
-#            to the root store first; `key` gives stable widget ids
-#            across reorders
+#   repeat   for="doc"?, in="items", key="id"?,    the v-for (Python
+#            index="i"?                             reading order): rows
+#            from a list slot (rt.rows["…"]), one scope per row — the
+#            row's fields as {doc.field}, "_i" the row index (index=
+#            renames it, v-for's `(item, i)`); actions fired from a
+#            row write "_i" to the root store first; `key` gives
+#            stable widget ids across reorders
 #   markdown text, base_dir?                     the markdown widget
 #
 # Widgets carrying `id="name"` register their Response in the
@@ -95,6 +95,21 @@
 # Partial-in-partial works; cycles are detected statically and the
 # recursive branch is dropped with a warning.
 #
+# Vue directive spellings parse as ALIASES and desugar to the
+# canonical attributes above: `v-if`/`v-show` → `if=`, `v-model` →
+# `bind=`, `v-text` → `text=`, `@click`/`v-on:click` → `on_click=`,
+# `:title`/`v-bind:title` → `title="{title}"`, `v-else` → the previous
+# sibling's inverted condition, `v-for="item in items"` (with `:key`)
+# → a synthesized `<repeat>` wrapper, `ref="name"` → `id="name"` (the
+# template-ref registry), `v-model.number`/`.trim` → `numeric=`/
+# `trim=`, `@keyup.enter="save"` → `hotkey="enter"` + `on_keyup=`
+# (window-global, the regular HotkeyMap), and `<template>` — a
+# parse-time group wrapper whose children splice into the parent (the
+# group's `v-if`/`v-else` gate copied onto each child; `<template
+# v-for>` repeats the whole group). The values stay OURS — a bare
+# slot/action/field name, never a JS expression (a warned parse issue,
+# `Exml.warnings`). SPEC.md §7 carries the full subset table.
+#
 # `Exml.validate` lints a parsed document — element vocabulary,
 # attribute names/shapes, required attributes — so markup/enum drift
 # is caught at build/test time (the spec suite lints assets/*.exml),
@@ -110,8 +125,8 @@ module Egui
     enum Kind
       Page; Modal; MenuBar; Menu; MenuItem; Central; Statusbar
       Row; Column; Box; Heading; Label; Button; Slider; Checkbox
-      Separator; Progress; Input; Textarea; Combo; Custom
-      Partial; Use; Repeat; Markdown
+      Separator; Progress; Input; Textarea; Combo; Toggle; Custom
+      Partial; Use; Repeat; Markdown; FlexItem; Template
     end
 
     CONTAINERS = {Kind::Page, Kind::Modal, Kind::MenuBar, Kind::Menu,
@@ -136,9 +151,17 @@ module Egui
       "progress" => Kind::Progress, "progressbar" => Kind::Progress,
       "input" => Kind::Input, "textarea" => Kind::Textarea,
       "combo" => Kind::Combo, "combobox" => Kind::Combo,
+      # `<toggle>` — the switch-style checkbox (ToggleButton)
+      "toggle" => Kind::Toggle,
       "exml" => Kind::Column,
       "partial" => Kind::Partial, "use" => Kind::Use,
       "repeat" => Kind::Repeat, "markdown" => Kind::Markdown,
+      # `<flex-item>` — per-child flex factors inside a flex box
+      # (`<box flex="true">`): `<flex-item grow="1" order="-1">…`.
+      "flex-item" => Kind::FlexItem, "fitem" => Kind::FlexItem,
+      # `<template>` — parse-time group wrapper (Vue's): spliced away
+      # by `desugar_vue_tree`, never reaches the renderer.
+      "template" => Kind::Template,
     } of String => Kind
 
     # One parsed element: kind + attributes + children + the stable
@@ -190,6 +213,7 @@ module Egui
       getter repeat_for : String?
       getter repeat_in : String?
       getter repeat_key : String?
+      getter repeat_index_alias : String? # index= — v-for's (item, i)
       # box
       getter box_row : Bool
       getter box_wrap : Bool
@@ -198,6 +222,29 @@ module Egui
       getter box_rounding : Float64
       getter box_padding : Float64?
       getter box_class : String?
+      # flex box (`<box flex="true">`) — the container modes (CSS
+      # spellings, parsed by Flex.parse_* at render time) plus the
+      # definite extents a column flex needs
+      getter box_flex : Bool
+      getter box_justify : String?
+      getter box_align : String?
+      getter box_gap : Float64?
+      getter box_width : String?
+      getter box_height : String?
+      # flex item (`<flex-item>`) — the per-child factors
+      getter flex_grow : Float64
+      getter flex_shrink : Float64
+      getter flex_basis : String?
+      getter flex_order : Int32
+      getter flex_align_self : String?
+      # input extras — v-model's .number/.trim (`numeric` writes the
+      # float slot, `trim` strips the write-back)
+      getter numeric : Bool
+      getter trim : Bool
+      # hotkey — v-on key modifiers (`@keyup.enter`): the KEY spelling
+      # plus the key event whose action it fires (window-global)
+      getter hotkey_attr : String?
+      getter on_key_event : String?
 
       @children_under : Hash(String, Array(Node))? = nil
 
@@ -230,6 +277,7 @@ module Egui
         @repeat_for = @attrs["for"]?
         @repeat_in = @attrs["in"]?
         @repeat_key = @attrs["key"]?
+        @repeat_index_alias = @attrs["index"]?
         @box_row = @attrs["direction"]? == "row"
         @box_wrap = @attrs["wrap"]? != "false"
         @box_fill = Exml.parse_box_color(@attrs["fill"]?)
@@ -238,6 +286,21 @@ module Egui
         @box_rounding = @attrs["rounding"]?.try(&.to_f?) || 6.0
         @box_padding = @attrs["padding"]?.try(&.to_f?)
         @box_class = @attrs["class"]?
+        @box_flex = @attrs["flex"]? == "true"
+        @box_justify = @attrs["justify"]?
+        @box_align = @attrs["align"]?
+        @box_gap = @attrs["gap"]?.try(&.to_f?)
+        @box_width = @attrs["width"]?
+        @box_height = @attrs["height"]?
+        @flex_grow = @attrs["grow"]?.try(&.to_f?) || 0.0
+        @flex_shrink = @attrs["shrink"]?.try(&.to_f?) || 1.0
+        @flex_basis = @attrs["basis"]?
+        @flex_order = @attrs["order"]?.try(&.to_i?) || 0
+        @flex_align_self = @attrs["align"]?
+        @numeric = @attrs["numeric"]? == "true"
+        @trim = @attrs["trim"]? == "true"
+        @hotkey_attr = @attrs["hotkey"]?
+        @on_key_event = @attrs["on_keyup"]? || @attrs["on_keydown"]?
       end
 
       def container? : Bool
@@ -459,6 +522,13 @@ module Egui
         "#{prefix}#{node.path}")
     end
 
+    # An attribute NAME: the canonical `[a-z_][a-z0-9_]*` (HTML rules)
+    # widened with the Vue directive spellings — `v-if`,
+    # `v-model.number`, `v-bind:title`, `v-on:click`, `:title`, `@click`
+    # (plans/vue-aliases.md). They desugar at parse (`desugar_vue_*`
+    # below); the renderer, the linter and the codegen never see one.
+    ATTR_NAME = /(?:v-[a-zA-Z][a-zA-Z-]*(?:[:.][a-zA-Z_][a-zA-Z0-9_.-]*)?|[@:]?[a-zA-Z_][a-zA-Z0-9_.-]*)/
+
     # `<name key="value" …>` → {downcased name, attrs}. Entity escapes
     # are resolved in attribute values.
     private def self.parse_tag(inner : String)
@@ -467,16 +537,314 @@ module Egui
       return {nil, nil} unless name
       attrs = {} of String => String
       if rest = parts[1]?
-        # Attribute names: letter/underscore first, then letters/digits/
-        # underscores (HTML rules — `c1=`/`s20=` are valid names; a
-        # digit-less class silently dropped them as "junk").
-        rest.scan(/([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"([^"]*)"/) do |m|
+        # Attribute names: ATTR_NAME (canonical HTML names — `c1=`/
+        # `s20=` are valid; a digit-less class silently dropped them as
+        # "junk" — plus the Vue directive spellings). Bare `v-else`
+        # (the subset's only valueless attribute) is picked out of the
+        # remainder below.
+        rest.scan(/(#{ATTR_NAME})\s*=\s*"([^"]*)"/) do |m|
           attrs[m[1].downcase] = unescape(m[2])
         end
-        stray = rest.gsub(/\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*"[^"]*"/, "").strip
+        stray = rest.gsub(/\s*(#{ATTR_NAME})\s*=\s*"[^"]*"/, "").strip
+        if stray =~ /\bv-else\b/
+          attrs["v-else"] = "true"
+          stray = stray.gsub(/\bv-else\b/, "").strip
+        end
         STDERR.puts "exml: junk in <#{name}> tag: #{stray}" unless stray.empty?
       end
       {name, attrs}
+    end
+
+    # ── Vue directive aliases (plans/vue-aliases.md) ──────────────────
+    #
+    # The Vue WRITING of directives, desugared to canonical form while
+    # parsing: after desugar the tree IS canonical, so `validate`,
+    # codegen and hot reload never notice an alias. The formula is
+    # "Vue's form, our values" — a directive's value is a bare
+    # slot/action/field name, never a JS expression; an expression
+    # value warns (collected in `warnings`) instead of failing
+    # silently. Canonical spellings stay valid forever — the aliases
+    # are purely additive.
+
+    # Parse-time desugar diagnostics (also printed to STDERR); cleared
+    # at every parse. Tooling reads this, specs assert on it.
+    class_property warnings = [] of String
+
+    private def self.vue_warn(msg : String) : Nil
+      warnings << msg
+      STDERR.puts "exml: #{msg}"
+    end
+
+    private def self.expr_warn(path : String, key : String,
+                               value : String) : Nil
+      vue_warn(%(#{path}: #{key}="#{value}" — expressions are not) \
+               %( supported; publish a slot and use its name))
+    end
+
+    # A bare slot/action reference — `name`, `doc.field`, optionally
+    # wrapped in `{}` (the canonical if= spelling). Anything else
+    # (spaces, operators, calls) is a JS expression — out of subset.
+    private def self.bare_ref?(value : String) : Bool
+      v = value.starts_with?('{') && value.ends_with?('}') ? value[1..-2] : value
+      !v.empty? && v.matches?(/^[a-zA-Z_][a-zA-Z0-9_.]*$/)
+    end
+
+    # Quick gate: only Vue-prefixed keys (and `ref`, the one bare-name
+    # alias) need the desugar scan — canonical documents skip it
+    # entirely.
+    private def self.vue_attrs?(attrs : Hash(String, String)) : Bool
+      attrs.keys.any? { |k|
+        k.starts_with?("v-") || k.starts_with?(':') ||
+          k.starts_with?('@') || k == "ref"
+      }
+    end
+
+    # Per-tag attribute desugar, right after the path is known
+    # (diagnostics carry it). `v-for`/`v-else` survive for the tree
+    # pass (`desugar_vue_tree`).
+    private def self.desugar_vue_attrs(attrs : Hash(String, String),
+                                       path : String) : Nil
+      renames = [] of Tuple(String, String, String) # old, new, value
+      drops = [] of String
+
+      attrs.each do |key, value|
+        case key
+        when "v-if", "v-show"
+          # v-show ≡ if=: rendering is skipped but widget memory lives
+          # on by Id-path — Vue's display:none semantics, state kept
+          expr_warn(path, key, value) unless bare_ref?(value)
+          renames << {key, "if", value}
+        when "v-model"
+          expr_warn(path, key, value) unless bare_ref?(value)
+          renames << {key, "bind", value}
+        when "ref"
+          # Vue's template-ref IS the ref registry (`renderer.ref`) —
+          # the same thing `id=` feeds; a real id= wins
+          if attrs.has_key?("id")
+            vue_warn(%(#{path}: ref="#{value}" — id= is already set;) \
+                     %( ref dropped))
+            drops << key
+          else
+            renames << {key, "id", value}
+          end
+        when "v-text"
+          expr_warn(path, key, value) unless bare_ref?(value)
+          renames << {key, "text",
+                      value.includes?('{') ? value : "{#{value}}"}
+        when .starts_with?("v-model.")
+          expr_warn(path, key, value) unless bare_ref?(value)
+          # v-model modifiers (plans/vue-aliases2.md): `.number` binds
+          # the FLOAT slot, `.trim` strips the write-back — the rest
+          # (`.lazy` above all: on_change is already event-shaped)
+          # warn + drop
+          renames << {key, "bind", value}
+          key[8..].split('.').each do |mod|
+            case mod
+            when "number" then renames << {key, "numeric", "true"}
+            when "trim"   then renames << {key, "trim", "true"}
+            when "lazy"
+              vue_warn(%(#{path}: #{key} — .lazy is not in the subset) \
+                       %( (on_change already fires on commit); dropped))
+            else
+              vue_warn(%(#{path}: #{key} — v-model modifiers are not) \
+                       %( in the subset; dropped))
+            end
+          end
+        when "v-for", "v-else"
+          # consumed by the tree pass below
+        else
+          if key.starts_with?(':') || key.starts_with?("v-bind:")
+            prop = key.starts_with?(':') ? key[1..] : key[7..]
+            if prop.empty?
+              drops << key
+            elsif prop == "key" && attrs.has_key?("v-for")
+              # v-for's :key names the row FIELD to key on — the
+              # `<var>.` prefix is the row variable, dropped
+              if (dot = value.index('.'))
+                renames << {key, "key", value[(dot + 1)..]}
+              else
+                vue_warn(%(#{path}: :key="#{value}" — expected) \
+                         %( "<var>.<field>", the field being the row key))
+                drops << key
+              end
+            elsif value.to_f? || %w(true false).includes?(value)
+              vue_warn(%(#{path}: #{key}="#{value}" — a literal; write) \
+                       %( #{prop}="#{value}" directly))
+              renames << {key, prop, value}
+            elsif bare_ref?(value)
+              renames << {key, prop, "{#{value}}"}
+            else
+              expr_warn(path, key, value)
+              drops << key
+            end
+          elsif key.starts_with?('@') || key.starts_with?("v-on:")
+            event = key.starts_with?('@') ? key[1..] : key[5..]
+            parts = event.split('.')
+            base = parts[0]
+            mods = parts[1..]
+            expr_warn(path, key, value) unless bare_ref?(value)
+            if mods.empty?
+              renames << {key, "on_#{base}", value} unless base.empty?
+            elsif {"keyup", "keydown"}.includes?(base) &&
+                  (hk = Hotkey.parse?(mods.join('+')))
+              # Key events' dotted suffix is the KEY (a `Hotkey`
+              # spelling — `@keyup.enter`, `@keyup.ctrl.enter`): the
+              # key fires the action WINDOW-globally, no focus needed
+              renames << {key, "hotkey", mods.join('+')}
+              renames << {key, "on_#{base}", value}
+            else
+              vue_warn(%(#{path}: #{key} — event modifiers are not in) \
+                       %( the subset; using the bare "#{base}" event))
+              renames << {key, "on_#{base}", value} unless base.empty?
+            end
+          elsif key.starts_with?("v-")
+            vue_warn(%(#{path}: #{key} is not in the Vue subset) \
+                     %( (SPEC.md §7) — dropped))
+            drops << key
+          end
+        end
+      end
+
+      drops.each { |k| attrs.delete(k) }
+      renames.each do |old, neu, v|
+        attrs.delete(old)
+        attrs[neu] = v
+      end
+    end
+
+    # The second alias half — a parse-time tree rewrite (the precedent
+    # is `expand`/`repath`): `v-else` mirrors the previous sibling's
+    # `if=`/`unless=`, and `v-for` replaces the node with a synthesized
+    # `<repeat>` wrapper taking the node's path. Canonical documents
+    # pass through untouched. Rewrites REBUILD nodes (flattened fields
+    # are set in `Node#initialize` — mutating attrs afterwards would
+    # leave them stale). Runs before partial expansion: v-for on `<use>`
+    # is not in the subset (warn + the bare element survives).
+    private def self.desugar_vue_tree(nodes : Array(Node)) : Nil
+      nodes.each { |n| desugar_vue_tree(n.children) }
+
+      nodes.each_with_index do |node, i|
+        next unless node.attrs.has_key?("v-else")
+        attrs = node.attrs.dup
+        attrs.delete("v-else")
+        prev = i > 0 ? nodes[i - 1] : nil
+        if (cond = prev.try &.if_cond)
+          attrs["unless"] = cond
+        elsif (cond = prev.try &.unless_cond)
+          attrs["if"] = cond
+        else
+          vue_warn(%(#{node.path}: v-else without a preceding if=/) \
+                   %(unless= sibling — dropped))
+        end
+        nodes[i] = Node.new(node.kind, node.name, attrs,
+          node.children, node.path)
+      end
+
+      nodes.each_with_index do |node, i|
+        next unless node.attrs.has_key?("v-for")
+        nodes[i] = wrap_v_for(node)
+      end
+
+      # Last pass: `<template>` — a parse-time GROUP wrapper (Vue's):
+      # no node of its own, children splice into the parent in place.
+      # A group `if=`/`unless=` (v-if/v-else on the template) is
+      # copied onto every child — each gate is independent, `visible?`
+      # already checks both. Children KEEP their parsed paths (the
+      # template's path segment namespaces them), so splicing never
+      # collides with a same-named sibling and no path shifts.
+      spliced = [] of Node
+      nodes.each do |node|
+        if node.kind.template?
+          node.children.each { |c| spliced << copy_group_gate(node, c) }
+        else
+          spliced << node
+        end
+      end
+      nodes.replace(spliced)
+    end
+
+    # Copy a `<template>` group's if=/unless= gate onto one child. A
+    # child's OWN gate of the same kind wins (the AND of two slots is
+    # an expression — not expressible; warned, the plan's "no
+    # half-properties" rule).
+    private def self.copy_group_gate(group : Node, child : Node) : Node
+      return child if group.if_cond.nil? && group.unless_cond.nil?
+      attrs = child.attrs.dup
+      if (cond = group.if_cond)
+        if attrs.has_key?("if")
+          vue_warn(%(#{child.path}: if= on a child of a gated) \
+                   %( <template> — a combined condition is not in the) \
+                   %( subset; the child's own if= wins))
+        else
+          attrs["if"] = cond
+        end
+      end
+      if (cond = group.unless_cond)
+        if attrs.has_key?("unless")
+          vue_warn(%(#{child.path}: unless= on a child of a gated) \
+                   %( <template> — a combined condition is not in the) \
+                   %( subset; the child's own unless= wins))
+        else
+          attrs["unless"] = cond
+        end
+      end
+      Node.new(child.kind, child.name, attrs, child.children, child.path)
+    end
+
+    # `item in items` / `(item, i) in items` — bare names only.
+    V_FOR_RE = /\A(?:\(\s*([a-zA-Z_]\w*)\s*,\s*([a-zA-Z_]\w*)\s*\)|([a-zA-Z_]\w*))\s+in\s+([a-zA-Z_]\w*)\z/
+
+    # `<row v-for="doc in docs" :key="doc.name">…</row>` →
+    # `<repeat for="doc" in="docs" key="name"><row>…</row></repeat>`.
+    # The wrapper takes the original node's path (widget ids of a
+    # document BORN in v-for syntax are stable; rewriting an existing
+    # canonical document shifts paths one level — a documented caveat,
+    # not a migration). The `(item, i)` spelling exposes the row index
+    # as `{i}` next to `{_i}` (the `index=` wrapper attr).
+    #
+    # `<template v-for>` — the Vue list pattern: the GROUP repeats,
+    # so EVERY template child rides the wrapper (each keeping its own
+    # parsed path, already namespaced under the template). Other
+    # template attrs are group-level only and drop with the wrapper.
+    private def self.wrap_v_for(node : Node) : Node
+      spec = node.attrs["v-for"].not_nil!
+      unless m = spec.match(V_FOR_RE)
+        vue_warn(%(#{node.path}: v-for="#{spec}" — expected `item in) \
+                 %( list` or `(item, i) in list`))
+        return rebuild_without(node, "v-for")
+      end
+      if node.kind.use? || node.kind.partial?
+        vue_warn(%(#{node.path}: v-for on <#{node.name}> is not) \
+                 %( supported — wrap a <repeat> manually))
+        return rebuild_without(node, "v-for")
+      end
+
+      wrap_attrs = {"for" => (m[1]? || m[3]? || "item"),
+                    "in" => (m[4]? || "")} of String => String
+      if (key = node.attrs["key"]?)
+        wrap_attrs["key"] = key
+      end
+      if (index_alias = m[2]?)
+        wrap_attrs["index"] = index_alias
+      end
+
+      if node.kind.template?
+        children = node.children.map { |c| copy_group_gate(node, c) }
+        Node.new(Kind::Repeat, "repeat", wrap_attrs, children, node.path)
+      else
+        child_attrs = node.attrs.dup
+        child_attrs.delete("v-for")
+        child_attrs.delete("key")
+        child = Node.new(node.kind, node.name, child_attrs, node.children,
+          "#{node.path}/#{node.name}[0]")
+        Node.new(Kind::Repeat, "repeat", wrap_attrs, [child], node.path)
+      end
+    end
+
+    private def self.rebuild_without(node : Node, attr : String) : Node
+      attrs = node.attrs.dup
+      attrs.delete(attr)
+      Node.new(node.kind, node.name, attrs, node.children, node.path)
     end
 
     private def self.unescape(s : String) : String
@@ -490,6 +858,7 @@ module Egui
     # root so every node's path is GLOBALLY unique — two buttons in two
     # rows must never share an egui Id (DuplicateWidgetIdError).
     def self.parse_tags(text : String) : Array(Node)
+      warnings.clear
       # strip comments and processing instructions up front
       text = text.gsub(/<!--.*?-->/m, "").gsub(/<\?.*?\?>/m, "")
 
@@ -500,7 +869,7 @@ module Egui
       pos = 0
       while pos < text.size
         lt = text.index('<', pos) || break
-        gt = text.index('>', lt)
+        gt = index_tag_end(text, lt)
         unless gt
           STDERR.puts "exml: unterminated tag at byte #{lt} — rest skipped"
           break
@@ -526,10 +895,13 @@ module Egui
           next unless name
           # The child's path: parent prefix + this element's position
           # (children attach at close, so the sink's size IS this
-          # child's index) + an explicit id tag when present.
+          # child's index) + an explicit id tag when present (`ref=`
+          # too — it renames to id= in the desugar right below).
           parent = stack.last
+          id_tag = attrs.not_nil!["id"]? || attrs.not_nil!["ref"]?
           path = "#{parent[3]}/#{name}[#{parent[2].size}]" \
-                 "#{attrs.not_nil!["id"]? ? ":#{attrs.not_nil!["id"]}" : ""}"
+                 "#{id_tag ? ":#{id_tag}" : ""}"
+          desugar_vue_attrs(attrs.not_nil!, path) if vue_attrs?(attrs.not_nil!)
           if self_close
             attach(stack, {name, attrs.not_nil!, [] of Node, path})
           else
@@ -541,7 +913,29 @@ module Egui
       unless stack.size == 1
         STDERR.puts "exml: unclosed <#{stack.last[0]}> at EOF — dropped"
       end
+      desugar_vue_tree(root_children)
       root_children
+    end
+
+    # The '>' closing a tag, skipping quoted attribute values — an
+    # attribute may legally hold '>' (`v-if="count > 0"`, text="a > b")
+    # and the naive first-'>' scan split the tag there, cascading junk
+    # warnings and a broken tree. nil = unterminated.
+    private def self.index_tag_end(text : String, lt : Int32) : Int32?
+      in_quote = false
+      i = lt + 1
+      while i < text.size
+        c = text.char_at(i)
+        if in_quote
+          in_quote = false if c == '"'
+        elsif c == '"'
+          in_quote = true
+        elsif c == '>'
+          return i
+        end
+        i += 1
+      end
+      nil
     end
 
     # A fragment: top-level WIDGETS, no page/modal wrapper — what a
@@ -750,10 +1144,13 @@ module Egui
       # `<Counter :start="5"/>`. Values interpolate against the
       # ENCLOSING store (so `label="{selected}"` is dynamic);
       # structural attrs (if/unless/id) are not props.
+      # structural attrs (if/unless/id) are not props, and neither are
+      # the hotkey pair (window-global, not a per-widget value)
       private def seed_props(node : Node, scope : ScopedRuntime,
                              rt : Runtime) : Nil
         node.attrs.each do |k, v|
-          next if {"if", "unless", "id"}.includes?(k)
+          next if {"if", "unless", "id", "hotkey", "on_keyup",
+                   "on_keydown"}.includes?(k)
           scope.strings[k] = rt.interpolate(v)
         end
       end
@@ -796,7 +1193,9 @@ module Egui
     # the custom elements the app registers handlers for — an unknown
     # one is itself an issue.
 
-    COMMON_ATTRS = %w(if unless id)
+    # Structural attrs every element accepts; the hotkey pair rides
+    # here too — the binding is window-global, not a per-widget prop.
+    COMMON_ATTRS = %w(if unless id hotkey on_keyup on_keydown)
 
     ATTRS_BY_KIND = {
       Kind::Page      => %w(title),
@@ -808,7 +1207,8 @@ module Egui
       Kind::Statusbar => %w(),
       Kind::Row       => %w(),
       Kind::Column    => %w(),
-      Kind::Box       => %w(direction wrap border fill padding rounding class),
+      Kind::Box       => %w(direction wrap border fill padding rounding class flex justify align gap width height
+                             position top right bottom left z),
       Kind::Heading   => %w(text),
       Kind::Label     => %w(text live),
       Kind::Button    => %w(text on_click),
@@ -816,14 +1216,17 @@ module Egui
       Kind::Checkbox  => %w(bind text on_change),
       Kind::Separator => %w(),
       Kind::Progress  => %w(bind text),
-      Kind::Input     => %w(bind hint focus_id on_change),
+      Kind::Input     => %w(bind hint focus_id on_change numeric trim),
       Kind::Textarea  => %w(bind hint rows frame editor_id on_change),
       Kind::Combo     => %w(bind options on_change),
+      Kind::Toggle    => %w(bind text on_change),
       Kind::Custom    => %w(), # handler-defined — not checked
       Kind::Partial   => %w(),
       Kind::Use       => %w(partial),
-      Kind::Repeat    => %w(for in key),
+      Kind::Repeat    => %w(for in key index),
       Kind::Markdown  => %w(text base_dir),
+      Kind::FlexItem  => %w(grow shrink basis order align),
+      Kind::Template  => %w(), # parse-time only — spliced away
     } of Kind => Array(String)
 
     REQUIRED_BY_KIND = {
@@ -865,7 +1268,7 @@ module Egui
                     " for this app's renderer"
         end
         return
-      when .partial?, .use?
+      when .partial?, .use?, .template?
         issues << "#{node.path}: <#{node.name}> leaked into the tree" \
                   " (parse-time element)"
         return
@@ -902,22 +1305,52 @@ module Egui
         if (v = node.attrs["live"]?) && !%w(true false).includes?(v)
           issues << "#{node.path}: live=#{v.inspect} must be true/false"
         end
+      when .input?
+        %w(numeric trim).each do |a|
+          if (v = node.attrs[a]?) && !%w(true false).includes?(v)
+            issues << "#{node.path}: #{a}=#{v.inspect} must be true/false"
+          end
+        end
       when .box?
-        if (v = node.attrs["direction"]?) && !%w(row column).includes?(v)
-          issues << "#{node.path}: direction=#{v.inspect} must be row/column"
+        if (v = node.attrs["direction"]?) &&
+           !%w(row column row-reverse column-reverse).includes?(v)
+          issues << "#{node.path}: direction=#{v.inspect} must be" \
+                    " row/column/row-reverse/column-reverse"
         end
-        if (v = node.attrs["wrap"]?) && !%w(true false).includes?(v)
-          issues << "#{node.path}: wrap=#{v.inspect} must be true/false"
+        if (v = node.attrs["wrap"]?) &&
+           !%w(true false wrap nowrap wrap-reverse).includes?(v)
+          issues << "#{node.path}: wrap=#{v.inspect} must be" \
+                    " true/false/wrap/nowrap/wrap-reverse"
         end
-        %w(padding rounding).each do |a|
+        if (v = node.attrs["flex"]?) && !%w(true false).includes?(v)
+          issues << "#{node.path}: flex=#{v.inspect} must be true/false"
+        end
+        %w(gap padding rounding).each do |a|
           if (v = node.attrs[a]?) && v.to_f?.nil?
             issues << "#{node.path}: #{a}=#{v.inspect} is not a number"
           end
         end
         %w(fill border).each do |a|
+          # `{placeholder}` fill/border is store-interpolated at render
+          # time (see the Box render path) — validated then, not here
+          next if (v = node.attrs[a]?) && v.includes?('{')
           if (v = node.attrs[a]?) && Exml.parse_box_color(v).nil?
             issues << "#{node.path}: #{a}=#{v.inspect} is not a #rrggbb color"
           end
+        end
+        if (v = node.attrs["position"]?) &&
+           !%w(absolute relative fixed).includes?(v)
+          issues << "#{node.path}: position=#{v.inspect} must be" \
+                    " absolute/relative/fixed"
+        end
+      when .flex_item?
+        %w(grow shrink).each do |a|
+          if (v = node.attrs[a]?) && v.to_f?.nil?
+            issues << "#{node.path}: #{a}=#{v.inspect} is not a number"
+          end
+        end
+        if (v = node.attrs["order"]?) && v.to_i?.nil?
+          issues << "#{node.path}: order=#{v.inspect} is not an integer"
         end
       end
 
@@ -1139,6 +1572,11 @@ module Egui
 
       @custom = {} of String => CustomHandler
       @warned_custom = Set(String).new
+      # Hotkeys markup bound LAST frame (`hotkey=` from `@keyup.enter`
+      # and friends): lapsed at every #render_routes — only the keys
+      # of nodes visible THIS frame re-bind during the walk, so a
+      # hidden node frees its key (Vue unmounts the listener).
+      @markup_hotkeys = Set(Hotkey).new
       # Template refs: this frame's named widgets (`id="go"` in
       # markup) → their Response (rect, clicked?, hovered?, …) — the
       # app reads them after rendering via #ref. Cleared at every
@@ -1180,6 +1618,10 @@ module Egui
       # a modal declared only while a confirmation is pending.
       def render_routes(ctx : Context, doc : Document, rt : Runtime) : Nil
         @refs.clear # refs describe the frame being rendered
+        # Last frame's markup hotkeys lapse; visible nodes re-bind
+        # theirs during the walk (bind_hotkey below)
+        @markup_hotkeys.each { |hk| ctx.hotkeys.unbind(hk) }
+        @markup_hotkeys.clear
         ctx.routes do |r|
           doc.pages.each do |page|
             next unless visible?(page, rt)
@@ -1246,6 +1688,50 @@ module Egui
         node.children.each { |c| render(c, ui, ctx, rt) }
       end
 
+      # ── dynamic `<box>` attributes ──────────────────────────────────
+      # A `{placeholder}` value re-resolves from the store every frame
+      # (dynamic fills — per-row cover gradients — and computed
+      # extents/offsets); a static value keeps the parse-time field.
+
+      private def box_attr_fill(node : Node, rt : Runtime) : Color32 | Gradient?
+        raw = node.attrs["fill"]?
+        if raw && raw.includes?('{')
+          Exml.parse_box_color(rt.interpolate(raw)) || node.box_fill
+        else
+          node.box_fill
+        end
+      end
+
+      private def box_attr_len(node : Node, rt : Runtime, key : String,
+                               fallback : String?) : String?
+        raw = node.attrs[key]?
+        raw && raw.includes?('{') ? rt.interpolate(raw) : fallback
+      end
+
+      BOX_POSITIONS = {"absolute" => :absolute, "relative" => :relative,
+                       "fixed" => :fixed} of String => Symbol
+
+      # `position`/`top`/`right`/`bottom`/`left`/`z` — the CSS placement
+      # vocabulary `Ui#box`/`Ui#flex` already speak (see #box_positioning).
+      # Each offset is a px number, a StyleLength string ("50%") or a
+      # `{placeholder}` — the values pass through as strings.
+      private def box_positioning_attrs(node : Node, rt : Runtime)
+        position = node.attrs["position"]?.try do |v|
+          BOX_POSITIONS[rt.interpolate(v)]?
+        end
+        top = right = bottom = left : String? = nil
+        if position || node.attrs["top"]? || node.attrs["right"]? ||
+           node.attrs["bottom"]? || node.attrs["left"]?
+          top = node.attrs["top"]?.try { |v| rt.interpolate(v) }
+          right = node.attrs["right"]?.try { |v| rt.interpolate(v) }
+          bottom = node.attrs["bottom"]?.try { |v| rt.interpolate(v) }
+          left = node.attrs["left"]?.try { |v| rt.interpolate(v) }
+        end
+        z = node.attrs["z"]?.try { |v| rt.interpolate(v).to_i? }
+        {position: position, top: top, right: right, bottom: bottom,
+         left: left, z: z}
+      end
+
       private def render_menu_bar(node : Node, bar : Ui, ctx : Context,
                                   rt : Runtime) : Nil
         node.children.each do |menu|
@@ -1266,6 +1752,7 @@ module Egui
       # The per-widget dispatch — the hot path (microseconds per page).
       def render(node : Node, ui : Ui, ctx : Context, rt : Runtime) : Nil
         return unless visible?(node, rt)
+        bind_hotkey(node, ui, ctx, rt)
 
         case node.kind
         in .menu_bar?
@@ -1276,7 +1763,7 @@ module Egui
         in .menu?
           # a bare menu outside a menubar renders as a plain column
           render_children_of(node, ui, ctx, rt)
-        in .partial?, .use?
+        in .partial?, .use?, .template?
           # parse-time only: spliced away above; a leftover (a partial
           # defined mid-tree) renders nothing — the linter flags it
         in .repeat?
@@ -1287,12 +1774,73 @@ module Egui
           node.children.each { |c| render(c, ui, ctx, rt) }
         in .box?
           margin = node.box_padding.try { |p| Vec2.new(p, p) }
-          ui.box(node.box_row ? :row : :column,
-            wrap: node.box_wrap, fill: node.box_fill,
-            stroke: node.box_stroke, rounding: node.box_rounding,
-            margin: margin, style_class: node.box_class) do |b|
-            node.children.each { |c| render(c, b, ctx, rt) }
+          if node.box_flex
+            # Flexbox container (Ui#flex): `direction`/`wrap`/`justify`/
+            # `align`/`gap` are the CSS spellings, `width`/`height` the
+            # definite extents a column flex needs. `<flex-item>`
+            # children carry per-child grow/shrink/basis/order/align;
+            # every other child is a plain flex item.
+            wrap_sym = case (w = node.attrs["wrap"]?)
+                       when "wrap", "true"            then :wrap
+                       when "wrap-reverse"             then :wrap_reverse
+                       else                                 :nowrap
+                       end
+            # `fill`/`width`/`height`/position offsets are store-
+            # interpolatable: a `{placeholder}` value re-resolves every
+            # frame (dynamic gradients from the data — e.g. per-row
+            # covers), a static one keeps the parse-time cache.
+            box_fill = box_attr_fill(node, rt)
+            box_w = box_attr_len(node, rt, "width", node.box_width)
+            box_h = box_attr_len(node, rt, "height", node.box_height)
+            pos = box_positioning_attrs(node, rt)
+            ui.flex(
+              direction: Flex.parse_direction(node.attrs["direction"]?),
+              wrap: wrap_sym,
+              justify: Flex.parse_justify(node.box_justify),
+              align: Flex.parse_cross_align(node.box_align),
+              gap: node.box_gap.try { |g| Vec2.new(g, g) },
+              fill: box_fill, stroke: node.box_stroke,
+              # rounding only when EXPLICIT: an unpainted flex wrapper
+              # with a rounding must not rounded-clip its subtree (an
+              # SDF mask per flex container per frame — the ring
+              # overflows on flex-heavy trees)
+              rounding: node.attrs["rounding"]? ? node.box_rounding : 0.0,
+              margin: margin,
+              style_class: node.box_class,
+              width: box_w, height: box_h,
+              position: pos[:position], top: pos[:top],
+              right: pos[:right], bottom: pos[:bottom],
+              left: pos[:left], z: pos[:z]) do |f|
+              node.children.each do |c|
+                if c.kind.flex_item?
+                  f.child(grow: c.flex_grow, shrink: c.flex_shrink,
+                    basis: c.flex_basis || :auto, order: c.flex_order,
+                    align_self: Flex.parse_cross_align(c.flex_align_self)) do |cell|
+                    c.children.each { |cc| render(cc, cell, ctx, rt) }
+                  end
+                else
+                  f.child { |cell| render(c, cell, ctx, rt) }
+                end
+              end
+            end
+          else
+            pos = box_positioning_attrs(node, rt)
+            ui.box(node.box_row ? :row : :column,
+              wrap: node.box_wrap, fill: box_attr_fill(node, rt),
+              stroke: node.box_stroke, rounding: node.box_rounding,
+              margin: margin, style_class: node.box_class,
+              position: pos[:position], top: pos[:top],
+              right: pos[:right], bottom: pos[:bottom],
+              left: pos[:left], z: pos[:z],
+              width: box_attr_len(node, rt, "width", node.box_width),
+              height: box_attr_len(node, rt, "height", node.box_height)) do |b|
+              node.children.each { |c| render(c, b, ctx, rt) }
+            end
           end
+        in .flex_item?
+          # Outside a flex box the wrapper is transparent — children
+          # render into the plain flow (the linter flags the usage).
+          node.children.each { |c| render(c, ui, ctx, rt) }
         in .heading?
           ref_set(node, ui.heading(text_of(node, rt)))
         in .label?
@@ -1324,13 +1872,34 @@ module Egui
             rt.bools[key] = v
             rt.fire(on_act.not_nil!) if on_act
           end)
+        in .toggle?
+          key = node.bind_key || ""
+          on_act = node.on_change
+          ref_set(node, ui.toggle_button(rt.bool(key),
+            id: node.path) do |v|
+            rt.bools[key] = v
+            rt.fire(on_act.not_nil!) if on_act
+          end)
         in .input?
           key = node.bind_key || ""
           on_act = node.on_change
-          ref_set(node, ui.text_edit_singleline(rt.string(key),
+          # v-model.number (numeric="true"): the float slot — display
+          # round-trips through Float#to_s, a half-typed "3." is not
+          # clobbered (TextEdit owns its buffer); unparseable text
+          # just doesn't write. trim strips the write-back.
+          shown = node.numeric ? rt.float(key).to_s : rt.string(key)
+          ref_set(node, ui.text_edit_singleline(shown,
             hint: node.hint_attr, focus_id: node.focus_id) do |t|
-            rt.strings[key] = t
-            rt.fire(on_act.not_nil!) if on_act
+            t = t.strip if node.trim
+            if node.numeric
+              if (f = t.to_f?)
+                rt.floats[key] = f
+                rt.fire(on_act.not_nil!) if on_act
+              end
+            else
+              rt.strings[key] = t
+              rt.fire(on_act.not_nil!) if on_act
+            end
           end)
         in .textarea?
           render_textarea(node, ui, ctx, rt)
@@ -1391,6 +1960,9 @@ module Egui
           scope = ScopedRuntime.new(rt)
           row.each { |k, v| scope.strings["#{as_name}.#{k}"] = v }
           scope.strings["_i"] = i.to_s
+          if (alias_name = node.repeat_index_alias)
+            scope.strings[alias_name] = i.to_s
+          end
           scope.repeat_index = i
           seg = (key_field.try { |kf| row[kf]? } || "i#{i}")
           node.children_under("#{node.path}/#{seg}").each do |child|
@@ -1436,6 +2008,30 @@ module Egui
       end
 
       # ── helpers ──────────────────────────────────────────────────────
+
+      # Markup hotkeys (`@keyup.enter="save"` → `hotkey="enter"` +
+      # `on_keyup="save"`): the key is WINDOW-global (like Vue's
+      # document-level listener), fired through the regular HotkeyMap.
+      # The binding rides the map namespaced `exml:<action>`; the
+      # firing is consumed HERE and routed to the store's registered
+      # proc (rt.fire) — the app's own HotkeyActions never collide.
+      # Binding repeats every frame (idempotent); a markup binding
+      # replaces an app one bound earlier — markup binds last, markup
+      # wins — and lapsing with visibility returns the key (see
+      # #render_routes). Skipped in a flex measure pass: the consume
+      # is exactly-once state, the real pass must see it.
+      private def bind_hotkey(node : Node, ui : Ui, ctx : Context,
+                              rt : Runtime) : Nil
+        hk_attr = node.hotkey_attr || return
+        act = node.on_key_event || return
+        return unless hotkey = Hotkey.parse?(rt.interpolate(hk_attr))
+        name = rt.interpolate(act)
+        action = HotkeyAction.new("exml:#{name}")
+        ctx.hotkeys.bind(hotkey, action)
+        @markup_hotkeys << hotkey
+        return if ui.measuring?
+        rt.fire(name) if ctx.consume_action(action)
+      end
 
       private def interp(text : String?, rt : Runtime) : String?
         text.try { |t| rt.interpolate(t) }

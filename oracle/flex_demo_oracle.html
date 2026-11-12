@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>flex oracle — браузер vs egui.cr</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 16px 20px 60px;
+    background: #16171a; color: #e8e8e8;
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  h3 { margin: 18px 0 8px; font-size: 15px; color: #cfcfcf; }
+  hr { border: 0; border-top: 1px solid #2a2c31; margin: 14px 0; }
+  button, .chip {
+    background: #23252b; color: #e8e8e8; border: 1px solid #3a3d45;
+    border-radius: 6px; padding: 5px 12px; font: inherit;
+  }
+  button:hover { background: #2d3038; }
+  input[type=text] {
+    background: #1d1f24; color: #e8e8e8; border: 1px solid #3a3d45;
+    border-radius: 6px; padding: 5px 10px; font: inherit; flex: 1;
+  }
+  label { display: flex; align-items: center; gap: 6px; }
+
+  /* — секции демо (зеркало examples/flex_demo.cr) — */
+  .toolbar { display: flex; justify-content: space-between; gap: 8px; }
+  .alignrow { display: flex; align-items: center; gap: 10px; }
+  .alignrow .end { align-self: flex-end; }
+  .alignrow .start { align-self: flex-start; }
+  .tags { display: flex; flex-wrap: wrap; gap: 10px 6px; align-content: flex-start; }
+  .columns { display: flex; gap: 8px; }
+  .colbox {
+    display: flex; flex-direction: column; justify-content: space-between;
+    height: 120px; width: 46%; gap: 4px;
+  }
+  .revrow {
+    display: flex; flex-direction: row-reverse; gap: 6px; width: 50%;
+  }
+  .basis { display: flex; gap: 6px; }
+  .basis .b30 { flex: 0 0 30%; order: 1; }
+  .basis .b120 { flex: 0 0 120px; }
+  .basis .bauto { order: -1; }
+  .nested { display: flex; gap: 8px; }
+  .nested > div {
+    flex: 1 1 0; display: flex; flex-direction: column; gap: 4px;
+  }
+  .nested .row { display: flex; gap: 4px; }
+  .nested .between { display: flex; justify-content: space-between; }
+  .stress { display: flex; flex-wrap: wrap; gap: 6px 4px; align-content: flex-start; }
+
+  /* FPS-оверлей: как ctx.fps в egui.cr — EMA по dt, α=0.15 */
+  #fps {
+    position: fixed; top: 10px; right: 12px; z-index: 10;
+    background: #0d2b17ee; border: 1px solid #2f5c3f; border-radius: 6px;
+    padding: 6px 12px; font: 600 13px/1.3 ui-monospace, monospace;
+    color: #7ee2a0; white-space: pre; text-align: right;
+  }
+  #fps.warn { background: #2d1508ee; border-color: #6b4a1f; color: #ffb26b; }
+</style>
+</head>
+<body>
+
+<div id="fps">…</div>
+
+<h3>flexbox — все режимы</h3>
+<div class="toolbar">
+  <button>◀ Назад</button>
+  <input type="text" placeholder="поиск…">
+  <button>Вперёд ▶</button>
+  <button>⋯</button>
+</div>
+<hr>
+
+<h3>align-items: center + align-self</h3>
+<div class="alignrow">
+  <span>метка по центру линии</span>
+  <label class="end"><input type="checkbox" checked> align-self: end</label>
+  <span>короткая</span>
+  <span class="start">start</span>
+  <button>высокая кнопка<br>в две строки</button>
+</div>
+<hr>
+
+<h3>flex-wrap: wrap + gap 6×10</h3>
+<div class="tags" id="tags"></div>
+<hr>
+
+<h3>direction: column + row-reverse</h3>
+<div class="columns">
+  <div class="colbox"><span>верх</span><span>…растянутый центр…</span><span>низ</span></div>
+  <div class="revrow"><button>первый</button><button>второй</button><button>третий</button></div>
+</div>
+<hr>
+
+<h3>basis 30% / 120px / auto + order</h3>
+<div class="basis">
+  <span class="b30">basis 30% (order 1)</span>
+  <span class="b120">basis 120</span>
+  <span class="bauto">auto, order −1 → первым</span>
+</div>
+<hr>
+
+<h3>вложенность depth 3</h3>
+<div class="nested">
+  <div>
+    <div class="row"><button>a1</button><button>a2</button></div>
+    <div class="row"><button>b1</button><button>b2</button><button>b3</button></div>
+  </div>
+  <div>
+    <div class="between"><span>row 0</span><button>…</button></div>
+    <div class="between"><span>row 1</span><button>…</button></div>
+    <div class="between"><span>row 2</span><button>…</button></div>
+  </div>
+</div>
+<hr>
+
+<h3>Стресс: N чипов</h3>
+<label style="margin-bottom:8px">чипов:
+  <input type="range" id="n" min="100" max="5000" step="100" value="400"
+         oninput="rebuild()">
+  <span id="nval">400</span>
+  <label style="margin-left:16px">
+    <input type="checkbox" id="churn"> FPS-чип ВНУТРИ flex-строки
+    (каждый кадр меняет ширину → форсирует reflow, как FPS-лейбл в egui-демо)
+  </label>
+</label>
+<div class="stress" id="stress"></div>
+
+<script>
+"use strict";
+// — контент, зеркальный examples/flex_demo.cr —
+const TAGS = ["раст","dev","prod","hot-reload","ecss","exml","sokol",
+  "crystal","flex","wrap","justify","align","grow","shrink","basis","order"];
+document.getElementById("tags").innerHTML =
+  TAGS.map(t => `<button class="chip">${t}</button>`).join("");
+
+let chipsHtml = "";
+function rebuild() {
+  const n = +document.getElementById("n").value;
+  document.getElementById("nval").textContent = n;
+  let s = "";
+  for (let i = 0; i < n; i++) s += `<span class="chip">чип ${i}</span>`;
+  chipsHtml = s;                              // churn-чип вставляется в цикле
+  document.getElementById("stress").innerHTML = s;
+}
+rebuild();
+
+// FPS: EMA по dt, как ctx.fps в egui.cr (α = 0.15).
+const el = document.getElementById("fps");
+const churn = document.getElementById("churn");
+let fps = 0, last = performance.now(), emaFrame = 0;
+function tick(t) {
+  const dt = t - last; last = t;
+  if (dt > 0) fps = fps > 0 ? fps + (1000 / dt - fps) * 0.15 : 1000 / dt;
+  emaFrame = emaFrame * 0.9 + dt * 0.1;
+  // Сравнение честное только если кадр АНИМИРУЕТСЯ: rAF гонит
+  // composite каждый кадр; чекбокс добавляет макетный churn.
+  if (churn.checked) {
+    // ширина меняется каждые ~5 кадров — как текст "FPS: 60.2→60.3"
+    document.getElementById("stress").firstElementChild.textContent =
+      "FPS " + fps.toFixed(1).padStart(6, " ");
+  }
+  el.textContent =
+    `${fps.toFixed(1)} fps\n${emaFrame.toFixed(2)} мс/кадр (EMA)\n` +
+    `${churn.checked ? "reflow каждый кадр" : "только composite"}`;
+  el.className = fps < 50 ? "warn" : "";
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

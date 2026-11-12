@@ -10,9 +10,9 @@
 # is responsible and the standard permission prompt shows up.
 #
 # Usage: scripts/make_voice_app.sh [binary] [app-name]
-#   scripts/make_voice_app.sh bin/voice_echo VoiceEcho
+#   scripts/make_voice_app.sh bin/apps/voice_echo VoiceEcho
 set -euo pipefail
-BIN="${1:-bin/voice_echo}"
+BIN="${1:-bin/apps/voice_echo}"
 NAME="${2:-VoiceEcho}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/builds/$NAME.app"

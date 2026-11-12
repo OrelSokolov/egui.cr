@@ -1638,6 +1638,14 @@ void egui_cr_gfx_init(void) {
         // destroyed slot only a few frames later — budget for the
         // working set PLUS that in-flight tail. The pools are
         // preallocated slot arrays — a few hundred KB.
+        // Buffers: default is 128 slots, but the SDF instance ring alone
+        // takes 64 (SH_SDF_RING) and doubles on heavy frames — the first
+        // grow past 64 exhausts the default pool (BUFFER_POOL_EXHAUSTED,
+        // then an invalid handle in sg_apply_bindings panics validation).
+        // Budget like the image pool above: slots are cheap preallocated
+        // array entries; the backing memory is only the ring's ~224 KB
+        // per actually created buffer.
+        .buffer_pool_size = 1024,
         .image_pool_size = 4096,
         .view_pool_size = 4096,
         .logger.func = slog_func,
@@ -2454,9 +2462,20 @@ static void sh_draw_mesh3d(const float* mvp, int blend, int prim,
 #define SH_SDF_MAX_INST 2048
 #define SH_SDF_INST_BYTES (28 * 4)
 #define SH_SDF_INST_FLOATS 28
-#define SH_SDF_RING 64 // see sh_draw_sdf: one update per buffer per frame
+// Initial size of the instance-append ring: sg_append_buffer allows
+// MANY writes into one buffer per frame, so batches share ring slots
+// and the ring only grows when a frame's instance data genuinely
+// exceeds its capacity (sh_sdf_ring_grow, from sh_draw_sdf). 16 may
+// look generous, but the GL-side matters: sokol keeps 2 internal GL
+// buffer objects per slot, and rewriting one the GPU still reads
+// (glBufferSubData) stalls the frame — the deeper the ring, the more
+// frames of slack (16 ≈ 270 ms at 60 fps, matching the old
+// one-slot-per-batch ring's safety without its pool exhaustion).
+#define SH_SDF_RING 16
 
 static sg_shader g_sdf_shd;
+// Non-instanced shader for the mask/unmask pipelines (shape via uniforms)
+static sg_shader g_sdf_mask_shd;
 static sg_pipeline g_sdf_pip;
 // Rounded-clip twins (see egui_cr_clip_mask): g_sdf_pip_st tests
 // stencil EQUAL 1 for batches recorded inside a mask bracket;
@@ -2465,7 +2484,11 @@ static sg_pipeline g_sdf_pip;
 // (mask) / REPLACE 0 (unmask, square bbox).
 static sg_pipeline g_sdf_pip_st, g_sdf_mask_pip, g_sdf_unmask_pip;
 static sg_buffer g_sdf_quad; // static corner quad (-1..1), 6 × vec2
-static sg_buffer g_sdf_ring[SH_SDF_RING];
+static sg_buffer* g_sdf_ring; // growable (sh_sdf_ring_grow), SH_SDF_RING to start
+static int g_sdf_ring_cap;
+// Ring slot the next append goes to; advanced per frame (sh_sdf_reset)
+// so consecutive frames start on fresh buffers while the GPU may still
+// read the previous frame's appends.
 static int g_sdf_ring_next;
 // 0 = not tried, 1 = ready, -1 = unsupported/failed on this backend
 static int g_sdf_state;
@@ -2501,6 +2524,39 @@ static const char SH_SDF_VS[] =
     "    v_ext = i_ext;\n"
     "    gl_Position = u_mvp * vec4(i_rect.xy + v_p, 0.0, 1.0);\n"
     "}\n";
+// Non-instanced twin for the rounded-clip mask/unmask draws: the shape
+// rides uniforms (apply-uniforms is unlimited per frame) instead of an
+// instance buffer — CSS pages stash dozens of bracket edges per frame,
+// and one sg_update_buffer per buffer per frame would exhaust any ring
+// (BUFFER_POOL_EXHAUSTED, then VALIDATE_UPDATEBUF_ONCE). Feeds the very
+// same SH_SDF_FS: the unused fill/stroke varyings are parked, and
+// v_params.z stays 0 so the FS takes the plain coverage path.
+static const char SH_SDF_MASK_VS[] =
+    "#version 410 core\n"
+    "layout(location = 0) in vec2 corner;\n"
+    "uniform mat4 u_mvp;\n"
+    "uniform vec4 u_rect;  // center.xy, half.xy (points)\n"
+    "uniform vec4 u_radii;\n"
+    "uniform vec4 u_mparam; // shape half xy, -, ppp\n"
+    "out vec2 v_p;\n"
+    "flat out vec2 v_half;\n"
+    "flat out vec4 v_radii;\n"
+    "flat out vec4 v_fill;\n"
+    "flat out vec4 v_fill2;\n"
+    "flat out vec4 v_stroke;\n"
+    "flat out vec4 v_params;\n"
+    "flat out vec4 v_ext;\n"
+    "void main() {\n"
+    "    v_p = corner * u_rect.zw;\n"
+    "    v_half = u_mparam.xy;\n"
+    "    v_radii = u_radii;\n"
+    "    v_fill = vec4(1.0);\n"
+    "    v_fill2 = vec4(1.0);\n"
+    "    v_stroke = vec4(0.0);\n"
+    "    v_params = vec4(0.0);\n"
+    "    v_ext = vec4(0.0, u_mparam.w, 0.0, 0.0);\n"
+    "    gl_Position = u_mvp * vec4(u_rect.xy + v_p, 0.0, 1.0);\n"
+    "}\n";
 static const char SH_SDF_FS[] =
     "#version 410 core\n"
     "in vec2 v_p;\n"
@@ -2523,12 +2579,18 @@ static const char SH_SDF_FS[] =
     "    float ppp = max(v_ext.y, 1.0);\n"
     "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
     "    if (v_params.z > 0.5) {\n"
-    // Outset box-shadow: same exp(-2t^2) curve as the tessellated
-    // bands (shadow_stop in driver/sokol.cr), renormalized to hit 0
-    // at t=1 so the quad rim (placed past d=blur) is seamless.
+    // Outset box-shadow, CSS/Skia semantics: the gaussian (sigma =
+    // blur/2) is CENTERED on the caster silhouette, so just outside
+    // the edge the coverage is HALF the color alpha, fading to 0 at
+    // ~1.5*blur; well inside the caster it accumulates to full alpha
+    // (the exposed strip of an offset shadow stays solid). exp(-2t^2)
+    // is the gaussian's tail; renormalized to hit exactly 0 at the
+    // quad rim (t = 1.5) so the rim never cuts the curve.
     "        float blur = max(v_params.w * ppp, 1.0);\n"
-    "        float t = clamp(d / blur, 0.0, 1.0);\n"
-    "        float cov = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float t = d / blur;\n"
+    "        if (t >= 1.5) discard;\n"
+    "        float cov = t <= 0.0 ? 1.0\n"
+    "            : 0.5 * (exp(-2.0 * t * t) - 0.011109) * 1.011235;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov);\n"
     "        return;\n"
@@ -2580,6 +2642,33 @@ static const char SH_SDF_VS[] =
     "    v_ext = i_ext;\n"
     "    gl_Position = u_mvp * vec4(i_rect.xy + v_p, 0.0, 1.0);\n"
     "}\n";
+// Non-instanced mask/unmask twin — see the GLCORE comment above.
+static const char SH_SDF_MASK_VS[] =
+    "#version 300 es\n"
+    "layout(location = 0) in vec2 corner;\n"
+    "uniform mat4 u_mvp;\n"
+    "uniform vec4 u_rect;  // center.xy, half.xy (points)\n"
+    "uniform vec4 u_radii;\n"
+    "uniform vec4 u_mparam; // shape half xy, -, ppp\n"
+    "out vec2 v_p;\n"
+    "flat out vec2 v_half;\n"
+    "flat out vec4 v_radii;\n"
+    "flat out vec4 v_fill;\n"
+    "flat out vec4 v_fill2;\n"
+    "flat out vec4 v_stroke;\n"
+    "flat out vec4 v_params;\n"
+    "flat out vec4 v_ext;\n"
+    "void main() {\n"
+    "    v_p = corner * u_rect.zw;\n"
+    "    v_half = u_mparam.xy;\n"
+    "    v_radii = u_radii;\n"
+    "    v_fill = vec4(1.0);\n"
+    "    v_fill2 = vec4(1.0);\n"
+    "    v_stroke = vec4(0.0);\n"
+    "    v_params = vec4(0.0);\n"
+    "    v_ext = vec4(0.0, u_mparam.w, 0.0, 0.0);\n"
+    "    gl_Position = u_mvp * vec4(u_rect.xy + v_p, 0.0, 1.0);\n"
+    "}\n";
 static const char SH_SDF_FS[] =
     "#version 300 es\n"
     "precision mediump float;\n"
@@ -2603,12 +2692,18 @@ static const char SH_SDF_FS[] =
     "    float ppp = max(v_ext.y, 1.0);\n"
     "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
     "    if (v_params.z > 0.5) {\n"
-    // Outset box-shadow: same exp(-2t^2) curve as the tessellated
-    // bands (shadow_stop in driver/sokol.cr), renormalized to hit 0
-    // at t=1 so the quad rim (placed past d=blur) is seamless.
+    // Outset box-shadow, CSS/Skia semantics: the gaussian (sigma =
+    // blur/2) is CENTERED on the caster silhouette, so just outside
+    // the edge the coverage is HALF the color alpha, fading to 0 at
+    // ~1.5*blur; well inside the caster it accumulates to full alpha
+    // (the exposed strip of an offset shadow stays solid). exp(-2t^2)
+    // is the gaussian's tail; renormalized to hit exactly 0 at the
+    // quad rim (t = 1.5) so the rim never cuts the curve.
     "        float blur = max(v_params.w * ppp, 1.0);\n"
-    "        float t = clamp(d / blur, 0.0, 1.0);\n"
-    "        float cov = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float t = d / blur;\n"
+    "        if (t >= 1.5) discard;\n"
+    "        float cov = t <= 0.0 ? 1.0\n"
+    "            : 0.5 * (exp(-2.0 * t * t) - 0.011109) * 1.011235;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov);\n"
     "        return;\n"
@@ -2651,6 +2746,30 @@ static void sh_sdf_ensure(void) {
         SH_LAZY_UNLOCK();
         return;
     }
+    // Mask/unmask twin: same FS, a VS fed by uniforms — no instance
+    // buffer, so bracket edges never touch the update-once ring.
+    memset(&sd, 0, sizeof sd);
+    sd.vertex_func.source = SH_SDF_MASK_VS;
+    sd.fragment_func.source = SH_SDF_FS;
+    sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[0].size = 64;
+    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "u_mvp";
+    sd.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
+    sd.uniform_blocks[1].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[1].size = 48;
+    sd.uniform_blocks[1].glsl_uniforms[0].glsl_name = "u_rect";
+    sd.uniform_blocks[1].glsl_uniforms[0].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[1].glsl_uniforms[1].glsl_name = "u_radii";
+    sd.uniform_blocks[1].glsl_uniforms[1].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[1].glsl_uniforms[2].glsl_name = "u_mparam";
+    sd.uniform_blocks[1].glsl_uniforms[2].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.label = "egui-cr-sdf-mask-shader";
+    g_sdf_mask_shd = sg_make_shader(&sd);
+    if (g_sdf_mask_shd.id == 0) {
+        g_sdf_state = -1;
+        SH_LAZY_UNLOCK();
+        return;
+    }
     static const float quad[12] = {
         -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
         -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
@@ -2661,7 +2780,14 @@ static void sh_sdf_ensure(void) {
         .data = {.ptr = quad, .size = sizeof quad},
         .label = "egui-cr-sdf-quad",
     });
-    for (int i = 0; i < SH_SDF_RING; i++) {
+    g_sdf_ring = (sg_buffer*)calloc((size_t)SH_SDF_RING, sizeof(sg_buffer));
+    if (!g_sdf_ring) {
+        g_sdf_state = -1;
+        SH_LAZY_UNLOCK();
+        return;
+    }
+    g_sdf_ring_cap = SH_SDF_RING;
+    for (int i = 0; i < g_sdf_ring_cap; i++) {
         g_sdf_ring[i] = sg_make_buffer(&(sg_buffer_desc){
             .size = (size_t)SH_SDF_MAX_INST * SH_SDF_INST_BYTES,
             .usage = {.vertex_buffer = true, .dynamic_update = true},
@@ -2715,6 +2841,13 @@ static void sh_sdf_ensure(void) {
                   .pass_op = SG_STENCILOP_REPLACE },
         .read_mask = 0xFF, .write_mask = 0xFF, .ref = 1,
     };
+    // The writers drop the instance buffer: their shader is the
+    // uniform-fed twin (no attrs past slot 0, no per-instance step).
+    pd.shader = g_sdf_mask_shd;
+    pd.layout.buffers[1].stride = 0;
+    pd.layout.buffers[1].step_func = SG_VERTEXSTEP_PER_VERTEX;
+    for (int i = 0; i < 7; i++)
+        pd.layout.attrs[1 + i] = (sg_vertex_attr_state){0};
     pd.colors[0].write_mask = SG_COLORMASK_NONE;
     pd.colors[0].blend.enabled = false;
     pd.label = "egui-cr-sdf-mask-pip";
@@ -2726,13 +2859,36 @@ static void sh_sdf_ensure(void) {
     pd.colors[0].write_mask = SG_COLORMASK_RGBA;
     pd.colors[0].blend.enabled = true;
     bool ok = g_sdf_pip.id != 0 && g_sdf_quad.id != 0 &&
-              g_sdf_pip_st.id != 0 && g_sdf_mask_pip.id != 0;
-    for (int i = 0; i < SH_SDF_RING; i++) ok = ok && g_sdf_ring[i].id != 0;
+              g_sdf_pip_st.id != 0 && g_sdf_mask_pip.id != 0 &&
+              g_sdf_mask_shd.id != 0;
+    for (int i = 0; i < g_sdf_ring_cap; i++) ok = ok && g_sdf_ring[i].id != 0;
     g_sdf_state = ok ? 1 : -1;
 #else // Vulkan/D3D11/Metal/WGPU: no GLSL source path — SDF unavailable
     g_sdf_state = -1;
 #endif
     SH_LAZY_UNLOCK();
+}
+
+// Extend the instance-append ring to exactly `cap` slots, creating only
+// the new buffers; `g_sdf_ring_next` stays put. Called from sh_draw_sdf
+// when every existing slot is full for this frame, after sh_sdf_ensure,
+// so the ring exists. Failed sg_make_buffer calls (pool exhausted) leave
+// .id == 0 slots — the draw path skips those instead of binding an
+// invalid handle (the pre-append-era crash).
+static void sh_sdf_ring_grow(int cap) {
+    if (cap <= g_sdf_ring_cap) return;
+    sg_buffer* nr = (sg_buffer*)realloc(g_sdf_ring,
+                                        (size_t)cap * sizeof(sg_buffer));
+    if (!nr) return; // OOM: keep the old ring; the caller drops the batch
+    for (int i = g_sdf_ring_cap; i < cap; i++) {
+        nr[i] = sg_make_buffer(&(sg_buffer_desc){
+            .size = (size_t)SH_SDF_MAX_INST * SH_SDF_INST_BYTES,
+            .usage = {.vertex_buffer = true, .dynamic_update = true},
+            .label = "egui-cr-sdf-inst",
+        });
+    }
+    g_sdf_ring = nr;
+    g_sdf_ring_cap = cap;
 }
 
 // Raw draw of one SDF batch. `inst` is count × 28 floats (see the
@@ -2748,8 +2904,14 @@ static void sh_sdf_ensure(void) {
 // sgl-layer interleaving (see sh_sdf_frame below) — sokol_gl uploads
 // its CPU vertex buffer only ONCE per frame (first _sgl_draw), so a
 // mid-frame sgl_draw() would leave the later chunks' vertices stale in
-// the GPU buffer. Ring rotation on EVERY update is still required: one
-// frame draws up to three packet replays' worth of batches.
+// the GPU buffer.
+//
+// Instances ride sg_append_buffer: sokol allows MANY appends per frame
+// into one buffer (unlike sg_update_buffer's once-a-frame rule), so the
+// batches of a frame share ring slots and the ring rotates only when a
+// buffer is genuinely full — one frame drawing three packet replays'
+// worth of batches no longer costs a slot per batch. The append offset
+// comes back from the call and rides the binding.
 static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
                         float ch, const float* inst, int count,
                         float w_pts, float h_pts, int stencil) {
@@ -2775,14 +2937,39 @@ static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
     mvp[15] = 1.0f;
     sg_range ur = {.ptr = mvp, .size = sizeof mvp};
     sg_apply_uniforms(0, &ur);
+    // Current append buffer, rotated only when it cannot fit this batch.
+    // sg_query_buffer_will_overflow accounts for sokol's per-frame
+    // append_pos rewind, so a buffer filled LAST frame reads as empty.
+    size_t need = (size_t)count * SH_SDF_INST_BYTES;
     sg_buffer buf = g_sdf_ring[g_sdf_ring_next];
-    g_sdf_ring_next = (g_sdf_ring_next + 1) % SH_SDF_RING;
-    sg_range data = {.ptr = inst, .size = (size_t)count * SH_SDF_INST_BYTES};
-    sg_update_buffer(buf, &data);
+    if (buf.id == 0 || sg_query_buffer_will_overflow(buf, need)) {
+        int idx = -1;
+        for (int i = 1; i <= g_sdf_ring_cap; i++) {
+            int j = (g_sdf_ring_next + i) % g_sdf_ring_cap;
+            if (g_sdf_ring[j].id != 0 &&
+                !sg_query_buffer_will_overflow(g_sdf_ring[j], need)) {
+                idx = j;
+                break;
+            }
+        }
+        if (idx < 0) {
+            // Every slot full this frame: extend the ring by one buffer.
+            idx = g_sdf_ring_cap;
+            sh_sdf_ring_grow(idx + 1);
+            if (g_sdf_ring_cap <= idx || g_sdf_ring[idx].id == 0)
+                return; // OOM / pool exhausted: drop the batch, keep drawing
+        }
+        g_sdf_ring_next = idx;
+        buf = g_sdf_ring[idx];
+    }
+    sg_range data = {.ptr = inst, .size = need};
+    int off = sg_append_buffer(buf, &data);
+    if (off < 0) return; // nothing written: drawing would read stale bytes
     sg_bindings b;
     memset(&b, 0, sizeof b);
     b.vertex_buffers[0] = g_sdf_quad;
     b.vertex_buffers[1] = buf;
+    b.vertex_buffer_offsets[1] = off;
     sg_apply_bindings(&b);
     sg_draw(0, 6, count);
 }
@@ -2841,6 +3028,11 @@ static void sh_sdf_reset(void) {
     g_sdf_layer = 0;
     g_sdf_arena_n = 0;
     g_clip_on = 0;
+    // Start each frame on a fresh ring slot: sokol rewinds append_pos
+    // per frame per buffer, but the GPU may still be reading the
+    // previous frame's appends — rotation keeps the frames apart.
+    if (g_sdf_ring_cap > 0)
+        g_sdf_ring_next = (g_sdf_ring_next + 1) % g_sdf_ring_cap;
 }
 
 // Record a flush point: the batch draws after the sgl segment currently
@@ -2902,6 +3094,9 @@ static void sh_clip_stash(int kind, int apply_clip, float x, float y,
 // Draw one mask/unmask instance: the SDF rounded-rect quad with the
 // color mask off and stencil REPLACE — the bracket the content
 // pipelines test against. The unmask (radii 0) clears the whole bbox.
+// The shape rides uniforms (sg_apply_uniforms has no per-frame limit),
+// so unlike sh_draw_sdf this consumes no instance-buffer ring slot —
+// a CSS frame can bracket dozens of rounded clips.
 static void sh_draw_seg_mask(const sh_sdf_seg_t* s, float w_pts,
                              float h_pts) {
     sh_sdf_ensure();
@@ -2909,17 +3104,21 @@ static void sh_draw_seg_mask(const sh_sdf_seg_t* s, float w_pts,
     if (w_pts <= 0.0f || h_pts <= 0.0f) return;
     if (s->cw <= 0.0f || s->ch <= 0.0f) return;
     float ppp = s->ppp;
-    float inst[SH_SDF_INST_FLOATS];
-    memset(inst, 0, sizeof inst);
-    inst[0] = (s->cx + s->cw / 2.0f) / ppp;
-    inst[1] = (s->cy + s->ch / 2.0f) / ppp;
-    inst[2] = s->cw / 2.0f / ppp;
-    inst[3] = s->ch / 2.0f / ppp;
-    inst[4] = s->rtl; inst[5] = s->rtr;
-    inst[6] = s->rbr; inst[7] = s->rbl;
-    inst[20] = inst[2]; // shape half == quad half (no margin wanted)
-    inst[21] = inst[3];
-    inst[25] = ppp;     // ext: ppp for the AA band
+    struct {
+        float rect[4];   // center.xy, half.xy (points)
+        float radii[4];  // corner radii (points)
+        float mparam[4]; // shape half xy, -, ppp
+    } u;
+    u.rect[0] = (s->cx + s->cw / 2.0f) / ppp;
+    u.rect[1] = (s->cy + s->ch / 2.0f) / ppp;
+    u.rect[2] = s->cw / 2.0f / ppp;
+    u.rect[3] = s->ch / 2.0f / ppp;
+    u.radii[0] = s->rtl; u.radii[1] = s->rtr;
+    u.radii[2] = s->rbr; u.radii[3] = s->rbl;
+    u.mparam[0] = u.rect[2]; // shape half == quad half (no margin wanted)
+    u.mparam[1] = u.rect[3];
+    u.mparam[2] = 0.0f;
+    u.mparam[3] = ppp;       // ext: ppp for the AA band
     if (s->apply_clip)
         sg_apply_scissor_rectf(s->cx, s->cy, s->cw, s->ch, true);
     sg_apply_pipeline(s->kind == 1 ? g_sdf_mask_pip : g_sdf_unmask_pip);
@@ -2933,14 +3132,11 @@ static void sh_draw_seg_mask(const sh_sdf_seg_t* s, float w_pts,
     mvp[15] = 1.0f;
     sg_range ur = {.ptr = mvp, .size = sizeof mvp};
     sg_apply_uniforms(0, &ur);
-    sg_buffer buf = g_sdf_ring[g_sdf_ring_next];
-    g_sdf_ring_next = (g_sdf_ring_next + 1) % SH_SDF_RING;
-    sg_range data = {.ptr = inst, .size = SH_SDF_INST_BYTES};
-    sg_update_buffer(buf, &data);
+    sg_range ur1 = {.ptr = &u, .size = sizeof u};
+    sg_apply_uniforms(1, &ur1);
     sg_bindings b;
     memset(&b, 0, sizeof b);
     b.vertex_buffers[0] = g_sdf_quad;
-    b.vertex_buffers[1] = buf;
     sg_apply_bindings(&b);
     sg_draw(0, 6, 1);
 }
@@ -2956,6 +3152,10 @@ static void sh_sdf_frame(float w_pts, float h_pts) {
         sgl_draw();
         return;
     }
+    sh_sdf_ensure();
+    // Only kind-0 batches consume append capacity (mask edges ride
+    // uniforms); the ring grows lazily in sh_draw_sdf when every slot
+    // is full — no per-frame precount needed under sg_append_buffer.
     for (int l = 0; l <= g_sdf_layer; l++) {
         sgl_draw_layer(l);
         for (int i = 0; i < g_sdf_segs_n; i++) {

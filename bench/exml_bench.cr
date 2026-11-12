@@ -19,8 +19,8 @@
 #             cache always misses ≈ the pre-cache interpolate cost;
 #             row subtrees still hit the memo (row keys are stable).
 #
-#   crystal build --release bench/exml_bench.cr -o bin/exml_bench \
-#     && ./bin/exml_bench
+#   crystal build --release bench/exml_bench.cr -o bin/benchmarks/exml_bench \
+#     && ./bin/benchmarks/exml_bench
 
 require "../src/egui"
 

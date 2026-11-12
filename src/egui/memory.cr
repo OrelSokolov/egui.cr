@@ -538,7 +538,14 @@ module Egui
       @slot_ids.each_with_index do |id, i|
         if @cur_used[i] == @geo_gen
           @used_ids.add(id)
-        else
+        elsif @slot_of[id]? == i
+          # Free ONLY when this slot is the id's live mapping AND the
+          # slot went unused. A recycled slot keeps its PREVIOUS id in
+          # @slot_ids while that id now lives at another index; matching
+          # on the id alone would delete the live mapping and re-push
+          # the already-free index into @slot_free — one slot handed to
+          # two ids, a ghost @slot_of entry, and (after the next
+          # compact_slots shrink) an out-of-bounds index in #use_id.
           @slot_of.delete(id)
           @slot_free << i
         end
@@ -786,7 +793,13 @@ module Egui
     # fails every `stamp == @geo_gen` comparison on its own.
     private def ensure_slot(id : Id) : Int32
       if (i = @slot_of[id]?)
-        return i
+        # Never index the SoA arrays with an unvalidated cached index:
+        # a ghost entry (see end_frame/compact_slots) can point past
+        # the arrays after a shrink. Live mappings round-trip
+        # (@slot_of[id] == i <=> @slot_ids[i] == id); anything else is
+        # stale and gets dropped here.
+        return i if i < @slot_ids.size && @slot_ids[i] == id
+        @slot_of.delete(id)
       end
       if (i = @slot_free.pop?)
         @slot_ids[i] = id
@@ -853,6 +866,12 @@ module Egui
       @cur_clips.pop(drop)
       @prv_clips.pop(drop)
       @slot_free.clear
+      # Purge ghost @slot_of entries — mappings whose slot was dropped
+      # (or now belongs to another id). Nothing else removes them, and
+      # a stale index past the shrunken arrays is an out-of-bounds
+      # access in every SoA reader (#use_id, #interact,
+      # #interaction_state).
+      @slot_of.select! { |id, i| i < @slot_ids.size && @slot_ids[i] == id }
       @cur_order.map! { |i| remap[i] }
       @geo_version += 1
     end

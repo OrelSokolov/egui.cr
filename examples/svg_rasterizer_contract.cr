@@ -7,8 +7,8 @@
 # Icons cover both paint modes: filled paths (bootstrap) and stroked
 # outlines (lucide).
 #
-#   bin/svg_rasterizer             # GUI: side by side, any size
-#   bin/svg_rasterizer --headless  # console report (stats + ASCII) and exit
+#   bin/apps/svg_rasterizer             # GUI: side by side, any size
+#   bin/apps/svg_rasterizer --headless  # console report (stats + ASCII) and exit
 #
 # Bootstrap Icons (MIT) live in icons/bootstrap, Lucide (ISC) in
 # icons/lucide — Rakefile download:bootstrap refreshes them.
