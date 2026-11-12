@@ -78,6 +78,63 @@ module Egui
       StyleProps.textlike
     end
 
+    # Retained paint (see paint_cache.cr), the Label pattern: content by
+    # value (fresh RichLabel objects each frame), the resolved effective
+    # Style by identity (it merges the theme + per-element override +
+    # inline layer, and drives run generation — sizes, colors, chips).
+    # Selectable labels cache only in the inert-selection state, with
+    # cursor/anchor in the key (a selection starting lands as a miss).
+    # A LINKED label runs for real while hovered: link clicks, the
+    # Pointer cursor and link_at geometry need the live galley — a
+    # link-less label stays cached under hover.
+    def paint_cache_key(ui : Ui)
+      id = cache_id(ui)
+      ctx = ui.ctx
+      cursor = 0
+      anchor = -1
+      if @userselect
+        # press/drag/release frames place the caret, the RELEASE frame
+        # fires the click/double-click selection, and a SECONDARY press
+        # opens the context menu — all must run for real (the primary
+        # and secondary buttons carry separate press state).
+        return nil if ctx.input.pointer_pressed? ||
+                      ctx.input.pointer_down? ||
+                      ctx.input.pointer_released? ||
+                      ctx.input.secondary_pressed? ||
+                      ctx.input.secondary_down? ||
+                      ctx.input.secondary_released? ||
+                      ctx.input.modifiers.command?
+        anchor_id = id.child(0x5EED_u64)
+        cursor = ctx.memory.data.get_int(id, 0)
+        anchor = ctx.memory.data.get_int(anchor_id, -1)
+        return nil if ctx.popup_open?("context_menu_#{id.value}")
+        return nil if anchor >= 0 && anchor != cursor
+      end
+      state = ctx.memory.interaction_state(id)
+      # Hover over a LINKED label runs for real: link clicks, the
+      # Pointer cursor and link_at geometry need the live galley. The
+      # link spans are parsed lazily by styled_runs (empty on a fresh
+      # instance), so the gate scans the markup marker instead — a
+      # false positive only costs the cache miss.
+      return nil if state == "hover" && @rich.text.includes?("](")
+      style = effective_style(ui, id)
+      {"richlabel", @rich.text, @rich.size, @rich.color, @rich.bold?,
+       @rich.italic?, @rich.underline?, @rich.strikethrough?,
+       @wrap, @userselect, @line_height, @link_handler.nil?,
+       ui.layout.vertical?, ui.available_width,
+       ctx.mono_fonts.nil?, style.object_id,
+       @style_override.try(&.hash), cursor, anchor}.hash
+    end
+
+    # #ui's non-paint side effects: the text cursor over hovered labels
+    # and the selection anchor cell's keep-alive (end-frame pruning
+    # would drop the selection).
+    def cache_replay(ui : Ui, response : Response) : Nil
+      return unless @userselect
+      ui.ctx.set_cursor_icon(Egui::CursorIcon::Text) if response.hovered?
+      ui.ctx.memory.use_id(cache_id(ui).child(0x5EED_u64))
+    end
+
     def inspector_label : String?
       @rich.text
     end

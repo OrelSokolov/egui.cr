@@ -129,9 +129,14 @@ module Egui
       if @userselect
         # press/drag frames place the caret, the RELEASE frame fires
         # the click/double-click selection — all must run for real.
+        # A SECONDARY press opens the context menu; primary and
+        # secondary buttons carry separate press state.
         return nil if ctx.input.pointer_pressed? ||
                       ctx.input.pointer_down? ||
                       ctx.input.pointer_released? ||
+                      ctx.input.secondary_pressed? ||
+                      ctx.input.secondary_down? ||
+                      ctx.input.secondary_released? ||
                       ctx.input.modifiers.command?
         anchor_id = id.child(0x5EED_u64)
         cursor = ctx.memory.data.get_int(id, 0)

@@ -57,6 +57,16 @@ module Egui
     # Retained paint cache (paint_cache.cr — FPS_OPTIMIZATION.md §1,
     # stage 2): memoized widget paint output replayed by Ui#add.
     getter paint_cache : PaintCache
+    # Subtree capture (Ui#cached_subtree): while set, every real
+    # interaction registration is appended here — the captured
+    # subtree's Entry re-registers them translated on a hit.
+    @interact_log : Array(PaintCache::Interact)? = nil
+    # Per-frame paint-cache telemetry (see #end_frame): widgets whose
+    # keys changed (rebuilt) vs replayed from the cache.
+    @frame_rebuilt = 0
+    @frame_replayed = 0
+    @last_real_misses = 0
+    @last_paint_hits = 0
     # The app-global hotkey → action bindings (see `hotkeys.cr`).
     # Actions fired this frame (key press or `#fire_action`) live for
     # exactly one frame and are claimed with `#consume_action`.
@@ -403,6 +413,29 @@ module Egui
       @safe_area = SafeArea.zero
     end
 
+    # Swap the interact-capture log (nil = not capturing); returns the
+    # previous one so nested captures restore it. Ui#cached_subtree is
+    # the only caller.
+    def swap_interact_log(log : Array(PaintCache::Interact)?) : Array(PaintCache::Interact)?
+      old = @interact_log
+      @interact_log = log
+      old
+    end
+
+    # Subtree-cache gate: while ANY time-dependent animation runs
+    # anywhere, a cached subtree must not replay (its content may be
+    # mid-flight; a subtree spans ids it cannot enumerate, so the gate
+    # is global — the leaf cache gates per widget id). All four checks
+    # are liveness, not presence: a settled cell lingering in a hash
+    # does not block.
+    def subtree_animations_running? : Bool
+      time = @input.time
+      @memory.style_animations.any_running?(time) ||
+        @memory.appear_anims.any_running? ||
+        @memory.keyframe_anims.any_running?(time) ||
+        @memory.animations.any_running?(time)
+    end
+
     def begin_frame(raw : RawInput) : Nil
       @in_frame = true
       @input = InputState.build(raw, @input, @prev_time)
@@ -508,6 +541,18 @@ module Egui
       @theme.sheet
     end
 
+    # Widgets whose paint-cache keys changed this frame (ran for
+    # real), and how many replayed from the cache — the damage
+    # telemetry pair (see #end_frame). `frame_damage` is the spatial
+    # version: the union of the rebuilt widgets' rects (nil = an
+    # identical frame, nothing to re-render).
+    getter frame_rebuilt : Int32
+    getter frame_replayed : Int32
+
+    def frame_damage : Rect?
+      @painter.dirty
+    end
+
     def end_frame : Array(PaintCmd)
       # The central panel is DEFERRED: it renders here, after update
       # has declared every other panel, so it always gets the true
@@ -531,6 +576,17 @@ module Egui
       @paint_cache.tick
       gen = @flex_memo_gen
       @flex_measures.reject! { |_, m| gen - m.last_gen > 3 }
+      # --- per-frame cache telemetry (FPS_OPTIMIZATION.md §2) ---------
+      # Widgets rebuilt vs replayed THIS frame (paint-cache counters
+      # are cumulative; the delta is the frame's). `frame_damage`
+      # (Painter#dirty) is the spatial version — the union of the
+      # changed widgets' rects. The "hover over 1000 icons rebuilds
+      # two widgets" readiness metric reads these.
+      @frame_rebuilt = @paint_cache.real_misses - @last_real_misses
+      @frame_replayed = @paint_cache.hits - @last_paint_hits
+      @last_real_misses = @paint_cache.real_misses
+      @last_paint_hits = @paint_cache.hits
+      @frame_rebuilt.times { Egui::Bench.count("paintcache.rebuilt") }
       Egui::Bench.span("Memory#end_frame") { @memory.end_frame }
       cmds = Egui::Bench.span("Painter#commands_in_layer_order") do
         @painter.commands_in_layer_order
@@ -620,7 +676,7 @@ module Egui
     end
 
     def set_flex_measure(id : Id, avail : Float64,
-                         measure : FlexMeasure) : Nil
+                         measure : FlexMeasure) : FlexMeasure
       measure.last_gen = @flex_memo_gen
       @flex_measures[{id.value, avail.round(1)}] = measure
     end
@@ -640,6 +696,21 @@ module Egui
       # flex).
       property ids : Array(Id)
       property last_gen : Int32 = 0
+
+      # Incremental layout (FPS_OPTIMization.md §5): the LAST real
+      # pass's placement, memoized by an inputs hash (child params +
+      # naturals + container axes). A stationary frame reuses the slots
+      # and skips distribute + place entirely. Slots are RELATIVE to
+      # max_rect.min (the flex translates for free when it moves).
+      class FlexLayout
+        getter inputs : UInt64
+        getter slots : Array(Rect)
+
+        def initialize(@inputs, @slots)
+        end
+      end
+
+      property layout : FlexLayout?
 
       def initialize(@avail, @naturals, @ids)
       end
@@ -682,6 +753,11 @@ module Egui
         insp.record_meta(id, @current_widget)
       end
       v = @memory.interact(id, rect, sense, layer, clip)
+      # Subtree capture (Ui#cached_subtree): record the registration
+      # so a hit can re-register it translated without running the
+      # block. Deduped by id when the capture closes (last wins — the
+      # later registration is the z-meaningful one).
+      @interact_log.try &.push(PaintCache::Interact.new(id, rect, sense, layer))
       response = Response.new(self, id, rect, sense, v.hovered?, v.clicked?,
         v.click_count, v.pressed?, v.active?, v.dragged?, v.drag_started?,
         v.drag_stopped?, v.drag_delta)

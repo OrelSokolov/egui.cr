@@ -120,6 +120,102 @@ const LOOKS = ['Nocturne', 'Aurora', 'Daylight', 'Windows Light', 'Windows Dark'
   'GNOME Light', 'GNOME Dark', 'KDE Light', 'KDE Dark', 'Glass', 'High Contrast', 'Print', 'Sepia', 'Midnight'];
 const EFFECTS = ['Mesh', 'Aurora', 'Plasma', 'Spotlight', 'Shimmer', 'None'];
 
+/* Луки плеера — порт <Theme>-файлов Raven (themes/nocturne.xml, aurora.xml,
+   daylight.xml + луки платформ). Те же значения, что в MusicTags
+   (examples/music_components/music_tags.cr): база Dark/Light + оверрайды.
+   applyTheme() пишет их в CSS-переменные :root — верстка одна, тем много. */
+const DARK_VARS = {
+  '--window': '#060609', '--popup': '#1b1b24', '--popup-border': '#ffffff1a',
+  '--text': '#f4f4f8', '--placeholder': '#8a8a99', '--muted': '#a3a3b4',
+  '--eyebrow': '#d6d6e2', '--separator': '#ffffff14', '--border': '#ffffff12',
+  '--control': '#ffffff12', '--control-hover': '#ffffff1f', '--control-pressed': '#ffffff2b',
+  '--row-hover': '#ffffff10', '--surface-bg': '#0d0d12c8', '--surface-border': '#ffffff0d',
+  '--bar-bg': '#050508e6', '--search-bg': '#1e1e28', '--card-flat': '#ffffff0a',
+  '--card-hover': '#ffffff12', '--card-active': '#ffffff1c', '--card2': '#16161c',
+  '--accent': '#b79cff', '--icon': '#c4c4d2', '--strong': '#f4f4f8', '--track': '#ffffff33',
+};
+const LIGHT_VARS = {
+  '--window': '#f3f1ec', '--popup': '#ffffff', '--popup-border': '#00000014',
+  '--text': '#16161d', '--placeholder': '#7a7a88', '--muted': '#5e5e6c',
+  '--eyebrow': '#3a3a46', '--separator': '#0000001a', '--border': '#00000014',
+  '--control': '#0000000d', '--control-hover': '#00000017', '--control-pressed': '#00000021',
+  '--row-hover': '#0000000d', '--surface-bg': '#ffffffd9', '--surface-border': '#0000000f',
+  '--bar-bg': '#ffffffe6', '--search-bg': '#ffffff', '--card-flat': '#0000000a',
+  '--card-hover': '#00000009', '--card-active': '#00000012', '--card2': '#ffffff',
+  '--accent': '#7c3aed', '--icon': '#3a3a46', '--strong': '#16161d', '--track': '#00000026',
+};
+const THEMES = {
+  'Nocturne': { dark: true },
+  'Aurora': { dark: true, vars: { '--text': '#f7f7fb', '--placeholder': '#b4b4c6',
+    '--muted': '#c8c8d8', '--eyebrow': '#e4e4ee', '--separator': '#ffffff1f',
+    '--row-hover': '#ffffff14', '--surface-bg': '#101018b0', '--surface-border': '#ffffff14',
+    '--search-bg': '#1a1a24b8', '--card-flat': '#ffffff10', '--accent': '#7dd3fc',
+    '--strong': '#f7f7fb' } },
+  'Daylight': { dark: false },
+  'Windows Light': { dark: false, vars: { '--window': '#f3f3f3', '--surface-bg': '#fefefed9',
+    '--accent': '#005fb8', '--text': '#1a1a1a', '--muted': '#5d5d5d', '--eyebrow': '#2f2f2f',
+    '--strong': '#1a1a1a', '--icon': '#2f2f2f' } },
+  'Windows Dark': { dark: true, vars: { '--window': '#202020', '--popup': '#2b2b2b',
+    '--surface-bg': '#2b2b2bd9', '--surface-border': '#ffffff0f', '--accent': '#4cc2ff',
+    '--muted': '#a6a6a6', '--eyebrow': '#d0d0d0', '--search-bg': '#333333',
+    '--bar-bg': '#1c1c1ce6', '--card2': '#313131', '--strong': '#ffffff' } },
+  'macOS Light': { dark: false, vars: { '--window': '#f5f5f7', '--surface-bg': '#ffffffc0',
+    '--accent': '#0071e3', '--text': '#1d1d1f', '--muted': '#6e6e73', '--eyebrow': '#3c3c43',
+    '--bar-bg': '#f5f5f7d9', '--strong': '#1d1d1f', '--icon': '#3c3c43' } },
+  'macOS Dark': { dark: true, vars: { '--window': '#1e1e1e', '--popup': '#2c2c2e',
+    '--surface-bg': '#2c2c2ec0', '--accent': '#0a84ff', '--text': '#f5f5f7',
+    '--muted': '#98989d', '--eyebrow': '#d8d8dc', '--search-bg': '#38383a',
+    '--bar-bg': '#1a1a1ce6', '--card2': '#323234', '--strong': '#f5f5f7' } },
+  'GNOME Light': { dark: false, vars: { '--window': '#f6f5f4', '--surface-bg': '#ffffff',
+    '--accent': '#1c71d8', '--text': '#242424', '--muted': '#77767b', '--eyebrow': '#3d3d3d',
+    '--bar-bg': '#f6f5f4e6', '--card2': '#faf9f8', '--strong': '#242424' } },
+  'GNOME Dark': { dark: true, vars: { '--window': '#242428', '--popup': '#303035',
+    '--surface-bg': '#303035', '--accent': '#3584e4', '--muted': '#b0b0b4',
+    '--eyebrow': '#dcdcdf', '--search-bg': '#3a3a40', '--bar-bg': '#1e1e22e6',
+    '--card2': '#35353b', '--strong': '#ffffff' } },
+  'KDE Light': { dark: false, vars: { '--window': '#eff0f1', '--surface-bg': '#fcfcfc',
+    '--accent': '#3daee9', '--text': '#232629', '--muted': '#6d6d70', '--eyebrow': '#31363b',
+    '--bar-bg': '#eff0f1e6', '--card2': '#f7f7f8', '--strong': '#232629' } },
+  'KDE Dark': { dark: true, vars: { '--window': '#1b1c20', '--popup': '#26272c',
+    '--surface-bg': '#26272ccc', '--accent': '#3daee9', '--text': '#fcfcfc',
+    '--muted': '#a9a9b0', '--eyebrow': '#d5d5da', '--search-bg': '#33343a',
+    '--bar-bg': '#16171be6', '--card2': '#2c2d33', '--strong': '#fcfcfc' } },
+  'Glass': { dark: true, vars: { '--window': '#0a0a10', '--surface-bg': '#14141cc0',
+    '--surface-border': '#ffffff14', '--accent': '#a5c8ff', '--text': '#f2f2f8',
+    '--muted': '#c0c0d0', '--eyebrow': '#e0e0ea', '--search-bg': '#1c1c26b8',
+    '--bar-bg': '#08080ce0', '--card2': '#1a1a24', '--strong': '#f2f2f8' } },
+  'High Contrast': { dark: true, vars: { '--window': '#000000', '--popup': '#000000',
+    '--popup-border': '#ffffff', '--placeholder': '#e0e0e0', '--muted': '#e0e0e0',
+    '--eyebrow': '#ffffff', '--separator': '#ffffff66', '--border': '#ffffff',
+    '--control': '#ffffff26', '--control-hover': '#ffffff40', '--control-pressed': '#ffffff59',
+    '--row-hover': '#ffffff33', '--bar-bg': '#000000e6', '--search-bg': '#000000',
+    '--accent': '#ffff00', '--icon': '#ffffff', '--strong': '#ffffff',
+    '--surface-bg': '#000000', '--surface-border': '#ffffff', '--card-flat': '#ffffff1a',
+    '--card-hover': '#ffffff26', '--card-active': '#ffffff33', '--card2': '#0d0d0d',
+    '--track': '#ffffff59' } },
+  'Print': { dark: false, vars: { '--window': '#ffffff', '--separator': '#00000033',
+    '--border': '#00000026', '--placeholder': '#767676', '--muted': '#555555',
+    '--eyebrow': '#222222', '--bar-bg': '#ffffff', '--search-bg': '#f2f2f2',
+    '--accent': '#111111', '--icon': '#333333', '--strong': '#111111',
+    '--surface-bg': '#ffffff', '--surface-border': '#00000026', '--card-flat': '#00000008',
+    '--card-hover': '#0000000d', '--card-active': '#00000012', '--card2': '#f7f7f7',
+    '--track': '#00000040' } },
+  'Sepia': { dark: false, vars: { '--window': '#f4ecd8', '--popup': '#faf4e6',
+    '--text': '#5b4636', '--placeholder': '#9c8a72', '--muted': '#7a6a55',
+    '--eyebrow': '#5b4636', '--separator': '#5b463633', '--border': '#5b463626',
+    '--control': '#5b46360d', '--control-hover': '#5b463617', '--control-pressed': '#5b463621',
+    '--row-hover': '#5b46360d', '--bar-bg': '#f4ecd8e6', '--search-bg': '#fdf8ec',
+    '--accent': '#8b5e34', '--icon': '#6d5c48', '--strong': '#43302b',
+    '--surface-bg': '#faf4e6d9', '--surface-border': '#5b46361a', '--card-flat': '#5b46360a',
+    '--card-hover': '#5b46360d', '--card-active': '#5b463612', '--card2': '#f8f2e2',
+    '--track': '#5b463640' } },
+  'Midnight': { dark: true, vars: { '--window': '#0a0e1a', '--popup': '#151b2c',
+    '--text': '#e8ecf8', '--placeholder': '#7e86a3', '--muted': '#8e96b4',
+    '--eyebrow': '#c8cfe4', '--search-bg': '#1a2238', '--accent': '#6c9cff',
+    '--icon': '#b0b8d0', '--strong': '#e8ecf8', '--surface-bg': '#121829c8',
+    '--bar-bg': '#070b14e6', '--card2': '#182036' } },
+};
+
 /* --- сборка библиотеки --- */
 const TRACKS = [];   /* { album, title, seconds, liked, plays } */
 for (let a = 0; a < ALBUMS.length; a++) {
@@ -237,7 +333,7 @@ const app = Vue.createApp({
 
       /* настройки (значения по умолчанию — из main()) */
       followCover: true, picked: '#B79CFF', effect: 0, animate: true, panel: true,
-      crossfade: 5, look: 0, normalize: true, quality: 2,
+      crossfade: 5, look: 0, normalize: true, quality: 2, darkLook: true,
       albumLikes: ALBUMS.map((_, i) => i === 2 || i === 5),
 
       notice: '', noticeTimer: 0,
@@ -254,11 +350,16 @@ const app = Vue.createApp({
     album() { return this.trackObj ? this.albums[this.trackObj.album] : this.albums[0]; },
 
     /* акцент следует обложке (update_accent + make_accent в main.c/library.c) */
-    accent() { return this.followCover ? makeAccent(this.album.c1) : this.picked; },
+    accent() {
+      if (!this.followCover) return this.picked;
+      const a = makeAccent(this.album.c1);
+      return this.darkLook ? a : scaleHex(a, 0.62);
+    },
     winStyle() { return { '--accent': this.accent }; },
     meshStyle() {
-      const a = this.album;
-      return { '--m1': scaleHex(a.c1, 0.55), '--m2': scaleHex(a.c2, 0.35), '--m3': scaleHex(a.c1, 0.35) };
+      const a = this.album, d = this.darkLook;
+      return { '--m1': scaleHex(a.c1, d ? 0.55 : 1.0), '--m2': scaleHex(a.c2, d ? 0.35 : 0.9),
+               '--m3': scaleHex(a.c1, d ? 0.35 : 0.9) };
     },
     heroStyle() {
       const a = this.colKind === 'album' ? this.albums[this.colIndex] : this.albums[this.playlists[this.colIndex].cover < 0 ? 0 : this.playlists[this.colIndex].cover];
@@ -379,6 +480,9 @@ const app = Vue.createApp({
        RAVEN_MUSIC_PAUSED / RAVEN_MUSIC_ISLAND у main.c: #album, #playlist,
        #search, #genres, #library, #settings (+ «,paused», «,island») */
     const opts = location.hash.slice(1).split(',').map(s => s.trim());
+    const lkOpt = opts.find(o => o.startsWith('look='));
+    if (lkOpt && LOOKS.includes(lkOpt.slice(5))) this.look = LOOKS.indexOf(lkOpt.slice(5));
+    this.applyTheme(LOOKS[this.look]);
     if (opts.includes('album')) this.openAlbum(0);
     else if (opts.includes('playlist')) this.openPlaylist(1);
     else if (opts.includes('search')) { this.query = 'the'; this.showPage('search', true); }
@@ -555,8 +659,15 @@ const app = Vue.createApp({
     togglePanel() { this.panel = !this.panel; },
 
     /* ------------------------------------------------------- настройки */
-    onLook() {
-      if (this.look !== 0) { this.notify('Not in this demo'); this.look = 0; }
+    onLook() { this.applyTheme(LOOKS[this.look] || LOOKS[0]); },
+    /* лук = CSS-переменные :root (аналог Rtheme_use у Raven); светлый
+       лук также затемняет акцент обложки и приглушает фон */
+    applyTheme(name) {
+      const t = THEMES[name] || THEMES['Nocturne'];
+      const vars = Object.assign({}, t.dark ? DARK_VARS : LIGHT_VARS, t.vars || {});
+      const root = document.documentElement.style;
+      for (const [k, v] of Object.entries(vars)) root.setProperty(k, v);
+      this.darkLook = t.dark;
     },
     onAccent(e) {
       this.picked = e.target.value;

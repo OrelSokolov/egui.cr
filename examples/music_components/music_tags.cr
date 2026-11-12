@@ -5,8 +5,9 @@
 # состоит из встроенных тегов (row/column/box/repeat/…) и этих.
 #
 # Почти всё рисуется painter'ом по прямоугольникам — как Rcustom-виджеты
-# Raven. Значения цветов/отступов — из oracle/raven_music/style.css
-# (тема Nocturne); номера в комментариях ссылаются на его строки.
+# Raven. Отступы/геометрия — из oracle/raven_music/style.css (база —
+# Nocturne); ЦВЕТА — палитра текущего лука (см. looks/Palette ниже,
+# порт themes/*.xml Raven), номера в комментариях ссылаются на его строки.
 require "../../src/egui"
 require "./music_library"
 
@@ -19,26 +20,389 @@ module MusicTags
   # make_accent цвета играющей обложки, иначе picked из настроек);
   # до первого кадра — акцент темы Nocturne.
   def self.accent(rt) : Egui::Color32
-    hex(rt.string("accent")) || ACCENT
+    hex(rt.string("accent")) || accent
   end
 
-  # ── палитра Nocturne (oracle style.css :root) ──────────────────────
-  WINDOW      = Egui::Color32.rgb(0x06, 0x06, 0x09)
-  POPUP       = Egui::Color32.rgb(0x1b, 0x1b, 0x24)
-  TEXT        = Egui::Color32.rgb(0xf4, 0xf4, 0xf8)
-  PLACEHOLDER = Egui::Color32.rgb(0x8a, 0x8a, 0x99)
-  MUTED       = Egui::Color32.rgb(0xa3, 0xa3, 0xb4)
-  EYEBROW     = Egui::Color32.rgb(0xd6, 0xd6, 0xe2)
-  SEPARATOR   = Egui::Color32.rgba(255, 255, 255, 0x14)
-  BORDER      = Egui::Color32.rgba(255, 255, 255, 0x12)
-  CONTROL     = Egui::Color32.rgba(255, 255, 255, 0x12)
-  CONTROL_HOV = Egui::Color32.rgba(255, 255, 255, 0x1f)
-  ROW_HOVER   = Egui::Color32.rgba(255, 255, 255, 0x10)
-  BAR_BG      = Egui::Color32.rgb(0x05, 0x05, 0x08)
-  SEARCH_BG   = Egui::Color32.rgb(0x1e, 0x1e, 0x28)
-  ACCENT      = Egui::Color32.rgb(0xb7, 0x9c, 0xff)
-  WHITE       = Egui::Color32.rgb(255, 255, 255)
-  ICON_FG     = Egui::Color32.rgb(0xc4, 0xc4, 0xd2)
+  # ── луки (аналог themes/*.xml у Raven) ──────────────────────────────
+  # Палитра лука — порт <Theme>-файлов Raven (themes/nocturne.xml,
+  # aurora.xml, daylight.xml + луки платформ): слоты Colors темы и цвета
+  # классов плеера (surface/card/track). Смена лука — MusicTags.use_look
+  # (аналог Rtheme_use): теги читают цвета через методы ниже каждый кадр,
+  # окно перекрашивается на следующем кадре. Имена — MusicLibrary::LOOKS.
+  #
+  # WHITE — буквально белый: тексты поверх ЦВЕТНЫХ поверхностей (hero,
+  # плитки жанров, лого) — у Raven они белые «whatever the theme»; для
+  # «самого яркого» цвета лука есть слот strong (тёмные луки: #f4f4f8,
+  # светлые: цвет текста).
+  WHITE = Egui::Color32.rgb(255, 255, 255)
+
+  class Palette
+    getter name : String
+    getter? dark : Bool
+    getter colors : Hash(String, Egui::Color32)
+
+    def initialize(@name : String, @dark : Bool,
+                   overrides : Hash(String, Egui::Color32) = {} of String => Egui::Color32)
+      base = @dark ? MusicTags.dark_base : MusicTags.light_base
+      @colors = base.merge(overrides)
+    end
+
+    def [](key : String) : Egui::Color32
+      @colors[key]
+    end
+  end
+
+  # база Dark — Nocturne (themes/nocturne.xml, oracle style.css :root)
+  def self.dark_base : Hash(String, Egui::Color32)
+    {
+      "window"         => hex("#060609").not_nil!,
+      "popup"          => hex("#1b1b24").not_nil!,
+      "popup_border"   => hex("#ffffff1a").not_nil!,
+      "text"           => hex("#f4f4f8").not_nil!,
+      "placeholder"    => hex("#8a8a99").not_nil!,
+      "muted"          => hex("#a3a3b4").not_nil!,
+      "eyebrow"        => hex("#d6d6e2").not_nil!,
+      "separator"      => hex("#ffffff14").not_nil!,
+      "border"         => hex("#ffffff12").not_nil!,
+      "control"        => hex("#ffffff12").not_nil!,
+      "control_hov"    => hex("#ffffff1f").not_nil!,
+      "control_prs"    => hex("#ffffff2b").not_nil!,
+      "row_hover"      => hex("#ffffff10").not_nil!,
+      "bar_bg"         => hex("#050508e6").not_nil!,
+      "search_bg"      => hex("#1e1e28").not_nil!,
+      "accent"         => hex("#b79cff").not_nil!,
+      "icon"           => hex("#c4c4d2").not_nil!,
+      "strong"         => hex("#f4f4f8").not_nil!,
+      "surface_bg"     => hex("#0d0d12c8").not_nil!,
+      "surface_border" => hex("#ffffff0d").not_nil!,
+      "card_flat"      => hex("#ffffff0a").not_nil!,
+      "card_hover"     => hex("#ffffff12").not_nil!,
+      "card_active"    => hex("#ffffff1c").not_nil!,
+      "card2"          => hex("#16161c").not_nil!,
+      "np_artist"      => hex("#241a3f").not_nil!,
+      "track"          => hex("#ffffff33").not_nil!,
+    }
+  end
+
+  # база Light — Daylight (themes/daylight.xml)
+  def self.light_base : Hash(String, Egui::Color32)
+    {
+      "window"         => hex("#f3f1ec").not_nil!,
+      "popup"          => hex("#ffffff").not_nil!,
+      "popup_border"   => hex("#00000014").not_nil!,
+      "text"           => hex("#16161d").not_nil!,
+      "placeholder"    => hex("#7a7a88").not_nil!,
+      "muted"          => hex("#5e5e6c").not_nil!,
+      "eyebrow"        => hex("#3a3a46").not_nil!,
+      "separator"      => hex("#0000001a").not_nil!,
+      "border"         => hex("#00000014").not_nil!,
+      "control"        => hex("#0000000d").not_nil!,
+      "control_hov"    => hex("#00000017").not_nil!,
+      "control_prs"    => hex("#00000021").not_nil!,
+      "row_hover"      => hex("#0000000d").not_nil!,
+      "bar_bg"         => hex("#ffffffe6").not_nil!,
+      "search_bg"      => hex("#ffffff").not_nil!,
+      "accent"         => hex("#7c3aed").not_nil!,
+      "icon"           => hex("#3a3a46").not_nil!,
+      "strong"         => hex("#16161d").not_nil!,
+      "surface_bg"     => hex("#ffffffd9").not_nil!,
+      "surface_border" => hex("#0000000f").not_nil!,
+      "card_flat"      => hex("#0000000a").not_nil!,
+      "card_hover"     => hex("#00000009").not_nil!,
+      "card_active"    => hex("#00000012").not_nil!,
+      "card2"          => hex("#ffffff").not_nil!,
+      "np_artist"      => hex("#f0ecfa").not_nil!,
+      "track"          => hex("#00000026").not_nil!,
+    }
+  end
+
+  @@look : Palette?
+  @@looks : Hash(String, Palette)?
+
+  # все луки плеера (порядок имён — MusicLibrary::LOOKS): три темы
+  # Raven-плеера (Nocturne/Aurora/Daylight) и луки платформ
+  def self.looks : Hash(String, Palette)
+    @@looks ||= {
+      "Nocturne"       => Palette.new("Nocturne", dark: true),
+      "Aurora"         => Palette.new("Aurora", dark: true, overrides: {
+        "text"           => hex("#f7f7fb").not_nil!,
+        "placeholder"    => hex("#b4b4c6").not_nil!,
+        "muted"          => hex("#c8c8d8").not_nil!,
+        "eyebrow"        => hex("#e4e4ee").not_nil!,
+        "separator"      => hex("#ffffff1f").not_nil!,
+        "row_hover"      => hex("#ffffff14").not_nil!,
+        "surface_bg"     => hex("#101018b0").not_nil!,
+        "surface_border" => hex("#ffffff14").not_nil!,
+        "search_bg"      => hex("#1a1a24b8").not_nil!,
+        "card_flat"      => hex("#ffffff10").not_nil!,
+        "accent"         => hex("#7dd3fc").not_nil!,
+        "strong"         => hex("#f7f7fb").not_nil!,
+        "np_artist"      => hex("#12283a").not_nil!,
+      }),
+      "Daylight"       => Palette.new("Daylight", dark: false),
+      "Windows Light"  => Palette.new("Windows Light", dark: false, overrides: {
+        "window"      => hex("#f3f3f3").not_nil!,
+        "surface_bg"  => hex("#fefefed9").not_nil!,
+        "accent"      => hex("#005fb8").not_nil!,
+        "text"        => hex("#1a1a1a").not_nil!,
+        "muted"       => hex("#5d5d5d").not_nil!,
+        "eyebrow"     => hex("#2f2f2f").not_nil!,
+        "strong"      => hex("#1a1a1a").not_nil!,
+        "icon"        => hex("#2f2f2f").not_nil!,
+        "np_artist"   => hex("#dfeaf5").not_nil!,
+      }),
+      "Windows Dark"   => Palette.new("Windows Dark", dark: true, overrides: {
+        "window"         => hex("#202020").not_nil!,
+        "popup"          => hex("#2b2b2b").not_nil!,
+        "surface_bg"     => hex("#2b2b2bd9").not_nil!,
+        "surface_border" => hex("#ffffff0f").not_nil!,
+        "accent"         => hex("#4cc2ff").not_nil!,
+        "muted"          => hex("#a6a6a6").not_nil!,
+        "eyebrow"        => hex("#d0d0d0").not_nil!,
+        "search_bg"      => hex("#333333").not_nil!,
+        "bar_bg"         => hex("#1c1c1ce6").not_nil!,
+        "card2"          => hex("#313131").not_nil!,
+        "np_artist"      => hex("#1a3a4d").not_nil!,
+        "strong"         => hex("#ffffff").not_nil!,
+      }),
+      "macOS Light"    => Palette.new("macOS Light", dark: false, overrides: {
+        "window"      => hex("#f5f5f7").not_nil!,
+        "surface_bg"  => hex("#ffffffc0").not_nil!,
+        "accent"      => hex("#0071e3").not_nil!,
+        "text"        => hex("#1d1d1f").not_nil!,
+        "muted"       => hex("#6e6e73").not_nil!,
+        "eyebrow"     => hex("#3c3c43").not_nil!,
+        "bar_bg"      => hex("#f5f5f7d9").not_nil!,
+        "strong"      => hex("#1d1d1f").not_nil!,
+        "icon"        => hex("#3c3c43").not_nil!,
+        "np_artist"   => hex("#e8f0fb").not_nil!,
+      }),
+      "macOS Dark"     => Palette.new("macOS Dark", dark: true, overrides: {
+        "window"      => hex("#1e1e1e").not_nil!,
+        "popup"       => hex("#2c2c2e").not_nil!,
+        "surface_bg"  => hex("#2c2c2ec0").not_nil!,
+        "accent"      => hex("#0a84ff").not_nil!,
+        "text"        => hex("#f5f5f7").not_nil!,
+        "muted"       => hex("#98989d").not_nil!,
+        "eyebrow"     => hex("#d8d8dc").not_nil!,
+        "search_bg"   => hex("#38383a").not_nil!,
+        "bar_bg"      => hex("#1a1a1ce6").not_nil!,
+        "card2"       => hex("#323234").not_nil!,
+        "np_artist"   => hex("#12233d").not_nil!,
+        "strong"      => hex("#f5f5f7").not_nil!,
+      }),
+      "GNOME Light"    => Palette.new("GNOME Light", dark: false, overrides: {
+        "window"      => hex("#f6f5f4").not_nil!,
+        "surface_bg"  => hex("#ffffff").not_nil!,
+        "accent"      => hex("#1c71d8").not_nil!,
+        "text"        => hex("#242424").not_nil!,
+        "muted"       => hex("#77767b").not_nil!,
+        "eyebrow"     => hex("#3d3d3d").not_nil!,
+        "bar_bg"      => hex("#f6f5f4e6").not_nil!,
+        "card2"       => hex("#faf9f8").not_nil!,
+        "strong"      => hex("#242424").not_nil!,
+        "np_artist"   => hex("#dbe6f8").not_nil!,
+      }),
+      "GNOME Dark"     => Palette.new("GNOME Dark", dark: true, overrides: {
+        "window"      => hex("#242428").not_nil!,
+        "popup"       => hex("#303035").not_nil!,
+        "surface_bg"  => hex("#303035").not_nil!,
+        "accent"      => hex("#3584e4").not_nil!,
+        "muted"       => hex("#b0b0b4").not_nil!,
+        "eyebrow"     => hex("#dcdcdf").not_nil!,
+        "search_bg"   => hex("#3a3a40").not_nil!,
+        "bar_bg"      => hex("#1e1e22e6").not_nil!,
+        "card2"       => hex("#35353b").not_nil!,
+        "np_artist"   => hex("#16294a").not_nil!,
+        "strong"      => hex("#ffffff").not_nil!,
+      }),
+      "KDE Light"      => Palette.new("KDE Light", dark: false, overrides: {
+        "window"      => hex("#eff0f1").not_nil!,
+        "surface_bg"  => hex("#fcfcfc").not_nil!,
+        "accent"      => hex("#3daee9").not_nil!,
+        "text"        => hex("#232629").not_nil!,
+        "muted"       => hex("#6d6d70").not_nil!,
+        "eyebrow"     => hex("#31363b").not_nil!,
+        "bar_bg"      => hex("#eff0f1e6").not_nil!,
+        "card2"       => hex("#f7f7f8").not_nil!,
+        "strong"      => hex("#232629").not_nil!,
+        "np_artist"   => hex("#dff1fb").not_nil!,
+      }),
+      "KDE Dark"       => Palette.new("KDE Dark", dark: true, overrides: {
+        "window"      => hex("#1b1c20").not_nil!,
+        "popup"       => hex("#26272c").not_nil!,
+        "surface_bg"  => hex("#26272ccc").not_nil!,
+        "accent"      => hex("#3daee9").not_nil!,
+        "text"        => hex("#fcfcfc").not_nil!,
+        "muted"       => hex("#a9a9b0").not_nil!,
+        "eyebrow"     => hex("#d5d5da").not_nil!,
+        "search_bg"   => hex("#33343a").not_nil!,
+        "bar_bg"      => hex("#16171be6").not_nil!,
+        "card2"       => hex("#2c2d33").not_nil!,
+        "np_artist"   => hex("#123244").not_nil!,
+        "strong"      => hex("#fcfcfc").not_nil!,
+      }),
+      "Glass"          => Palette.new("Glass", dark: true, overrides: {
+        "window"         => hex("#0a0a10").not_nil!,
+        "surface_bg"     => hex("#14141cc0").not_nil!,
+        "surface_border" => hex("#ffffff14").not_nil!,
+        "accent"         => hex("#a5c8ff").not_nil!,
+        "text"           => hex("#f2f2f8").not_nil!,
+        "muted"          => hex("#c0c0d0").not_nil!,
+        "eyebrow"        => hex("#e0e0ea").not_nil!,
+        "search_bg"      => hex("#1c1c26b8").not_nil!,
+        "bar_bg"         => hex("#08080ce0").not_nil!,
+        "card2"          => hex("#1a1a24").not_nil!,
+        "np_artist"      => hex("#1d2540").not_nil!,
+        "strong"         => hex("#f2f2f8").not_nil!,
+      }),
+      "High Contrast"  => Palette.new("High Contrast", dark: true, overrides: {
+        "window"         => hex("#000000").not_nil!,
+        "popup"          => hex("#000000").not_nil!,
+        "popup_border"   => hex("#ffffff").not_nil!,
+        "placeholder"    => hex("#e0e0e0").not_nil!,
+        "muted"          => hex("#e0e0e0").not_nil!,
+        "eyebrow"        => hex("#ffffff").not_nil!,
+        "separator"      => hex("#ffffff66").not_nil!,
+        "border"         => hex("#ffffff").not_nil!,
+        "control"        => hex("#ffffff26").not_nil!,
+        "control_hov"    => hex("#ffffff40").not_nil!,
+        "control_prs"    => hex("#ffffff59").not_nil!,
+        "row_hover"      => hex("#ffffff33").not_nil!,
+        "bar_bg"         => hex("#000000e6").not_nil!,
+        "search_bg"      => hex("#000000").not_nil!,
+        "accent"         => hex("#ffff00").not_nil!,
+        "icon"           => hex("#ffffff").not_nil!,
+        "strong"         => hex("#ffffff").not_nil!,
+        "surface_bg"     => hex("#000000").not_nil!,
+        "surface_border" => hex("#ffffff").not_nil!,
+        "card_flat"      => hex("#ffffff1a").not_nil!,
+        "card_hover"     => hex("#ffffff26").not_nil!,
+        "card_active"    => hex("#ffffff33").not_nil!,
+        "card2"          => hex("#0d0d0d").not_nil!,
+        "np_artist"      => hex("#3a3a00").not_nil!,
+        "track"          => hex("#ffffff59").not_nil!,
+      }),
+      "Print"          => Palette.new("Print", dark: false, overrides: {
+        "window"         => hex("#ffffff").not_nil!,
+        "separator"      => hex("#00000033").not_nil!,
+        "border"         => hex("#00000026").not_nil!,
+        "placeholder"    => hex("#767676").not_nil!,
+        "muted"          => hex("#555555").not_nil!,
+        "eyebrow"        => hex("#222222").not_nil!,
+        "bar_bg"         => hex("#ffffff").not_nil!,
+        "search_bg"      => hex("#f2f2f2").not_nil!,
+        "accent"         => hex("#111111").not_nil!,
+        "icon"           => hex("#333333").not_nil!,
+        "strong"         => hex("#111111").not_nil!,
+        "surface_bg"     => hex("#ffffff").not_nil!,
+        "surface_border" => hex("#00000026").not_nil!,
+        "card_flat"      => hex("#00000008").not_nil!,
+        "card_hover"     => hex("#0000000d").not_nil!,
+        "card_active"    => hex("#00000012").not_nil!,
+        "card2"          => hex("#f7f7f7").not_nil!,
+        "np_artist"      => hex("#eeeeee").not_nil!,
+        "track"          => hex("#00000040").not_nil!,
+      }),
+      "Sepia"          => Palette.new("Sepia", dark: false, overrides: {
+        "window"         => hex("#f4ecd8").not_nil!,
+        "popup"          => hex("#faf4e6").not_nil!,
+        "text"           => hex("#5b4636").not_nil!,
+        "placeholder"    => hex("#9c8a72").not_nil!,
+        "muted"          => hex("#7a6a55").not_nil!,
+        "eyebrow"        => hex("#5b4636").not_nil!,
+        "separator"      => hex("#5b463633").not_nil!,
+        "border"         => hex("#5b463626").not_nil!,
+        "control"        => hex("#5b46360d").not_nil!,
+        "control_hov"    => hex("#5b463617").not_nil!,
+        "control_prs"    => hex("#5b463621").not_nil!,
+        "row_hover"      => hex("#5b46360d").not_nil!,
+        "bar_bg"         => hex("#f4ecd8e6").not_nil!,
+        "search_bg"      => hex("#fdf8ec").not_nil!,
+        "accent"         => hex("#8b5e34").not_nil!,
+        "icon"           => hex("#6d5c48").not_nil!,
+        "strong"         => hex("#43302b").not_nil!,
+        "surface_bg"     => hex("#faf4e6d9").not_nil!,
+        "surface_border" => hex("#5b46361a").not_nil!,
+        "card_flat"      => hex("#5b46360a").not_nil!,
+        "card_hover"     => hex("#5b46360d").not_nil!,
+        "card_active"    => hex("#5b463612").not_nil!,
+        "card2"          => hex("#f8f2e2").not_nil!,
+        "np_artist"      => hex("#eee2cd").not_nil!,
+        "track"          => hex("#5b463640").not_nil!,
+      }),
+      "Midnight"       => Palette.new("Midnight", dark: true, overrides: {
+        "window"      => hex("#0a0e1a").not_nil!,
+        "popup"       => hex("#151b2c").not_nil!,
+        "text"        => hex("#e8ecf8").not_nil!,
+        "placeholder" => hex("#7e86a3").not_nil!,
+        "muted"       => hex("#8e96b4").not_nil!,
+        "eyebrow"     => hex("#c8cfe4").not_nil!,
+        "search_bg"   => hex("#1a2238").not_nil!,
+        "accent"      => hex("#6c9cff").not_nil!,
+        "icon"        => hex("#b0b8d0").not_nil!,
+        "strong"      => hex("#e8ecf8").not_nil!,
+        "surface_bg"  => hex("#121829c8").not_nil!,
+        "bar_bg"      => hex("#070b14e6").not_nil!,
+        "card2"       => hex("#182036").not_nil!,
+        "np_artist"   => hex("#1a2748").not_nil!,
+      }),
+    }
+  end
+
+  def self.look : Palette
+    @@look ||= looks["Nocturne"].not_nil!
+  end
+
+  # смена лука (аналог Rtheme_use); false — имени нет в таблице
+  def self.use_look(name : String) : Bool
+    if (pal = looks[name]?)
+      @@look = pal
+      true
+    else
+      false
+    end
+  end
+
+  def self.look? : Bool
+    look.dark?
+  end
+
+  # текущая палитра: hex-строка слота (для store экзмл-рендера — разметка
+  # интерполирует {c_muted} и т.п.; alpha != 255 → #rrggbbaa)
+  def self.hex_str(key : String) : String
+    c = look[key]
+    c.a == 255 ? sprintf("#%02x%02x%02x", c.r, c.g, c.b)
+      : sprintf("#%02x%02x%02x%02x", c.r, c.g, c.b, c.a)
+  end
+
+  # ── слоты текущего лука (каждый кадр; до первого use_look — Nocturne)
+  def self.window : Egui::Color32; look["window"]; end
+  def self.popup : Egui::Color32; look["popup"]; end
+  def self.popup_border : Egui::Color32; look["popup_border"]; end
+  def self.text : Egui::Color32; look["text"]; end
+  def self.placeholder : Egui::Color32; look["placeholder"]; end
+  def self.muted : Egui::Color32; look["muted"]; end
+  def self.eyebrow : Egui::Color32; look["eyebrow"]; end
+  def self.separator : Egui::Color32; look["separator"]; end
+  def self.border : Egui::Color32; look["border"]; end
+  def self.control : Egui::Color32; look["control"]; end
+  def self.control_hov : Egui::Color32; look["control_hov"]; end
+  def self.control_prs : Egui::Color32; look["control_prs"]; end
+  def self.row_hover : Egui::Color32; look["row_hover"]; end
+  def self.bar_bg : Egui::Color32; look["bar_bg"]; end
+  def self.search_bg : Egui::Color32; look["search_bg"]; end
+  def self.accent : Egui::Color32; look["accent"]; end
+  def self.icon : Egui::Color32; look["icon"]; end
+  def self.strong : Egui::Color32; look["strong"]; end
+  def self.surface_bg : Egui::Color32; look["surface_bg"]; end
+  def self.surface_border : Egui::Color32; look["surface_border"]; end
+  def self.card_flat : Egui::Color32; look["card_flat"]; end
+  def self.card_hover : Egui::Color32; look["card_hover"]; end
+  def self.card_active : Egui::Color32; look["card_active"]; end
+  def self.card2 : Egui::Color32; look["card2"]; end
+  def self.np_artist : Egui::Color32; look["np_artist"]; end
+  def self.track : Egui::Color32; look["track"]; end
 
   # Оценка ширины ребёнка строки (для предрасчёта пружин — flex-распре-
   # деления в движке разметки нет, контейнер считает сам по атрибутам).
@@ -268,6 +632,10 @@ module MusicTags
       MusicTags.lerp(a.b, b.b, f).round.to_u8,
       MusicTags.lerp(a.a, b.a, f).round.to_u8)
   end
+  # цвет лука с другой alpha (CSS opacity поверх var(--…))
+  def self.dim(c : Egui::Color32, a : UInt8) : Egui::Color32
+    Egui::Color32.new(c.r, c.g, c.b, a)
+  end
 
   # appear=/appear-delay=/appear-stagger= панели: входная анимация
   # (Egui::AppearAnims — общий движок с `appear:` в ECSS). Задержка
@@ -404,7 +772,7 @@ widget :t do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   text = MusicTags.a(node, rt, "text") || ""
   size = MusicTags.f(node, rt, "size", 14.0)
-  color = MusicTags.hex(MusicTags.a(node, rt, "color")) || MusicTags::TEXT
+  color = MusicTags.hex(MusicTags.a(node, rt, "color")) || MusicTags.text
   bold = MusicTags.b(node, rt, "bold")
   w = MusicTags.f(node, rt, "w", 0.0)
   h = MusicTags.f(node, rt, "h", 0.0)
@@ -458,7 +826,7 @@ widget :icon do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "name") || "circle"
   size = MusicTags.f(node, rt, "size", 18.0)
-  color = MusicTags.hex(MusicTags.a(node, rt, "color")) || MusicTags::ICON_FG
+  color = MusicTags.hex(MusicTags.a(node, rt, "color")) || MusicTags.icon
   slot_w = MusicTags.f(node, rt, "w", -1.0)
   rect = ui.allocate_space(Egui::Vec2.new(
     slot_w >= 0 ? slot_w : size, size))
@@ -490,8 +858,8 @@ widget :ibtn do |node, ui, ctx, rt, r|
   # color= — постоянный тон глифа (активный shuffle/repeat, лайкнутое
   # сердце — цвет акцента); hover мягко ведёт к #fff (.icon-btn:hover)
   tint = MusicTags.hex(MusicTags.a(node, rt, "color"))
-  base = tint || MusicTags::ICON_FG
-  color = MusicTags.lerp_color(base, MusicTags::WHITE, hov / 0x12)
+  base = tint || MusicTags.icon
+  color = MusicTags.lerp_color(base, MusicTags.strong, hov / 0x12)
   inner = Egui::Rect.from_min_size(
     Egui::Pos2.new(rect.center.x - isz / 2.0, rect.center.y - isz / 2.0),
     Egui::Vec2.new(isz, isz))
@@ -531,8 +899,8 @@ widget :navitem do |node, ui, ctx, rt, r|
     ui.painter.rect(rect, 6.0,
       fill: Egui::Color32.new(255, 255, 255, hov.round.to_u8))
   end
-  fg = active ? MusicTags::WHITE
-    : MusicTags.lerp_color(MusicTags::MUTED, MusicTags::WHITE, hov / 0x10)
+  fg = active ? MusicTags.strong
+    : MusicTags.lerp_color(MusicTags.muted, MusicTags.strong, hov / 0x10)
   cx = rect.left + pad
   MusicTags.icon(name, fg).paint(ui, Egui::Rect.from_min_size(
     Egui::Pos2.new(cx, rect.center.y - isz / 2.0),
@@ -557,10 +925,10 @@ widget :chip do |node, ui, ctx, rt, r|
   resp = ui.interact(rect, id, Egui::Sense::Click)
   # .chip { transition: background .15s, color .15s } — фон мягко едет
   # между control / control-hover / включённым состоянием
-  target = on ? MusicTags::TEXT
-    : (resp.hovered? ? MusicTags::CONTROL_HOV : MusicTags::CONTROL)
+  target = on ? MusicTags.text
+    : (resp.hovered? ? MusicTags.control_hov : MusicTags.control)
   bg = MusicTags.fade(ctx, id, "bg", target, 150.0)
-  fg = on ? MusicTags::WINDOW : MusicTags::TEXT
+  fg = on ? MusicTags.window : MusicTags.text
   ui.painter.rect(rect, 15.0, fill: bg)
   ui.painter.text(Egui::Pos2.new(rect.center.x - m.x / 2.0, rect.center.y),
     text, fs, fg)
@@ -574,7 +942,7 @@ end
 # (0 10-14px 30-40px #000000a6).
 widget :cover do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
-  c1 = MusicTags.hex(MusicTags.a(node, rt, "c1")) || MusicTags::ACCENT
+  c1 = MusicTags.hex(MusicTags.a(node, rt, "c1")) || MusicTags.accent
   c2 = MusicTags.hex(MusicTags.a(node, rt, "c2")) || c1
   txt = MusicTags.a(node, rt, "txt") || ""
   s = MusicTags.f(node, rt, "s", 46.0)
@@ -668,6 +1036,7 @@ widget :mesh do |node, ui, ctx, rt, r|
   fx = MusicTags.f(node, rt, "fx", 0.0).to_i.clamp(0, 4)
   t = ctx.input.time
   animate = MusicTags.b(node, rt, "animate")
+  mesh_op = MusicTags.f(node, rt, "opacity", 1.0).clamp(0.0, 1.0)
 
   # Блоб: базовый прямоугольник (x, y — центр), цвета/прозрачность и
   # параметры дрейфа (амплитуды в px; ω = π/T — полупериод, как CSS
@@ -680,7 +1049,7 @@ widget :mesh do |node, ui, ctx, rt, r|
     dx = animate ? s * ax : 0.0
     dy = animate ? Math.cos(t * Math::PI / period + ph) * ay : 0.0
     k = 1.0 + (animate ? scale_amp * (1.0 + s) / 2.0 : scale_amp / 2.0)
-    MusicTags.blob(p, cx + dx, cy + dy, w * k, h * k, color, op, blur)
+    MusicTags.blob(p, cx + dx, cy + dy, w * k, h * k, color, op * mesh_op, blur)
   end
 
   w = rect.width
@@ -901,7 +1270,7 @@ widget :hline do |node, ui, ctx, rt, r|
   w = MusicTags.f(node, rt, "w", -1.0)
   w = ui.available_width - 2 * pad if w < 0
   rect = ui.allocate_space(Egui::Vec2.new({w, 0.0}.max, 1.0))
-  ui.painter.rect(rect, 0.0, fill: MusicTags::SEPARATOR)
+  ui.painter.rect(rect, 0.0, fill: MusicTags.separator)
 end
 
 # <searchpill/> — поле поиска в шапке (статичный placeholder).
@@ -911,13 +1280,13 @@ widget :searchpill do |node, ui, ctx, rt, r|
   w = MusicTags.f(node, rt, "w", 280.0)
   rect = ui.allocate_space(Egui::Vec2.new(w, 40.0))
   p = ui.painter
-  p.rect(rect, 20.0, fill: MusicTags::SEARCH_BG)
-  MusicTags.icon("search", Egui::Color32.rgba(0x8a, 0x8a, 0x99, 0xB3))
+  p.rect(rect, 20.0, fill: MusicTags.search_bg)
+  MusicTags.icon("search", MusicTags.dim(MusicTags.placeholder, 0xB3))
       .paint(ui, Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.left + 14.0, rect.center.y - 9.0),
         Egui::Vec2.new(18.0, 18.0)))
   ui.painter.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
-    text, 14.0, MusicTags::PLACEHOLDER)
+    text, 14.0, MusicTags.placeholder)
 end
 
 # <searchinput bind= w=> — поле поиска: та же пилюля, но с живым вводом
@@ -958,27 +1327,27 @@ widget :searchinput do |node, ui, ctx, rt, r|
   end
   p = ui.painter
   # focus-within: обводка 1px цветом акцента (как .search-pill:focus-within)
-  p.rect(rect, 20.0, fill: MusicTags::SEARCH_BG,
-    stroke_color: focused ? MusicTags::ACCENT : nil,
+  p.rect(rect, 20.0, fill: MusicTags.search_bg,
+    stroke_color: focused ? MusicTags.accent(rt) : nil,
     stroke_width: 1.0)
-  MusicTags.icon("search", Egui::Color32.rgba(0x8a, 0x8a, 0x99, 0xB3)).paint(ui,
+  MusicTags.icon("search", MusicTags.dim(MusicTags.placeholder, 0xB3)).paint(ui,
     Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.left + 14.0, rect.center.y - 9.0),
       Egui::Vec2.new(18.0, 18.0)))
   txt = rt.string(key)
   if txt.empty?
     ui.painter.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
-      hint, 14.0, MusicTags::PLACEHOLDER)
+      hint, 14.0, MusicTags.placeholder)
   else
     m = ui.fonts.measure(txt, 14.0)
     caret_x = rect.left + 42.0 + {m.x, rect.width - 60.0}.min
     ui.painter.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
-      txt[0, 28], 14.0, MusicTags::TEXT)
+      txt[0, 28], 14.0, MusicTags.text)
     # мигающий курсор
     if (ctx.input.time * 2.0).to_i % 2 == 0
       ui.painter.rect(Egui::Rect.from_min_size(
         Egui::Pos2.new(caret_x + 1.0, rect.center.y - 8.0),
-        Egui::Vec2.new(1.0, 16.0)), 0.0, fill: MusicTags::TEXT)
+        Egui::Vec2.new(1.0, 16.0)), 0.0, fill: MusicTags.text)
     end
   end
 end
@@ -999,7 +1368,7 @@ widget :avatar do |node, ui, ctx, rt, r|
   p.circle_filled(rect.center, s / 2.0, Egui::Color32.rgb(0xe8, 0xa9, 0x3b))
   m = ui.fonts.measure("M", 14.0)
   p.text(Egui::Pos2.new(rect.center.x - m.x / 2.0, rect.center.y),
-    "M", 14.0, MusicTags::WINDOW, bold: true)
+    "M", 14.0, MusicTags.window, bold: true)
 end
 
 # <logo/> — белый скруглённый квадрат с нотой.
@@ -1009,7 +1378,7 @@ widget :logo do |node, ui, ctx, rt, r|
   isz = MusicTags.f(node, rt, "size", 18.0)
   rect = ui.allocate_space(Egui::Vec2.new(s, s))
   ui.painter.rect(rect, 9.0, fill: MusicTags::WHITE)
-  MusicTags.icon("note", MusicTags::WINDOW).paint(ui,
+  MusicTags.icon("note", MusicTags.window).paint(ui,
     Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.center.x - isz / 2.0, rect.center.y - isz / 2.0),
       Egui::Vec2.new(isz, isz)))
@@ -1028,8 +1397,8 @@ widget :playround do |node, ui, ctx, rt, r|
   MusicTags.geom!("playround:#{name}", rect)
   id = Egui::Id.from(node.path)
   resp = ui.interact(rect, id, Egui::Sense::Click)
-  bg = big ? MusicTags.accent(rt) : MusicTags::TEXT
-  fg = MusicTags::WINDOW
+  bg = big ? MusicTags.accent(rt) : MusicTags.text
+  fg = MusicTags.window
   sc = MusicTags.glide(ctx, id, "scale",
     resp.active? ? (big ? 0.97 : 0.95) : (resp.hovered? ? 1.06 : 1.0), 120.0)
   # filter: brightness — play-big светлеет (+8%), play-round чуть
@@ -1157,14 +1526,14 @@ widget :oswitch do |node, ui, ctx, rt, r|
   if resp.hovered?
     p.rect(Egui::Rect.from_min_size(rect.min,
       Egui::Vec2.new(rect.width, rect.height)), 12.0,
-      fill: MusicTags::ROW_HOVER)
+      fill: MusicTags.row_hover)
   end
   pos = MusicTags.glide(ctx, id, "knob", on ? 1.0 : 0.0, 180.0)
   bg = MusicTags.fade(ctx, id, "bg",
-    on ? MusicTags.accent(rt) : MusicTags::CONTROL, 180.0)
+    on ? MusicTags.accent(rt) : MusicTags.control, 180.0)
   p.rect(rect, 12.0, fill: bg)
   kx = MusicTags.lerp(rect.left + 2.0, rect.left + 22.0, pos)
-  p.circle_filled(Egui::Pos2.new(kx + 10.0, rect.center.y), 10.0, MusicTags::WHITE)
+  p.circle_filled(Egui::Pos2.new(kx + 10.0, rect.center.y), 10.0, MusicTags.strong)
   if resp.clicked?
     # с on_click состояние меняет приложение (player), без — сам store
     if act
@@ -1205,12 +1574,12 @@ widget :ocombo do |node, ui, ctx, rt, r|
   p = ui.painter
   open = key && rt.string("_combo") == key
   p.rect(rect, 8.0,
-    fill: resp.hovered? || open ? MusicTags::CONTROL_HOV : MusicTags::CONTROL,
-    stroke_color: MusicTags::BORDER, stroke_width: 1.0)
+    fill: resp.hovered? || open ? MusicTags.control_hov : MusicTags.control,
+    stroke_color: MusicTags.border, stroke_width: 1.0)
   m = ui.fonts.measure(text, 14.0)
   p.text(Egui::Pos2.new(rect.left + 12.0, rect.center.y), text, 14.0,
-    MusicTags::TEXT)
-  MusicTags.icon("chev", Egui::Color32.rgba(0xc4, 0xc4, 0xd2, 0xB3)).paint(ui,
+    MusicTags.text)
+  MusicTags.icon("chev", MusicTags.dim(MusicTags.icon, 0xB3)).paint(ui,
     Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.right - 12.0 - 16.0, rect.center.y - 8.0),
       Egui::Vec2.new(16.0, 16.0)))
@@ -1232,8 +1601,8 @@ widget :ocombo do |node, ui, ctx, rt, r|
       Egui::Pos2.new(1e8, 1e8))
     prev_layer = lp.layer
     lp.layer = Egui::Order::Foreground
-    lp.rect(list_rect, 8.0, fill: MusicTags::POPUP,
-      stroke_color: MusicTags::BORDER, stroke_width: 1.0)
+    lp.rect(list_rect, 8.0, fill: MusicTags.popup,
+      stroke_color: MusicTags.border, stroke_width: 1.0)
     options.each_with_index do |opt, i|
       orect = Egui::Rect.from_min_size(
         Egui::Pos2.new(list_rect.left + 4.0,
@@ -1244,10 +1613,10 @@ widget :ocombo do |node, ui, ctx, rt, r|
       if oresp.hovered?
         lp.rect(Egui::Rect.from_min_size(orect.min,
           Egui::Vec2.new(orect.width, orect.height)), 6.0,
-          fill: MusicTags::CONTROL)
+          fill: MusicTags.control)
       end
       lp.text(Egui::Pos2.new(orect.left + 8.0, orect.center.y), opt, 14.0,
-        opt == text ? MusicTags::WHITE : MusicTags::MUTED)
+        opt == text ? MusicTags.strong : MusicTags.muted)
       if oresp.clicked?
         rt.strings[key] = opt
         rt.strings["_combo"] = ""
@@ -1292,11 +1661,11 @@ widget :oslider do |node, ui, ctx, rt, r|
     resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
   p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
     Egui::Vec2.new(w, 4.0)), 2.0,
-    fill: Egui::Color32.rgba(255, 255, 255, 0x33))
+    fill: MusicTags.track)
   p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
     Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: MusicTags.accent(rt))
   kx = rect.left + w * frac
-  p.circle_filled(Egui::Pos2.new(kx, cy), kw, MusicTags::WHITE)
+  p.circle_filled(Egui::Pos2.new(kx, cy), kw, MusicTags.strong)
 end
 
 # <island/> — «остров» сверху по центру (.island): пилюля с обложкой,
@@ -1310,11 +1679,11 @@ widget :island do |node, ui, ctx, rt, r|
     lp = ctx.painter
     lp.rect(Egui::Rect.from_min_size(Egui::Pos2.new(area.left, cy - 2.0),
       Egui::Vec2.new(w, 4.0)), 2.0,
-      fill: Egui::Color32.rgba(255, 255, 255, 0x40))
+      fill: MusicTags.track)
     lp.rect(Egui::Rect.from_min_size(Egui::Pos2.new(area.left, cy - 2.0),
       Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: MusicTags.accent(rt))
     lp.circle_filled(Egui::Pos2.new(area.left + w * frac, cy), 5.0,
-      MusicTags::WHITE)
+      MusicTags.strong)
     srect = Egui::Rect.from_min_size(Egui::Pos2.new(area.left, cy - 7.0),
       Egui::Vec2.new(w, 14.0))
     sresp = ctx.interact(Egui::Id.from("#{node.path}/seek"), srect,
@@ -1325,7 +1694,7 @@ widget :island do |node, ui, ctx, rt, r|
       ctx.request_repaint
     end
   }
-  c1 = MusicTags.hex(MusicTags.a(node, rt, "c1")) || MusicTags::ACCENT
+  c1 = MusicTags.hex(MusicTags.a(node, rt, "c1")) || MusicTags.accent
   c2 = MusicTags.hex(MusicTags.a(node, rt, "c2")) || c1
   txt = MusicTags.a(node, rt, "txt") || "DH"
   title = MusicTags.a(node, rt, "title") || ""
@@ -1361,14 +1730,14 @@ widget :island do |node, ui, ctx, rt, r|
     # CSS height:auto, переключаются сразу
     radius = MusicTags.glide(ctx, Egui::Id.from("#{node.path}/rad"),
       "radius", expanded ? 14.0 : 100.0, 180.0)
-    p.rect(rect, radius, fill: MusicTags::POPUP,
-      stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
+    p.rect(rect, radius, fill: MusicTags.popup,
+      stroke_color: MusicTags.popup_border, stroke_width: 1.0)
     x = rect.left + 10.0
     MusicTags.cover(p, o.fonts,
       Egui::Rect.from_min_size(Egui::Pos2.new(x, rect.center.y - 10.0),
         Egui::Vec2.new(20.0, 20.0)), c1, c2, txt, 5.0, 8.0)
     x += 20.0 + 8.0
-    p.text(Egui::Pos2.new(x, rect.center.y), title, 12.0, MusicTags::TEXT)
+    p.text(Egui::Pos2.new(x, rect.center.y), title, 12.0, MusicTags.text)
     x += tw + 8.0
     t = ctx.input.time
     heights = {6.0, 11.0, 8.0, 5.0}
@@ -1390,8 +1759,8 @@ widget :island do |node, ui, ctx, rt, r|
       lp.layer = Egui::Order::Foreground
       iw = 300.0
       ipanel = Egui::Rect.from_min_size(rect.min, Egui::Vec2.new(iw, 186.0))
-      lp.rect(ipanel, 14.0, fill: MusicTags::POPUP,
-        stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
+      lp.rect(ipanel, 14.0, fill: MusicTags.popup,
+        stroke_color: MusicTags.popup_border, stroke_width: 1.0)
       lp.box_shadow(ipanel, Egui::Color32.rgba(0, 0, 0, 0x80), 30.0, 14.0)
       # u-song: cover 40 + тексты + vis 6
       sy = ipanel.top + 12.0
@@ -1401,9 +1770,9 @@ widget :island do |node, ui, ctx, rt, r|
       tt = rt.string("np_title")
       ta = rt.string("np_artist")
       lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 10.0), tt, 13.0,
-        MusicTags::TEXT, bold: true)
+        MusicTags.text, bold: true)
       lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 26.0), ta, 11.0,
-        MusicTags::MUTED)
+        MusicTags.muted)
       6.times do |i|
         ulevels = MusicTags.vis_step("#{node.path}/unfolded", 6,
           !rt.bool("paused"), t)
@@ -1418,10 +1787,10 @@ widget :island do |node, ui, ctx, rt, r|
           Egui::Pos2.new(ipanel.left + 12.0, sy + 56.0),
           Egui::Vec2.new(iw - 24.0, 14.0)), "seek_frac", iw - 24.0)
       lp.text(Egui::Pos2.new(ipanel.left + 12.0, sy + 76.0),
-        rt.string("elapsed"), 10.0, MusicTags::MUTED)
+        rt.string("elapsed"), 10.0, MusicTags.muted)
       lw = o.fonts.measure(rt.string("length"), 10.0).x
       lp.text(Egui::Pos2.new(ipanel.right - 12.0 - lw, sy + 76.0),
-        rt.string("length"), 10.0, MusicTags::MUTED)
+        rt.string("length"), 10.0, MusicTags.muted)
       # u-row: heart prev play next panel (30px, play 34)
       by = sy + 92.0
       cxm = ipanel.center.x
@@ -1443,15 +1812,15 @@ widget :island do |node, ui, ctx, rt, r|
         # hover-подложкой (как .u-row .icon-btn)
         is_play = bname == "play"
         if is_play
-          lp.circle_filled(brect.center, brect.width / 2.0, MusicTags::TEXT)
+          lp.circle_filled(brect.center, brect.width / 2.0, MusicTags.text)
         elsif bresp.hovered?
           lp.circle_filled(brect.center, brect.width / 2.0,
-            MusicTags::CONTROL_HOV)
+            MusicTags.control_hov)
         end
         icon_name = is_play ? rt.string("play_icon") : bname
         icon_name = "heart-f" if bname == "heart" && rt.bool("liked_current")
-        fg = is_play ? MusicTags::WINDOW
-          : (bresp.hovered? ? MusicTags::WHITE : MusicTags::ICON_FG)
+        fg = is_play ? MusicTags.window
+          : (bresp.hovered? ? MusicTags.strong : MusicTags.icon)
         MusicTags.icon(icon_name, fg).paint(ui,
           Egui::Rect.from_min_size(
             Egui::Pos2.new(brect.center.x - 7.0, brect.center.y - 7.0),
@@ -1464,9 +1833,9 @@ widget :island do |node, ui, ctx, rt, r|
       # u-sep + u-look
       lp.rect(Egui::Rect.from_min_size(
         Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 40.0),
-        Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags::SEPARATOR)
+        Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags.separator)
       lp.text(Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 20.0),
-        "Look: " + rt.string("look_name"), 12.0, MusicTags::MUTED)
+        "Look: " + rt.string("look_name"), 12.0, MusicTags.muted)
       lp.layer = prev_layer
       lp.clip = prev_clip
     end
@@ -1549,7 +1918,7 @@ widget :pbar do |node, ui, ctx, rt, r|
   rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
   MusicTags.geom!("pbar", rect)
   p = ui.painter
-  p.rect(rect, 0.0, fill: MusicTags::BAR_BG)
+  p.rect(rect, 0.0, fill: MusicTags.bar_bg)
   total = rect.width - 32.0
   c13 = total / 3.3
   c2w = total - 2 * c13

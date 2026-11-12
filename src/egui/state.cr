@@ -317,6 +317,16 @@ module Egui
       anim.duration > 0.0 && (time - anim.start) < anim.duration
     end
 
+    # True while ANY value animation is easing (the subtree-cache gate —
+    # liveness, not presence: a settled Anim lingering in the hash does
+    # not block).
+    def any_running?(time : Float64) : Bool
+      @anims.each_value do |a|
+        return true if a.duration > 0.0 && (time - a.start) < a.duration
+      end
+      false
+    end
+
     private def value_at(a : Anim, time : Float64) : Float64
       return a.target if a.duration <= 0.0
       t = ((time - a.start) / a.duration).clamp(0.0, 1.0)
@@ -422,6 +432,22 @@ module Egui
 
     def reset : Nil
       @runs.clear
+    end
+
+    # True while any run still has frames to play (the subtree-cache
+    # gate). Read-only (no #evaluate bookkeeping): a paused run counts
+    # as running — it may resume.
+    def any_running?(time : Float64) : Bool
+      @runs.each_value do |run|
+        spec = run.spec
+        return true if spec.paused
+        active = time - run.start - spec.delay
+        next if active < 0.0
+        return true if spec.duration > 0.0 &&
+                       (spec.iterations < 0.0 ||
+                        active / spec.duration < spec.iterations)
+      end
+      false
     end
   end
 

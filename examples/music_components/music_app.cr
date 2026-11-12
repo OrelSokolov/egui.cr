@@ -1,8 +1,9 @@
 # music_app.cr — приложение Raven Music live (NATIVE_HTML_DEMO):
 # порт поведения Vue-оракула oracle/oracle_live (плеер, акцент из
 # обложки, поиск, коллекция, остров, клавиши) на exml-разметку.
-# Слои как у оригинала: markup (assets/music.exml) — структура, тема
-# (assets/music.ecss) — покрытие панелей, состояние — MusicPlayer
+# Слои как у оригинала: markup (assets/music.exml) — структура, геометрия
+# (assets/music.ecss) — паддинги/скругления панелей (цвета классов пишет
+# apply_look по текущему луку — как <Theme>-файлы Raven), состояние — MusicPlayer
 # (music_player.cr, порт app.js), данные — MusicLibrary
 # (music_library.cr, тот же LCG, что в library.c). Каждый кадр
 # приложение синхронизирует вычисляемые значения в store exml-рендера
@@ -49,6 +50,9 @@ class MusicExmlApp < Egui::App
     when opts.includes?("library")   then @player.nav_to(:library)
     when opts.includes?("settings")  then @player.nav_to(:settings)
     end
+    if (lk = ENV["MUSIC_LOOK"]?) && (i = MusicLibrary::LOOKS.index(lk))
+      @player.look = i
+    end
     @player.playing = false if opts.includes?("paused")
     @player.animate = false if opts.includes?("still") # для скриншот-сравнений
   end
@@ -81,15 +85,15 @@ class MusicExmlApp < Egui::App
   def update(ctx : Egui::Context) : Nil
     unless @styled
       # Вся геометрия — как в оракуле: нулевые item_spacing/window_padding
-      # (зазоры в разметке явные <gap/>, отступы — в ECSS-правилах) и фон
-      # окна #060609. Мутация in-place: ctx.theme= идемпотентен по ИМЕНИ
-      # темы (dark == dark) и не применил бы копию.
+      # (зазоры в разметке явные <gap/>, отступы — в ECSS-правилах).
+      # Цвета лука пишутся ПОВЕРХ сессии ecss (в файле — только геометрия)
+      # и переписываются при каждой смене лука (apply_look).
       ctx.style.spacing.item_spacing = Egui::Vec2.new(0.0, 0.0)
       ctx.style.spacing.window_padding = Egui::Vec2.new(0.0, 0.0)
-      ctx.style.visuals.panel_fill = MusicTags::WINDOW
       t0 = Time.instant
       @ecss = Egui::Ecss::Session.new(ctx, self.class.ecss_path)
       MusicExmlApp.ecss_parse_ms = (Time.instant - t0).total_milliseconds
+      apply_look(ctx)
       @styled = true
       register_actions(ctx)
       bind_hotkeys(ctx)
@@ -110,6 +114,38 @@ class MusicExmlApp < Egui::App
     @renderer.render_routes(ctx, @exml, @rt)
   end
 
+  # ── лук (аналог use_look/Rtheme_use у Raven) ───────────────────────
+  # Применяет лук @player.look: палитру MusicTags (её читают теги каждый
+  # кадр), базовые visuals контекста и ЦВЕТНАЯ часть ECSS-классов —
+  # music.ecss хранит только геометрию, цвета пишутся сюда поверх сессии
+  # (стили файлов темы Raven: Colors + Style Class="surface" …).
+  def apply_look(ctx : Egui::Context) : Nil
+    name = MusicLibrary::LOOKS[@player.look]? || MusicLibrary::LOOKS[0]
+    MusicTags.use_look(name)
+    pal = MusicTags.look
+    # мутация in-place: ctx.theme= идемпотентен по имени (dark == dark)
+    ctx.style.visuals.panel_fill = pal["window"]
+    ctx.style.visuals.text_color = pal["text"]
+    sheet = ctx.stylesheet
+    surfaces = {"center", "nowplaying", "nav-box", "lib-box"}
+    surfaces.each do |cls|
+      sheet.rule(cls, Egui::StyleVars{
+        "background" => pal["surface_bg"], "stroke" => pal["surface_border"]})
+    end
+    sheet.rule("album-card:hover", Egui::StyleVars{"background" => pal["card_hover"]})
+    sheet.rule("top-card", Egui::StyleVars{"background" => pal["card_flat"]})
+    sheet.rule("top-card:hover", Egui::StyleVars{"background" => pal["card_hover"]})
+    sheet.rule("quick", Egui::StyleVars{"background" => pal["control"]})
+    sheet.rule("quick:hover", Egui::StyleVars{"background" => pal["control_hov"]})
+    sheet.rule("np-artist-card", Egui::StyleVars{"background" => pal["np_artist"]})
+    {"np-queue-card", "about-card"}.each do |cls|
+      sheet.rule(cls, Egui::StyleVars{"background" => pal["card2"]})
+    end
+    {"lib-row", "track-row"}.each do |cls|
+      sheet.rule("#{cls}:hover", Egui::StyleVars{"background" => pal["row_hover"]})
+    end
+  end
+
   # ── часы плеера (mounted() оракула): позиция идёт, пока играет; конец
   # трека → следующий по режиму repeat ────────────────────────────────
 
@@ -120,6 +156,11 @@ class MusicExmlApp < Egui::App
     @last_tick = now
     @player.advance(dt, now)
     ctx.request_repaint if @player.playing
+    # цвета текущего лука (разметка: color="{c_muted}" и т.п.)
+    rt.strings["c_muted"] = MusicTags.hex_str("muted")
+    rt.strings["c_eyebrow"] = MusicTags.hex_str("eyebrow")
+    rt.strings["c_muted_b3"] = MusicTags.hex_str("muted") + "b3"
+
     # остров: notice живёт 2.5 с — к моменту истечения нужен кадр
     ctx.request_repaint if @player.notice != "" && @player.notice_until > now
     now
@@ -128,7 +169,13 @@ class MusicExmlApp < Egui::App
   # ── данные → store (computed у Vue) ────────────────────────────────
 
   private def accent_hex : String
-    @player.follow_cover ? MusicLibrary.make_accent(@player.album.c1) : @player.picked
+    if @player.follow_cover
+      acc = MusicLibrary.make_accent(@player.album.c1)
+      # на светлом окне акцент обложки темнее (main.c: rgb *= 0.62)
+      MusicTags.look.dark? ? acc : MusicLibrary.scale_hex(acc, 0.62)
+    else
+      @player.picked
+    end
   end
 
   private def sync(ctx : Egui::Context, now : Float64) : Nil
@@ -151,9 +198,11 @@ class MusicExmlApp < Egui::App
     accent = accent_hex
     rt.strings["accent"] = accent
     album = p.album
-    rt.strings["m1"] = MusicLibrary.scale_hex(album.c1, 0.55)
-    rt.strings["m2"] = MusicLibrary.scale_hex(album.c2, 0.35)
-    rt.strings["m3"] = MusicLibrary.scale_hex(album.c1, 0.35)
+    dark = MusicTags.look.dark?
+    rt.strings["m1"] = MusicLibrary.scale_hex(album.c1, dark ? 0.55 : 1.0)
+    rt.strings["m2"] = MusicLibrary.scale_hex(album.c2, dark ? 0.35 : 0.9)
+    rt.strings["m3"] = MusicLibrary.scale_hex(album.c1, dark ? 0.35 : 0.9)
+    rt.floats["mesh_op"] = dark ? 1.0 : 0.5 # opacity backdrop 0.9/0.45
     rt.bools["mesh_on"] = p.effect != 5 # None
     rt.bools["animate_bg"] = p.animate
     rt.floats["effect"] = p.effect.to_f64
@@ -174,10 +223,11 @@ class MusicExmlApp < Egui::App
     rt.bools["paused"] = !p.playing
     rt.bools["liked_current"] = obj ? obj.liked : false
     rt.strings["heart_icon"] = obj.try(&.liked) ? "heart-f" : "heart"
-    rt.strings["heart_col"] = obj.try(&.liked) ? accent : "#c4c4d2"
-    rt.strings["shuffle_col"] = p.shuffle ? accent : "#c4c4d2"
+    icon_c = MusicTags.hex_str("icon")
+    rt.strings["heart_col"] = obj.try(&.liked) ? accent : icon_c
+    rt.strings["shuffle_col"] = p.shuffle ? accent : icon_c
     rt.strings["repeat_icon"] = p.repeat_mode == 2 ? "repeat1" : "repeat"
-    rt.strings["repeat_col"] = p.repeat_mode != 0 ? accent : "#c4c4d2"
+    rt.strings["repeat_col"] = p.repeat_mode != 0 ? accent : icon_c
     rt.strings["vol_icon"] = (p.muted || p.volume <= 0.001) ? "muted" : "volume"
     rt.floats["volume_frac"] = p.muted ? 0.0 : p.volume
     rt.strings["island_text"] = p.island_text(now)
@@ -327,7 +377,7 @@ class MusicExmlApp < Egui::App
     rt.strings["col_meta"] = p.col_meta
     rt.strings["col_play_icon"] = p.col_playing_same_list? && p.playing ? "pause" : "play"
     rt.strings["col_heart_icon"] = p.col_is_liked ? "heart-f" : "heart"
-    rt.strings["col_heart_col"] = p.col_is_liked ? accent : "#c4c4d2"
+    rt.strings["col_heart_col"] = p.col_is_liked ? accent : MusicTags.hex_str("icon")
     rt.strings["album_head"] = is_pl ? "Album" : ""
     rt.rows["tracks"] = p.col_tracks.map_with_index { |ti, i|
       song_row(ti, i, accent, always_album: is_pl)
@@ -368,12 +418,12 @@ class MusicExmlApp < Egui::App
     a = @library.albums[t.album]
     playing = ti == @player.track
     {"n" => (i + 1).to_s,
-     "tc" => playing ? accent : "#f4f4f8",
+     "tc" => playing ? accent : MusicTags.hex_str("text"),
      "c1" => a.c1, "c2" => a.c2, "txt" => a.ini,
      "tt" => t.title, "ta" => a.artist,
      "al" => always_album ? a.title : "",
      "hicon" => t.liked ? "heart-f" : "heart",
-     "hcol" => t.liked ? accent : "#c4c4d28c",
+     "hcol" => t.liked ? accent : MusicTags.hex_str("icon") + "8c",
      "time" => MusicLibrary.fmt_time(t.seconds.to_f64)}
   end
 
@@ -516,10 +566,7 @@ class MusicExmlApp < Egui::App
     a["sw_normalize"] = -> { p.normalize = !p.normalize; ctx.request_repaint }
     a["look_change"] = -> {
       p.look = MusicLibrary::LOOKS.index(@rt.string("combo_look")) || 0
-      if p.look != 0
-        p.notify("Not in this demo", now.call)
-        p.look = 0
-      end
+      apply_look(ctx)
       ctx.request_repaint
     }
     a["effect_change"] = -> {

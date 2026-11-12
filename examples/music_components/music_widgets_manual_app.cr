@@ -119,7 +119,9 @@ class MusicWidgetsManualApp < Egui::App
       # верстке явные), фон окна #060609
       ctx.style.spacing.item_spacing = Egui::Vec2.new(0.0, 0.0)
       ctx.style.spacing.window_padding = Egui::Vec2.new(0.0, 0.0)
-      ctx.style.visuals.panel_fill = MusicTags::WINDOW
+      MusicTags.use_look(MusicLibrary::LOOKS[@player.look]? || MusicLibrary::LOOKS[0])
+      ctx.style.visuals.panel_fill = MusicTags.window
+      ctx.style.visuals.text_color = MusicTags.text
       bind_hotkeys(ctx)
       @styled = true
     end
@@ -150,7 +152,7 @@ class MusicWidgetsManualApp < Egui::App
   end
 
   private def accent_col : Egui::Color32
-    MusicTags.hex(accent_hex) || MusicTags::ACCENT
+    MusicTags.hex(accent_hex) || MusicTags.accent
   end
 
   private def greeting : String
@@ -245,7 +247,7 @@ class MusicWidgetsManualApp < Egui::App
                 wrap : Bool = false, lh : Float64 = 1.5,
                 ls : Float64 = 0.0) : Nil
     ui.painter.clip = ui.clip
-    color = MusicTags::TEXT unless color
+    color = MusicTags.text unless color
     fonts = ui.fonts
     if wrap && w > 0
       lines = MusicTags.wrap_lines(fonts, text, size, w)
@@ -287,7 +289,7 @@ class MusicWidgetsManualApp < Egui::App
   private def icon(ui : Egui::Ui, name : String, size : Float64 = 18.0,
                    color : Egui::Color32? = nil, w : Float64 = -1.0) : Nil
     ui.painter.clip = ui.clip
-    color = MusicTags::ICON_FG unless color
+    color = MusicTags.icon unless color
     rect = ui.allocate_space(Egui::Vec2.new(w >= 0 ? w : size, size))
     MusicTags.icon(name, color).paint(ui, Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.center.x - size / 2.0, rect.center.y - size / 2.0),
@@ -309,8 +311,8 @@ class MusicWidgetsManualApp < Egui::App
       ui.painter.circle_filled(rect.center, btn / 2.0,
         Egui::Color32.new(255, 255, 255, hov.round.to_u8))
     end
-    base = tint || MusicTags::ICON_FG
-    color = MusicTags.lerp_color(base, MusicTags::WHITE, hov / 0x12)
+    base = tint || MusicTags.icon
+    color = MusicTags.lerp_color(base, MusicTags.strong, hov / 0x12)
     MusicTags.icon(name, color).paint(ui, Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.center.x - size / 2.0, rect.center.y - size / 2.0),
       Egui::Vec2.new(size, size)))
@@ -343,8 +345,8 @@ class MusicWidgetsManualApp < Egui::App
       ui.painter.rect(rect, 6.0,
         fill: Egui::Color32.new(255, 255, 255, hov.round.to_u8))
     end
-    fg = active ? MusicTags::WHITE
-      : MusicTags.lerp_color(MusicTags::MUTED, MusicTags::WHITE, hov / 0x10)
+    fg = active ? MusicTags.strong
+      : MusicTags.lerp_color(MusicTags.muted, MusicTags.strong, hov / 0x10)
     cx = rect.left + pad
     MusicTags.icon(name, fg).paint(ui, Egui::Rect.from_min_size(
       Egui::Pos2.new(cx, rect.center.y - isz / 2.0), Egui::Vec2.new(isz, isz)))
@@ -365,10 +367,10 @@ class MusicWidgetsManualApp < Egui::App
     rect = ui.allocate_space(Egui::Vec2.new(m.x + 28.0, 30.0))
     wid = Egui::Id.from(id)
     resp = ui.interact(rect, wid, Egui::Sense::Click)
-    target = on ? MusicTags::TEXT
-      : (resp.hovered? ? MusicTags::CONTROL_HOV : MusicTags::CONTROL)
+    target = on ? MusicTags.text
+      : (resp.hovered? ? MusicTags.control_hov : MusicTags.control)
     bg = MusicTags.fade(ctx, wid, "bg", target, 150.0)
-    fg = on ? MusicTags::WINDOW : MusicTags::TEXT
+    fg = on ? MusicTags.window : MusicTags.text
     ui.painter.rect(rect, 15.0, fill: bg)
     ui.painter.text(Egui::Pos2.new(rect.center.x - m.x / 2.0, rect.center.y),
       text, fs, fg)
@@ -385,7 +387,7 @@ class MusicWidgetsManualApp < Egui::App
                     round : Bool = false, r : Float64 = 8.0,
                     fs : Float64? = nil, shadow : Bool = false) : Nil
     ui.painter.clip = ui.clip
-    col1 = MusicTags.hex(c1) || MusicTags::ACCENT
+    col1 = MusicTags.hex(c1) || MusicTags.accent
     col2 = MusicTags.hex(c2) || col1
     w_real = w || s
     h_real = h || s
@@ -606,7 +608,7 @@ class MusicWidgetsManualApp < Egui::App
     ui.painter.clip = ui.clip
     w = ui.available_width - 2 * pad
     rect = ui.allocate_space(Egui::Vec2.new({w, 0.0}.max, 1.0))
-    ui.painter.rect(rect, 0.0, fill: MusicTags::SEPARATOR)
+    ui.painter.rect(rect, 0.0, fill: MusicTags.separator)
   end
 
   # <hbar h= pad=> — строка-контейнер, дети центрированы по вертикали
@@ -647,7 +649,7 @@ class MusicWidgetsManualApp < Egui::App
     ui.painter.clip = ui.clip
     rect = ui.allocate_space(Egui::Vec2.new(s, s))
     ui.painter.rect(rect, 9.0, fill: MusicTags::WHITE)
-    MusicTags.icon("note", MusicTags::WINDOW).paint(ui,
+    MusicTags.icon("note", MusicTags.window).paint(ui,
       Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.center.x - isz / 2.0, rect.center.y - isz / 2.0),
         Egui::Vec2.new(isz, isz)))
@@ -661,7 +663,7 @@ class MusicWidgetsManualApp < Egui::App
     p.circle_filled(rect.center, s / 2.0, Egui::Color32.rgb(0xe8, 0xa9, 0x3b))
     m = ui.fonts.measure("M", 14.0)
     p.text(Egui::Pos2.new(rect.center.x - m.x / 2.0, rect.center.y),
-      "M", 14.0, MusicTags::WINDOW, bold: true)
+      "M", 14.0, MusicTags.window, bold: true)
   end
 
   # <playround icon= s= size= big=/>
@@ -674,8 +676,8 @@ class MusicWidgetsManualApp < Egui::App
     rect = ui.allocate_space(Egui::Vec2.new(s, s))
     wid = Egui::Id.from(id)
     resp = ui.interact(rect, wid, Egui::Sense::Click)
-    bg = big ? accent : MusicTags::TEXT
-    fg = MusicTags::WINDOW
+    bg = big ? accent : MusicTags.text
+    fg = MusicTags.window
     sc = MusicTags.glide(ctx, wid, "scale",
       resp.active? ? (big ? 0.97 : 0.95) : (resp.hovered? ? 1.06 : 1.0), 120.0)
     lift = big ? 0.08 : -0.04
@@ -706,8 +708,8 @@ class MusicWidgetsManualApp < Egui::App
                     txt : String, w : Float64 = 184.0, h : Float64 = 112.0,
                     &on_click) : Nil
     ui.painter.clip = ui.clip
-    gcol = MusicTags.hex(g) || MusicTags::ACCENT
-    col1 = MusicTags.hex(c1) || MusicTags::ACCENT
+    gcol = MusicTags.hex(g) || MusicTags.accent
+    col1 = MusicTags.hex(c1) || MusicTags.accent
     col2 = MusicTags.hex(c2) || col1
     padb = 16.0 # запас под перенос строк
     rect = ui.allocate_space(Egui::Vec2.new(w, h + padb))
@@ -782,13 +784,13 @@ class MusicWidgetsManualApp < Egui::App
     resp = ui.interact(rect, wid, Egui::Sense::Click)
     p = ui.painter
     if resp.hovered?
-      p.rect(rect, 12.0, fill: MusicTags::ROW_HOVER)
+      p.rect(rect, 12.0, fill: MusicTags.row_hover)
     end
     pos = MusicTags.glide(ctx, wid, "knob", on ? 1.0 : 0.0, 180.0)
-    bg = MusicTags.fade(ctx, wid, "bg", on ? accent : MusicTags::CONTROL, 180.0)
+    bg = MusicTags.fade(ctx, wid, "bg", on ? accent : MusicTags.control, 180.0)
     p.rect(rect, 12.0, fill: bg)
     kx = MusicTags.lerp(rect.left + 2.0, rect.left + 22.0, pos)
-    p.circle_filled(Egui::Pos2.new(kx + 10.0, rect.center.y), 10.0, MusicTags::WHITE)
+    p.circle_filled(Egui::Pos2.new(kx + 10.0, rect.center.y), 10.0, MusicTags.strong)
     if resp.clicked?
       on_click.call
       ctx.request_repaint
@@ -813,10 +815,10 @@ class MusicWidgetsManualApp < Egui::App
     p = ui.painter
     open = @combo_open == key
     p.rect(rect, 8.0,
-      fill: resp.hovered? || open ? MusicTags::CONTROL_HOV : MusicTags::CONTROL,
-      stroke_color: MusicTags::BORDER, stroke_width: 1.0)
+      fill: resp.hovered? || open ? MusicTags.control_hov : MusicTags.control,
+      stroke_color: MusicTags.border, stroke_width: 1.0)
     p.text(Egui::Pos2.new(rect.left + 12.0, rect.center.y), text, 14.0,
-      MusicTags::TEXT)
+      MusicTags.text)
     MusicTags.icon("chev", Egui::Color32.rgba(0xc4, 0xc4, 0xd2, 0xB3)).paint(ui,
       Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.right - 12.0 - 16.0, rect.center.y - 8.0),
@@ -837,8 +839,8 @@ class MusicWidgetsManualApp < Egui::App
       Egui::Pos2.new(1e8, 1e8))
     prev_layer = lp.layer
     lp.layer = Egui::Order::Foreground
-    lp.rect(list_rect, 8.0, fill: MusicTags::POPUP,
-      stroke_color: MusicTags::BORDER, stroke_width: 1.0)
+    lp.rect(list_rect, 8.0, fill: MusicTags.popup,
+      stroke_color: MusicTags.border, stroke_width: 1.0)
     options.each_with_index do |opt, i|
       orect = Egui::Rect.from_min_size(
         Egui::Pos2.new(list_rect.left + 4.0, list_rect.top + 4.0 + i * item_h),
@@ -846,10 +848,10 @@ class MusicWidgetsManualApp < Egui::App
       oresp = ctx.interact(Egui::Id.from("#{id}/opt#{i}"), orect,
         Egui::Sense::Click, layer, orect)
       if oresp.hovered?
-        lp.rect(orect, 6.0, fill: MusicTags::CONTROL)
+        lp.rect(orect, 6.0, fill: MusicTags.control)
       end
       lp.text(Egui::Pos2.new(orect.left + 8.0, orect.center.y), opt, 14.0,
-        opt == text ? MusicTags::WHITE : MusicTags::MUTED)
+        opt == text ? MusicTags.strong : MusicTags.muted)
       if oresp.clicked?
         @combo_open = ""
         on_change.call(opt)
@@ -885,7 +887,7 @@ class MusicWidgetsManualApp < Egui::App
       fill: Egui::Color32.rgba(255, 255, 255, 0x33))
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: accent)
-    p.circle_filled(Egui::Pos2.new(rect.left + w * frac, cy), kw, MusicTags::WHITE)
+    p.circle_filled(Egui::Pos2.new(rect.left + w * frac, cy), kw, MusicTags.strong)
   end
 
   # <searchinput bind= w=/> — поле поиска: клик — фокус, ввод — query
@@ -923,8 +925,8 @@ class MusicWidgetsManualApp < Egui::App
       ctx.request_repaint
     end
     p = ui.painter
-    p.rect(rect, 20.0, fill: MusicTags::SEARCH_BG,
-      stroke_color: @focus ? MusicTags::ACCENT : nil, stroke_width: 1.0)
+    p.rect(rect, 20.0, fill: MusicTags.search_bg,
+      stroke_color: @focus ? MusicTags.accent : nil, stroke_width: 1.0)
     MusicTags.icon("search", Egui::Color32.rgba(0x8a, 0x8a, 0x99, 0xB3)).paint(ui,
       Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.left + 14.0, rect.center.y - 9.0),
@@ -932,16 +934,16 @@ class MusicWidgetsManualApp < Egui::App
     txt = @player.query
     if txt.empty?
       p.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
-        hint, 14.0, MusicTags::PLACEHOLDER)
+        hint, 14.0, MusicTags.placeholder)
     else
       m = ui.fonts.measure(txt, 14.0)
       caret_x = rect.left + 42.0 + {m.x, rect.width - 60.0}.min
       p.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
-        txt[0, 28], 14.0, MusicTags::TEXT)
+        txt[0, 28], 14.0, MusicTags.text)
       if (ctx.input.time * 2.0).to_i % 2 == 0
         p.rect(Egui::Rect.from_min_size(
           Egui::Pos2.new(caret_x + 1.0, rect.center.y - 8.0),
-          Egui::Vec2.new(1.0, 16.0)), 0.0, fill: MusicTags::TEXT)
+          Egui::Vec2.new(1.0, 16.0)), 0.0, fill: MusicTags.text)
       end
     end
   end
@@ -1032,7 +1034,7 @@ class MusicWidgetsManualApp
             col(r, "side/row/#{i}/t", 190.0, 14.0 * 1.35 + 3.0 + 12.0 * 1.35) do |cc|
               t(cc, row[:t], size: 14.0)
               gap(cc, 3.0)
-              t(cc, row[:s], size: 12.0, color: MusicTags::MUTED)
+              t(cc, row[:s], size: 12.0, color: MusicTags.muted)
             end
           end
           if clicked
@@ -1119,7 +1121,7 @@ class MusicWidgetsManualApp
     album = p.album
     obj = p.track_obj
     library = @library
-    heart_col = obj.try(&.liked) ? accent : MusicTags::ICON_FG
+    heart_col = obj.try(&.liked) ? accent : MusicTags.icon
     panel(ui, ctx, "np", MwStyle::NOWPLAYING, w: 320.0, scroll: true) do |c|
       hbar(c, "np/head", 28.0) do |h|
         t(h, "From #{p.context}", size: 15.0, bold: true)
@@ -1134,7 +1136,7 @@ class MusicWidgetsManualApp
         col(h, "np/title/t", 200.0, 22.0 * 1.35 + 3.0 + 15.0 * 1.35) do |cc|
           t(cc, obj ? obj.title : "", size: 22.0, bold: true)
           gap(cc, 3.0)
-          t(cc, album.artist, size: 15.0, color: MusicTags::MUTED)
+          t(cc, album.artist, size: 15.0, color: MusicTags.muted)
         end
         rspring(h, 56.0) # хвост: share(28) + heart(28)
         ibtn(h, ctx, "np/share", "share", btn: 28.0, size: 20.0) { p.notify("Not in this demo", ctx.input.time) }
@@ -1164,12 +1166,12 @@ class MusicWidgetsManualApp
         hbar(q, "np/queue/head", 22.0) do |h|
           t(h, "Next in queue", size: 15.0, bold: true)
           rspring(h, 0.0)
-          t(h, "Open queue", size: 14.0, color: MusicTags::MUTED)
+          t(h, "Open queue", size: 14.0, color: MusicTags.muted)
         end
         gap(q, 8.0)
         queue = p.queue[p.queue_pos + 1..].first(4)
         if queue.empty?
-          t(q, "Nothing after this song.", size: 14.0, color: MusicTags::MUTED)
+          t(q, "Nothing after this song.", size: 14.0, color: MusicTags.muted)
         else
           queue.each_with_index do |ti, i|
             tr = library.tracks[ti]
@@ -1181,7 +1183,7 @@ class MusicWidgetsManualApp
               col(r, "np/queue/row/#{i}/t", 190.0, 14.0 * 1.35 + 2.0 + 12.0 * 1.35) do |cc|
                 t(cc, tr.title, size: 14.0)
                 gap(cc, 2.0)
-                t(cc, a.artist, size: 12.0, color: MusicTags::MUTED)
+                t(cc, a.artist, size: 12.0, color: MusicTags.muted)
               end
             end
             if clicked
@@ -1205,7 +1207,7 @@ class MusicWidgetsManualApp
     h = 88.0
     rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
     pa = ui.painter
-    pa.rect(rect, 0.0, fill: MusicTags::BAR_BG)
+    pa.rect(rect, 0.0, fill: MusicTags.bar_bg)
     total = rect.width - 32.0
     c13 = total / 3.3
     c2w = total - 2 * c13
@@ -1225,11 +1227,11 @@ class MusicWidgetsManualApp
       col(r, "pb/c0/t", 200.0, 15.0 * 1.35 + 3.0 + 13.0 * 1.35) do |cc|
         t(cc, obj ? obj.title : "", size: 15.0)
         gap(cc, 3.0)
-        t(cc, album.artist, size: 13.0, color: MusicTags::MUTED)
+        t(cc, album.artist, size: 13.0, color: MusicTags.muted)
       end
       gap(r, 14.0)
       ibtn(r, ctx, "pb/heart", obj.try(&.liked) ? "heart-f" : "heart",
-        tint: obj.try(&.liked) ? accent : MusicTags::ICON_FG) { p.like_current(ctx.input.time) }
+        tint: obj.try(&.liked) ? accent : MusicTags.icon) { p.like_current(ctx.input.time) }
     end
     # колонка 1: транспорт + seek
     col1 = Egui::Rect.from_min_size(
@@ -1243,7 +1245,7 @@ class MusicWidgetsManualApp
       sw = (r.available_width - 224.0) / 2.0
       r.allocate_space(Egui::Vec2.new({sw, 0.0}.max, 0.0))
       ibtn(r, ctx, "pb/shuffle", "shuffle", size: 18.0,
-        tint: p.shuffle ? accent : MusicTags::ICON_FG) { p.toggle_shuffle(ctx.input.time) }
+        tint: p.shuffle ? accent : MusicTags.icon) { p.toggle_shuffle(ctx.input.time) }
       gap(r, 12.0)
       ibtn(r, ctx, "pb/prev", "prev") { p.prev_track }
       gap(r, 12.0)
@@ -1252,17 +1254,17 @@ class MusicWidgetsManualApp
       ibtn(r, ctx, "pb/next", "next") { p.next_track }
       gap(r, 12.0)
       ibtn(r, ctx, "pb/repeat", p.repeat_mode == 2 ? "repeat1" : "repeat",
-        size: 18.0, tint: p.repeat_mode != 0 ? accent : MusicTags::ICON_FG) { p.cycle_repeat(ctx.input.time) }
+        size: 18.0, tint: p.repeat_mode != 0 ? accent : MusicTags.icon) { p.cycle_repeat(ctx.input.time) }
       r.allocate_space(Egui::Vec2.new({sw, 0.0}.max, 0.0))
     end
     gap(c1, 4.0)
     hbar(c1, "pb/c1/seek", 16.0) do |r|
-      t(r, MusicLibrary.fmt_time(p.position), size: 12.0, color: MusicTags::MUTED, w: 40.0, align: "r")
+      t(r, MusicLibrary.fmt_time(p.position), size: 12.0, color: MusicTags.muted, w: 40.0, align: "r")
       gap(r, 10.0)
       oslider(r, ctx, "pb/seek", p.seek_frac, accent) { |f| p.seek(f) }
       gap(r, 10.0)
       t(r, obj ? MusicLibrary.fmt_time(obj.seconds.to_f64) : "0:00",
-        size: 12.0, color: MusicTags::MUTED, w: 40.0)
+        size: 12.0, color: MusicTags.muted, w: 40.0)
     end
     # колонка 2: vis + кнопки + громкость
     col2 = Egui::Rect.from_min_size(
@@ -1403,7 +1405,7 @@ class MusicWidgetsManualApp
       t(h, title, size: 22.0, bold: true)
       reserve = show_all ? h.fonts.measure("Show all", 14.0).x : 0.0
       rspring(h, reserve)
-      t(h, "Show all", size: 14.0, color: MusicTags::MUTED) if show_all
+      t(h, "Show all", size: 14.0, color: MusicTags.muted) if show_all
     end
   end
 
@@ -1418,7 +1420,7 @@ class MusicWidgetsManualApp
       gap(c, 6.0)
       t(c, title, size: 14.0, bold: true, w: 164.0)
       gap(c, 2.0)
-      t(c, sub, size: 13.0, color: MusicTags::MUTED, w: 164.0)
+      t(c, sub, size: 13.0, color: MusicTags.muted, w: 164.0)
     end
     on_open.call if clicked
   end
@@ -1464,7 +1466,7 @@ class MusicWidgetsManualApp
       gap(c, 10.0)
       if top.nil?
         t(c, "Nothing matches «#{p.query}». Try another word: a genre, a city, a color…",
-          size: 15.0, color: MusicTags::MUTED, w: 600.0, wrap: true, lh: 1.5)
+          size: 15.0, color: MusicTags.muted, w: 600.0, wrap: true, lh: 1.5)
         next
       end
       t(c, "Top result", size: 22.0, bold: true)
@@ -1477,7 +1479,7 @@ class MusicWidgetsManualApp
         col(r, "search/top/t", 340.0, 22.0 * 1.35 + 4.0 + 14.0 * 1.35) do |cc|
           t(cc, ta.title, size: 22.0, bold: true)
           gap(cc, 4.0)
-          t(cc, "Album · #{ta.artist}", size: 14.0, color: MusicTags::MUTED)
+          t(cc, "Album · #{ta.artist}", size: 14.0, color: MusicTags.muted)
         end
       end
       if clicked
@@ -1516,7 +1518,7 @@ class MusicWidgetsManualApp
     trk = @library.tracks[ti]
     a = @library.albums[trk.album]
     playing = ti == p.track
-    tc = playing ? accent : MusicTags::TEXT
+    tc = playing ? accent : MusicTags.text
     hcol = trk.liked ? accent : MusicTags.hex("#c4c4d28c").not_nil!
     clicked = panel(ui, ctx, id, MwStyle::TRACK_ROW, dir: :row, h: 56.0,
       padx: 12.0) do |r|
@@ -1527,14 +1529,14 @@ class MusicWidgetsManualApp
       col(r, "#{id}/t", 260.0, 15.0 * 1.35 + 2.0 + 13.0 * 1.35) do |cc|
         t(cc, trk.title, size: 15.0, color: tc)
         gap(cc, 2.0)
-        t(cc, a.artist, size: 13.0, color: MusicTags::MUTED)
+        t(cc, a.artist, size: 13.0, color: MusicTags.muted)
       end
       rspring(r, 197.0 + 32.0 + 44.0) # хвост: album(197) + ibtn(32) + time(44)
-      t(r, always_album ? a.title : "", size: 13.0, color: MusicTags::MUTED, w: 197.0)
+      t(r, always_album ? a.title : "", size: 13.0, color: MusicTags.muted, w: 197.0)
       ibtn(r, ctx, "#{id}/heart", trk.liked ? "heart-f" : "heart",
         tint: hcol, btn: 32.0, size: 16.0) { on_like.call }
       t(r, MusicLibrary.fmt_time(trk.seconds.to_f64), size: 13.0,
-        color: MusicTags::MUTED, w: 44.0, align: "r")
+        color: MusicTags.muted, w: 44.0, align: "r")
     end
     if clicked
       on_play.call
@@ -1563,10 +1565,8 @@ class MusicWidgetsManualApp
             MusicLibrary::LOOKS[p.look]? || MusicLibrary::LOOKS[0],
             MusicLibrary::LOOKS, w: 260.0) do |opt|
             p.look = MusicLibrary::LOOKS.index(opt) || 0
-            if p.look != 0
-              p.notify("Not in this demo", ctx.input.time)
-              p.look = 0
-            end
+            MusicTags.use_look(MusicLibrary::LOOKS[p.look])
+            ctx.request_repaint
           end
         end
         setting_row(c, ctx, "accent_follow", "Accent from the cover",
@@ -1627,7 +1627,7 @@ class MusicWidgetsManualApp
            "• Icon, Cover, Visualizer and Heading are made by the application",
            "• the themes are files of themes/; the accent follows the cover playing",
            "• the island at the top lives in the notch of a MacBook"].each do |line|
-            t(a, line, size: 14.0, color: MusicTags::EYEBROW)
+            t(a, line, size: 14.0, color: MusicTags.eyebrow)
             gap(a, 4.0)
           end
         end
@@ -1637,7 +1637,7 @@ class MusicWidgetsManualApp
 
   # APPEARANCE/PLAYBACK/ABOUT — 12px bold с трекингом
   private def eyebrow(ui : Egui::Ui, text : String) : Nil
-    t(ui, text, size: 12.0, bold: true, color: MusicTags::EYEBROW, ls: 0.08)
+    t(ui, text, size: 12.0, bold: true, color: MusicTags.eyebrow, ls: 0.08)
     gap(ui, 20.0)
   end
 
@@ -1652,7 +1652,7 @@ class MusicWidgetsManualApp
         15.0 * 1.35 + 3.0 + (wrap ? 13.0 * 1.4 * 2 : 13.0 * 1.35)) do |cc|
         t(cc, title, size: 15.0)
         gap(cc, 3.0)
-        t(cc, desc, size: 13.0, color: MusicTags::MUTED,
+        t(cc, desc, size: 13.0, color: MusicTags.muted,
           w: wrap ? 500.0 : 0.0, wrap: wrap, lh: 1.4)
       end
       # хвост известной ширины: oslider 180 + gap10 + «N s» 36
@@ -1676,7 +1676,7 @@ class MusicWidgetsManualApp
     library = @library
     center_page(ui, ctx, "library") do |c|
       t(c, "Your library", size: 30.0, bold: true, h: 46.0)
-      t(c, lib_summary, size: 14.0, color: MusicTags::MUTED)
+      t(c, lib_summary, size: 14.0, color: MusicTags.muted)
       section_header(c, ctx, "lib/h_pl", "Playlists", true)
       crow(c, "lib/playlists", h: 225.0) do |row|
         library.playlists.each_with_index do |pl, pi|
@@ -1762,29 +1762,29 @@ class MusicWidgetsManualApp
           accent, s: 56.0, size: 24.0, big: true) { p.col_play(ctx.input.time) }
         gap(h, 14.0)
         ibtn(h, ctx, "col/shuffle", "shuffle", btn: 40.0, size: 24.0,
-          tint: p.shuffle ? accent : MusicTags::ICON_FG) { p.col_shuffle(ctx.input.time) }
+          tint: p.shuffle ? accent : MusicTags.icon) { p.col_shuffle(ctx.input.time) }
         gap(h, 14.0)
         ibtn(h, ctx, "col/heart", p.col_is_liked ? "heart-f" : "heart",
           btn: 40.0, size: 24.0,
-          tint: p.col_is_liked ? accent : MusicTags::ICON_FG) { p.like_collection(ctx.input.time) }
+          tint: p.col_is_liked ? accent : MusicTags.icon) { p.like_collection(ctx.input.time) }
         gap(h, 14.0)
         ibtn(h, ctx, "col/download", "download", btn: 40.0, size: 24.0) { p.notify("Not in this demo", ctx.input.time) }
         gap(h, 14.0)
         ibtn(h, ctx, "col/more", "more", btn: 40.0, size: 24.0) { p.notify("Not in this demo", ctx.input.time) }
         rspring(h, 0.0)
-        t(h, "List", size: 14.0, color: MusicTags::MUTED)
+        t(h, "List", size: 14.0, color: MusicTags.muted)
         gap(h, 8.0)
         icon(h, "queue", 18.0, color: Egui::Color32.rgba(0xa3, 0xa3, 0xb4, 0xB3))
       end
       gap(c, 6.0)
       # шапка списка
       hbar(c, "col/head", 29.0, pad: 12.0) do |h|
-        t(h, "#", size: 13.0, color: MusicTags::MUTED, w: 26.0, align: "r")
+        t(h, "#", size: 13.0, color: MusicTags.muted, w: 26.0, align: "r")
         gap(h, 14.0)
-        t(h, "Title", size: 13.0, color: MusicTags::MUTED)
+        t(h, "Title", size: 13.0, color: MusicTags.muted)
         # хвост: album(197) + gap32 + clock(16)
         rspring(h, 245.0)
-        t(h, is_pl ? "Album" : "", size: 13.0, color: MusicTags::MUTED, w: 197.0)
+        t(h, is_pl ? "Album" : "", size: 13.0, color: MusicTags.muted, w: 197.0)
         gap(h, 32.0)
         icon(h, "clock", 16.0, color: Egui::Color32.rgba(0xa3, 0xa3, 0xb4, 0xB3))
       end
@@ -1808,7 +1808,7 @@ class MusicWidgetsManualApp
     album = p.album
     obj = p.track_obj
     now = ctx.input.time
-    c1 = MusicTags.hex(album.c1) || MusicTags::ACCENT
+    c1 = MusicTags.hex(album.c1) || MusicTags.accent
     c2 = MusicTags.hex(album.c2) || c1
     txt = album.ini
     ui.overlay(:top_center, margin: Egui::StyleBox.new(top: 6.0)) do |o|
@@ -1833,14 +1833,14 @@ class MusicWidgetsManualApp
       pnt = o.painter
       radius = MusicTags.glide(ctx, Egui::Id.from("island/rad"), "radius",
         expanded ? 14.0 : 100.0, 180.0)
-      pnt.rect(rect, radius, fill: MusicTags::POPUP,
+      pnt.rect(rect, radius, fill: MusicTags.popup,
         stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
       x = rect.left + 10.0
       MusicTags.cover(pnt, o.fonts,
         Egui::Rect.from_min_size(Egui::Pos2.new(x, rect.center.y - 10.0),
           Egui::Vec2.new(20.0, 20.0)), c1, c2, txt, 5.0, 8.0)
       x += 20.0 + 8.0
-      pnt.text(Egui::Pos2.new(x, rect.center.y), title, 12.0, MusicTags::TEXT)
+      pnt.text(Egui::Pos2.new(x, rect.center.y), title, 12.0, MusicTags.text)
       x += tw + 8.0
       heights = {6.0, 11.0, 8.0, 5.0}
       levels = MusicTags.vis_step("island/folded", 4, p.playing, now)
@@ -1859,7 +1859,7 @@ class MusicWidgetsManualApp
         lp.layer = Egui::Order::Foreground
         iw = 300.0
         ipanel = Egui::Rect.from_min_size(rect.min, Egui::Vec2.new(iw, 186.0))
-        lp.rect(ipanel, 14.0, fill: MusicTags::POPUP,
+        lp.rect(ipanel, 14.0, fill: MusicTags.popup,
           stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
         lp.box_shadow(ipanel, Egui::Color32.rgba(0, 0, 0, 0x80), 30.0, 14.0)
         sy = ipanel.top + 12.0
@@ -1867,9 +1867,9 @@ class MusicWidgetsManualApp
           Egui::Rect.from_min_size(Egui::Pos2.new(ipanel.left + 12.0, sy),
             Egui::Vec2.new(40.0, 40.0)), c1, c2, txt, 6.0, 13.0)
         lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 10.0),
-          obj ? obj.title : "", 13.0, MusicTags::TEXT, bold: true)
+          obj ? obj.title : "", 13.0, MusicTags.text, bold: true)
         lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 26.0),
-          album.artist, 11.0, MusicTags::MUTED)
+          album.artist, 11.0, MusicTags.muted)
         ulevels = MusicTags.vis_step("island/unfolded", 6, p.playing, now)
         6.times do |i|
           bh = {16.0 * ulevels[i], 2.0}.max
@@ -1889,7 +1889,7 @@ class MusicWidgetsManualApp
           Egui::Pos2.new(ipanel.left + 12.0, cy - 2.0),
           Egui::Vec2.new(seek_w * frac, 4.0)), 2.0, fill: accent)
         lp.circle_filled(Egui::Pos2.new(ipanel.left + 12.0 + seek_w * frac, cy),
-          5.0, MusicTags::WHITE)
+          5.0, MusicTags.strong)
         srect = Egui::Rect.from_min_size(
           Egui::Pos2.new(ipanel.left + 12.0, cy - 7.0),
           Egui::Vec2.new(seek_w, 14.0))
@@ -1901,12 +1901,12 @@ class MusicWidgetsManualApp
           ctx.request_repaint
         end
         lp.text(Egui::Pos2.new(ipanel.left + 12.0, sy + 76.0),
-          MusicLibrary.fmt_time(p.position), 10.0, MusicTags::MUTED)
+          MusicLibrary.fmt_time(p.position), 10.0, MusicTags.muted)
         len_w = o.fonts.measure(
           obj ? MusicLibrary.fmt_time(obj.seconds.to_f64) : "0:00", 10.0).x
         lp.text(Egui::Pos2.new(ipanel.right - 12.0 - len_w, sy + 76.0),
           obj ? MusicLibrary.fmt_time(obj.seconds.to_f64) : "0:00",
-          10.0, MusicTags::MUTED)
+          10.0, MusicTags.muted)
         # u-row: heart prev play next panel
         by = sy + 92.0
         cxm = ipanel.center.x
@@ -1925,14 +1925,14 @@ class MusicWidgetsManualApp
             Egui::Sense::Click, layer, brect)
           is_play = bname == "play"
           if is_play
-            lp.circle_filled(brect.center, brect.width / 2.0, MusicTags::TEXT)
+            lp.circle_filled(brect.center, brect.width / 2.0, MusicTags.text)
           elsif bresp.hovered?
-            lp.circle_filled(brect.center, brect.width / 2.0, MusicTags::CONTROL_HOV)
+            lp.circle_filled(brect.center, brect.width / 2.0, MusicTags.control_hov)
           end
           icon_name = is_play ? (p.playing ? "pause" : "play") : bname
           icon_name = "heart-f" if bname == "heart" && obj.try(&.liked)
-          fg = is_play ? MusicTags::WINDOW
-            : (bresp.hovered? ? MusicTags::WHITE : MusicTags::ICON_FG)
+          fg = is_play ? MusicTags.window
+            : (bresp.hovered? ? MusicTags.strong : MusicTags.icon)
           MusicTags.icon(icon_name, fg).paint(o,
             Egui::Rect.from_min_size(
               Egui::Pos2.new(brect.center.x - 7.0, brect.center.y - 7.0),
@@ -1950,9 +1950,9 @@ class MusicWidgetsManualApp
         end
         lp.rect(Egui::Rect.from_min_size(
           Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 40.0),
-          Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags::SEPARATOR)
+          Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags.separator)
         lp.text(Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 20.0),
-          "Look: #{MusicLibrary::LOOKS[p.look]}", 12.0, MusicTags::MUTED)
+          "Look: #{MusicLibrary::LOOKS[p.look]}", 12.0, MusicTags.muted)
         lp.layer = prev_layer
         lp.clip = prev_clip
       end

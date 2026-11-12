@@ -56,7 +56,7 @@
             <col w="190">
               <t text="{r.t}" size="14"/>
               <gap h="3"/>
-              <t text="{r.s}" size="12" color="#a3a3b4"/>
+              <t text="{r.s}" size="12" color="{c_muted}"/>
             </col>
           </panel>
           <gap h="2"/>
@@ -80,7 +80,7 @@
         <col w="200">
           <t text="{np_title}" size="22" bold="1"/>
           <gap h="3"/>
-          <t text="{np_artist}" size="15" color="#a3a3b4"/>
+          <t text="{np_artist}" size="15" color="{c_muted}"/>
         </col>
         <spring/>
         <ibtn icon="share" btn="28" size="20" on_click="not_in_demo"/>
@@ -103,10 +103,10 @@
         <hbar h="22">
           <t text="Next in queue" size="15" bold="1"/>
           <spring/>
-          <t text="Open queue" size="14" color="#a3a3b4"/>
+          <t text="Open queue" size="14" color="{c_muted}"/>
         </hbar>
         <gap h="8"/>
-        <t if="queue_empty" text="Nothing after this song." size="14" color="#a3a3b4"/>
+        <t if="queue_empty" text="Nothing after this song." size="14" color="{c_muted}"/>
         <repeat for="q" in="queue">
           <panel class="q-row" dir="row" h="42" on_click="jump_queue">
             <cover c1="{q.c1}" c2="{q.c2}" txt="{q.txt}" s="36" r="4" fs="12"/>
@@ -114,7 +114,7 @@
             <col w="190">
               <t text="{q.t}" size="14"/>
               <gap h="2"/>
-              <t text="{q.s}" size="12" color="#a3a3b4"/>
+              <t text="{q.s}" size="12" color="{c_muted}"/>
             </col>
           </panel>
           <gap h="6"/>
@@ -131,7 +131,7 @@
         <col w="200">
           <t text="{np_title}" size="15"/>
           <gap h="3"/>
-          <t text="{np_artist}" size="13" color="#a3a3b4"/>
+          <t text="{np_artist}" size="13" color="{c_muted}"/>
         </col>
         <gap w="14"/>
         <ibtn icon="{heart_icon}" color="{heart_col}" on_click="like_current"/>
@@ -152,11 +152,11 @@
         </hbar>
         <gap h="4"/>
         <hbar h="16">
-          <t text="{elapsed}" size="12" color="#a3a3b4" w="40" align="r"/>
+          <t text="{elapsed}" size="12" color="{c_muted}" w="40" align="r"/>
           <gap w="10"/>
           <oslider bind="seek_frac" w="-1" on_change="seek"/>
           <gap w="10"/>
-          <t text="{length}" size="12" color="#a3a3b4" w="40"/>
+          <t text="{length}" size="12" color="{c_muted}" w="40"/>
         </hbar>
       </column>
       <hbar h="88">
@@ -219,7 +219,7 @@
       <hbar h="36">
         <t text="Made for you" size="22" bold="1"/>
         <spring/>
-        <t text="Show all" size="14" color="#a3a3b4"/>
+        <t text="Show all" size="14" color="{c_muted}"/>
       </hbar>
       <crow>
         <repeat for="c" in="made_cards">
@@ -228,7 +228,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -236,7 +236,7 @@
       <hbar h="36">
         <t text="Recently played" size="22" bold="1"/>
         <spring/>
-        <t text="Show all" size="14" color="#a3a3b4"/>
+        <t text="Show all" size="14" color="{c_muted}"/>
       </hbar>
       <crow>
         <repeat for="c" in="recent_cards">
@@ -245,7 +245,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -261,7 +261,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -269,7 +269,7 @@
       <hbar h="36">
         <t text="New releases" size="22" bold="1"/>
         <spring/>
-        <t text="Show all" size="14" color="#a3a3b4"/>
+        <t text="Show all" size="14" color="{c_muted}"/>
       </hbar>
       <crow>
         <repeat for="c" in="release_cards">
@@ -278,7 +278,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -303,7 +303,7 @@
         <t text="Results" size="26" bold="1"/>
         <gap h="10"/>
         <column if="no_results">
-          <t text="Nothing matches «{query}». Try another word: a genre, a city, a color…" size="15" color="#a3a3b4" w="600" wrap="1" lh="1.5"/>
+          <t text="Nothing matches «{query}». Try another word: a genre, a city, a color…" size="15" color="{c_muted}" w="600" wrap="1" lh="1.5"/>
         </column>
         <column unless="no_results">
         <t text="Top result" size="22" bold="1"/>
@@ -314,7 +314,7 @@
           <col w="340">
             <t text="{top_t}" size="22" bold="1"/>
             <gap h="4"/>
-            <t text="Album · {top_s}" size="14" color="#a3a3b4"/>
+            <t text="Album · {top_s}" size="14" color="{c_muted}"/>
           </col>
         </panel>
         <gap h="10"/>
@@ -329,12 +329,12 @@
             <col w="260">
               <t text="{tr.tt}" size="15" color="{tr.tc}"/>
               <gap h="2"/>
-              <t text="{tr.ta}" size="13" color="#a3a3b4"/>
+              <t text="{tr.ta}" size="13" color="{c_muted}"/>
             </col>
             <spring/>
-            <t text="{tr.al}" size="13" color="#a3a3b4" w="197"/>
+            <t text="{tr.al}" size="13" color="{c_muted}" w="197"/>
             <ibtn icon="{tr.hicon}" color="{tr.hcol}" btn="32" size="16" on_click="like_song"/>
-            <t text="{tr.time}" size="13" color="#a3a3b4" w="44" align="r"/>
+            <t text="{tr.time}" size="13" color="{c_muted}" w="44" align="r"/>
           </panel>
         </repeat>
         <gap h="10"/>
@@ -346,7 +346,7 @@
               <gap h="6"/>
               <t text="{c.t}" size="14" bold="1" w="164"/>
               <gap h="2"/>
-              <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+              <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
             </panel>
             <gap w="4"/>
           </repeat>
@@ -362,13 +362,13 @@
       <panel class="settings-col" w="-1">
           <t text="Settings" size="30" bold="1"/>
           <gap h="20"/>
-          <t text="APPEARANCE" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
+          <t text="APPEARANCE" size="12" bold="1" color="{c_eyebrow}" ls="0.08"/>
           <gap h="20"/>
           <hbar h="60">
             <col w="500">
               <t text="Look" size="15"/>
               <gap h="3"/>
-              <t text="A theme of the player, or a look of Raven: Windows, macOS, GNOME, glass, high contrast." size="13" color="#a3a3b4" w="500" wrap="1" lh="1.4"/>
+              <t text="A theme of the player, or a look of Raven: Windows, macOS, GNOME, glass, high contrast." size="13" color="{c_muted}" w="500" wrap="1" lh="1.4"/>
             </col>
             <spring/>
             <ocombo bind="combo_look" w="260" on_change="look_change"/>
@@ -376,46 +376,46 @@
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Accent from the cover" size="15"/><gap h="3"/>
-              <t text="The color of the controls follows the cover of what plays." size="13" color="#a3a3b4"/></col>
+              <t text="The color of the controls follows the cover of what plays." size="13" color="{c_muted}"/></col>
             <spring/>
             <oswitch bind="sw_accent_follow" on="{sw_accent_follow}" on_click="sw_accent"/>
           </hbar>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Accent" size="15"/><gap h="3"/>
-              <t text="The color of the controls, when it does not follow the cover." size="13" color="#a3a3b4"/></col>
+              <t text="The color of the controls, when it does not follow the cover." size="13" color="{c_muted}"/></col>
             <spring/>
             <swatch/>
           </hbar>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Background" size="15"/><gap h="3"/>
-              <t text="What moves behind the panels, in the colors of the cover." size="13" color="#a3a3b4"/></col>
+              <t text="What moves behind the panels, in the colors of the cover." size="13" color="{c_muted}"/></col>
             <spring/>
             <ocombo bind="combo_bg" w="160" on_change="effect_change"/>
           </hbar>
           <gap h="20"/>
           <hbar h="60">
             <col w="500"><t text="Animate the background" size="15"/><gap h="3"/>
-              <t text="Off, the background stays still and the window draws only when something changes." size="13" color="#a3a3b4" w="500" wrap="1" lh="1.4"/></col>
+              <t text="Off, the background stays still and the window draws only when something changes." size="13" color="{c_muted}" w="500" wrap="1" lh="1.4"/></col>
             <spring/>
             <oswitch bind="sw_animate" on="{sw_animate}" on_click="sw_animate"/>
           </hbar>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Now playing panel" size="15"/><gap h="3"/>
-              <t text="The panel on the right, with the cover and what comes next." size="13" color="#a3a3b4"/></col>
+              <t text="The panel on the right, with the cover and what comes next." size="13" color="{c_muted}"/></col>
             <spring/>
             <oswitch bind="sw_np_setting" on="{sw_np_setting}" on_click="toggle_np"/>
           </hbar>
           <gap h="20"/>
           <hline/>
           <gap h="20"/>
-          <t text="PLAYBACK" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
+          <t text="PLAYBACK" size="12" bold="1" color="{c_eyebrow}" ls="0.08"/>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Crossfade" size="15"/><gap h="3"/>
-              <t text="Songs fade into each other." size="13" color="#a3a3b4"/></col>
+              <t text="Songs fade into each other." size="13" color="{c_muted}"/></col>
             <spring/>
             <oslider bind="crossfade_frac" w="180" on_change="crossfade_change"/>
             <gap w="10"/>
@@ -424,34 +424,34 @@
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Normalize the volume" size="15"/><gap h="3"/>
-              <t text="The same loudness for every song." size="13" color="#a3a3b4"/></col>
+              <t text="The same loudness for every song." size="13" color="{c_muted}"/></col>
             <spring/>
             <oswitch bind="sw_normalize" on="{sw_normalize}" on_click="sw_normalize"/>
           </hbar>
           <gap h="20"/>
           <hbar h="46">
             <col w="500"><t text="Streaming quality" size="15"/><gap h="3"/>
-              <t text="Nothing is streamed: the songs of this player are made up." size="13" color="#a3a3b4"/></col>
+              <t text="Nothing is streamed: the songs of this player are made up." size="13" color="{c_muted}"/></col>
             <spring/>
             <ocombo bind="combo_quality" w="160" on_change="quality_change"/>
           </hbar>
           <gap h="20"/>
           <hline/>
           <gap h="20"/>
-          <t text="ABOUT" size="12" bold="1" color="#d6d6e2" ls="0.08"/>
+          <t text="ABOUT" size="12" bold="1" color="{c_eyebrow}" ls="0.08"/>
           <gap h="20"/>
           <panel class="about-card" h="190">
             <t text="Raven Music is a showcase of Raven: no server, no sound, only the interface." size="14" w="748" wrap="1" lh="1.55"/>
             <gap h="8"/>
-            <t text="• every part is an XML file of ui/, brought in with Include" size="14" color="#d6d6e2"/>
+            <t text="• every part is an XML file of ui/, brought in with Include" size="14" color="{c_eyebrow}"/>
             <gap h="4"/>
-            <t text="• the cards, the rows and the tiles are tags declared in widgets.xml" size="14" color="#d6d6e2"/>
+            <t text="• the cards, the rows and the tiles are tags declared in widgets.xml" size="14" color="{c_eyebrow}"/>
             <gap h="4"/>
-            <t text="• Icon, Cover, Visualizer and Heading are made by the application" size="14" color="#d6d6e2"/>
+            <t text="• Icon, Cover, Visualizer and Heading are made by the application" size="14" color="{c_eyebrow}"/>
             <gap h="4"/>
-            <t text="• the themes are files of themes/; the accent follows the cover playing" size="14" color="#d6d6e2"/>
+            <t text="• the themes are files of themes/; the accent follows the cover playing" size="14" color="{c_eyebrow}"/>
             <gap h="4"/>
-            <t text="• the island at the top lives in the notch of a MacBook" size="14" color="#d6d6e2"/>
+            <t text="• the island at the top lives in the notch of a MacBook" size="14" color="{c_eyebrow}"/>
           </panel>
         </panel>
     </panel>
@@ -461,11 +461,11 @@
   <partial id="p_library">
     <panel class="center-page" scroll="1" appear="fade">
       <t text="Your library" size="30" bold="1" h="46"/>
-      <t text="{lib_summary}" size="14" color="#a3a3b4"/>
+      <t text="{lib_summary}" size="14" color="{c_muted}"/>
       <hbar h="37">
         <t text="Playlists" size="22" bold="1"/>
         <spring/>
-        <t text="Show all" size="14" color="#a3a3b4"/>
+        <t text="Show all" size="14" color="{c_muted}"/>
       </hbar>
       <crow h="225">
         <repeat for="c" in="playlists">
@@ -474,7 +474,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -482,7 +482,7 @@
       <hbar h="37">
         <t text="Albums" size="22" bold="1"/>
         <spring/>
-        <t text="Show all" size="14" color="#a3a3b4"/>
+        <t text="Show all" size="14" color="{c_muted}"/>
       </hbar>
       <crow>
         <repeat for="c" in="albums_r0">
@@ -491,7 +491,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -503,7 +503,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -515,7 +515,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -527,7 +527,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -539,7 +539,7 @@
           <gap h="6"/>
           <t text="{c.t}" size="14" bold="1" w="164"/>
           <gap h="2"/>
-          <t text="{c.s}" size="13" color="#a3a3b4" w="164"/>
+          <t text="{c.s}" size="13" color="{c_muted}" w="164"/>
         </panel>
         <gap w="4"/>
       </repeat>
@@ -580,19 +580,19 @@
         <gap w="14"/>
         <ibtn icon="more" btn="40" size="24" on_click="not_in_demo"/>
         <spring/>
-        <t text="List" size="14" color="#a3a3b4"/>
+        <t text="List" size="14" color="{c_muted}"/>
         <gap w="8"/>
-        <icon name="queue" size="18" color="#a3a3b4b3"/>
+        <icon name="queue" size="18" color="{c_muted_b3}"/>
       </hbar>
       <gap h="6"/>
       <hbar h="29" pad="12">
-        <t text="#" size="13" color="#a3a3b4" w="26" align="r"/>
+        <t text="#" size="13" color="{c_muted}" w="26" align="r"/>
         <gap w="14"/>
-        <t text="Title" size="13" color="#a3a3b4"/>
+        <t text="Title" size="13" color="{c_muted}"/>
         <spring/>
-        <t text="{album_head}" size="13" color="#a3a3b4" w="197"/>
+        <t text="{album_head}" size="13" color="{c_muted}" w="197"/>
         <gap w="32"/>
-        <icon name="clock" size="16" color="#a3a3b4b3"/>
+        <icon name="clock" size="16" color="{c_muted_b3}"/>
       </hbar>
       <gap h="4"/>
       <hline pad="12"/>
@@ -606,12 +606,12 @@
           <col w="260">
             <t text="{tr.tt}" size="15" color="{tr.tc}"/>
             <gap h="2"/>
-            <t text="{tr.ta}" size="13" color="#a3a3b4"/>
+            <t text="{tr.ta}" size="13" color="{c_muted}"/>
           </col>
           <spring/>
-          <t text="{tr.al}" size="13" color="#a3a3b4" w="197"/>
+          <t text="{tr.al}" size="13" color="{c_muted}" w="197"/>
           <ibtn icon="{tr.hicon}" color="{tr.hcol}" btn="32" size="16" on_click="like_track"/>
-          <t text="{tr.time}" size="13" color="#a3a3b4" w="44" align="r"/>
+          <t text="{tr.time}" size="13" color="{c_muted}" w="44" align="r"/>
         </panel>
       </repeat>
     </panel>
@@ -619,7 +619,7 @@
 
   <!-- ════════════════════════════════ ОКНО ═══════════════════════════ -->
   <page id="root/root">
-    <mesh c1="{m1}" c2="{m2}" c3="{m3}" fx="{effect}" animate="{animate_bg}" if="mesh_on"/>
+    <mesh c1="{m1}" c2="{m2}" c3="{m3}" fx="{effect}" animate="{animate_bg}" opacity="{mesh_op}" if="mesh_on"/>
     <use partial="header"/>
     <mainarea pad="8" reserve="88">
       <use partial="sidebar"/>

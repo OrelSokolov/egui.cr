@@ -157,6 +157,13 @@ module Egui
       @runs.has_key?(id)
     end
 
+    # True while any run is still waiting out its delay or springing
+    # (the subtree-cache gate — liveness, not presence: a settled run
+    # lingering in Memory does not block).
+    def any_running? : Bool
+      @runs.any? { |_, r| r.delay > 0.0 || r.progress.moving?(1.0) }
+    end
+
     def reset : Nil
       @runs.clear
     end

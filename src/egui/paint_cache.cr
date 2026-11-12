@@ -34,6 +34,19 @@
 #     truncates into them.
 module Egui
   class PaintCache
+    # One interaction registration inside a captured subtree: replayed
+    # (translated) on a subtree hit so hit-testing, hover and clicks
+    # keep working when the block doesn't run.
+    struct Interact
+      getter id : Id
+      getter rect : Rect
+      getter sense : Sense
+      getter layer : LayerId
+
+      def initialize(@id, @rect, @sense, @layer)
+      end
+    end
+
     class Entry
       getter id : Id
       # Child-counter span the widget consumed (see replay above).
@@ -47,12 +60,21 @@ module Egui
       getter ambient_clip : Rect
       getter commands : Array(PaintCmd)
       getter layers : Array(Int32)
+      # Subtree entries (Ui#cached_subtree): the interaction
+      # registrations the block made, and its layout effects on the Ui
+      # (cursor + min_rect after the block) — replayed translated.
+      # Leaf entries leave these empty/nil.
+      getter interacts : Array(Interact)
+      getter cursor : Pos2?
+      getter min_rect : Rect?
       property last_gen : Int32
 
       def initialize(@id : Id, @ids_consumed : Int32, @size : Vec2,
                      @sense : Sense, @origin : Pos2,
                      @ambient_clip : Rect, @commands : Array(PaintCmd),
-                     @layers : Array(Int32), @last_gen : Int32)
+                     @layers : Array(Int32), @last_gen : Int32,
+                     @interacts : Array(Interact) = [] of Interact,
+                     @cursor : Pos2? = nil, @min_rect : Rect? = nil)
       end
     end
 
@@ -133,6 +155,36 @@ module Egui
             want = if moved
                      # The recorded clip moved with the widget; the
                      # ambient clip did not — intersect both.
+                     shifted = Rect.new(Pos2.new(rec.min.x + dx, rec.min.y + dy),
+                       Pos2.new(rec.max.x + dx, rec.max.y + dy))
+                     intersect(shifted, ambient)
+                   else
+                     intersect(rec, ambient)
+                   end
+            cmd = cmd.with_clip(want, cmd.clip_corners) unless want == rec
+          end
+        end
+        painter.replay_add(entry.layers[i], cmd)
+      end
+    end
+
+    # Re-emit a SUBTREE entry's commands translated by (dx, dy) and
+    # re-clipped against the painter's current ambient clip (the
+    # Ui#cached_subtree replay path — no single widget rect, the whole
+    # span moves together).
+    def self.replay_subtree(entry : Entry, dx : Float64, dy : Float64,
+                            painter : Painter) : Nil
+      ambient = painter.clip
+      moved = dx != 0.0 || dy != 0.0
+      reclipped = moved || ambient != entry.ambient_clip
+      frame = moved ? Painter::TransformFrame.new(Pos2.zero, 0,
+        1.0, 1.0, dx, dy, 1.0) : nil
+      entry.commands.each_with_index do |cmd, i|
+        unless cmd.is_a?(NoopCmd)
+          cmd = frame.try(&.apply(cmd)) || cmd
+          if reclipped
+            rec = cmd.clip
+            want = if moved
                      shifted = Rect.new(Pos2.new(rec.min.x + dx, rec.min.y + dy),
                        Pos2.new(rec.max.x + dx, rec.max.y + dy))
                      intersect(shifted, ambient)

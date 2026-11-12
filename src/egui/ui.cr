@@ -538,6 +538,9 @@ module Egui
       epoch0 = painter.xform_epoch
       clip0 = painter.clip
       resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
+      # The key changed — the output changed: fold into the frame's
+      # damage region (Painter#mark_dirty).
+      painter.mark_dirty(resp.rect)
       # Store only fully clip-contained captures: galley paint culls
       # rows against the ambient clip (Painter#paint_galley), so a
       # partially/fully culled widget's bucket is position-dependent —
@@ -556,6 +559,134 @@ module Egui
           resp.sense, resp.rect.min, clip0, cmds, layers, 0))
       end
       resp
+    end
+
+    # --- retained subtree (FPS_OPTIMIZATION.md §2: containers) ----------
+    #
+    # The container-level generalization of the per-widget paint cache:
+    # run the block once, capture its WHOLE effect — paint commands,
+    # interaction registrations, cursor/min_rect movement — and on
+    # later frames with the same `key` replay all of it without
+    # running the block. A hit skips the block's closures, layout and
+    # paint entirely (one translate + re-clip of the recorded span);
+    # hit-testing keeps working through the recorded interactions.
+    #
+    # `key` must fold EVERYTHING the block's output depends on besides
+    # what this method adds (the Ui's id, its region size, font scale,
+    # ppp): content, resolved style identities, hover/active inputs of
+    # the widgets inside. A nil key — or any gate below — just runs
+    # the block:
+    #
+    #   * the block must be a pure declaration (the Flex measure-pass
+    #     contract: side effects not gated on a Response must not
+    #     happen, or must guard with `ui.measuring?`);
+    #   * frames with pointer presses/drags/releases/wheel inside the
+    #     subtree, or keyboard focus held inside it, run for real —
+    #     gestures and app response callbacks must fire;
+    #   * while ANY animation runs anywhere (style transitions, appear,
+    #     keyframes, value animations) nothing replays — a subtree
+    #     spans ids it cannot enumerate, so this gate is global and
+    #     coarse (the leaf cache gates per widget id instead);
+    #   * captures must be fully inside the ambient clip (row culling
+    #     makes partially visible spans position-dependent) and free of
+    #     transform brackets and Mesh3D commands.
+    def cached_subtree(key : UInt64?, & : Ui ->)
+      return yield self unless key
+      return yield self if @ctx.measuring?
+      return yield self if @ctx.subtree_animations_running?
+      cache = @ctx.paint_cache
+      full = {key, @id, @max_rect.width, @max_rect.height,
+              @ctx.font_scale, @ctx.pixels_per_point}.hash
+      if (entry = cache.lookup(full))
+        if subtree_hit_ok?(entry)
+          Egui::Bench.span("paintcache.subtree.replay") do
+            Egui::Bench.span("paintcache.mint") do
+              entry.ids_consumed.times { next_widget_id }
+            end
+            dx = @max_rect.min.x - entry.origin.x
+            dy = @max_rect.min.y - entry.origin.y
+            if (mr = entry.min_rect)
+              @min_rect = @min_rect.union(Rect.new(
+                Pos2.new(mr.min.x + dx, mr.min.y + dy),
+                Pos2.new(mr.max.x + dx, mr.max.y + dy)))
+            end
+            if (cur = entry.cursor)
+              @cursor = Pos2.new(cur.x + dx, cur.y + dy)
+            end
+            entry.interacts.each do |ia|
+              r = ia.rect
+              @ctx.interact(ia.id,
+                Rect.new(Pos2.new(r.min.x + dx, r.min.y + dy),
+                  Pos2.new(r.max.x + dx, r.max.y + dy)),
+                ia.sense, ia.layer)
+            end
+            PaintCache.replay_subtree(entry, dx, dy, painter)
+          end
+          return
+        end
+        # An interaction frame inside the subtree: the hit's replay
+        # would swallow gestures and response callbacks — run the block
+        # for real, without storing (pointer-dependent output).
+        painter.mark_dirty(@min_rect) if min_rect = @min_rect
+        yield self
+        return
+      end
+      # Miss: run the block under capture.
+      cmd0 = painter.snapshot
+      counter0 = @child_counter
+      epoch0 = painter.xform_epoch
+      origin0 = @max_rect.min
+      clip0 = painter.clip
+      log = [] of PaintCache::Interact
+      outer_log = @ctx.swap_interact_log(log)
+      begin
+        yield self
+      ensure
+        @ctx.swap_interact_log(outer_log)
+      end
+      # The subtree's key changed — its output changed.
+      painter.mark_dirty(@min_rect) if min_rect = @min_rect
+      # Store only fully clip-contained, transform-stable, mesh-free
+      # captures — the leaf-capture rules (see #paint_cache_add).
+      if painter.xform_epoch == epoch0 &&
+         (mr = @min_rect) &&
+         clip0.min.x <= mr.min.x && clip0.max.x >= mr.max.x &&
+         clip0.min.y <= mr.min.y && clip0.max.y >= mr.max.y &&
+         (bucket = painter.take_bucket(cmd0)) &&
+         !bucket[0].any?(&.is_a?(Mesh3DCmd))
+        # Dedupe the interactions by id, LAST registration wins (the
+        # later one carries the z-meaningful geometry).
+        dedup = {} of UInt64 => PaintCache::Interact
+        log.each { |ia| dedup[ia.id.value] = ia }
+        cache.store(full, PaintCache::Entry.new(
+          @id, (@child_counter - counter0).to_i32, mr.size, Sense.none,
+          origin0, clip0, bucket[0], bucket[1], 0,
+          interacts: dedup.values, cursor: @cursor, min_rect: mr))
+      end
+    end
+
+    # A subtree hit may replay only on a frame with no live gesture
+    # inside it: presses/drags/releases/wheel with the pointer over the
+    # subtree, or keyboard focus on one of its registered widgets, need
+    # the block to run (responses and app callbacks must fire).
+    private def subtree_hit_ok?(entry : PaintCache::Entry) : Bool
+      return false unless (mr = entry.min_rect)
+      ctx = @ctx
+      input = ctx.input
+      if (pos = input.pointer_pos) &&
+         (input.pointer_pressed? || input.pointer_down? ||
+          input.pointer_released? ||
+          input.scroll.x != 0.0 || input.scroll.y != 0.0)
+        dx = @max_rect.min.x - entry.origin.x
+        dy = @max_rect.min.y - entry.origin.y
+        zone = Rect.new(Pos2.new(mr.min.x + dx, mr.min.y + dy),
+          Pos2.new(mr.max.x + dx, mr.max.y + dy))
+        return false if zone.contains?(pos)
+      end
+      if (fid = ctx.memory.focus.id)
+        return false if entry.interacts.any? { |ia| ia.id == fid }
+      end
+      true
     end
 
     # egui `ui.label` — selectable text by default (`userselect: false`

@@ -129,7 +129,47 @@ module Egui
     # subtree runs (2^depth); with them the cost is linear in depth.
     def render(ui : Ui) : Rect
       return ui.min_rect if @children.empty?
+      # Whole-subtree retained paint (see #subtree_key): a data-driven
+      # flex (every child a Widget with a paint-cache key) replays as
+      # one span — measure + distribute + place + child runs skipped
+      # entirely on a hit.
+      skey = ui.ctx.measuring? ? nil : subtree_key(ui)
+      if skey
+        ui.cached_subtree(skey) { render_uncached(ui) }
+        return ui.min_rect
+      end
+      render_uncached(ui)
+    end
 
+    # Aggregate subtree key, computable BEFORE anything runs: per child
+    # the widget's own paint_cache_key evaluated on a PROBE cell ui
+    # carrying the real cell id (so the child's hover/active state
+    # resolves exactly like the real pass will see) plus the child's
+    # flex parameters; the flex's own properties and region on top.
+    # Block children opt out — closures cannot be keyed.
+    private def subtree_key(ui : Ui) : UInt64?
+      return nil if @children.empty?
+      h = 0xcbf29ce484222325_u64
+      @children.each_with_index do |child, i|
+        return nil if child.block
+        widget = child.widget
+        return nil unless widget
+        probe = ui.child_ui(
+          Rect.from_min_size(ui.max_rect.min,
+            Vec2.new(ui.max_rect.width, 1e6)),
+          id: @flex_id.child(i.to_u64 + 1))
+        k = widget.paint_cache_key(probe)
+        return nil unless k
+        rh = {k, child.grow, child.shrink, child.basis, child.order,
+              child.align_self}.hash
+        h = (h ^ rh) &* 0x100000001b3
+      end
+      (h ^ {ui.max_rect.width, ui.max_rect.height, ui.style.object_id,
+            @direction, @wrap, @justify, @align, @align_content,
+            @gap}.hash) &* 0x100000001b3
+    end
+
+    def render_uncached(ui : Ui) : Rect
       row = @direction == :row || @direction == :row_reverse
       rev_main = @direction == :row_reverse || @direction == :column_reverse
       wrapped = @wrap == :wrap || @wrap == :wrap_reverse
@@ -159,12 +199,30 @@ module Egui
       avail = ui.max_rect.width
       Egui::Bench.count("flex.render")
       cell_ids = nil
-      if (memo = ctx.flex_measure(@flex_id, avail)) &&
+      reuse_layout = false
+      memo = ctx.flex_measure(@flex_id, avail)
+      if memo &&
          (memo.avail - avail).abs < 0.5 &&
          memo.naturals.size == ordered.size
         Egui::Bench.count("flex.memo.hit")
         ordered.each_with_index { |child, i| child.natural = memo.naturals[i] }
         cell_ids = memo.ids
+        # Incremental layout: same placement inputs → reuse the last
+        # pass's slots (relative to max_rect.min), skip distribute +
+        # place. A measuring pass never reuses (its axes differ from
+        # the real pass — the 1e6 measure cell).
+        if !measuring &&
+           (lay = memo.layout) &&
+           lay.inputs == layout_inputs_hash(ordered, main_size, cross_size)
+          Egui::Bench.count("flex.layout.hit")
+          reuse_layout = true
+          ordered.each_with_index do |child, i|
+            r = lay.slots[i]
+            child.slot = Rect.from_min_size(
+              Pos2.new(ui.max_rect.min.x + r.min.x,
+                ui.max_rect.min.y + r.min.y), r.size)
+          end
+        end
       else
         Egui::Bench.count("flex.memo.miss")
         naturals = [] of Vec2
@@ -189,43 +247,60 @@ module Egui
         end
         end
         cell_ids = ids
-        ctx.set_flex_measure(@flex_id, avail,
+        memo = ctx.set_flex_measure(@flex_id, avail,
           Context::FlexMeasure.new(avail, naturals, ids))
       end
 
       # --- distribution ---------------------------------------------------
-      # Hypothetical main size (flex-basis, % against the definite
-      # main axis, else the measured natural size).
-      ordered.each do |child|
-        child.base = case (b = child.basis)
-                     when Float64 then b
-                     when String  then percent_of(b, main_size) || natural_main(child, row)
-                     else              natural_main(child, row)
-                     end
-      end
+      unless reuse_layout
+        # Hypothetical main size (flex-basis, % against the definite
+        # main axis, else the measured natural size).
+        ordered.each do |child|
+          child.base = case (b = child.basis)
+                       when Float64 then b
+                       when String  then percent_of(b, main_size) || natural_main(child, row)
+                       else              natural_main(child, row)
+                       end
+        end
 
-      lines = Egui::Bench.span("flex.distribute") { break_lines(ordered, main_size) }
-      Egui::Bench.span("flex.distribute") do
-      lines.each do |line|
-        resolve_main(line, main_size, row)
-        crosses = line.items.map { |c| row ? c.natural.y : c.natural.x }
-        line.cross = crosses.max? || 0.0
-      end
-      # A single-line (nowrap) container with a definite cross size
-      # sizes its line to the CONTAINER, not the tallest child's
-      # natural (CSS §9.4: the line fills the flex container under
-      # `align-content: stretch`, the default). Taller children
-      # overflow and are clipped — they must not enlarge the siblings'
-      # cells (a sidebar list would blow up the center panel's slot).
-      if !wrapped && cross_size > EPS && @align_content == :stretch
-        lines.each { |l| l.cross = cross_size }
-      end
-      end
-      line_crosses = Egui::Bench.span("flex.distribute") { stretch_lines(lines, cross_size) } if wrapped
+        lines = Egui::Bench.span("flex.distribute") { break_lines(ordered, main_size) }
+        Egui::Bench.span("flex.distribute") do
+        lines.each do |line|
+          resolve_main(line, main_size, row)
+          crosses = line.items.map { |c| row ? c.natural.y : c.natural.x }
+          line.cross = crosses.max? || 0.0
+        end
+        # A single-line (nowrap) container with a definite cross size
+        # sizes its line to the CONTAINER, not the tallest child's
+        # natural (CSS §9.4: the line fills the flex container under
+        # `align-content: stretch`, the default). Taller children
+        # overflow and are clipped — they must not enlarge the siblings'
+        # cells (a sidebar list would blow up the center panel's slot).
+        if !wrapped && cross_size > EPS && @align_content == :stretch
+          lines.each { |l| l.cross = cross_size }
+        end
+        end
+        line_crosses = Egui::Bench.span("flex.distribute") { stretch_lines(lines, cross_size) } if wrapped
 
-      Egui::Bench.span("flex.place") do
-        place(lines, ui, row, rev_main, wrap_reverse,
-          main_size, cross_size, line_crosses)
+        Egui::Bench.span("flex.place") do
+          place(lines, ui, row, rev_main, wrap_reverse,
+            main_size, cross_size, line_crosses)
+        end
+
+        # Memoize the placement (relative to max_rect.min) for the next
+        # stationary frame — never from a measuring pass (its axes are
+        # the measure cell's, not the real region's).
+        unless measuring
+          Egui::Bench.count("flex.layout.miss")
+          min = ui.max_rect.min
+          slots = ordered.map do |child|
+            s = child.slot
+            Rect.from_min_size(Pos2.new(s.min.x - min.x, s.min.y - min.y),
+              s.size)
+          end
+          memo.layout = Context::FlexMeasure::FlexLayout.new(
+            layout_inputs_hash(ordered, main_size, cross_size), slots)
+        end
       end
 
       # --- measure mode: single pass, no real layout ---------------------
@@ -235,10 +310,11 @@ module Egui
       # and return: the real layout happens in the ancestor's real
       # pass, reusing the memo above when widths match.
       if measuring
-        main_extent = lines.map do |l|
+        ls = lines.not_nil! # reuse never happens in measure mode
+        main_extent = ls.map do |l|
           l.sizes.sum + @gap.x * {l.sizes.size - 1, 0}.max
         end.max? || 0.0
-        cross_extent = lines.sum(&.cross) + @gap.y * (lines.size - 1)
+        cross_extent = ls.sum(&.cross) + @gap.y * (ls.size - 1)
         size = row ? Vec2.new(main_extent, cross_extent)
           : Vec2.new(cross_extent, main_extent)
         ui.min_rect = ui.min_rect.union(
@@ -276,6 +352,24 @@ module Egui
       elsif (widget = child.widget)
         widget.ui(cell)
       end
+    end
+
+    # The placement inputs folded into one UInt64 — the incremental
+    # layout's identity: every child's flex parameters + natural size,
+    # the container's properties and its two axes (a definite cross
+    # axis changes place()). naturals are part of the hash, so stale
+    # naturals never reuse a placement made from fresh ones.
+    private def layout_inputs_hash(ordered : Array(Child),
+                                   main_size : Float64,
+                                   cross_size : Float64) : UInt64
+      h = 0xcbf29ce484222325_u64
+      ordered.each do |c|
+        rh = {c.grow, c.shrink, c.basis, c.order, c.align_self,
+              c.natural.x, c.natural.y}.hash
+        h = (h ^ rh) &* 0x100000001b3
+      end
+      (h ^ {main_size, cross_size, @direction, @wrap, @justify,
+            @align, @align_content, @gap}.hash) &* 0x100000001b3
     end
 
     private def natural_main(child : Child, row : Bool) : Float64

@@ -127,6 +127,44 @@ module Egui
       ]
     end
 
+    # Retained paint (see paint_cache.cr). The drag path derives the
+    # painted value from the POINTER (stateless widget — the app writes
+    # the value back), so any global pointer-down frame runs for real:
+    # during a drag the paint is pointer-dependent and must not replay.
+    # The part cascades (slider.tip / slider.tick) fold in by bag
+    # identity — a rule change for the tips alone must miss the key.
+    def paint_cache_key(ui : Ui)
+      ctx = ui.ctx
+      # Press/drag/release frames: the painted value may be
+      # pointer-derived this frame.
+      return nil if ctx.input.pointer_pressed? ||
+                    ctx.input.pointer_down? ||
+                    ctx.input.pointer_released?
+      id = cache_id(ui)
+      state = ctx.memory.interaction_state(id)
+      base = style_vars(ui, id)
+      stated = state.nil? ? base : style_vars(ui, id, state)
+      tip_vars = ctx.stylesheet.resolve(TIP_CLASS, nil).object_id
+      tick_vars = ctx.stylesheet.resolve(TICK_CLASS, nil).object_id
+      tip1_ov = ctx.id_style_state_vars(id.child(1), nil).try(&.object_id)
+      tip2_ov = ctx.id_style_state_vars(id.child(2), nil).try(&.object_id)
+      tick_ov = ctx.id_style_state_vars(id.child(3), nil).try(&.object_id)
+      {"slider", @value, @range.hash, @text, @tips.try(&.hash),
+       @quantized, @values.try(&.hash), @ticks, @handle,
+       ui.available_width, ui.style.object_id,
+       base.object_id, stated.object_id,
+       @style_override.try(&.hash),
+       tip_vars, tick_vars, tip1_ov, tip2_ov, tick_ov}.hash
+    end
+
+    # #ui's non-paint side effect: the response carries the current
+    # value (no change on a replay — a change would have missed the
+    # key). The focus ring paints inside #ui; the focus flag rides the
+    # Ui-level key extension.
+    def cache_replay(ui : Ui, response : Response) : Nil
+      response.widget_value = @value
+    end
+
     def inspector_label : String?
       @text
     end

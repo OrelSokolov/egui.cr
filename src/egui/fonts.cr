@@ -162,7 +162,23 @@ module Egui
       end
     end
 
+    # Multi-run jobs (rich text, preset-run labels): the whole run list
+    # folded into one UInt64 (text/size/color/decorations/family/flags
+    # per run, plus the RESOLVED font stack's identity — a re-materialized
+    # stack has different metrics) alongside the wrap width and the line
+    # height. Fresh-but-equal run arrays hit the same entry; the single-
+    # run cache above stays on its fine-grained struct key.
+    struct MultiLayoutKey
+      getter runs_hash : UInt64
+      getter max_width : Float64?
+      getter line_height : Float64?
+
+      def initialize(@runs_hash, @max_width, @line_height)
+      end
+    end
+
     @layout_cache = {} of LayoutKey => LayoutCacheEntry
+    @multi_layout_cache = {} of MultiLayoutKey => LayoutCacheEntry
     @layout_bytes = 0_i64
     @layout_gen = 0_u32
     # Byte budget of the layout cache (EGUI_LAYOUT_CACHE_BYTES overrides).
@@ -170,7 +186,7 @@ module Egui
 
     # Cache stats (tests, the inspector, EGUI_LAYOUT_DEBUG reports).
     def layout_cache_entries : Int32
-      @layout_cache.size
+      @layout_cache.size + @multi_layout_cache.size
     end
 
     def layout_cache_bytes : Int64
@@ -201,8 +217,9 @@ module Egui
     # runs (the inline-code chip) fit inside the line box.
     #
     # Single-run jobs (labels, textareas — the frame's volume) go
-    # through the cache; multi-run jobs (rich text) still build fresh
-    # every frame (their LayoutKey would span runs — a later increment).
+    # through the cache; multi-run jobs (rich text) share the same
+    # budget through the folded MultiLayoutKey (their LayoutKey would
+    # span runs — the fold is that key).
     def layout(runs : Array(TextRun),
                max_width : Float64? = nil,
                resolve : ((String?, Bool, Bool) -> Fonts)? = nil,
@@ -227,9 +244,41 @@ module Egui
         @layout_bytes += bytes
         purge_layout_cache
         galley
-      else
+      elsif runs.empty?
         build_galley(runs, max_width, resolve, line_height)
+      else
+        key = multi_run_key(runs, max_width, line_height, resolve)
+        if (entry = @multi_layout_cache[key]?)
+          entry.last_used = @layout_gen
+          Egui::Bench.count("fonts.layout.multi.hit")
+          return entry.galley
+        end
+        Egui::Bench.count("fonts.layout.multi.miss")
+        galley = Egui::Bench.span("Fonts#layout_multi(miss)") { build_galley(runs, max_width, resolve, line_height) }
+        bytes = galley_bytes(galley)
+        @multi_layout_cache[key] = LayoutCacheEntry.new(galley, bytes, @layout_gen)
+        @layout_bytes += bytes
+        purge_layout_cache
+        galley
       end
+    end
+
+    # The whole run list folded into one hash: per-run value fields plus
+    # the identity of the font stack each run measures through (nil
+    # family resolves through `self`; a re-materialized stack changes
+    # identity and misses — its metrics may differ).
+    private def multi_run_key(runs : Array(TextRun), max_width : Float64?,
+                              line_height : Float64?,
+                              resolve : ((String?, Bool, Bool) -> Fonts)?) : MultiLayoutKey
+      h = 0xcbf29ce484222325_u64
+      runs.each do |r|
+        stack = resolve ? resolve.call(r.family, r.bold?, r.italic?) : self
+        rh = {r.text, r.size, r.color, r.underline?, r.strikethrough?,
+              r.family, r.bold?, r.italic?, r.background,
+              stack.object_id}.hash
+        h = (h ^ rh) &* 0x100000001b3
+      end
+      MultiLayoutKey.new(h, max_width, line_height)
     end
 
     # Estimated heap cost of a cached galley (Boehm, 16-byte blocks):
@@ -249,26 +298,44 @@ module Egui
     # down to 3/4 of the budget so the boundary does not thrash.
     private def purge_layout_cache : Nil
       return if @layout_bytes <= @layout_cache_budget &&
-                @layout_cache.size < LAYOUT_MAX_ENTRIES
+                @layout_cache.size + @multi_layout_cache.size < LAYOUT_MAX_ENTRIES
+      stale_then_cold(@layout_cache) { |k| evict_layout(k) }
+      if @layout_bytes > @layout_cache_budget * 3 // 4
+        stale_then_cold(@multi_layout_cache) { |k| evict_multi_layout(k) }
+      end
+    end
+
+    # Stale entries (unused for LAYOUT_STALE_FRAMES) first, oldest
+    # first; the block evicts — the loop breaks once the budget target
+    # is met.
+    private def stale_then_cold(cache : Hash(K, V),
+                                &evict : K ->) forall K, V
       target = @layout_cache_budget * 3 // 4
       gen = @layout_gen.to_i32
-      @layout_cache.select { |_k, e| gen - e.last_used.to_i32 >= LAYOUT_STALE_FRAMES }
+      cache.select { |_k, e| gen - e.last_used.to_i32 >= LAYOUT_STALE_FRAMES }
         .to_a.sort_by! { |_k, e| e.last_used }
         .each do |k, _e|
           break if @layout_bytes <= target
-          evict_layout(k)
+          evict.call(k)
         end
-      if @layout_bytes > target || @layout_cache.size >= LAYOUT_MAX_ENTRIES
-        @layout_cache.to_a.sort_by! { |_k, e| e.last_used }
+      if @layout_bytes > target
+        cache.to_a.sort_by! { |_k, e| e.last_used }
           .each do |k, _e|
-            break if @layout_bytes <= target && @layout_cache.size < LAYOUT_MAX_ENTRIES
-            evict_layout(k)
+            break if @layout_bytes <= target
+            evict.call(k)
           end
       end
     end
 
     private def evict_layout(key : LayoutKey) : Nil
       if (entry = @layout_cache.delete(key))
+        @layout_bytes -= entry.bytes
+        Egui::Bench.count("fonts.layout.evict")
+      end
+    end
+
+    private def evict_multi_layout(key : MultiLayoutKey) : Nil
+      if (entry = @multi_layout_cache.delete(key))
         @layout_bytes -= entry.bytes
         Egui::Bench.count("fonts.layout.evict")
       end

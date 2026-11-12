@@ -146,7 +146,14 @@ describe MusicExmlApp do
     app.rt.bool("mesh_on").should be_false
     app.rt.strings["combo_look"] = "Daylight"
     act(t, "look_change")
-    app.player.look.should eq 0 # «Not in this demo» сбрасывает
+    app.player.look.should eq 2 # Daylight — применяется, а не «Not in this demo»
+    MusicTags.look.name.should eq "Daylight"
+    app.rt.string("c_muted").should eq "#5e5e6c" # цвета лука ушли в store
+    MusicTags.look.dark?.should be_false
+    app.rt.strings["combo_look"] = "Nocturne" # вернуть тёмный для остальных спек
+    act(t, "look_change")
+    app.player.look.should eq 0
+    MusicTags.look.name.should eq "Nocturne"
     app.rt.floats["crossfade_frac"] = 0.5
     act(t, "crossfade_change")
     app.player.crossfade.should eq 6

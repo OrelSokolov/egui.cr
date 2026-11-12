@@ -816,6 +816,12 @@ module Egui
     end
 
     getter commands : Array(PaintCmd)
+    # Damage tracking (FPS_OPTIMIZATION.md §2): union of the rects
+    # whose paint-cache keys CHANGED this frame. Reset every #clear;
+    # exact for a fully cache-keyed tree, a lower bound otherwise —
+    # uncached widgets (panels, closures) run every frame but don't
+    # register.
+    @dirty : Rect? = nil
 
     def initialize
       @commands = [] of PaintCmd
@@ -840,6 +846,21 @@ module Egui
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       @xforms.clear
+      @dirty = nil
+    end
+
+    # Fold `rect` into this frame's damage region (see @dirty). Called
+    # on every paint-cache miss — the widget's output changed, so its
+    # pixels must re-render.
+    def mark_dirty(rect : Rect) : Nil
+      @dirty = @dirty.try(&.union(rect)) || rect
+    end
+
+    # The frame's damage region: the union of changed widgets' rects,
+    # nil when nothing changed (an identical frame). This is the input
+    # a future partial-present backend consumes (scissor + load-prev).
+    def dirty : Rect?
+      @dirty
     end
 
     # Which layer subsequently pushed commands belong to (egui
