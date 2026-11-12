@@ -141,10 +141,10 @@ class GnomeGalleryApp < Egui::App
 
   # One sheet row: a small dim caption + the widgets.
   private def section(ui : Egui::Ui, name : String,
-                      & : Egui::Ui ->) : Nil
+                      &block : Egui::Ui ->) : Nil
     ui.rich(Egui::RichText.new(name).color(SECONDARY).size(11.0))
     ui.allocate_space(Egui::Vec2.new(0.0, 2.0))
-    ui.horizontal(false) { |row| yield row }
+    ui.horizontal(false, &block)
     ui.allocate_space(Egui::Vec2.new(0.0, 8.0))
   end
 end

@@ -164,9 +164,9 @@ class AudioApp < Egui::App
       @mic_level *= 0.9f32 # decay to zero after close
       # Echo playback cursor: redraw the wave with the position line
       # while the voice runs; one last redraw when it finishes.
-      if (v = @echo_voice)
-        if v.playing?
-          @play_pos = interpolate_play_pos(v)
+      if (voice = @echo_voice)
+        if voice.playing?
+          @play_pos = interpolate_play_pos(voice)
           draw_wave
         else
           @echo_voice = nil
@@ -262,8 +262,11 @@ class AudioApp < Egui::App
 
         scroll.separator
         scroll.label("Эхо-тест — #{Egui::SystemPorts::Microphone.supported? ? "запись с волной, затем проигрывание" : "микрофона нет (headless)"}")
-        mic = @mic
-        if mic.nil?
+        # A separate name from the `mic` local in the pull at the top of
+        # #update: this one lives inside a captured block, and a captured
+        # variable would lose its nil-narrowing up there.
+        live = @mic
+        if live.nil?
           if scroll.button(@echo ? "Перезаписать" : "Записать с микрофона").clicked?
             if (old = @echo)
               old.close
@@ -278,7 +281,7 @@ class AudioApp < Egui::App
             draw_wave
           end
         elsif scroll.button("Остановить запись").clicked?
-          mic.close
+          live.close
           @mic = nil
           @recording = false
           @mic_level = 0.0f32
