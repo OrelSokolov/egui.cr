@@ -51,7 +51,7 @@ BIN_HTML   = %w[
   partial_border border_radius clipping clip_child_demo spring appear
   flex_demo transform_showcase card_flip
 ]
-BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml music_widgets]
+BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml music_gen music_widgets_manual]
 BIN_DBG    = %w[resize_dbg]
 BIN_DIR    = (BIN_APPS.product(["apps"]) + BIN_HTML.product(["html"]) +
               BIN_CLONES.product(["clones"]) + BIN_DBG.product(["dbg"])).to_h
@@ -59,6 +59,31 @@ EXAMPLES   = BIN_APPS + BIN_HTML + BIN_CLONES + BIN_DBG
 if LOTTIE_FEATURE
   EXAMPLES << "lottie_native"
   BIN_DIR["lottie_native"] = "apps"
+end
+
+# ── exml-кодоген как билд-степ (plans/NativeHTML.md §6, Route A) ──────
+# Приложение, собираемое из разметки: перед crystal build rake прогоняет
+# egui-gen — парсер один раз читает .exml и эмитит литералы Node-дерева
+# во ВРЕМЕННЫЙ файл (gitignored), который компилятор вшивает в бинарь.
+# Бинарь не читает .exml в рантайме — литералы всегда; живой файл
+# (hot-reload) — только явный дев-оверрайд MUSIC_EXML=…, а дев-версия
+# на живой разметке — music_exml. Ручной запуск:
+#   crystal run scripts/egui_gen.cr -- assets/music.exml out.cr --module X
+#   name => [разметка, генерируемый файл, имя модуля]
+EXML_APPS = {
+  "music_gen" => ["assets/music.exml",
+                  "examples/music_components/music_gen.cr", "MusicUi"],
+}
+
+def gen_exml!(names)
+  (names & EXML_APPS.keys).each do |name|
+    markup, out, mod = EXML_APPS[name]
+    puts "▶ egui-gen #{markup} → #{out}"
+    unless system("crystal", "run", "scripts/egui_gen.cr", "--",
+                  markup, out, "--module", mod)
+      raise "egui-gen failed for #{name} (#{markup})"
+    end
+  end
 end
 
 # Run `script` (cl/lib) inside the MSVC x64 environment. Crystal's
@@ -305,6 +330,7 @@ end
 # compilers race on the shared ~/.cache/crystal (tmp-file renames).
 # opt_flags: "" (dev), "-O3 " (optimized iteration), "--release ".
 def build_examples(names, opt_flags, label)
+  gen_exml!(names) # exml-кодоген: временные литералы до crystal build
   FileUtils.mkdir_p(BIN_DIR.values.uniq.map { |c| File.join("bin", c) })
   libdir = File.expand_path("lib")
   # MSVC Crystal resolves library search dirs from /LIBPATH:, not -L.

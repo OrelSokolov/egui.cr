@@ -14,10 +14,18 @@ require "./music_player"
 class MusicExmlApp < Egui::App
   getter rt : Egui::Exml::Runtime
   getter player : MusicPlayer
+  @exml : Egui::Exml::Document
+
+  # стартовые затраты exml-слоя для сравнения с ручной версткой
+  # (MUSIC_TTFB=1 у точки входа печатает их)
+  class_property exml_parse_ms : Float64 = 0.0
+  class_property ecss_parse_ms : Float64 = 0.0
 
   def initialize
     super
-    @exml = Egui::Exml::Document.load(MusicExmlApp.exml_path)
+    t0 = Time.instant
+    @exml = self.class.load_document
+    MusicExmlApp.exml_parse_ms = (Time.instant - t0).total_milliseconds
     @renderer = Egui::Exml::Renderer.new
     @rt = Egui::Exml::Runtime.new
     @ecss = nil
@@ -42,6 +50,7 @@ class MusicExmlApp < Egui::App
     when opts.includes?("settings")  then @player.nav_to(:settings)
     end
     @player.playing = false if opts.includes?("paused")
+    @player.animate = false if opts.includes?("still") # для скриншот-сравнений
   end
 
   def self.exml_path : String
@@ -58,6 +67,13 @@ class MusicExmlApp < Egui::App
     raise "assets/music.exml not found (set MUSIC_EXML)"
   end
 
+  # Источник разметки: живой .exml через парсер (dev, hot-reload).
+  # Кодоген-сборка (music_gen) подменяет это на Document.hybrid —
+  # живой файл, если он есть, иначе вшитые литералы egui-gen.
+  def self.load_document : Egui::Exml::Document
+    Egui::Exml::Document.load(exml_path)
+  end
+
   def self.ecss_path : String
     File.join(File.dirname(exml_path), "music.ecss")
   end
@@ -71,7 +87,9 @@ class MusicExmlApp < Egui::App
       ctx.style.spacing.item_spacing = Egui::Vec2.new(0.0, 0.0)
       ctx.style.spacing.window_padding = Egui::Vec2.new(0.0, 0.0)
       ctx.style.visuals.panel_fill = MusicTags::WINDOW
+      t0 = Time.instant
       @ecss = Egui::Ecss::Session.new(ctx, self.class.ecss_path)
+      MusicExmlApp.ecss_parse_ms = (Time.instant - t0).total_milliseconds
       @styled = true
       register_actions(ctx)
       bind_hotkeys(ctx)

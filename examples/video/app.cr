@@ -1,6 +1,6 @@
 # The video player egui app: a dark cinema area on top and a Raven
 # Music-style player bar at the bottom — a direct-code port of
-# examples/music_components/music_widgets_app.cr's player_bar (three
+# examples/music_components/music_widgets_manual_app.cr's player_bar (three
 # zones over one painted 88px bar):
 #
 #   left    thumbnail · file name · media info · Open…
@@ -346,7 +346,7 @@ class VideoApp < Egui::App
     p.circle_filled(Egui::Pos2.new(rect.left + rect.width * frac, cy), kw, WHITE)
   end
 
-  # ── примитивы (порты music_widgets_app.cr, без зависимостей от Music) ──
+  # ── примитивы (порты music_widgets_manual_app.cr, без зависимостей от Music) ──
 
   # Зона панели: child-ui на своём прямоугольнике (клип — вся зона).
   private def zone(ui : Egui::Ui, ctx : Egui::Context, id : String,
