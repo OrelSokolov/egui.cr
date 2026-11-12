@@ -51,6 +51,9 @@ class TransformShowcaseApp < Egui::App
         end
 
         # -- row 2: live animations --------------------------------------
+        # Плоский ряд (как browser flex): все элементы — inline-колонки
+        # одного wrap-ряда; вложенные :row боксы в горизонтальном
+        # родителе — это line-break блоки, каждый со своей строки.
         col.box(:row, wrap: true, margin: Egui::Vec2.new(0.0, 8.0)) do |row|
           spinning(row, now)
           pulsing(row, now)
@@ -137,22 +140,24 @@ class TransformShowcaseApp < Egui::App
   end
 
   # --- live imperative transforms ---------------------------------------
+  #
+  # Все элементы — INLINE-колонки одного ряда (браузерный flex-row):
+  # nested :row в горизонтальном родителе занял бы собственную строку.
 
   private def spinning(row : Egui::Ui, now : Float64) : Nil
-    row.box(:row, wrap: false, margin: Egui::Vec2.new(10.0, 10.0)) do |wrap|
-      xf = Egui::Affine2.rotation(now % (2 * Math::PI),
-        Egui::Pos2.new(22.0, 22.0))
-      # Явные размеры: пустой box без width/height растягивается на
-      # остаток строки (block stretch), и «квадрат» превращается в
-      # широкий параллелограмм под поворотом.
-      wrap.box(:column, transform: xf, fill: ACCENT,
-        rounding: 10.0, margin: Egui::Vec2.new(0.0, 0.0),
-        width: 44.0, height: 44.0) { }
-      wrap.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
-        margin: Egui::Vec2.new(12.0, 0.0)) do |c|
-        big(c, "rotate ∞", ACCENT)
-        body(c, "Affine2.rotation(t)\nrebuilt every frame")
-      end
+    # Rotation around the ORIGIN — Ui#box folds the box-center pivot
+    # itself (an Affine2 with a pre-folded pivot would rotate twice).
+    xf = Egui::Affine2.rotation(now % (2 * Math::PI), Egui::Pos2.zero)
+    # Нулевые поля: в движке margin лежит ВНУТРИ заливки (fill красит
+    # outer), поле сделало бы квадрат 64×64 вместо 44×44. Зазор даёт
+    # следующая карточка своим полем.
+    row.box(:column, transform: xf, fill: ACCENT,
+      rounding: 10.0, margin: Egui::Vec2.new(0.0, 0.0),
+      width: 44.0, height: 44.0) { }
+    row.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
+      margin: Egui::Vec2.new(12.0, 10.0)) do |c|
+      big(c, "rotate ∞", ACCENT)
+      body(c, "Affine2.rotation(t)\nrebuilt every frame")
     end
   end
 
@@ -167,23 +172,23 @@ class TransformShowcaseApp < Egui::App
   end
 
   private def wave(row : Egui::Ui, now : Float64) : Nil
-    row.box(:row, wrap: true, margin: Egui::Vec2.new(10.0, 10.0)) do |wrap|
-      5.times do |i|
-        phase = now * 1.8 + i * 0.55
-        dy = 10.0 * Math.sin(phase)
-        sh = Math.tan(0.06 * Math.cos(phase))
-        # matrix() spelling: [1 0 tan 1 0 dy] = translateY + skewX
-        xf = "matrix(1, 0, #{sh.round(4)}, 1, 0, #{dy.round(2)})"
-        wrap.box(:column, transform: xf,
-          fill: i.even? ? WARM : MUTED, rounding: 4.0,
-          margin: Egui::Vec2.new(5.0, 14.0),
-          width: 14.0, height: 30.0) { }
-      end
-      wrap.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
-        margin: Egui::Vec2.new(12.0, 0.0)) do |c|
-        big(c, "wave", WARM)
-        body(c, "matrix(…) per card\ntranslate + skewX phase")
-      end
+    5.times do |i|
+      phase = now * 1.8 + i * 0.55
+      dy = 10.0 * Math.sin(phase)
+      sh = Math.tan(0.06 * Math.cos(phase))
+      # matrix() spelling: [1 0 tan 1 0 dy] = translateY + skewX.
+      # Нулевые поля: заливка не должна съедать ширину бара (движковый
+      # margin — внутри fill), зазор даёт item_spacing ряда.
+      xf = "matrix(1, 0, #{sh.round(4)}, 1, 0, #{dy.round(2)})"
+      row.box(:column, transform: xf,
+        fill: i.even? ? WARM : MUTED, rounding: 4.0,
+        margin: Egui::Vec2.new(0.0, 0.0),
+        width: 14.0, height: 30.0) { }
+    end
+    row.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
+      margin: Egui::Vec2.new(12.0, 0.0)) do |c|
+      big(c, "wave", WARM)
+      body(c, "matrix(…) per card\ntranslate + skewX phase")
     end
   end
 

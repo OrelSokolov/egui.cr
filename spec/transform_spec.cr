@@ -370,4 +370,61 @@ describe "Ui#box transform" do
     y2 = ctx.painter.commands.select(Egui::TextCmd).first.pos.y - y0
     y2.should be >= 100.0
   end
+
+  it "a row box in a horizontal parent owns its line (no sibling overlap)" do
+    ctx = Egui::Context.new
+    row_rect = nil
+    after_rect = nil
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("rowbrk"), XF_SCREEN)
+      ui.horizontal(wrap: false) do |h|
+        row_rect = h.box(:row, margin: Egui::Vec2.new(0.0, 0.0)) do |r|
+          r.label("aa")
+          r.label("bb")
+        end
+        after_rect = h.box(:column, margin: Egui::Vec2.new(0.0, 0.0)) do |cc|
+          cc.label("cc")
+        end
+      end
+    end
+    r = row_rect.not_nil!
+    a = after_rect.not_nil!
+    # the line-break row ends its line: whatever follows starts BELOW
+    # the row's bottom edge, not on top of it (the row-2 pile-up bug)
+    a.min.y.should be >= r.max.y
+  end
+
+  it "an empty inline box with explicit width/height occupies its size" do
+    ctx = Egui::Context.new
+    rect = nil
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("defsz"), XF_SCREEN)
+      ui.horizontal(wrap: false) do |h|
+        rect = h.box(:column, margin: Egui::Vec2.new(10.0, 10.0),
+          width: 44.0, height: 44.0,
+          fill: Egui::Color32.rgb(1, 2, 3)) { }
+        h.label("next")
+      end
+    end
+    r = rect.not_nil!
+    r.width.should eq 64.0  # 44 + 2×10 margin
+    r.height.should eq 64.0
+  end
+
+  it "an Affine2 transform argument pivots at the box center (no double fold)" do
+    ctx = Egui::Context.new
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("afpiv"), XF_SCREEN)
+      ui.box(fill: Egui::Color32.rgb(1, 2, 3), rounding: 0.0,
+        margin: Egui::Vec2.new(0.0, 0.0), width: 44.0, height: 44.0,
+        transform: Egui::Affine2.rotation(Math::PI / 3, Egui::Pos2.zero)) { }
+    end
+    cmd = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |rc| rc.fill.try { |f| f.r == 1 } }.not_nil!
+    xf = cmd.xform.not_nil!
+    # whatever the rotation, the box's own center must stay in place
+    center = xf * cmd.rect.center
+    center.x.should be_close cmd.rect.center.x, 1e-6
+    center.y.should be_close cmd.rect.center.y, 1e-6
+  end
 end

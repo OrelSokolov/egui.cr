@@ -1454,8 +1454,9 @@ module Egui
       definite_w = box_extent(width, :x) ||
                    size_vars.length_px_in?("width", @max_rect, @ctx, :x)
       w = definite_w || w
-      h = box_extent(height, :y) ||
-          size_vars.length_px_in?("height", @max_rect, @ctx, :y) || 1e6
+      definite_h = box_extent(height, :y) ||
+                   size_vars.length_px_in?("height", @max_rect, @ctx, :y)
+      h = definite_h || 1e6
       child =
         if @layout.bottom_up?
           if row
@@ -1544,6 +1545,18 @@ module Egui
         end
 
         outer = Rect.new(child.min_rect.min - m, child.min_rect.max + m)
+        # A DEFINITE size beats shrink-to-fit content (an EMPTY inline
+        # box must still occupy width: 44 — CSS): enforce the explicit
+        # extents BEFORE the band bookkeeping below — the row-height
+        # tracker, the natural-width cache and the cursor advance must
+        # all see the final size, or the neighbors collide with the
+        # (painted) box.
+        if definite_w || definite_h
+          outer = Rect.from_min_size(outer.min,
+            Vec2.new(
+              {outer.width, definite_w.try { |v| v + 2 * m.x } || 0.0}.max,
+              {outer.height, definite_h.try { |v| v + 2 * m.y } || 0.0}.max))
+        end
         if inline_row
           # Inline shrink-to-fit: instead of the block fill (expanding
           # to max_rect's right edge — a vertical-flow contract, kept in
@@ -1590,8 +1603,22 @@ module Egui
             Pos2.new(definite_w ? outer.max.x : {outer.max.x, @max_rect.right}.max,
               outer.max.y))
           min_rect = @min_rect.union(outer)
-          @cursor = @layout.advance(@cursor, outer.size,
-            style.spacing.item_spacing)
+          if row && @layout.horizontal?
+            # A line-break row OWNS its line (the origin above broke to
+            # a fresh one): the flow must continue BELOW the row —
+            # #end_line semantics. A plain horizontal advance marches
+            # the cursor right of a full-width block, and the next
+            # line's break (row_h already reset) lands ON this row —
+            # the second showcase row used to pile up exactly so.
+            @cursor = @cross_up ?
+              Pos2.new(@max_rect.min.x,
+                outer.min.y - style.spacing.item_spacing.y) :
+              Pos2.new(@max_rect.min.x,
+                outer.max.y + style.spacing.item_spacing.y)
+          else
+            @cursor = @layout.advance(@cursor, outer.size,
+              style.spacing.item_spacing)
+          end
           @min_rect = min_rect
         end
         @row_h = 0.0 if row && @layout.horizontal?
