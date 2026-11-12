@@ -822,6 +822,8 @@ static void sh_sdf_frame(float w_pts, float h_pts);
 static float g_pkt_ppp;
 static void egui_cr_pkt_pipe(int kind);
 static void egui_cr_pkt_pipe_pop(void);
+static void egui_cr_pkt_xform(const float* m);
+static void egui_cr_pkt_xform_pop(void);
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
                            int stream, const void* data, size_t size);
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
@@ -3463,6 +3465,19 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
     sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
                    g_fb_w, g_fb_h, g_pkt_ppp);
 }
+// A 2D affine bracket (see egui_cr_pkt_xform): on the detached path it
+// becomes the packet op; directly it pushes sgl's matrix stack and
+// loads the modelview.
+void egui_cr_xform_push(const float* m) {
+    if (!sh_run_direct()) { egui_cr_pkt_xform(m); return; }
+    sgl_push_matrix();
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(m);
+}
+void egui_cr_xform_pop(void) {
+    if (!sh_run_direct()) { egui_cr_pkt_xform_pop(); return; }
+    sgl_pop_matrix();
+}
 // One SDF rounded-rect batch (EGUI_SDF=1) — see the SDF section above
 // for the instance layout. `clip4` is x,y,w,h in FRAMEBUFFER pixels
 // (Crystal scales points by ppp); on the replay path it is scaled by
@@ -3508,6 +3523,15 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
                     const unsigned char* verts) {
     sh_draw_mesh3d(mvp, blend ? 1 : 0, prim, x, y, w, h, count, verts,
                    g_fb_w, g_fb_h, g_pkt_ppp);
+}
+// macOS pass-through: no packet path — the matrix stack is local.
+void egui_cr_xform_push(const float* m) {
+    sgl_push_matrix();
+    sgl_matrix_mode_modelview();
+    sgl_load_matrix(m);
+}
+void egui_cr_xform_pop(void) {
+    sgl_pop_matrix();
 }
 // macOS pass-through: no packet path — stash for the end_pass interleave.
 void egui_cr_sdf_batch(const float* clip4, const float* instances,
@@ -5616,6 +5640,7 @@ enum {
     SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
     SH_OP_MESH3D, SH_OP_SDF, SH_OP_CLIP_MASK, SH_OP_CLIP_UNMASK,
+    SH_OP_XFORM, SH_OP_XFORM_POP,
 };
 
 typedef struct {
@@ -5858,6 +5883,23 @@ static void egui_cr_pkt_sdf(const float* clip4, const float* instances,
     memcpy(g_build->ops + g_build->ops_len, instances,
            (size_t)words * 4);
     g_build->ops_len += words;
+}
+
+// A 2D affine stamped on a command (Egui::Affine2): the command's
+// geometry draws under a modelview matrix instead of moving on the
+// CPU (rotated text stays one rigid run, GPU-side). Push/pop nest via
+// sgl's matrix stack; the replay resets modelview per pass, so a
+// dangling pop cannot leak across frames.
+static void egui_cr_pkt_xform(const float* m) {
+    uint32_t o[17];
+    o[0] = SH_OP_XFORM;
+    for (int i = 0; i < 16; i++) o[1 + i] = sh_f2u(m[i]);
+    sh_push_words(o, 17);
+}
+
+static void egui_cr_pkt_xform_pop(void) {
+    uint32_t o[1] = { SH_OP_XFORM_POP };
+    sh_push_words(o, 1);
 }
 
 // Rounded-clip bracket edge (see egui_cr_clip_mask): bbox in PACKET
@@ -6337,6 +6379,19 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             }
             break;
         }
+        case SH_OP_XFORM: {
+            // 2D affine bracket: push the matrix stack and load the
+            // modelview — everything until the matching POP draws
+            // under it (geometry only; scissors/stencils unaffected).
+            float m[16];
+            for (int i = 0; i < 16; i++) m[i] = sh_u2f(op[i]);
+            op += 16;
+            sgl_push_matrix();
+            sgl_matrix_mode_modelview();
+            sgl_load_matrix(m);
+            break;
+        }
+        case SH_OP_XFORM_POP: sgl_pop_matrix(); break;
         default: // corrupted stream — drop the rest of the frame
             op = end;
             break;

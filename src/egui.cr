@@ -12,6 +12,7 @@ require "set"
 
 require "./egui/math"
 require "./egui/math3d"
+require "./egui/transform"
 require "./egui/driver/base"
 require "./egui/color"
 require "./egui/gradient"

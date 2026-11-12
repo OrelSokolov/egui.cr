@@ -185,6 +185,9 @@ module Egui
     # backends clip to `clip` rounded by these per-corner radii.
     # Set by the painter's subtree-clip brackets, never by callers.
     getter clip_corners : CornerRadii?
+    # Stamped subtree affine (see TransformFrame#stamp): nil = geometry
+    # is already at its final screen position.
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @fill : Color32?, @stroke_color : Color32?,
@@ -193,7 +196,8 @@ module Egui
                    @corners : CornerRadii? = nil,
                    @replace : Bool = false, @diag : Bool = false,
                    @gradient : Gradient? = nil,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     # Copy with a replaced clip (and its corner radii) — what
@@ -201,7 +205,7 @@ module Egui
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       RectCmd.new(clip, @rect, @rounding, @fill, @stroke_color,
         @stroke_width, @fill2, @stroke_sides, @corners, @replace, @diag,
-        @gradient, clip_corners)
+        @gradient, clip_corners, @xform)
     end
   end
 
@@ -338,17 +342,19 @@ module Egui
     # aligned text drifts off its slot.
     getter letter_spacing : Float64?
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @pos : Pos2, @text : String,
                    @size : Float64, @color : Color32, @family : String? = nil,
                    @bold : Bool = false, @italic : Bool = false,
                    @letter_spacing : Float64? = nil,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       TextCmd.new(clip, @pos, @text, @size, @color, @family, bold?,
-        italic?, @letter_spacing, clip_corners)
+        italic?, @letter_spacing, clip_corners, @xform)
     end
   end
 
@@ -361,16 +367,18 @@ module Egui
     getter stroke : Color32?
     getter stroke_width : Float64
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
                    @fill : Color32?, @stroke : Color32?,
                    @stroke_width : Float64,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       CircleCmd.new(clip, @center, @radius, @fill, @stroke,
-        @stroke_width, clip_corners)
+        @stroke_width, clip_corners, @xform)
     end
   end
 
@@ -384,14 +392,16 @@ module Egui
     getter width : Float64
     getter color : Color32
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @p1 : Pos2, @p2 : Pos2,
                    @width : Float64, @color : Color32,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
-      LineCmd.new(clip, @p1, @p2, @width, @color, clip_corners)
+      LineCmd.new(clip, @p1, @p2, @width, @color, clip_corners, @xform)
     end
   end
 
@@ -405,13 +415,15 @@ module Egui
     getter c : Pos2
     getter fill : Color32
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @a : Pos2, @b : Pos2, @c : Pos2,
-                   @fill : Color32, @clip_corners : CornerRadii? = nil)
+                   @fill : Color32, @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
-      TriCmd.new(clip, @a, @b, @c, @fill, clip_corners)
+      TriCmd.new(clip, @a, @b, @c, @fill, clip_corners, @xform)
     end
   end
 
@@ -426,16 +438,18 @@ module Egui
     getter width : Float64
     getter color : Color32
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @center : Pos2, @radius : Float64,
                    @start_angle : Float64, @end_angle : Float64,
                    @width : Float64, @color : Color32,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       ArcCmd.new(clip, @center, @radius, @start_angle, @end_angle,
-        @width, @color, clip_corners)
+        @width, @color, clip_corners, @xform)
     end
   end
 
@@ -452,16 +466,18 @@ module Egui
     getter tint : Color32
     getter? nearest : Bool
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @rect : Rect, @uv : Rect,
                    @texture_id : UInt64, @tint : Color32,
                    @nearest : Bool = false,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       ImageCmd.new(clip, @rect, @uv, @texture_id, @tint, nearest?,
-        clip_corners)
+        clip_corners, @xform)
     end
   end
 
@@ -492,6 +508,11 @@ module Egui
       Mesh3DCmd.new(clip, @viewport, @mvp, @data, @primitive, blend?,
         clip_corners)
     end
+
+    # Owns its own mvp — never stamped by a transform bracket.
+    def xform : Affine2?
+      nil
+    end
   end
 
   # CSS `box-shadow` (no upstream egui counterpart — upstream
@@ -513,16 +534,18 @@ module Egui
     getter color : Color32
     getter? inset : Bool
     getter clip_corners : CornerRadii?
+    getter xform : Affine2?
 
     def initialize(@clip : Rect, @rect : Rect, @rounding : Float64,
                    @blur : Float64, @spread : Float64, @offset : Vec2,
                    @color : Color32, @inset : Bool,
-                   @clip_corners : CornerRadii? = nil)
+                   @clip_corners : CornerRadii? = nil,
+                   @xform : Affine2? = nil)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       ShadowCmd.new(clip, @rect, @rounding, @blur, @spread, @offset,
-        @color, inset?, clip_corners)
+        @color, inset?, clip_corners, @xform)
     end
   end
 
@@ -530,14 +553,18 @@ module Egui
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       self
     end
+
+    def xform : Affine2?
+      nil
+    end
   end
 
   alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | NoopCmd
 
   class Painter
     # A bracketed subtree transform (plans/NATIVE_HTML_DEMO.md §3.2):
-    # everything emitted between #push_transform and #pop_transform is
-    # scaled around `pivot`, shifted by an offset and faded by
+    # everything emitted between #push_transform/#push_affine and
+    # #pop_transform is transformed around `pivot` and faded by
     # `opacity` — the immediate-mode counterpart of Raven's post-factum
     # `rvn_drawlist_transform` (widget/anim.c). Clip rects are NOT
     # transformed and neither is hit-testing: layout stays in place
@@ -552,9 +579,20 @@ module Egui
     # rewrite of the whole list. A frame pushed WITH a pivot transforms
     # each command as it is emitted. Frames nest; the transforms
     # compose inner-first either way.
+    #
+    # The linear part is the FULL 2x2 affine (see Affine2): an
+    # axis-aligned linear (translate/scale, b = c = 0) rewrites each
+    # command on the CPU exactly as it always did; a rotated/skewed
+    # linear cannot be expressed by axis-aligned command geometry, so
+    # it is STAMPED onto the command (`#xform`) and the backend applies
+    # it as a modelview matrix at draw time (text rotates rigidly, GPU
+    # side). A command already stamped (an inner rotated frame) always
+    # takes the stamp path — the outer frame composes into the stamp.
     class TransformFrame
-      getter scale_x : Float64
-      getter scale_y : Float64
+      getter a : Float64
+      getter b : Float64
+      getter c : Float64
+      getter d : Float64
       getter offset_x : Float64
       getter offset_y : Float64
       getter opacity : Float64
@@ -564,32 +602,81 @@ module Egui
       # transformed in one pass at #pop_transform (an immediate frame
       # transforms at emit time instead and its pop is a plain pop).
       getter? deferred : Bool
+      # A CSS `transform` pushed UNRESOLVED (Ui#box): its percentages
+      # and `transform-origin` need the box rect, which exists only at
+      # #pop_transform(rect). Nil for resolved frames.
+      getter css : CssTransform?
+      getter origin : TransformOrigin?
       # `Painter#set` calls whose slot sits BELOW the frame's bracket
       # (a container's back-patched chrome, reserved before the push) —
       # transformed when the frame pops.
       getter deferred_sets : Array(Tuple(Int32, PaintCmd))
 
-      def initialize(pivot : Pos2?, @start : Int32, @scale_x : Float64,
-                     @scale_y : Float64, @offset_x : Float64,
-                     @offset_y : Float64, @opacity : Float64)
+      def initialize(pivot : Pos2?, @start : Int32, @a : Float64,
+                     @d : Float64, @offset_x : Float64,
+                     @offset_y : Float64, @opacity : Float64,
+                     @css : CssTransform? = nil,
+                     @origin : TransformOrigin? = nil)
+        @pivot = pivot
+        @b = 0.0
+        @c = 0.0
+        @deferred = pivot.nil?
+        @deferred_sets = [] of Tuple(Int32, PaintCmd)
+      end
+
+      def initialize(pivot : Pos2?, @start : Int32, xf : Affine2,
+                     @opacity : Float64, @css : CssTransform? = nil,
+                     @origin : TransformOrigin? = nil)
+        @a = xf.a
+        @b = xf.b
+        @c = xf.c
+        @d = xf.d
+        @offset_x = xf.e
+        @offset_y = xf.f
         @pivot = pivot
         @deferred = pivot.nil?
         @deferred_sets = [] of Tuple(Int32, PaintCmd)
+      end
+
+      def axis_aligned? : Bool
+        @b.abs < 1e-9 && @c.abs < 1e-9
+      end
+
+      # Resolve the pending CssTransform against `rect` (a css frame is
+      # always deferred — this runs once, at pop). The pivot is the
+      # `transform-origin` point (CSS default: the center).
+      def resolve_css(rect : Rect) : Nil
+        if (css = @css)
+          xf = css.resolve(rect.width, rect.height)
+          @a, @b, @c, @d = xf.a, xf.b, xf.c, xf.d
+          @offset_x += xf.e
+          @offset_y += xf.f
+        end
+        @pivot = @origin.try(&.resolve(rect)) || rect.center
+      end
+
+      # Replace the whole affine (the transition-lerped value injected
+      # at #pop_transform — see the `xf` override there).
+      def override_affine(xf : Affine2) : Nil
+        @a, @b, @c, @d = xf.a, xf.b, xf.c, xf.d
+        @offset_x = xf.e
+        @offset_y = xf.f
       end
 
       # The average axis scale — what radii, stroke widths, font sizes
       # and blurs scale by (the GPU would scale x and y apart; the CPU
       # transform approximates with one factor).
       def k : Float64
-        (@scale_x + @scale_y) / 2.0
+        axis_aligned? ? (@a + @d) / 2.0
+                      : Math.sqrt((@a * @d - @b * @c).abs)
       end
 
       def x(px : Float64) : Float64
-        @pivot.not_nil!.x + (px - @pivot.not_nil!.x) * @scale_x + @offset_x
+        @pivot.not_nil!.x + (px - @pivot.not_nil!.x) * @a + @offset_x
       end
 
       def y(py : Float64) : Float64
-        @pivot.not_nil!.y + (py - @pivot.not_nil!.y) * @scale_y + @offset_y
+        @pivot.not_nil!.y + (py - @pivot.not_nil!.y) * @d + @offset_y
       end
 
       def pt(p : Pos2) : Pos2
@@ -610,7 +697,71 @@ module Egui
         c && fade(c)
       end
 
+      # The frame as an ABSOLUTE affine (linear around the pivot plus
+      # the offsets) — the stamp written onto commands.
+      def abs_affine : Affine2
+        p = @pivot.not_nil!
+        Affine2.new(@a, @b, @c, @d,
+          p.x + @offset_x - (@a * p.x + @c * p.y),
+          p.y + @offset_y - (@b * p.x + @d * p.y))
+      end
+
+      # Fade `cmd`'s colors and stamp/compose the affine — the rotated
+      # path of #apply. Geometry stays untouched (the backend's
+      # modelview matrix moves it, so text rotates rigidly and stays
+      # crisp); an inner frame's existing stamp composes inner-first.
+      private def stamp(cmd : PaintCmd) : PaintCmd
+        abs = abs_affine
+        merged = (inner = cmd.xform) ? abs.compose(inner) : abs
+        case cmd
+        when RectCmd
+          sides = cmd.stroke_sides.try { |s|
+            StrokeSides.new(
+              SideStroke.new(s.top.width, fade(s.top.color)),
+              SideStroke.new(s.right.width, fade(s.right.color)),
+              SideStroke.new(s.bottom.width, fade(s.bottom.color)),
+              SideStroke.new(s.left.width, fade(s.left.color)))
+          }
+          RectCmd.new(cmd.clip, cmd.rect, cmd.rounding,
+            fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
+            cmd.stroke_width, fade_opt(cmd.fill2), sides, cmd.corners,
+            cmd.replace?, cmd.diag?, gradient: cmd.gradient,
+            clip_corners: cmd.clip_corners, xform: merged)
+        when TextCmd
+          TextCmd.new(cmd.clip, cmd.pos, cmd.text, cmd.size,
+            fade(cmd.color), cmd.family, cmd.bold?, cmd.italic?,
+            cmd.letter_spacing, cmd.clip_corners, merged)
+        when CircleCmd
+          CircleCmd.new(cmd.clip, cmd.center, cmd.radius,
+            fade_opt(cmd.fill), fade_opt(cmd.stroke), cmd.stroke_width,
+            cmd.clip_corners, merged)
+        when LineCmd
+          LineCmd.new(cmd.clip, cmd.p1, cmd.p2, cmd.width,
+            fade(cmd.color), cmd.clip_corners, merged)
+        when TriCmd
+          TriCmd.new(cmd.clip, cmd.a, cmd.b, cmd.c, fade(cmd.fill),
+            cmd.clip_corners, merged)
+        when ArcCmd
+          ArcCmd.new(cmd.clip, cmd.center, cmd.radius, cmd.start_angle,
+            cmd.end_angle, cmd.width, fade(cmd.color), cmd.clip_corners,
+            merged)
+        when ImageCmd
+          ImageCmd.new(cmd.clip, cmd.rect, cmd.uv, cmd.texture_id,
+            fade(cmd.tint), cmd.nearest?, cmd.clip_corners, merged)
+        when ShadowCmd
+          ShadowCmd.new(cmd.clip, cmd.rect, cmd.rounding, cmd.blur,
+            cmd.spread, cmd.offset, fade(cmd.color), cmd.inset?,
+            cmd.clip_corners, merged)
+        else
+          # Mesh3DCmd carries its own mvp, NoopCmd nothing — untouched.
+          cmd
+        end
+      end
+
       def apply(cmd : PaintCmd) : PaintCmd
+        # A rotated/skewed linear (or an already-stamped command — an
+        # inner rotated frame) cannot be rewritten axis-aligned: stamp.
+        return stamp(cmd) if cmd.xform || !axis_aligned?
         case cmd
         when RectCmd
           sides = cmd.stroke_sides.try { |s|
@@ -655,7 +806,7 @@ module Egui
         when ShadowCmd
           ShadowCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             cmd.blur * k, cmd.spread * k,
-            Vec2.new(cmd.offset.x * @scale_x, cmd.offset.y * @scale_y),
+            Vec2.new(cmd.offset.x * @a, cmd.offset.y * @d),
             fade(cmd.color), cmd.inset?, cmd.clip_corners)
         else
           # Mesh3DCmd carries its own mvp, NoopCmd nothing — untouched.
@@ -882,13 +1033,44 @@ module Egui
       @xform_epoch += 1
     end
 
+    # Begin a bracket for a RESOLVED full affine (rotate/skew — see
+    # Affine2). Like #push_transform the pivot may be deferred to the
+    # pop. Axis-aligned affines (translate/scale) take the existing CPU
+    # rewrite path verbatim; rotated ones stamp the commands.
+    def push_affine(pivot : Pos2?, xf : Affine2,
+                    opacity : Float64 = 1.0) : Nil
+      @xforms << TransformFrame.new(pivot, @commands.size, xf, opacity)
+      @xform_epoch += 1
+    end
+
+    # Begin a bracket for a CSS `transform` value, UNRESOLVED — always
+    # deferred: the percentages and `transform-origin` need the box
+    # rect, supplied at #pop_transform(…, rect:) once the children ran.
+    def push_css_transform(css : CssTransform,
+                           origin : TransformOrigin? = nil,
+                           opacity : Float64 = 1.0) : Nil
+      @xforms << TransformFrame.new(nil, @commands.size, Affine2.identity,
+        opacity, css, origin)
+      @xform_epoch += 1
+    end
+
     # End the innermost transform bracket. A deferred frame must be
     # given its `pivot` here; the commands of its bracket (and its
     # deferred sets) are transformed around it now. An immediate frame
-    # already transformed at emit time and only pops.
-    def pop_transform(pivot : Pos2? = nil) : Nil
+    # already transformed at emit time and only pops. A CSS frame
+    # (push_css_transform) resolves against `rect` instead — its pivot
+    # is the transform-origin point and its percentage translation the
+    # rect's size. `xf` OVERRIDES the frame's affine before the pass —
+    # how Ui#box injects the transition-lerped value (it knows the box
+    # rect, and thus the resolved target, only here at the pop).
+    def pop_transform(pivot : Pos2? = nil, rect : Rect? = nil,
+                      xf : Affine2? = nil) : Nil
       frame = @xforms.pop
       raise "pop_transform without a matching push_transform" unless frame
+      if frame.css && rect
+        frame.resolve_css(rect)
+      end
+      frame.override_affine(xf) if xf
       p = pivot || frame.pivot
       raise "pop_transform: a deferred frame needs its pivot here" unless p
       frame.pivot = p

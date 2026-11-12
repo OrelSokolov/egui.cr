@@ -50,7 +50,7 @@
 module Egui
   # The closed vocabulary of stylable values (keeps `StyleVars` a plain
   # mergeable hash while still type-safe at the getter level).
-  alias StyleValue = Color32 | Float64 | Int32 | Bool | String | StyleLength | Gradient | CornerRadii
+  alias StyleValue = Color32 | Float64 | Int32 | Bool | String | StyleLength | Gradient | CornerRadii | CssTransform | TransformOrigin
 
   # A length with a unit (CSS-like responsive sizing): `50%`, `10vw`,
   # `4vmin`, `1.5rem`. A plain `Float64` in a `StyleVars` bag stays a

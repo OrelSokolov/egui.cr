@@ -506,6 +506,32 @@ explicit id to persist element overrides"
             key = "transition.#{split[0]}"
             vs = split[1]
           end
+          # `transition: transform 250ms` — the plain-duration spelling
+          # of the same per-key split (the spring branch above handles
+          # `transition: background spring(bouncy)`).
+          if key == "transition" &&
+             (split = transition_key_shorthand(vs))
+            key = "transition.#{split[0]}"
+            vs = split[1]
+          end
+          # `transform` / `transform-origin` — parsed here so the bag
+          # carries the structs (see Egui::CssTransform).
+          if key == "transform"
+            if (t = CssTransform.parse?(vs))
+              yield key, t
+            else
+              warn "bad transform \"#{vs}\" — ignored"
+            end
+            next
+          end
+          if key == "transform-origin"
+            if (o = TransformOrigin.parse?(vs))
+              yield key, o
+            else
+              warn "bad transform-origin \"#{vs}\" — ignored"
+            end
+            next
+          end
           if (value = parse_value(vs))
             yield key, value
           end
@@ -616,6 +642,25 @@ explicit id to persist element overrides"
         return false unless s.ends_with?("ms") || s.ends_with?('s')
         body = s.ends_with?("ms") ? s[0...s.size - 2] : s[0...s.size - 1]
         !body.empty? && !body.to_f64?.nil?
+      end
+
+      # `transition: <key> <duration>` — e.g. "transform 250ms" or
+      # "transform 0.25s" → {"transform", "250"} (the duration stored
+      # as milliseconds, what the `transition.*` readers expect). nil
+      # when the value is not that shape (a plain ms number or a
+      # spring(…) — those keep their own spellings).
+      private def self.transition_key_shorthand(s : String) : Tuple(String, String)?
+        sp = s.index(' ')
+        return nil unless sp
+        name = s[0...sp].strip
+        rest = s[(sp + 1)..].strip
+        return nil if name.empty? || !name.each_char.all?(&.ascii_letter?)
+        return nil unless rest.ends_with?("ms") || rest.ends_with?('s')
+        body = rest.ends_with?("ms") ? rest[0...rest.size - 2] : rest[0...rest.size - 1]
+        n = body.to_f64?
+        return nil unless n
+        ms = rest.ends_with?("ms") ? n : n * 1000.0
+        {name, (ms % 1 == 0 ? ms.to_i64.to_s : ms.to_s)}
       end
 
       private def self.hex_val(c : Char) : Int32?

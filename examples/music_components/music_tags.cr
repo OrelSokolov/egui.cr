@@ -185,11 +185,44 @@ module MusicTags
                 opacity : Float64, blur : Float64) : Nil
     a = (color.a.to_f64 * opacity).round.clamp(0.0, 255.0).to_u8
     return if a.zero?
+    r = {w, h}.min / 2.0
+    return if r < 1.0
+    sig = {blur, 0.0}.max / 2.0 # CSS blur: σ = N/2
+    stops = [] of Egui::Gradient::Stop
+    alpha_at = ->(t : Float64) do # спад 1−|s|/0.9, свёрнутый с гауссом
+      v = 0.0
+      32.times do |k|
+        s = -0.9 + 1.8 * (k + 0.5) / 32.0
+        f = 1.0 - s.abs / 0.9
+        if f > 0.0
+          v += f * Math.exp(-0.5 * ((t - s) / (sig / r)) ** 2)
+        end
+      end
+      (v / 32.0 * 1.8 * r / sig / Math.sqrt(2.0 * Math::PI)).clamp(0.0, 1.0)
+    end
+    if sig < 1.0 # blur(0): спад без размытия, ступенька на 90%
+      stops << Egui::Gradient::Stop.new(0.0, Egui::Color32.new(color.r, color.g, color.b, a))
+      stops << Egui::Gradient::Stop.new(0.9,
+        Egui::Color32.new(color.r, color.g, color.b, 0u8))
+    else
+      # хвост 3σ за 90% радиуса; нормирован на радиус пятна (min-ось),
+      # эллипс рисуется расширенным на 3σ, стопы пересчитаны в его доли
+      tmax = 0.9 + 3.0 * sig / r
+      10.times do |i|
+        t = tmax * i / 9.0
+        v = alpha_at.call(t)
+        stops << Egui::Gradient::Stop.new(
+          (t * r / (r + 3.0 * sig)).clamp(0.0, 1.0),
+          Egui::Color32.new(color.r, color.g, color.b,
+            (a.to_f64 * v).round.clamp(0, 255).to_u8))
+      end
+    end
+    rx = w / 2.0 + 3.0 * sig
+    ry = h / 2.0 + 3.0 * sig
     rect = Egui::Rect.from_min_size(
-      Egui::Pos2.new(cx - w / 2.0, cy - h / 2.0), Egui::Vec2.new(w, h))
-    p.box_shadow(rect,
-      Egui::Color32.new(color.r, color.g, color.b, a), blur,
-      {w, h}.min / 2.0)
+      Egui::Pos2.new(cx - rx, cy - ry), Egui::Vec2.new(rx * 2.0, ry * 2.0))
+    p.rect(rect, 0.0, gradient: Egui::Gradient.new(:radial, stops,
+      cx: 0.5, cy: 0.5, rx: rx, ry: ry))
   end
 
   # Радиальное пятно-градиент поверх `rect` (radial-gradient у hero и

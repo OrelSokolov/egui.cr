@@ -181,6 +181,11 @@ module Egui
       # shorthand) — painted by `Ui#box` under (outset) or over (inset)
       # the fill.
       property shadow : BoxShadowSpec?
+      # CSS `transform` on the box — raw string (`Html`/`CssTransform`
+      # parses); paint-only, applied by `Ui#box` around the whole
+      # subtree like the appear transitions.
+      property transform : String?
+      property transform_origin : String?
 
       def initialize(@fill = nil, @stroke = nil, @rounding = nil,
                      @corners = nil, @margin = nil,
@@ -264,6 +269,10 @@ module Egui
           base.height = val
         when "box-shadow", "shadow"
           base.shadow = shadow(val)
+        when "transform"
+          base.transform = val
+        when "transform-origin"
+          base.transform_origin = val
         end
       end
       base
@@ -488,6 +497,8 @@ module Egui
             margin: params.margin,
             corners: params.corners,
             shadow: params.shadow,
+            transform: params.transform,
+            transform_origin: params.transform_origin,
             position: Html.position_sym(params.position),
             top: params.top, right: params.right,
             bottom: params.bottom, left: params.left,

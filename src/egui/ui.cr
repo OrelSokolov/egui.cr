@@ -1314,6 +1314,8 @@ module Egui
             shadow : BoxShadowSpec? = nil,
             appear : String | Symbol? = nil,
             appear_delay : Float64? = nil,
+            transform : String | CssTransform | Affine2? = nil,
+            transform_origin : String? = nil,
             position : Symbol? = nil,
             top : Float64 | Int32 | String? = nil,
             right : Float64 | Int32 | String? = nil,
@@ -1336,7 +1338,8 @@ module Egui
             stroke_width: stroke_width, style_class: style_class,
             stroke_sides: stroke_sides, corners: corners, shadow: shadow,
             appear: appear,
-            appear_delay: appear_delay, position: position, top: top,
+            appear_delay: appear_delay, transform: transform,
+            transform_origin: transform_origin, position: position, top: top,
             right: right, bottom: bottom, left: left, z: z,
             width: width, height: height, &block)
         end
@@ -1485,6 +1488,16 @@ module Egui
         @ctx.memory.use_id(box_pos_id)
       end
 
+      # CSS `transform` (see Egui::CssTransform): the whole subtree —
+      # children and the back-patched chrome — paints through a painter
+      # affine bracket, PAINT-ONLY like the appear transitions below
+      # (layout, clip rects and hit-testing stay in place). The box's
+      # rect exists only after the children ran, so percentage
+      # translations and `transform-origin` resolve at the pop; the
+      # `transition.transform` lerp (Ui#css_transform_pop) rides the
+      # same deferred slot.
+      tf = css_transform_of(style_class, transform, transform_origin)
+      painter.push_affine(nil, Affine2.identity) if tf
       # Appear transition (plans/NATIVE_HTML_DEMO.md §3.2): the whole
       # subtree — children and the back-patched chrome — paints through
       # a painter transform while the run plays. The box's rect (the
@@ -1577,6 +1590,7 @@ module Egui
         outer_rect = outer
       ensure
         painter.pop_transform(outer_rect.try(&.center) || @cursor) if xf
+        css_transform_pop(child, tf, outer_rect) if tf
       end
       # A non-zero border radius clips the subtree to the rounded
       # shape (engine-level `overflow: hidden` semantics — any nested
@@ -1618,6 +1632,55 @@ module Egui
       @ctx.memory.use_id(child.id)
       @ctx.request_repaint if xf
       xf
+    end
+
+    # Resolve the box's CSS `transform` source (see Egui::CssTransform):
+    # the explicit `transform:`/`transform_origin:` arguments over the
+    # box's class chain (`transform` / `transform-origin` /
+    # `transition.transform` keys). Nil when nothing asks for one —
+    # the common case costs nothing.
+    private def css_transform_of(style_class : String?,
+                                 transform : String | CssTransform | Affine2?,
+                                 transform_origin : String?,
+                                 vars : StyleVars = @ctx.stylesheet
+                                   .resolve_chain(style_chain_paths(style_class)))
+      css : CssTransform? =
+        case t = transform
+        when CssTransform then t
+        when Affine2      then CssTransform.parse?(t.to_s) # matrix spelling
+        when String       then CssTransform.parse?(t)
+        else nil
+        end
+      css ||= vars["transform"]?.as?(CssTransform)
+      return nil unless css
+      return nil if css.none?
+      origin = transform_origin.try { |s| TransformOrigin.parse?(s) } ||
+                vars["transform-origin"]?.as?(TransformOrigin)
+      dur_ms = vars.f64?("transition.transform") || vars.f64?("transition") || 0.0
+      {css: css, origin: origin, dur_ms: dur_ms}
+    end
+
+    # Pop the box's CSS-transform bracket now that `outer_rect` exists:
+    # resolve the percentage translations against the rect, lerp the
+    # `transition.transform` animation towards the target (keyed by the
+    # box's child-Ui id, so hover-driven retargeting never jumps), and
+    # pivot at the `transform-origin` point (CSS default: center).
+    private def css_transform_pop(child : Ui, tf : NamedTuple(css: CssTransform,
+                                   origin: TransformOrigin?, dur_ms: Float64),
+                                  outer_rect : Rect?) : Nil
+      rect = outer_rect || Rect.from_min_size(@cursor, Vec2.zero)
+      target = tf[:css].resolve(rect.width, rect.height)
+      dur = tf[:dur_ms] / 1000.0
+      xf : Affine2 = target
+      animating = false
+      if dur > 0.0 && !@ctx.reduced_motion?
+        xf, animating = @ctx.memory.transform_anims.drive(child.id, target,
+          dur, @ctx.input.time)
+      end
+      @ctx.memory.use_id(child.id)
+      @ctx.request_repaint if animating
+      pivot = tf[:origin].try(&.resolve(rect)) || rect.center
+      painter.pop_transform(pivot, xf: xf)
     end
 
     # egui `Frame::show` — a padded, painted panel around a block of

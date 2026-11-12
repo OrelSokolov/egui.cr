@@ -267,7 +267,13 @@ lib LibEguiCr
   fun mesh3d = egui_cr_mesh3d(mvp : Float32*, blend : Bool, primitive : Int32,
                               x : Int32, y : Int32, w : Int32, h : Int32,
                               count : Int32, verts : UInt8*)
-  # SDF rounded-rect batch (EGUI_SDF, on by default): `count` instances of 28 floats
+  # 2D affine bracket (a command's `xform` stamp): pushes sgl's matrix
+  # stack and loads the modelview — everything until #xform_pop draws
+  # under it (geometry only; scissors/stencils unaffected). `m` is 16
+  # floats, column-major.
+  fun xform_push = egui_cr_xform_push(m : Float32*)
+  fun xform_pop = egui_cr_xform_pop
+  # SDF rounded-rect batch (EGUI_SDF=1, off by default): `count` instances of 28 floats
   # each — geometry in POINTS (center.x/y, quad half_w/h, radii
   # tl/tr/br/bl, then shape half_w/h, kind, blur), colors straight
   # alpha 0..1 (fill, fill2, stroke), then stroke_w (points), ppp, 0, 0.
@@ -454,11 +460,18 @@ module Egui
       # Open rounded-clip group ({clip rect, fitted radii}) — see
       # #sync_clip_group; nil = no stencil bracket open.
       @@clip_shape : Tuple(Egui::Rect, Egui::CornerRadii)? = nil
-      # EGUI_SDF: analytic SDF rounded rects (see #sdf_try). On by
-      # default — outset box-shadows fade smoothly (exp(-2t²) in the
-      # shader) instead of the tessellated band approximation;
-      # EGUI_SDF=0 restores the old path byte-for-byte.
-      @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] != "0" : true
+      # EGUI_SDF: analytic SDF rounded rects (see #sdf_try). OFF by
+      # default — the instanced GLSL path proved driver-fragile (Intel
+      # Arc/Mesa rendered stray vertical stripes in filled areas;
+      # EGUI_SDF=0 output is pixel-identical where the driver behaves,
+      # see tmp/twinshot). EGUI_SDF=1 opts back in (the tessellated
+      # path stays byte-for-byte the same).
+      @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] == "1" : false
+      # PAUSE=1: детерминированные скриншоты — время кадра заморожено
+      # (on_frame_inner), так что mesh-дрейф, визуализатор и appear-
+      # анимации стоят; любые два запуска (напр. EGUI_SDF=1 vs
+      # EGUI_SDF=0) рисуют попиксельно один и тот же кадр.
+      @@pause : Bool = ENV["PAUSE"]? ? ENV["PAUSE"] != "0" : false
       # SDF batch accumulation: instance buffer (28 floats × 2048, the
       # shim's per-batch cap), fill mark, and the clip (framebuffer px,
       # the #scissor_rect tuple) the current group runs under.
@@ -1338,6 +1351,7 @@ module Egui
           app.ctx.pixels_per_point = @@pixels_per_point
 
           time = (Time.instant - @@start).total_seconds
+          time = 5.0 if @@pause # детерминированный кадр (см. @@pause)
           raw = Egui::RawInput.new(
             Egui::Rect.from_min_size(Egui::Pos2.zero,
               Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
@@ -1970,6 +1984,10 @@ module Egui
         bt0 = Time.instant # FrameBench "frame" span (see produce_frame)
 
         time = (Time.instant - @@start).total_seconds
+        # PAUSE=1: константное время — все анимации (mesh, vis, appear)
+        # замирают на воспроизводимой фазе, кадр не зависит от момента
+        # запуска (5 с — appear-волны карточек уже закончились).
+        time = 5.0 if @@pause
         raw = Egui::RawInput.new(
           Egui::Rect.from_min_size(Egui::Pos2.zero,
             Egui::Vec2.new(fb_w.to_f64 / @@pixels_per_point,
@@ -2343,6 +2361,22 @@ module Egui
       end
 
       def self.paint(cmd : Egui::PaintCmd) : Nil
+        # A stamped 2D affine (rotate/skew — see Egui::Affine2): draw
+        # the command under a modelview matrix. Geometry only — the GL
+        # scissor and stencil masks (rounded clips) stay axis-aligned,
+        # which is exactly the CSS semantics (an ancestor's clip cuts
+        # the TRANSFORMED geometry).
+        if (xf = cmd.xform)
+          m = xf.mat4
+          LibEguiCr.xform_push(m.to_unsafe)
+          paint_plain(cmd)
+          LibEguiCr.xform_pop
+        else
+          paint_plain(cmd)
+        end
+      end
+
+      private def self.paint_plain(cmd : Egui::PaintCmd) : Nil
         case cmd
         when Egui::RectCmd
           paint_rect(cmd)
@@ -2464,6 +2498,10 @@ module Egui
 
       def self.sdf_try_rect(cmd : Egui::RectCmd) : Bool
         return false if cmd.replace?
+        # The SDF shader evaluates in screen space — it cannot express
+        # a rotated/skewed rect (the xform stamp), which falls through
+        # to the tessellated path under a modelview matrix.
+        return false if cmd.xform
         # The standard border algorithm rides the batch too: a bordered
         # background decomposes into fill-only rects (outer border
         # plate(s) + the inset background), each one plain instance —
@@ -2530,6 +2568,7 @@ module Egui
       def self.sdf_try_shadow(cmd : Egui::ShadowCmd) : Bool
         return false if cmd.inset?
         return false if cmd.color.a.zero?
+        return false if cmd.xform # screen-space shader — see sdf_try_rect
         base = cmd.rect.translate(cmd.offset).expand(cmd.spread)
         return false if base.width <= 0.0 || base.height <= 0.0
 
@@ -2570,6 +2609,7 @@ module Egui
       def self.sdf_try_circle(cmd : Egui::CircleCmd) : Bool
         r = cmd.radius
         return false if r <= 0.0
+        return false if cmd.xform # screen-space shader — see sdf_try_rect
         fill = cmd.fill
         stroke = cmd.stroke if cmd.stroke_width > 0
         return false unless fill || stroke
