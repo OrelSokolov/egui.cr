@@ -42,8 +42,17 @@ Rules that make the diff meaningful:
 |10 | `progress`           | NSProgressIndicator 45% + spinner        | `ui.progress_bar`+`spinner`|
 |11 | `stepper`            | NSStepper (+ number)                     | `Egui::NumberInput`        |
 |12 | `label`              | NSTextField label + secondary label      | `ui.label` ×2              |
+|13 | `separator`          | NSBox separator between two labels       | `ui.separator` (height-capped) |
+|14 | `link`               | attributed .link label ×2 (linkColor, no underline) | `Egui::Hyperlink#underline(false)` ×2 |
+|15 | `secure_field`       | NSSecureTextField (rounded bezel)        | `ui.text_edit_singleline(password:)` |
+|16 | `textarea`           | NSTextView 200×56, two lines             | `ui.textarea(rows: 3)` (height-pinned) |
+|17 | `disclosure`         | NSButton roundedDisclosure off/on + label | bounded `CollapsingHeader` |
+|18 | `color_well`         | NSColorWell 48×24 ×2 (fixed colors)      | `Egui::ColorButton` |
+|19 | `date_picker`        | NSDatePicker stepper, POSIX locale       | `ui.date_picker("%m/%d/%Y")` |
+|20 | `time_picker`        | NSDatePicker time, POSIX locale          | `ui.time_picker("%H:%M:%S")` |
 
-Tier 1 = 1–6 (every dialog), Tier 2 = 7–11 (most windows), Tier 3 = 12.
+Tier 1 = 1–6 (every dialog), Tier 2 = 7–11 (most windows), Tier 3 = 12,
+Tier 4 = 13–16 (dialog extras), Tier 5 = 17–20 (settings-row controls).
 
 ## What we expect the diff to measure (the deliverable)
 

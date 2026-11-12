@@ -79,6 +79,31 @@ multicolor accent) vs `oracle/egui/png` (egui.cr, MacOsTheme, 13pt SF
 Pro), diffed with twinshot (`oracle/twinshot-report/default/`).
 All sizes in @1x points; colors sRGB.
 
+**Round 5** (Tier-4 sheets): separator 0.53, textarea 1.25, link 1.43
+(label noise floor 1.44), secure_field 3.28 (the same selected-text
+state text_field renders). New widget-level keys, same
+style-rule-driven pattern: `textarea` class (fill/stroke/rounding/
+padding + sizing — NSTextView is a borderless WHITE box with a ~6pt
+inset, not the button_weak bezel), `v.hyperlink_color = #0068DA`
+(NSColor.linkColor, measured), and the `sheet.separator` /
+`sheet.textarea` scope rules pinning the separator to the native 20pt
+hairline and the twin box to 56pt (a bare Separator stretches across
+the region's remaining height — upstream semantics). AppKit text links
+are NOT underlined; the twin drops the underline via
+`Hyperlink#underline(false)`.
+
+**Round 6** (Tier-5 settings-row sheets): color_well 1.77, disclosure
+2.97, time_picker 2.97, date_picker 3.03. New `Egui::ColorButton`
+widget (NSColorWell-shaped swatch; native sizeToFit well is 48×24,
+hairline #D5D5D5 rim, ~4pt corners — `color_well` class keys
+width/height/rounding/stroke). The pickers run native under
+en_US_POSIX + Gregorian + UTC so the text matches the twins' format
+strings exactly ("11/07/2026", "14:30:05"); the diff isolates the
+control chrome (native stepper vs the twin's segment field). Known
+gap: the native disclosure is a 24pt gray BEZEL around the triangle —
+`CollapsingHeader` paints arrow + text only (its bottom hairline is
+bounded to the 96pt cluster through a fixed child region).
+
 Diff ratios, before theme → after round 2 → after round 3:
 
 | sheet | r1 | r2 | r3 | | sheet | r1 | r2 | r3 |

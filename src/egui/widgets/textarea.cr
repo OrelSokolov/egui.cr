@@ -46,6 +46,20 @@ module Egui
                    @readonly : Bool = false)
     end
 
+    # Styled through the `textarea` class (the `text_edit` idiom):
+    # `fill`/`stroke`/`rounding` for the box, `padding` for the text
+    # inset, plus the responsive sizing keys (`rows` is only natural).
+    def style_class : String?
+      "textarea"
+    end
+
+    def style_properties : Array(StyleProp)
+      [StyleProp.new("fill", :color),
+       StyleProp.new("stroke", :color),
+       StyleProp.new("rounding", :number),
+       StyleProp.new("padding", :box)] + StyleProps.sizable
+    end
+
     # Cross-frame state for the virtual big-text mode: TextArea widgets
     # are recreated every frame, so the line index and the last built
     # row window live here, keyed by widget id (bounded — the handful
@@ -183,17 +197,21 @@ module Egui
       memory.use_id(vel_id)
 
       line_h = font_size * Fonts::LINE_H_FACTOR
-      pad = style.spacing.button_padding
+      vars = style_vars(ui, id)
+      # `padding` class box (falls back to Spacing#button_padding) —
+      # the text_edit idiom.
+      bp = style.spacing.button_padding
+      pad = vars.box?("padding") || StyleBox.new(bp.y, bp.x, bp.y, bp.x)
       # The border stroke is drawn INSIDE the rect (backend inset), so
       # layout reserves it on every side (same as TextEdit). A FRAMELESS
       # textarea (frame: false) fills its rect edge to edge — no box,
       # no inset (a full-bleed editor like Notepad's page).
       border = 2.0
-      inset = @frame ? Vec2.new(pad.x + border, pad.y + border) : Vec2.zero
+      inset = @frame ? Vec2.new(pad.left + border, pad.bottom + border) : Vec2.zero
 
       width = ui.available_width
       height = @rows * line_h + inset.y * 2.0
-      sized = styled_size(Vec2.new(width, height), style_vars(ui, id), ui, id)
+      sized = styled_size(Vec2.new(width, height), vars, ui, id)
       rect = ui.allocate_at_least(sized)
       response = ui.interact(rect, id,
         Sense::Click | Sense::Drag | Sense::Focusable)
@@ -464,20 +482,29 @@ module Egui
       # single-line TextEdit gets) — the box fill itself never
       # changes. `frame: false` skips the box entirely.
       visuals = style.visuals
+      # `textarea` class keys (fill/stroke/rounding) fall back to the
+      # visuals-driven look (the text_edit idiom). `focus_ring` keys
+      # the outside ring (visuals.focus_ring by default); a fully
+      # transparent one drops the ring — the native plain-NSTextView
+      # look (no ring on focus).
+      bg = vars.color?("fill") || visuals.button_weak
       if @frame
+        stroke_color = vars.color?("stroke") || visuals.button_stroke
+        rounding = vars.f64?("rounding") || 4.0
+        ring = vars.color?("focus_ring") || visuals.focus_ring
         if response.has_focus?
           # The outside ring must escape the widget's own clip (the
           # layout clamps the painter to the allocated rect) — borrow
           # 3pt of margin, paint, restore.
-          outer = ui.painter.clip
-          ui.painter.clip = outer.expand(3.0)
-          ui.painter.rect(rect.expand(3.0), 7.0, nil,
-            visuals.focus_ring, 3.0)
-          ui.painter.clip = outer
-          ui.painter.rect(rect, 4.0, visuals.button_weak, nil, 0.0)
+          if ring.a > 0
+            outer = ui.painter.clip
+            ui.painter.clip = outer.expand(3.0)
+            ui.painter.rect(rect.expand(3.0), 7.0, nil, ring, 3.0)
+            ui.painter.clip = outer
+          end
+          ui.painter.rect(rect, rounding, bg, nil, 0.0)
         else
-          ui.painter.rect(rect, 4.0, visuals.button_weak,
-            visuals.button_stroke, 1.0)
+          ui.painter.rect(rect, rounding, bg, stroke_color, 1.0)
         end
       end
 
@@ -565,7 +592,7 @@ module Egui
               Rect.from_min_size(Pos2.new(inner.min.x + caret_x, top + 1.0),
                 Vec2.new(w, h)), 0.0, visuals.text_color)
             if row && (ch = row.text[col]?)
-              glyph_bg = @frame ? visuals.button_weak : visuals.window_fill
+              glyph_bg = @frame ? bg : visuals.window_fill
               size = row.runs.map(&.size).max? || font_size
               ui.painter.text(
                 Pos2.new(inner.min.x + caret_x, top + row.height / 2.0),

@@ -41,7 +41,6 @@ module Egui
       StyleProps.textlike + StyleProps.sizable + [
         StyleProp.new("selection_fill", :color, label: "fill (on)"),
         StyleProp.new("track_fill", :color, label: "fill (off)"),
-        StyleProp.new("stroke", :color, label: "track stroke"),
         StyleProp.new("knob_color", :color),
         StyleProp.new("sync_with_text", :bool, fallback: true),
         StyleProp.new("tumbler_size", :number),
@@ -94,25 +93,15 @@ module Egui
       # Unchecked track defaults to button_stroke (light themes set
       # weak ≈ the panel fill — macOS #FFF on #FFF) unless the
       # `track_fill` rule key overrides it. `anim_t` eases 0→1 across
-      # the flip, driving the fill cross-fade, the rim and the knob
-      # position below.
+      # the flip, driving the fill cross-fade and the knob position
+      # below. The track carries NO rim — themes that used to paint a
+      # 1px border compensate by sizing the track itself a pixel up
+      # (see MacOsTheme), which keeps the visual padding identical.
       anim_t = ui.ctx.animate_value_with_time(id, @checked ? 1.0 : 0.0, 0.15)
       track_fill = class_vars.color("track_fill", visuals.button_stroke)
         .lerp(visuals.selection_fill, anim_t)
       track_fill = visuals.button_active if response.active? && @checked
-      # `stroke` rule key — the track's own 1px border. It cross-fades
-      # with the fill: macOS paints a light-gray rim on the off track
-      # but an accent-dark one when on (a gray ring around the blue
-      # capsule reads as a bug — cf. oracle/macos/png/switch.png).
-      track_stroke = class_vars.color?("stroke")
       ui.painter.capsule(track, track_fill)
-      if track_stroke
-        track_stroke = track_stroke.lerp(visuals.selection_fill, anim_t)
-        # The rim rides fully INSIDE the capsule edge — a centered
-        # stroke band would poke half a pixel outside the track rect
-        # (a 1px halo around the capsule that native does not paint).
-        ui.painter.capsule(track.shrink(0.5), nil, track_stroke, 1.0)
-      end
 
       # Knob slides between the track's ends, 3pt off either end
       # (native: white 30×20 at x=+3, travel 18 inside the 54×24

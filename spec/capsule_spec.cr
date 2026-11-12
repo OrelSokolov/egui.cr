@@ -81,8 +81,8 @@ describe "ToggleButton knob" do
     cmds = ctx.painter.commands
     cmds.select(Egui::CircleCmd).size.should eq 0 # the knob is no disc
     # Window chrome paints wide rects; the toggle's are the small ones:
-    # the capsule fill (+rim when the sheet sets one), the knob's
-    # shadow ring, then the knob fill — first vs last.
+    # the capsule fill, the knob's shadow ring, then the knob fill —
+    # first vs last.
     small = cmds.select(Egui::RectCmd)
       .reject { |c| c.rect.width > 100.0 }
     track, knob = small.first, small.last

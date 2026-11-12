@@ -26,6 +26,10 @@ class MacOsGalleryApp < Egui::App
   @num = 42
   @progress = 0.45_f64
   @sf_installed = false
+  @pw = "Placeholder"
+  @notes = "Line one\nLine two"
+  @date = Time.utc(2026, 11, 7, 14, 30, 5)
+  @time = Time.utc(2026, 11, 7, 14, 30, 5)
 
   # NSSearchField lens — the same placeholder gray as the hint.
   @lens : Egui::Svg = Egui::Icon.from_file(:lucide, :search, tint: SECONDARY)
@@ -35,6 +39,17 @@ class MacOsGalleryApp < Egui::App
   def initialize
     super
     @ctx.theme = Egui::MacOsTheme.light
+    # A bare Separator stretches across the panel's remaining height
+    # (upstream semantics); the native gallery's hairline is 20pt —
+    # cap it, and pin the textarea box to the native 56pt, under the
+    # "sheet" scope (the flat-sheet twin uses the same rules).
+    @ctx.theme.sheet.rule("sheet.separator",
+      Egui::StyleVars{"height" => 20.0})
+    @ctx.theme.sheet.rule("sheet.textarea",
+      # The native gallery's NSTextView carries no focus ring — kill
+      # the blue ring the default textarea treatment paints on focus.
+      Egui::StyleVars{"height" => 56.0,
+                      "focus_ring" => Egui::Color32.transparent})
     # SF Pro — the font the native sheets render with.
     if File.exists?("/System/Library/Fonts/SFNS.ttf") &&
        (font = Egui::Driver::CrystalFonts.from_system(
@@ -129,7 +144,69 @@ class MacOsGalleryApp < Egui::App
         second_column(row, row.label("Label"))
         row.rich(Egui::RichText.new("Secondary label").color(SECONDARY))
       end
+
+      section(ui, "separator") do |row|
+        row.label("One")
+        row.with_style_scope("sheet") { |s| s.separator }
+        row.label("Two")
+      end
+
+      section(ui, "link") do |row|
+        # AppKit links: linkColor (see MacOsTheme), no underline.
+        second_column(row, row.add(Egui::Hyperlink.new("Open the guide",
+          "https://example.com").underline(false)))
+        row.add(Egui::Hyperlink.new("More…",
+          "https://example.com/more").underline(false))
+      end
+
+      section(ui, "secure_field") do |row|
+        row.text_edit_singleline(@pw, password: true,
+          width: 200.0) { |t| @pw = t }
+      end
+
+      section(ui, "textarea") do |row|
+        row.with_style_scope("sheet") do |s|
+          s.textarea(@notes, rows: 3) { |t| @notes = t }
+        end
+      end
+
+      section(ui, "disclosure") do |row|
+        # Bounded like the native settings row (24pt bezel + label) —
+        # a bare CollapsingHeader spans the whole panel.
+        first = disclosure_header(row, "Advanced", open: false)
+        gap = 150.0 - first.width -
+              2.0 * row.style.spacing.item_spacing.x
+        row.allocate_space(Egui::Vec2.new(gap, 0.0)) if gap > 0
+        disclosure_header(row, "Advanced", open: true)
+      end
+
+      section(ui, "color_well") do |row|
+        second_column(row, row.add(Egui::ColorButton.new(
+          Egui::Color32.rgb(0, 122, 255))))
+        row.add(Egui::ColorButton.new(Egui::Color32.rgb(255, 59, 48)))
+      end
+
+      section(ui, "date_picker") do |row|
+        row.date_picker("gallery_date", @date,
+          format: "%m/%d/%Y") { |t| @date = t }
+      end
+
+      section(ui, "time_picker") do |row|
+        row.time_picker("gallery_time", @time,
+          format: "%H:%M:%S") { |t| @time = t }
+      end
     end
+  end
+
+  # One bounded CollapsingHeader: a fixed child region the header
+  # fills (its own allocate spans the whole panel otherwise — the
+  # native cluster is a bezel + label, not a full row).
+  private def disclosure_header(row : Egui::Ui, text : String,
+                                open : Bool) : Egui::Rect
+    rect = row.allocate_space(Egui::Vec2.new(96.0, 18.0))
+    child = row.child_ui(rect, row.next_widget_id)
+    Egui::CollapsingHeader.new(text, default_open: open).show(child) { |body| }
+    rect
   end
 
   # Space the second variant out to a FIXED column, like the native

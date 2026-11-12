@@ -14,6 +14,10 @@ let sheetSize = NSSize(width: 480, height: 160)
 
 @main
 struct RenderOracle {
+    // Sheets whose control outgrows the standard 40pt gallery row
+    // (textarea is a 56pt multiline box) get their own row height.
+    static let galleryRowH: [String: CGFloat] = ["textarea": 64.0]
+
     static func main() {
         let app = NSApplication.shared
         // `gallery` argument: a live visible window with every sheet
@@ -48,6 +52,19 @@ struct RenderOracle {
             ("progress", addProgress),
             ("stepper", addStepper),
             ("label", addLabels),
+            // Tier 4: dialog extras (each needs an egui.cr twin —
+            // scripts/make_macos_oracle_shots.cr).
+            ("separator", addSeparator),
+            ("link", addLink),
+            ("secure_field", addSecureField),
+            ("textarea", addTextarea),
+            // Tier 5: disclosure (settings triangles), color well,
+            // date/time pickers (compact stepper style, POSIX locale
+            // so the text stays numeric/ASCII like the egui twins).
+            ("disclosure", addDisclosure),
+            ("color_well", addColorWells),
+            ("date_picker", addDatePicker),
+            ("time_picker", addTimePicker),
         ]
 
         if gallery {
@@ -97,31 +114,33 @@ struct RenderOracle {
     private static func runGallery(app: NSApplication,
                                    aqua: NSAppearance?,
                                    sheets: [(String, (HostView) -> Void)]) {
-        let rowH: CGFloat = 40.0
         let margin: CGFloat = 16.0
+        let rowHs = sheets.map { galleryRowH[$0.0] ?? 40.0 }
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 520,
-                                height: margin * 2 + rowH * CGFloat(sheets.count)),
+                                height: margin * 2 + rowHs.reduce(0, +)),
             styleMask: [.titled, .closable], backing: .buffered, defer: false)
         window.appearance = aqua
         window.title = "macOS Widget Gallery (native oracle)"
         window.contentView = HostView(frame: NSRect(
             x: 0, y: 0, width: 520,
-            height: margin * 2 + rowH * CGFloat(sheets.count)))
+            height: margin * 2 + rowHs.reduce(0, +)))
         let host = window.contentView! as! HostView
+        var y = margin
         for (i, (name, populate)) in sheets.enumerated() {
+            let rowH = rowHs[i]
             let caption = NSTextField(labelWithString: name)
             caption.font = .systemFont(ofSize: 11)
             caption.textColor = .secondaryLabelColor
             caption.sizeToFit()
-            caption.frame.origin = NSPoint(x: 12, y: margin + CGFloat(i) * rowH + 6)
+            caption.frame.origin = NSPoint(x: 12, y: y + 6)
             host.addSubview(caption)
 
             let row = HostView(frame: NSRect(
-                x: 100, y: margin + CGFloat(i) * rowH,
-                width: 400, height: rowH))
+                x: 100, y: y, width: 400, height: rowH))
             populate(row)
             host.addSubview(row)
+            y += rowH
         }
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -332,4 +351,126 @@ func addLabels(_ host: RenderOracle.HostView) {
     secondary.font = .systemFont(ofSize: 13)
     secondary.textColor = .secondaryLabelColor
     RenderOracle.place(secondary, in: host, x: 250)
+}
+
+func addSeparator(_ host: RenderOracle.HostView) {
+    let one = NSTextField(labelWithString: "One")
+    one.font = .systemFont(ofSize: 13)
+    RenderOracle.place(one, in: host, x: 24)
+
+    // Vertical hairline between the labels (NSBox separator picks its
+    // axis from the frame aspect).
+    let sep = NSBox()
+    sep.boxType = .separator
+    sep.frame = NSRect(x: 0, y: 0, width: 1, height: 20)
+    RenderOracle.place(sep, in: host, x: 64)
+
+    let two = NSTextField(labelWithString: "Two")
+    two.font = .systemFont(ofSize: 13)
+    RenderOracle.place(two, in: host, x: 80)
+}
+
+func addLink(_ host: RenderOracle.HostView) {
+    // Attributed .link labels: selectable, so the cell renders them in
+    // linkColor (AppKit text links are NOT underlined by default —
+    // the egui twin drops the underline for parity).
+    let guide = NSTextField(labelWithAttributedString: NSAttributedString(
+        string: "Open the guide",
+        attributes: [.link: URL(string: "https://example.com")!]))
+    guide.isSelectable = true
+    RenderOracle.place(guide, in: host, x: 24)
+
+    let more = NSTextField(labelWithAttributedString: NSAttributedString(
+        string: "More…",
+        attributes: [.link: URL(string: "https://example.com/more")!]))
+    more.isSelectable = true
+    RenderOracle.place(more, in: host, x: 250)
+}
+
+func addSecureField(_ host: RenderOracle.HostView) {
+    let secure = NSSecureTextField()
+    secure.stringValue = "Placeholder"
+    secure.bezelStyle = .roundedBezel
+    RenderOracle.place(secure, in: host, x: 24, w: 200)
+}
+
+func addTextarea(_ host: RenderOracle.HostView) {
+    let text = NSTextView(frame: NSRect(x: 0, y: 0, width: 200, height: 56))
+    text.string = "Line one\nLine two"
+    text.font = .systemFont(ofSize: 13)
+    text.drawsBackground = true
+    text.backgroundColor = .textBackgroundColor
+    RenderOracle.place(text, in: host, x: 24, w: 200)
+}
+
+func addDisclosure(_ host: RenderOracle.HostView) {
+    // Bare disclosure triangles with a label next to each, like a
+    // settings row: roundedDisclosure points right when off, down
+    // when on.
+    let closed = NSButton(title: "", target: nil, action: nil)
+    closed.bezelStyle = .roundedDisclosure
+    closed.state = .off
+    RenderOracle.place(closed, in: host, x: 24)
+    let closedLabel = NSTextField(labelWithString: "Advanced")
+    closedLabel.font = .systemFont(ofSize: 13)
+    RenderOracle.place(closedLabel, in: host, x: 48)
+
+    let open = NSButton(title: "", target: nil, action: nil)
+    open.bezelStyle = .roundedDisclosure
+    open.state = .on
+    RenderOracle.place(open, in: host, x: 250)
+    let openLabel = NSTextField(labelWithString: "Advanced")
+    openLabel.font = .systemFont(ofSize: 13)
+    RenderOracle.place(openLabel, in: host, x: 274)
+}
+
+func addColorWells(_ host: RenderOracle.HostView) {
+    // Fixed sRGB colors — the egui twins paint the exact same values.
+    let blue = NSColorWell()
+    blue.color = NSColor(srgbRed: 0, green: 122.0 / 255.0, blue: 1.0,
+                         alpha: 1.0)
+    RenderOracle.place(blue, in: host, x: 24)
+
+    let red = NSColorWell()
+    red.color = NSColor(srgbRed: 1.0, green: 59.0 / 255.0,
+                        blue: 48.0 / 255.0, alpha: 1.0)
+    RenderOracle.place(red, in: host, x: 250)
+}
+
+private func makeDatePicker(elements: NSDatePicker.ElementFlags,
+                            components: DateComponents) -> NSDatePicker {
+    let picker = NSDatePicker()
+    picker.datePickerStyle = .textFieldAndStepper
+    picker.datePickerElements = elements
+    picker.calendar = Calendar(identifier: .gregorian)
+    // POSIX locale keeps the rendered text numeric ("11/07/2026",
+    // "14:30:05") — ASCII and deterministic like the egui twins'
+    // format strings, so the diff measures the control, not the locale.
+    picker.locale = Locale(identifier: "en_US_POSIX")
+    picker.timeZone = TimeZone(identifier: "UTC")
+    var comp = components
+    comp.calendar = picker.calendar
+    comp.timeZone = picker.timeZone
+    picker.dateValue = picker.calendar!.date(from: comp)!
+    return picker
+}
+
+func addDatePicker(_ host: RenderOracle.HostView) {
+    var comp = DateComponents()
+    comp.year = 2026
+    comp.month = 11
+    comp.day = 7
+    RenderOracle.place(makeDatePicker(elements: [.yearMonthDay],
+                                      components: comp),
+                       in: host, x: 24)
+}
+
+func addTimePicker(_ host: RenderOracle.HostView) {
+    var comp = DateComponents()
+    comp.hour = 14
+    comp.minute = 30
+    comp.second = 5
+    RenderOracle.place(makeDatePicker(elements: [.hourMinuteSecond],
+                                      components: comp),
+                       in: host, x: 24)
 }

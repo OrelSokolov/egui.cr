@@ -48,6 +48,10 @@ module Egui
         v.button_active = Color32.rgb(185, 185, 185)
         v.button_stroke = Color32.rgb(209, 209, 209)
         v.selection_fill = ACCENT
+        # NSColor.linkColor (light aqua) — measured (0,104,218) on the
+        # oracle link sheet. AppKit text links are NOT underlined; the
+        # twin sheets drop the underline via Hyperlink#underline(false).
+        v.hyperlink_color = Color32.rgb(0, 104, 218)
         # Text selections paint their own pale blue (#BED4F9); input
         # focus rings a stronger one (#8CA9F5) — see TextEdit/Textarea.
         v.text_selection_fill = Color32.rgb(190, 212, 249)
@@ -131,17 +135,18 @@ module Egui
         "dot_fill"  => Color32.rgb(255, 255, 255),
       })
 
-      # Switches (ToggleButton): 54x24 capsule track with a rim; the
-      # knob is a 30x20 capsule (default knob_rounding), +3 off the
-      # track ends (oracle/macos/png/switch.png). Gray track lerps to
-      # accent (selection_fill) when on.
+      # Switches (ToggleButton): 55x25 capsule track, borderless — the
+      # 1px the old rim occupied is spent on the track itself, so the
+      # visual padding (knob 3pt off the ends, 2pt vertical) is
+      # unchanged. The knob is a 30x21 capsule (default knob_rounding)
+      # riding the taller track; gray fill lerps to accent
+      # (selection_fill) when on (oracle/macos/png/switch.png).
       sheet.rule("toggle_button", StyleVars{
         "sync_with_text" => false,
-        "tumbler_size"   => 24.0,
-        "track_width"    => 54.0,
+        "tumbler_size"   => 25.0,
+        "track_width"    => 55.0,
         "knob_width"     => 30.0,
         "knob_color"     => Color32.rgb(255, 255, 255),
-        "stroke"         => Color32.rgb(214, 214, 214),
         "track_fill"     => Color32.rgb(213, 213, 213),
         "selection_fill" => SELECTION,
       })
@@ -169,6 +174,32 @@ module Egui
       # 6pt corners above.
       sheet.rule("search.text_edit", StyleVars{
         "rounding" => "capsule",
+      })
+
+      # Multiline text: NSTextView is a plain white box with NO bezel
+      # and a tight ~6pt text inset (stroke = fill keeps the border
+      # key from drawing a rim the native sheet has not).
+      sheet.rule("textarea", StyleVars{
+        "fill"           => Color32.rgb(255, 255, 255),
+        "stroke"         => Color32.rgb(255, 255, 255),
+        # The layout hard-reserves 2pt of border inside the box plus
+        # ~3pt of line leading before the glyphs — native starts its
+        # first line 3pt from the box top (the y inset reads the
+        # BOTTOM box side, the TextEdit idiom).
+        "padding.top"    => 0.0,
+        "padding.bottom" => -2.0,
+        "padding.left"   => 4.0,
+        "padding.right"  => 4.0,
+      })
+
+      # Color wells: the native swatch (NSColorWell sizeToFit) is
+      # 48×24 with a hairline #D5D5D5 rim and ~4pt corners — the fill
+      # is the color itself (ColorButton ignores any fill key).
+      sheet.rule("color_well", StyleVars{
+        "width"    => 48.0,
+        "height"   => 24.0,
+        "rounding" => 4.0,
+        "stroke"   => Color32.rgb(213, 213, 213),
       })
 
       # Progress: 9pt thin capsule track (semicircle ends at any
