@@ -3191,6 +3191,11 @@ void egui_cr_clip_mask(float x, float y, float w, float h,
         if (dbg) {
             GLint sbits = -1;
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+            // macOS gl3.h is legacy-free and omits this enum (Linux gl.h
+            // has it) — define the standard GL value when missing.
+#ifndef GL_STENCIL_BITS
+#define GL_STENCIL_BITS 0x0D57
+#endif
             glGetIntegerv(GL_STENCIL_BITS, &sbits);
 #endif
             fprintf(stderr,
@@ -3508,7 +3513,7 @@ void egui_cr_mesh3d(const float* mvp, bool blend, int prim,
 void egui_cr_sdf_batch(const float* clip4, const float* instances,
                        int count) {
     sh_sdf_stash(1, clip4[0], clip4[1], clip4[2], clip4[3], instances,
-                 count, 1);
+                 count, 1, g_clip_on);
 }
 #endif
 
