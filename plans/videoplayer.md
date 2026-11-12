@@ -1,8 +1,9 @@
 # Video player demo — plan
 
 Just-for-fun demo: an FFmpeg-backed video player UI built on egui-cr.
-Audio is explicitly out of scope; the goal is playback, pause, stop,
-seek and a sane control surface.
+Audio plays through the minaudio shard, synchronized to video (the audio
+device's played-frames counter IS the master clock); the goal is
+playback, pause, stop, seek and a sane control surface.
 
 ## Framework / project split
 
@@ -132,6 +133,24 @@ mpeg4, wmv2, vp9, av1, prores — all decode with correct colors and
 pacing (`EGUI_VIDEO_DEBUG=1` shows a per-second `avg=R,G,B` line;
 healthy ≈ 145,121,117 on testsrc2, pure green would be ≈ 0,135,0).
 
+Re-verified after the audio landing with the headless harness
+(`tmp/video_harness.cr`) over 17 files: h264 mp4/mkv (8+10-bit), hevc
+mkv, mpeg4 avi, mpeg2 ts, wmv2, vp8/vp9 webm, av1 mp4 (10-bit), prores
+mov, flv, theora ogv, vertical 404×720, odd 854×478, plus
+h264+aac / vp9+opus / video-only — every one PASS (open → play →
+pause-freeze → resume → seek ±→ EOF → restart).
+
+MPEG-TS gotcha (fixed): TS streams start at ~1.4 s, not 0 — frame pts
+must be shifted by the stream start_time (`@start_off`) or positions,
+seeks and the duration read ~1.4 s off; `st.duration`/`fmt.duration`
+are start-relative already and must NOT be shifted. Seeks add the
+offset back for `avformat_seek_file` (both contexts — video and audio).
+
+The Open… dialog filters are now the common video extensions plus `*`
+(zenity globs are case-sensitive — `.MP4` would be greyed out on a
+strict list; the catch-all keeps every file pickable and the player
+reports an honest error if it can't decode the pick).
+
 Robustness after the first real-world reports:
 
 - Stream pick goes through `av_find_best_stream` (+ decoder hint)
@@ -165,5 +184,59 @@ to the file, any player behaves the same.
 
 ## Non-goals
 
-Audio, subtitles, playlists, hardware decode, streaming protocols,
-portable FFmpeg vendoring (system libs only), decode thread offload.
+Subtitles, playlists, hardware decode, streaming protocols, portable
+FFmpeg vendoring (system libs only), decode thread offload.
+
+## Audio — implemented & verified
+
+Audio decodes through FFmpeg (same libavcodec surface, converted to
+interleaved f32 in Crystal — no libswresample) and plays through the
+minaudio shard; A/V sync is the audio device itself:
+
+- **C side** (`lib/minaudio/ext/miniaudio.c`, `minaudio_pring_*`): a
+  playback-mode `ma_device` whose data callback PULLS interleaved-f32
+  frames from a fixed ring the UI thread fills ahead of time — the
+  playback mirror of the ring capture, same rule: the audio-thread
+  callback never enters Crystal. Key contract: on underrun the callback
+  outputs SILENCE and `consumed` still advances, so the device timeline
+  never stalls and a clock derived from it stays contiguous.
+  Crystal wrapper: `MinAudio::PlaybackRing` (write/consumed_frames/
+  buffered_frames/clear/start/stop).
+- **Master clock**: `base_pts + (consumed_frames - base_consumed) /
+  rate`. Hardware-accurate, drift-free, and pause/resume falls out for
+  free — `ma_device_stop` freezes the callback, the clock freezes with
+  it, resume continues exactly (no wall-clock bookkeeping). Video decodes
+  frames DUE at this clock; files without audio (or with no device —
+  the ring degrades cleanly) fall back to the monotonic wall clock.
+- **Two AVFormatContexts**: audio demuxes through its OWN context on the
+  same file. A shared demuxer couples the streams' pacing — feeding
+  audio LEAD ahead means reading video packets early, and a video frame
+  pulled past its display moment is gone forever (two failed designs are
+  worth remembering: "decode video while audio is hungry, skip the
+  convert for early frames" loses every frame; "send-only + receive on
+  send-EAGAIN" churns the decoder queue and loses them again).
+- **Feeder**: decoded audio lands in a backlog of `AudioChunk`s
+  (pts + f32 PCM). Timeline hygiene at append/flush: gaps pad with
+  silence, frames already past (post-underrun) drop, LEAD = 0.3 s ahead
+  of the clock, ring capacity 1 s. Sample formats: flt/fltp/s16/s16p/
+  s32/s32p/u8/u8p interleaved in Crystal.
+- **EOF** fires only when the video decoder is exhausted AND the ring +
+  backlog are drained (the audio outlives the last video packet);
+  the device then stops, freezing the clock at the end.
+
+Verified (EGUI_VIDEO_DEBUG + the headless harness
+`tmp/video_harness.cr`: open/play/pause-freeze/resume-continuity/seek
+forward+back/EOF/restart):
+
+- h264+aac mp4: display pts == audio clock to ≤ 1 frame, 0 drops,
+  0 pads, ring fed at exactly real time (~44.1k frames/s) over 12 s.
+- vp9+opus webm, video-only mp4 (wall-clock fallback): PASS.
+- GUI run: 30 fps decode pacing unchanged, eof at duration, restart OK.
+- Shard: `cd lib/minaudio && rake build` (ring is part of the same
+  object), its spec suite stays green (12 examples).
+
+GOTCHA for Crystal code: a `case` whose branches only perform side
+effects returns the branches' value — `n.times { … }` is Nil, so
+"convert in a case, return bytes at the end" silently returned nil from
+every branch. `bytes` must be the explicit tail expression after
+`return nil` in `else`.

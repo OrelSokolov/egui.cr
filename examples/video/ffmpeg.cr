@@ -1,7 +1,9 @@
 # Hand-rolled Crystal bindings to the system FFmpeg libraries — just
 # enough surface for the video player demo: demux/read/seek
 # (libavformat), decode (libavcodec), RGBA conversion (libswscale),
-# error strings (libavutil).
+# error strings (libavutil). Audio decodes through the same libavcodec
+# surface (frames convert to interleaved f32 in Crystal — no
+# libswresample); sample_fmt/channels/rate live in AVCodecParameters.
 #
 # The structs mirror ONLY the fields the demo reads, padded to the
 # x86_64 offsets of the installed headers (libavformat 61 /
@@ -55,14 +57,23 @@ lib LibFF
     avg_frame_rate : AVRational # 88
   end
 
-  # AVCodecParameters (offsets: codec_type=0, codec_id=4, width=72,
-  # height=76)
+  # AVCodecParameters (offsets: codec_type=0, codec_id=4, format=44,
+  # width=72, height=76, ch_layout=128, sample_rate=152 — probed against
+  # libavcodec 61 / ffmpeg 7.1 headers)
   struct AVCodecParameters
     codec_type : Int32 # 0 (AVMediaType)
     codec_id : Int32   # 4 (AVCodecID)
-    pad0 : UInt8[64]   # 8..71
+    pad0 : UInt8[36]   # 8..43
+    format : Int32     # 44 (AVPixelFormat for video, AVSampleFormat for audio)
+    pad1 : UInt8[24]   # 48..71
     width : Int32      # 72
     height : Int32     # 76
+    pad2 : UInt8[48]   # 80..127
+    ch_order : Int32   # 128 (AVChannelOrder)
+    ch_nb_channels : Int32 # 132
+    pad3 : UInt8[16]   # 136..151 (the ch_layout union)
+    sample_rate : Int32 # 152
+    pad4 : UInt8[20]   # 156..175
   end
 
   # AVCodecContext (offsets: pkt_timebase=92, width=116, height=120,
@@ -177,6 +188,7 @@ lib LibFF
   AVERROR_EOF    = -541478725 # MKTAG('E','O','F',' ') negated
   AVERROR_EAGAIN = -11        # -EAGAIN on Linux
   AVMEDIA_TYPE_VIDEO = 0
+  AVMEDIA_TYPE_AUDIO = 1
   AVSEEK_FLAG_BACKWARD = 1
   SWS_BILINEAR = 2
   AV_LOG_ERROR = 16
@@ -184,6 +196,17 @@ lib LibFF
   AV_TIME_BASE_Q_DEN = 1_000_000
   # AV_NOPTS_VALUE
   NOPTS = -9223372036854775808_i64
+
+  # AVSampleFormat (libavutil/samplefmt.h) — the subset audio decoders
+  # emit; planar variants carry per-channel planes in data[0..ch-1].
+  AV_SAMPLE_FMT_U8   =  0
+  AV_SAMPLE_FMT_S16  =  1
+  AV_SAMPLE_FMT_S32  =  2
+  AV_SAMPLE_FMT_FLT  =  3
+  AV_SAMPLE_FMT_U8P  =  5
+  AV_SAMPLE_FMT_S16P =  6
+  AV_SAMPLE_FMT_S32P =  7
+  AV_SAMPLE_FMT_FLTP =  8
 end
 
 # Non-C-binding helper for the demo.
