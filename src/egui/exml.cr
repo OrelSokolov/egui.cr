@@ -6,9 +6,10 @@
 # markup interpolates (`{name}`) and binds (`bind="name"`), plus named
 # actions (`on_click="save"`) registered by the app.
 #
-# The parse is expensive and happens ONCE (or on hot reload —
+# The parse happens ONCE (or on hot reload —
 # `Document#reload_if_changed` stats the file like the ECSS session
-# does); the per-frame cost is a tree walk dispatching tagged-union
+# does) and is linear in file size (byte-based scan, see
+# `parse_tags`); the per-frame cost is a tree walk dispatching tagged-union
 # nodes to the regular egui.cr widgets, which immediate mode executes
 # every frame anyway (measured in tmp/exml_proto.cr: a realistic page
 # walks in tens of µs, ~0.15% of a 16 ms frame budget). What walk
@@ -529,6 +530,14 @@ module Egui
     # below); the renderer, the linter and the codegen never see one.
     ATTR_NAME = /(?:v-[a-zA-Z][a-zA-Z-]*(?:[:.][a-zA-Z_][a-zA-Z0-9_.-]*)?|[@:]?[a-zA-Z_][a-zA-Z0-9_.-]*)/
 
+    # The tag-attr regexes, hoisted: an interpolated regex literal
+    # (`/#{ATTR_NAME}…`) constructs a fresh Regex — a PCRE2 JIT
+    # compile — on EVERY evaluation, and per tag that dwarfed the
+    # scan itself. ATTR_NAME holds only non-capturing groups, so the
+    # outer parens stay m[1].
+    ATTR_VALUE_RE = Regex.new("(#{ATTR_NAME.source})\\s*=\\s*\"([^\"]*)\"")
+    STRIP_ATTR_RE = Regex.new("\\s*(#{ATTR_NAME.source})\\s*=\\s*\"[^\"]*\"")
+
     # `<name key="value" …>` → {downcased name, attrs}. Entity escapes
     # are resolved in attribute values.
     private def self.parse_tag(inner : String)
@@ -542,10 +551,10 @@ module Egui
         # "junk" — plus the Vue directive spellings). Bare `v-else`
         # (the subset's only valueless attribute) is picked out of the
         # remainder below.
-        rest.scan(/(#{ATTR_NAME})\s*=\s*"([^"]*)"/) do |m|
+        rest.scan(ATTR_VALUE_RE) do |m|
           attrs[m[1].downcase] = unescape(m[2])
         end
-        stray = rest.gsub(/\s*(#{ATTR_NAME})\s*=\s*"[^"]*"/, "").strip
+        stray = rest.gsub(STRIP_ATTR_RE, "").strip
         if stray =~ /\bv-else\b/
           attrs["v-else"] = "true"
           stray = stray.gsub(/\bv-else\b/, "").strip
@@ -857,24 +866,35 @@ module Egui
     # path-prefix}; never popped empty. The prefix accumulates from the
     # root so every node's path is GLOBALLY unique — two buttons in two
     # rows must never share an egui Id (DuplicateWidgetIdError).
+    #
+    # The scan is BYTE-based on purpose: String's char-indexed API
+    # (char_at/index/[]) hides an O(position) walk per call on
+    # multibyte strings — with any non-ASCII text (Russian labels)
+    # this loop went quadratic and a 27 KB document parsed in
+    # ~200 ms release / ~1.4 s dev. UTF-8 can never collide with the
+    # delimiters: multibyte sequences are bytes >= 0x80, '<'/'>'/'"'
+    # are ASCII.
     def self.parse_tags(text : String) : Array(Node)
       warnings.clear
       # strip comments and processing instructions up front
       text = text.gsub(/<!--.*?-->/m, "").gsub(/<\?.*?\?>/m, "")
+
+      bytes = text.to_unsafe
+      bytesize = text.bytesize
 
       root_children = [] of Node
       stack = [{ "", {} of String => String, root_children, "" }] of
         {String, Hash(String, String), Array(Node), String}
 
       pos = 0
-      while pos < text.size
-        lt = text.index('<', pos) || break
-        gt = index_tag_end(text, lt)
+      while pos < bytesize
+        lt = index_byte(bytes, bytesize, 0x3C_u8, pos) || break
+        gt = index_tag_end(bytes, bytesize, lt)
         unless gt
           STDERR.puts "exml: unterminated tag at byte #{lt} — rest skipped"
           break
         end
-        inner = text[(lt + 1)...gt]
+        inner = text.byte_slice(lt + 1, gt - lt - 1)
         pos = gt + 1
         next if inner.empty?
 
@@ -917,20 +937,34 @@ module Egui
       root_children
     end
 
+    # First occurrence of `needle` at or after `from` (nil = absent) —
+    # a plain byte scan so the tag loop stays linear in file size.
+    private def self.index_byte(bytes : UInt8*, bytesize : Int32,
+                                needle : UInt8, from : Int32) : Int32?
+      i = from
+      while i < bytesize
+        return i if bytes[i] == needle
+        i += 1
+      end
+      nil
+    end
+
     # The '>' closing a tag, skipping quoted attribute values — an
     # attribute may legally hold '>' (`v-if="count > 0"`, text="a > b")
     # and the naive first-'>' scan split the tag there, cascading junk
-    # warnings and a broken tree. nil = unterminated.
-    private def self.index_tag_end(text : String, lt : Int32) : Int32?
+    # warnings and a broken tree. nil = unterminated. Byte-based like
+    # the rest of the scan (see parse_tags).
+    private def self.index_tag_end(bytes : UInt8*, bytesize : Int32,
+                                   lt : Int32) : Int32?
       in_quote = false
       i = lt + 1
-      while i < text.size
-        c = text.char_at(i)
+      while i < bytesize
+        c = bytes[i]
         if in_quote
-          in_quote = false if c == '"'
-        elsif c == '"'
+          in_quote = false if c == 0x22_u8 # '"'
+        elsif c == 0x22_u8
           in_quote = true
-        elsif c == '>'
+        elsif c == 0x3E_u8 # '>'
           return i
         end
         i += 1
