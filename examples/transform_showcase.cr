@@ -30,6 +30,13 @@ class TransformShowcaseApp < Egui::App
     theme_once(ctx)
     rules_once(ctx)
     now = ctx.input.time
+    # Живые сцены (spin/pulse/wave) пересчитывают transform каждый кадр
+    # — значит демка обязана просить кадры сама (контракт движка:
+    # request_repaint покупает ПЕРЕДЕРЖКУ, а не постоянный поток; без
+    # этого анимации двигаются только на чужих repaint'ах — движении
+    # мыши и т.п.). transition.transform-раны просят кадры сами
+    # (Ui#css_transform_pop), card_flip — в своём цикле флипа.
+    ctx.request_repaint
 
     ctx.central_panel do |ui|
       ui.box(:column, fill: BG, margin: Egui::Vec2.new(12.0, 12.0),
@@ -57,8 +64,45 @@ class TransformShowcaseApp < Egui::App
           end
         end
 
+        # -- row 4: overflow escape (browser semantics) ------------------
+        # Слева контейнер с overflow: visible — повёрнутая карточка
+        # торчит за его край, как в браузере. Справа тот же поворот,
+        # но контейнер с дефолтным клипом — срез по краю.
+        col.box(:row, wrap: true, margin: Egui::Vec2.new(0.0, 8.0)) do |row|
+          escape_panel(row, visible: true)
+          escape_panel(row, visible: false)
+        end
+
         hint(col,
-          "Paint-only: layout and hit-testing stay in place — hover the bottom row")
+          "Paint-only: layout and hit-testing stay in place — hover the bottom row. " \
+          "Row 4: overflow: visible lets a transformed card escape its container")
+      end
+    end
+  end
+
+  # Контейнер с повёрнутой карточкой, нарочно вылезающей за нижний край.
+  # `visible` — карточка уходит за пределы панели (браузерный дефолт);
+  # иначе — срез по скруглённому краю контейнера (движковый дефолт).
+  ESCAPE_FILL = Egui::Color32.rgb(0x30, 0x33, 0x3a)
+
+  private def escape_panel(row : Egui::Ui, visible : Bool) : Nil
+    title = visible ? "overflow: visible" : "overflow: default (clip)"
+    row.box(:column, fill: PANEL, stroke: STROKE, rounding: 16.0,
+      margin: Egui::Vec2.new(10.0, 10.0), overflow: visible ? :visible : nil) do |p|
+      big(p, title, visible ? COOL : MUTED)
+      p.box(:row, wrap: false, margin: Egui::Vec2.new(0.0, 0.0)) do |inner|
+        # Повёрнутая карточка со смещением вниз: половина торчит из
+        # контейнера. z поднимает её поверх последующего содержимого.
+        inner.box(:column, transform: "rotate(-7deg) translateY(34px)",
+          fill: ACCENT, rounding: 10.0, z: 3,
+          margin: Egui::Vec2.new(14.0, 14.0)) do |c|
+          c.rich(Egui::RichText.new("esc").size(13.0)
+            .color(Egui::Color32.rgb(255, 255, 255)))
+        end
+        inner.box(:column, fill: ESCAPE_FILL, rounding: 10.0,
+          margin: Egui::Vec2.new(14.0, 14.0)) do |c|
+          c.rich(Egui::RichText.new("sib").size(13.0).color(MUTED))
+        end
       end
     end
   end
@@ -97,11 +141,13 @@ class TransformShowcaseApp < Egui::App
   private def spinning(row : Egui::Ui, now : Float64) : Nil
     row.box(:row, wrap: false, margin: Egui::Vec2.new(10.0, 10.0)) do |wrap|
       xf = Egui::Affine2.rotation(now % (2 * Math::PI),
-        Egui::Pos2.new(44.0, 44.0))
+        Egui::Pos2.new(22.0, 22.0))
+      # Явные размеры: пустой box без width/height растягивается на
+      # остаток строки (block stretch), и «квадрат» превращается в
+      # широкий параллелограмм под поворотом.
       wrap.box(:column, transform: xf, fill: ACCENT,
-        rounding: 16.0, margin: Egui::Vec2.new(0.0, 0.0)) do |c|
-        c.box(:row, margin: Egui::Vec2.new(26.0, 26.0)) { }
-      end
+        rounding: 10.0, margin: Egui::Vec2.new(0.0, 0.0),
+        width: 44.0, height: 44.0) { }
       wrap.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
         margin: Egui::Vec2.new(12.0, 0.0)) do |c|
         big(c, "rotate ∞", ACCENT)
@@ -121,22 +167,22 @@ class TransformShowcaseApp < Egui::App
   end
 
   private def wave(row : Egui::Ui, now : Float64) : Nil
-    row.box(:row, wrap: false, margin: Egui::Vec2.new(10.0, 10.0)) do |wrap|
+    row.box(:row, wrap: true, margin: Egui::Vec2.new(10.0, 10.0)) do |wrap|
       5.times do |i|
         phase = now * 1.8 + i * 0.55
         dy = 10.0 * Math.sin(phase)
-        sh = 0.06 * Math.cos(phase)
-        xf = "translateY(#{dy.round(2)}px) skewX(#{(sh * 180 / Math::PI).round(2)}deg)"
+        sh = Math.tan(0.06 * Math.cos(phase))
+        # matrix() spelling: [1 0 tan 1 0 dy] = translateY + skewX
+        xf = "matrix(1, 0, #{sh.round(4)}, 1, 0, #{dy.round(2)})"
         wrap.box(:column, transform: xf,
-          fill: i.even? ? WARM : MUTED, rounding: 8.0,
-          margin: Egui::Vec2.new(3.0, 3.0)) do |c|
-          c.box(:row, margin: Egui::Vec2.new(6.0, 16.0)) { }
-        end
+          fill: i.even? ? WARM : MUTED, rounding: 4.0,
+          margin: Egui::Vec2.new(5.0, 14.0),
+          width: 14.0, height: 30.0) { }
       end
       wrap.box(:column, fill: CARD, stroke: STROKE, rounding: 12.0,
         margin: Egui::Vec2.new(12.0, 0.0)) do |c|
         big(c, "wave", WARM)
-        body(c, "translate + skewX\nper-card phase")
+        body(c, "matrix(…) per card\ntranslate + skewX phase")
       end
     end
   end

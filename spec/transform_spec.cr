@@ -207,6 +207,118 @@ describe "Ui#box transform" do
     stamped.should be_true
   end
 
+  it "a transformed box skips its OWN rounded clip (browser semantics)" do
+    ctx = Egui::Context.new
+    # plain rounded box: the subtree is re-clipped to the rounded shape
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("clip-a"), XF_SCREEN)
+      ui.box(rounding: 14.0, fill: Egui::Color32.rgb(1, 1, 1)) do |b|
+        b.label("clipped")
+      end
+    end
+    plain = ctx.painter.commands.select(Egui::TextCmd).first
+    plain.clip_corners.should_not be_nil
+
+    # same box carrying a transform: the content moves WITH the box —
+    # its own untransformed rect must not cut it
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("clip-b"), XF_SCREEN)
+      ui.box(rounding: 14.0, fill: Egui::Color32.rgb(1, 1, 1),
+        transform: "scale(1.1)") do |b|
+        b.label("free")
+      end
+    end
+    moved = ctx.painter.commands.select(Egui::TextCmd).first
+    moved.clip_corners.should be_nil
+    moved.xform.should be_nil # scale is axis-aligned — CPU path, no stamp
+  end
+
+  it "overflow: visible skips the bracket, :hidden keeps it" do
+    ctx = Egui::Context.new
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("ovf-a"), XF_SCREEN)
+      ui.box(rounding: 14.0, overflow: :visible,
+        fill: Egui::Color32.rgb(1, 1, 1)) do |b|
+        b.label("v")
+      end
+    end
+    ctx.painter.commands.select(Egui::TextCmd).first
+      .clip_corners.should be_nil
+
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("ovf-b"), XF_SCREEN)
+      ui.box(rounding: 14.0, overflow: :hidden,
+        transform: "rotate(2deg)",
+        fill: Egui::Color32.rgb(1, 1, 1)) do |b|
+        b.label("h")
+      end
+    end
+    ctx.painter.commands.select(Egui::TextCmd).first
+      .clip_corners.should_not be_nil
+  end
+
+  it "resolves overflow from the class chain" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("frame", Egui::StyleVars{"overflow" => "visible"})
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("ovf-c"), XF_SCREEN)
+      ui.box(rounding: 14.0, style_class: "frame",
+        fill: Egui::Color32.rgb(1, 1, 1)) do |b|
+        b.label("v")
+      end
+    end
+    ctx.painter.commands.select(Egui::TextCmd).first
+      .clip_corners.should be_nil
+  end
+
+  it "z lifts the box's commands into a higher paint layer and restores it" do
+    ctx = Egui::Context.new
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("z-a"), XF_SCREEN)
+      ui.box(fill: Egui::Color32.rgb(1, 1, 1), z: 7) { |b| b.label("up") }
+      # after the box: the ambient layer must be back where it was
+      c.painter.layer.should eq Egui::Order::Background.z
+      ui.label("after")
+    end
+    _cmds, layers = ctx.painter.take_bucket(0).not_nil!
+    # the lifted box's label rides layer 7, the later sibling stays base
+    i_up = ctx.painter.commands.index(&.is_a?(Egui::TextCmd))
+    layers[i_up.not_nil!].should eq 7
+    ctx.painter.layer = Egui::Order::Background.z
+  end
+
+  it "a z-lifted transformed child stays clipped by the ancestor bracket" do
+    ctx = Egui::Context.new
+    # CSS: z-index does NOT escape an ancestor's overflow: hidden —
+    # a rounded panel's bracket must reach the lifted card too
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("z-clip"), XF_SCREEN)
+      ui.box(rounding: 16.0, fill: Egui::Color32.rgb(1, 1, 1)) do |p|
+        p.box(transform: "rotate(-7deg) translateY(34px)", z: 3,
+          fill: Egui::Color32.rgb(2, 2, 2)) do |card|
+          card.label("esc")
+        end
+      end
+    end
+    esc = ctx.painter.commands.select(Egui::TextCmd).first
+    esc.clip_corners.should_not be_nil # the ancestor bracket reached it
+    esc.xform.should_not be_nil        # …without dropping the rotation
+
+    # …while a POPUP-layer command still escapes the bracket (a menu
+    # opened inside a rounded card must not be cut by the card).
+    # rounding: 0 — the inner box must not mint its own bracket.
+    xf_frame(ctx, 0.0) do |c|
+      ui = Egui::Ui.new(c, Egui::Id.from("z-esc"), XF_SCREEN)
+      ui.box(rounding: 16.0, fill: Egui::Color32.rgb(1, 1, 1)) do |p|
+        p.box(fill: Egui::Color32.rgb(2, 2, 2), rounding: 0.0, z: 99) do |card|
+          card.label("menu")
+        end
+      end
+    end
+    ctx.painter.commands.select(Egui::TextCmd).first
+      .clip_corners.should be_nil
+  end
+
   it "resolves via the class chain (stylesheet rule)" do
     ctx = Egui::Context.new
     ctx.stylesheet.rule("badge", Egui::StyleVars{

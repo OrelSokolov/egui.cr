@@ -880,10 +880,11 @@ module Egui
     #
     # Recursion is free by nesting: an inner bracket bakes its tighter
     # clip first, the outer pass then intersects again and merges the
-    # radii per corner (CornerRadii#merge). Commands in a DIFFERENT
-    # painter layer than the mark (popups riding Foreground) are left
-    # alone — a menu opening inside a rounded card must not be cut by
-    # the card.
+    # radii per corner (CornerRadii#merge). Layers above the mark split
+    # in two (see #clip_apply): a box's `z` lift stays clipped (CSS —
+    # z-index does not escape `overflow: hidden`), while popups and
+    # tooltips (POPUP_LAYER_Z and above) are left alone — a menu
+    # opening inside a rounded card must not be cut by the card.
 
     def clip_mark : Tuple(Int32, Int32)
       {@commands.size, @layer}
@@ -895,7 +896,13 @@ module Egui
       return if radii.max <= 0.0
       start, layer = mark
       (start...@commands.size).each do |i|
-        next unless @layers[i] == layer
+        z = @layers[i]
+        # Same layer — always clipped. HIGHER layers split in two: a
+        # box's `z` lift (CSS z-index) stays INSIDE the ancestor's clip
+        # — z-index does not escape `overflow: hidden` in CSS — while
+        # popups/tooltips (POPUP_LAYER_Z and above) deliberately escape
+        # (a menu opened inside a rounded card must not be cut by it).
+        next unless z == layer || (z > layer && z < POPUP_LAYER_Z)
         cmd = @commands[i]
         next if cmd.is_a?(NoopCmd)
         clip = cmd_clip(cmd)

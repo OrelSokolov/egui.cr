@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<title>egui.cr — CSS transform showcase (HTML mirror)</title>
+<!-- Браузерное зеркало examples/transform_showcase.cr: те же карты,
+     трансформы, цвета и ряды. Снимается в 800x600 для сравнения с
+     движковой версией (oracle-паттерн проекта). -->
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+  :root {
+    --bg: #16171a; --panel: #1f2126; --card: #272a31;
+    --stroke: #33363d; --text: #e8e8e8; --muted: #9a9aa2;
+    --accent: #3b82f6; --warm: #f59e0b; --cool: #10b981;
+  }
+  html, body { background: var(--bg); color: var(--text);
+    font: 13px/1.35 system-ui, sans-serif; }
+  .wrap { padding: 14px 16px; }
+  h1 { font-size: 19px; font-weight: 600; margin-bottom: 10px; }
+  .row { display: flex; flex-wrap: wrap; align-items: flex-start;
+    margin-bottom: 6px; }
+
+  .card { background: var(--card); border: 1px solid var(--stroke);
+    border-radius: 12px; padding: 10px 12px; margin: 10px; width: 150px; }
+  .card .t { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .card .c { color: var(--muted); font-size: 11px; white-space: pre-line; }
+
+  /* -- row 1: static ------------------------------------------------- */
+  .tilt      { transform: rotate(-4deg); }
+  .tilt-corner { transform: rotate(5deg); transform-origin: bottom right; }
+  .skewcard  { transform: skewX(-8deg) translateY(6px); }
+
+  /* -- row 2: live ---------------------------------------------------- */
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin-wrap { display: flex; align-items: center; margin: 10px; }
+  .spin { width: 44px; height: 44px; border-radius: 10px;
+    background: var(--accent); animation: spin 4s linear infinite; }
+  .spin-wrap .card { margin: 0 0 0 12px; }
+
+  @keyframes pulse { 0%, 100% { transform: scale(1); }
+                     50% { transform: scale(1.12); } }
+  .pulse { animation: pulse 2.6s ease-in-out infinite; }
+
+  @keyframes wavebar { 0%, 100% { transform: translateY(0) skewX(3.4deg); }
+                       50% { transform: translateY(10px) skewX(-3.4deg); } }
+  .wave { display: flex; align-items: center; margin: 10px; }
+  .wave .bar { width: 14px; height: 30px; border-radius: 4px; margin: 0 5px;
+    animation: wavebar 3.5s ease-in-out infinite; }
+  .wave .bar:nth-child(odd) { background: var(--warm); }
+  .wave .bar:nth-child(even) { background: var(--muted); }
+  .wave .bar:nth-child(2) { animation-delay: .3s; }
+  .wave .bar:nth-child(3) { animation-delay: .6s; }
+  .wave .bar:nth-child(4) { animation-delay: .9s; }
+  .wave .bar:nth-child(5) { animation-delay: 1.2s; }
+  .wave .card { margin: 0 0 0 12px; }
+
+  /* -- row 3: hover + transition --------------------------------------- */
+  .lift { transition: transform 200ms cubic-bezier(.33,1,.68,1); }
+  .lift:hover { transform: translateY(-10px) scale(1.06); }
+
+  /* -- row 4: overflow escape ------------------------------------------ */
+  .escape { background: var(--panel); border: 1px solid var(--stroke);
+    border-radius: 16px; padding: 10px 12px; margin: 10px; width: 250px; }
+  .esc-row { display: flex; align-items: flex-start; }
+  .esc { background: var(--accent); border-radius: 10px; color: #fff;
+    padding: 12px 14px; margin: 14px; transform: rotate(-7deg) translateY(34px);
+    z-index: 3; position: relative; }
+  .sib { background: #30333a; border-radius: 10px; color: var(--muted);
+    padding: 12px 14px; margin: 14px; }
+  .ovf-visible { overflow: visible; }
+  .ovf-hidden { overflow: hidden; }
+  .cool { color: var(--cool); } .warm { color: var(--warm); }
+  .muted { color: var(--muted); } .accent { color: var(--accent); }
+
+  .hint { color: var(--muted); font-size: 11px; margin-top: 8px; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>CSS transform — rotate · skew · scale · translate</h1>
+
+    <div class="row">
+      <div class="card tilt">
+        <div class="t accent">rotate(-4deg)</div>
+        <div class="c">transform: rotate(-4deg)
+transform-origin: center</div>
+      </div>
+      <div class="card tilt-corner">
+        <div class="t cool">rotate(5deg)</div>
+        <div class="c">transform: rotate(5deg)
+transform-origin: bottom right</div>
+      </div>
+      <div class="card skewcard">
+        <div class="t warm">skewX(-8deg)</div>
+        <div class="c">transform: skewX(-8deg) translateY(6px)</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="spin-wrap">
+        <div class="spin"></div>
+        <div class="card">
+          <div class="t accent">rotate ∞</div>
+          <div class="c">Affine2.rotation(t)
+rebuilt every frame</div>
+        </div>
+      </div>
+      <div class="card pulse">
+        <div class="t cool">scale pulse</div>
+        <div class="c">scale(1 + 0.12·sin t)</div>
+      </div>
+      <div class="wave">
+        <div class="bar"></div><div class="bar"></div><div class="bar"></div>
+        <div class="bar"></div><div class="bar"></div>
+        <div class="card">
+          <div class="t warm">wave</div>
+          <div class="c">matrix(…) per card
+translate + skewX phase</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="card lift"><div class="t accent">hover 1</div>
+        <div class="c">transition: transform 200ms
+hover → translateY(-10px) scale(1.06)</div></div>
+      <div class="card lift"><div class="t accent">hover 2</div>
+        <div class="c">transition: transform 200ms
+hover → translateY(-10px) scale(1.06)</div></div>
+      <div class="card lift"><div class="t accent">hover 3</div>
+        <div class="c">transition: transform 200ms
+hover → translateY(-10px) scale(1.06)</div></div>
+      <div class="card lift"><div class="t accent">hover 4</div>
+        <div class="c">transition: transform 200ms
+hover → translateY(-10px) scale(1.06)</div></div>
+    </div>
+
+    <div class="row">
+      <div class="escape ovf-visible">
+        <div class="t cool">overflow: visible</div>
+        <div class="esc-row">
+          <div class="esc">esc</div>
+          <div class="sib">sib</div>
+        </div>
+      </div>
+      <div class="escape ovf-hidden">
+        <div class="t muted">overflow: default (clip)</div>
+        <div class="esc-row">
+          <div class="esc">esc</div>
+          <div class="sib">sib</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hint">Paint-only: layout and hit-testing stay in place —
+      hover the bottom row. Row 4: overflow: visible lets a transformed
+      card escape its container</div>
+  </div>
+</body>
+</html>

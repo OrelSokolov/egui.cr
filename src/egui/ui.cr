@@ -1316,6 +1316,7 @@ module Egui
             appear_delay : Float64? = nil,
             transform : String | CssTransform | Affine2? = nil,
             transform_origin : String? = nil,
+            overflow : Symbol? = nil,
             position : Symbol? = nil,
             top : Float64 | Int32 | String? = nil,
             right : Float64 | Int32 | String? = nil,
@@ -1339,7 +1340,8 @@ module Egui
             stroke_sides: stroke_sides, corners: corners, shadow: shadow,
             appear: appear,
             appear_delay: appear_delay, transform: transform,
-            transform_origin: transform_origin, position: position, top: top,
+            transform_origin: transform_origin, overflow: overflow,
+            position: position, top: top,
             right: right, bottom: bottom, left: left, z: z,
             width: width, height: height, &block)
         end
@@ -1381,6 +1383,16 @@ module Egui
       # rule on the box's class works without Crystal-side plumbing).
       size_vars = @ctx.stylesheet.resolve_chain(style_chain_paths(style_class))
       sh = shadow || size_vars.shadow?
+      # CSS `z-index` for FLOW boxes: a paint-order lift into a higher
+      # painter layer — no layout change, the commands just draw after
+      # their siblings'. A transformed box escaping its slot needs this
+      # to paint OVER later content, like a browser's transformed
+      # stacking context (`position: absolute/fixed` boxes have always
+      # had their `z` — see #box_positioning). The lift covers the
+      # chrome slots too, so the whole box rides the layer.
+      lift = z || size_vars.f64?("z").try(&.round.to_i)
+      prev_layer = painter.layer
+      painter.layer = lift if lift
       # Outset paints UNDER the fill, inset OVER it (CSS); both stay
       # under the contents — slots reserved before/after the chrome
       # one, back-patched once `outer` exists (the #frame trick).
@@ -1436,8 +1448,12 @@ module Egui
       # content-driven 1e6 region. `%` resolves against this Ui's
       # region (the flow containing block); `height` is what makes a
       # column flex container's main axis definite (see Flex).
-      w = box_extent(width, :x) ||
-          size_vars.length_px_in?("width", @max_rect, @ctx, :x) || w
+      # A definite width also stops the block stretch below (CSS: an
+      # explicit `width` overrides `width: auto` = 100% of containing
+      # block).
+      definite_w = box_extent(width, :x) ||
+                   size_vars.length_px_in?("width", @max_rect, @ctx, :x)
+      w = definite_w || w
       h = box_extent(height, :y) ||
           size_vars.length_px_in?("height", @max_rect, @ctx, :y) || 1e6
       child =
@@ -1497,6 +1513,13 @@ module Egui
       # `transition.transform` lerp (Ui#css_transform_pop) rides the
       # same deferred slot.
       tf = css_transform_of(style_class, transform, transform_origin)
+      # CSS `overflow` (`visible`/`hidden`): explicit argument over the
+      # box's class chain. Controls the own-bracket skip below.
+      ovf = overflow
+      if ovf.nil? && (v = size_vars.str?("overflow"))
+        ovf = :visible if v == "visible"
+        ovf = :hidden if v == "hidden"
+      end
       painter.push_affine(nil, Affine2.identity) if tf
       # Appear transition (plans/NATIVE_HTML_DEMO.md §3.2): the whole
       # subtree — children and the back-patched chrome — paints through
@@ -1558,11 +1581,14 @@ module Egui
           # `relative` shifts the flow slot (`rel`): the clamp keeps a
           # plain box from starting left/up of its slot, so it must
           # compare against the SHIFTED slot, not the raw cursor —
-          # otherwise the clamp eats the shift.
+          # otherwise the clamp eats the shift. The stretch to
+          # @max_rect.right is the CSS `width: auto` block fill; a
+          # definite width (explicit argument or class rule) opts out.
           slot = Pos2.new(@cursor.x + rel.x, @cursor.y + rel.y)
           outer = Rect.new(
             Pos2.new({outer.min.x, slot.x}.min, {outer.min.y, slot.y}.min),
-            Pos2.new({outer.max.x, @max_rect.right}.max, outer.max.y))
+            Pos2.new(definite_w ? outer.max.x : {outer.max.x, @max_rect.right}.max,
+              outer.max.y))
           min_rect = @min_rect.union(outer)
           @cursor = @layout.advance(@cursor, outer.size,
             style.spacing.item_spacing)
@@ -1595,8 +1621,22 @@ module Egui
       # A non-zero border radius clips the subtree to the rounded
       # shape (engine-level `overflow: hidden` semantics — any nested
       # element, scroll content included, stays inside the curve).
+      #
+      # CSS `overflow` opts out — and a box carrying a CSS transform
+      # skips its OWN bracket by default, matching the browser: the
+      # transform moves the box itself, so its content must not be cut
+      # by the UNtransformed rect (a scale(1.1) card would shave its
+      # own edges otherwise). Ancestor brackets still apply — that is
+      # exactly an `overflow: hidden` ancestor clipping the TRANSFORMED
+      # position, like CSS. And only a box with VISIBLE chrome clips at
+      # all: an invisible layout container (no fill/stroke, the default
+      # rounding 6.0) has no rounded edge to clip against — browser
+      # overflow: visible semantics for plain wrappers.
       radii = corners || CornerRadii.uniform(rounding)
-      painter.clip_apply(clip_from, outer_rect.not_nil!, radii) if radii.max > 0.0
+      own_clip = painted && radii.max > 0.0 &&
+                 (ovf == :hidden ? true : tf.nil? && ovf != :visible)
+      painter.clip_apply(clip_from, outer_rect.not_nil!, radii) if own_clip
+      painter.layer = prev_layer if lift
       outer_rect.not_nil!
     end
 

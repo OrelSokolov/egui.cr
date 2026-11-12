@@ -49,9 +49,9 @@ BIN_APPS   = %w[
 BIN_HTML   = %w[
   html_gallery html_positions box_shadow box_shadow_showcase oval_progress
   partial_border border_radius clipping clip_child_demo spring appear
-  flex_demo
+  flex_demo transform_showcase card_flip
 ]
-BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml]
+BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml music_widgets]
 BIN_DBG    = %w[resize_dbg]
 BIN_DIR    = (BIN_APPS.product(["apps"]) + BIN_HTML.product(["html"]) +
               BIN_CLONES.product(["clones"]) + BIN_DBG.product(["dbg"])).to_h

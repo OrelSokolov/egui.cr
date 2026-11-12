@@ -186,6 +186,10 @@ module Egui
       # subtree like the appear transitions.
       property transform : String?
       property transform_origin : String?
+      # CSS `overflow` on the box: "visible" lets the subtree paint
+      # past the rounded shape (browser default), "hidden" forces the
+      # clip (the engine default whenever a border radius is set).
+      property overflow : String?
 
       def initialize(@fill = nil, @stroke = nil, @rounding = nil,
                      @corners = nil, @margin = nil,
@@ -202,6 +206,17 @@ module Egui
       when "relative" then :relative
       when "absolute" then :absolute
       when "fixed"    then :fixed
+      else nil
+      end
+    end
+
+    # The CSS `overflow` keywords → the `Ui#box(overflow:)` symbols
+    # (anything else — including CSS scroll/auto — reads as nil, the
+    # engine default: clip whenever a border radius is set).
+    def self.overflow_sym(s : String?) : Symbol?
+      case s
+      when "visible" then :visible
+      when "hidden"  then :hidden
       else nil
       end
     end
@@ -273,6 +288,8 @@ module Egui
           base.transform = val
         when "transform-origin"
           base.transform_origin = val
+        when "overflow"
+          base.overflow = val
         end
       end
       base
@@ -499,6 +516,7 @@ module Egui
             shadow: params.shadow,
             transform: params.transform,
             transform_origin: params.transform_origin,
+            overflow: Html.overflow_sym(params.overflow),
             position: Html.position_sym(params.position),
             top: params.top, right: params.right,
             bottom: params.bottom, left: params.left,
