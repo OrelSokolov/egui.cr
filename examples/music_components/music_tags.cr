@@ -464,9 +464,17 @@ module MusicTags
 
   # отладка: MUSIC_GEOM=1 — печатать прямоугольники ключевых тегов (раз)
   @@geom_done = {} of String => Bool
+  # флаг читается один раз: geom! зовётся из горячего пути каждого тега,
+  # а ENV[] — это getenv; ключ тоже строится только при включённой
+  # отладке (иначе интерполяция аллоцировала бы строку на тег на кадр)
+  @@geom_on = !ENV["MUSIC_GEOM"]?.nil?
+
+  def self.geom_on? : Bool
+    @@geom_on
+  end
 
   def self.geom!(key : String, rect : Egui::Rect) : Nil
-    return unless ENV["MUSIC_GEOM"]? && !@@geom_done[key]?
+    return unless @@geom_on && !@@geom_done[key]?
     @@geom_done[key] = true
     STDERR.printf("geom %-14s %6.1f %6.1f %6.1f %6.1f\n", key,
       rect.left, rect.top, rect.width, rect.height)
@@ -692,9 +700,8 @@ module MusicTags
     end
   end
 
-  # обложка: вертикальный градиент двух цветов + инициалы (у оригинала
-  # 135°, ECSS поддерживает только вертикальный — расхождение зафикси-
-  # ровано в README).
+  # обложка: 135°-градиент двух цветов + инициалы (linear-gradient(135deg)
+  # оригинала; gouraud-тесселяция по диагонали TL→BR).
   def self.cover(p : Egui::Painter, fonts : Egui::Fonts, rect : Egui::Rect,
                  c1 : Egui::Color32, c2 : Egui::Color32, txt : String,
                  rounding : Float64, fs : Float64) : Nil
@@ -808,7 +815,7 @@ widget :t do |node, ui, ctx, rt, r|
     tw = w > 0 ? w : m.x
     rect = ui.allocate_space(Egui::Vec2.new(
       tw, {h, size * 1.35}.max))
-    MusicTags.geom!("t:#{text[0, 14]} #{node.path[-10..]?}", rect)
+    MusicTags.geom!("t:#{text[0, 14]} #{node.path[-10..]?}", rect) if MusicTags.geom_on?
     lw = m.x
     x = case align
         when "c" then rect.center.x - lw / 2.0
@@ -957,7 +964,7 @@ widget :cover do |node, ui, ctx, rt, r|
       Egui::Color32.rgba(0, 0, 0, 0xA6), h >= 200 ? 38.0 : 28.0, rounding,
       6.0, Egui::Vec2.new(0.0, h >= 200 ? 13.0 : 10.0))
   end
-  MusicTags.geom!("cover:#{txt} #{node.path[-8..]?} #{w}x#{h}", rect)
+  MusicTags.geom!("cover:#{txt} #{node.path[-8..]?} #{w}x#{h}", rect) if MusicTags.geom_on?
   MusicTags.cover(ui.painter, ui.fonts, rect, c1, c2, txt, rounding, fs)
 end
 
@@ -1118,7 +1125,7 @@ widget :panel do |node, ui, ctx, rt, r|
     r.render_each(node, content, ctx, rt)
     h = {content.min_rect.height, 1.0}.max
     rect = ui.allocate_space(Egui::Vec2.new(w, h))
-    MusicTags.geom!("panel:#{cls} #{rect.left}/#{rect.top}", rect)
+    MusicTags.geom!("panel:#{cls} #{rect.left}/#{rect.top}", rect) if MusicTags.geom_on?
     cvars = ctx.stylesheet.resolve(cls)
     if (bg = cvars.color?("background"))
       ui.painter.set(bg_index, Egui::RectCmd.new(ui.painter.clip, rect,
@@ -1128,7 +1135,7 @@ widget :panel do |node, ui, ctx, rt, r|
     next
   end
   rect = ui.allocate_space(Egui::Vec2.new(w, h))
-  MusicTags.geom!("panel:#{cls} #{node.path[-10..]?} #{rect.left}/#{rect.top}", rect) if cls != ""
+  MusicTags.geom!("panel:#{cls} #{node.path[-10..]?} #{rect.left}/#{rect.top}", rect) if MusicTags.geom_on? && cls != ""
   # :hover-правило класса (album-card:hover …): interact всегда с
   # Sense::Click — Memory#interact не даёт hover виджетам без sense-флагов
   # (Sense::None ⇒ hovered всегда false); клик без on_click просто ничего
@@ -1870,7 +1877,7 @@ widget :hbar do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 56.0)
   rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
-  MusicTags.geom!("hbar:#{MusicTags.a(node, rt, "name") || h}", rect)
+  MusicTags.geom!("hbar:#{MusicTags.a(node, rt, "name") || h}", rect) if MusicTags.geom_on?
   pad = MusicTags.f(node, rt, "pad", 0.0)
   inner = Egui::Rect.from_min_size(
     Egui::Pos2.new(rect.left + pad, rect.top),

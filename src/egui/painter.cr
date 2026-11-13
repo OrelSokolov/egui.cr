@@ -778,7 +778,7 @@ module Egui
           RectCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
             cmd.stroke_width * k, fade_opt(cmd.fill2), sides, corners,
-            cmd.replace?, gradient: cmd.gradient,
+            cmd.replace?, cmd.diag?, gradient: cmd.gradient,
             clip_corners: cmd.clip_corners)
         when TextCmd
           TextCmd.new(cmd.clip, pt(cmd.pos), cmd.text, cmd.size * k,
