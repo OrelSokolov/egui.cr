@@ -295,6 +295,10 @@ module Egui
     end
 
     def animate(id : Id, target : Float64, duration : Float64, time : Float64) : Float64
+      # EGUI_NOANIMATIONS=1: snap — the value IS the target, nothing
+      # eases and no Anim lingers (so #running?/#any_running? stay
+      # false and no repaint churn follows).
+      return target if Egui.no_animations?
       anim = @anims[id]?
       if anim.nil?
         @anims[id] = Anim.new(target, target, time, duration)
@@ -391,6 +395,9 @@ module Egui
     # cascade values apply again).
     def evaluate(id : Id, spec : Keyframes::Spec,
                  time : Float64) : Keyframes::Eval
+      # EGUI_NOANIMATIONS=1: no run ever starts — the base cascade
+      # values apply, nothing reports running.
+      return Keyframes::Eval.new(false, nil) if Egui.no_animations?
       run = @runs[id]?
       if run.nil? || !run.spec.same_run?(spec)
         run = @runs[id] = Run.new(spec, time)
@@ -573,6 +580,8 @@ module Egui
     # `Easing.apply` curve (nil = smoothstep).
     def color(id : Id, target : Color32, duration : Float64,
               time : Float64, easing : String? = nil) : Color32
+      # EGUI_NOANIMATIONS=1: no cell is ever created — the value snaps.
+      return target if Egui.no_animations?
       if duration <= 0.0
         @colors.delete(id)
         @spring_colors.delete(id)
@@ -595,6 +604,8 @@ module Egui
 
     def scalar(id : Id, target : Float64, duration : Float64,
                time : Float64, easing : String? = nil) : Float64
+      # EGUI_NOANIMATIONS=1: no cell is ever created — the value snaps.
+      return target if Egui.no_animations?
       if duration <= 0.0
         @scalars.delete(id)
         @spring_scalars.delete(id)
@@ -617,6 +628,8 @@ module Egui
 
     def vec2(id : Id, target : Vec2, duration : Float64,
              time : Float64, easing : String? = nil) : Vec2
+      # EGUI_NOANIMATIONS=1: no cell is ever created — the value snaps.
+      return target if Egui.no_animations?
       if duration <= 0.0
         @vec2s.delete(id)
         return target
@@ -659,6 +672,8 @@ module Egui
     # transition delay).
     def spring_scalar(id : Id, target : Float64, spec : Spring::Spec,
                       time : Float64) : Float64
+      # EGUI_NOANIMATIONS=1: no spring is ever created — the value snaps.
+      return target if Egui.no_animations?
       cell = @spring_scalars[id]?
       if cell.nil?
         @scalars.delete(id) # a key animates by ONE flavor at a time
@@ -677,6 +692,8 @@ module Egui
     # 0..1, the scale the settle thresholds are tuned for).
     def spring_color(id : Id, target : Color32, spec : Spring::Spec,
                      time : Float64) : Color32
+      # EGUI_NOANIMATIONS=1: no spring is ever created — the value snaps.
+      return target if Egui.no_animations?
       t4 = [target.r, target.g, target.b, target.a].map { |c| c / 255.0 }
       cell = @spring_colors[id]?
       if cell.nil?

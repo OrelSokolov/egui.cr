@@ -199,7 +199,12 @@ module Egui
             else
               sd_rounded_rect(px, py, r, rounding)
             end
-            if (grad = cmd.gradient) || (fill = cmd.fill) || (g2 = cmd.fill2)
+            # EGUI_NOGRADIENTS=1: gradient-carrying fills (the full
+            # background-gradient and the fill/fill2 pair) paint
+            # nothing, matching the GPU backends' A/B leg.
+            nograd = Egui.no_gradients? && (cmd.gradient || cmd.fill2)
+            if !nograd &&
+               ((grad = cmd.gradient) || (fill = cmd.fill) || (g2 = cmd.fill2))
               cov = cov_from_sdf(d)
               if cov > 0.0
                 c = if (grad = cmd.gradient)

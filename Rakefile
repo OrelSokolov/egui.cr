@@ -44,7 +44,7 @@ BIN_APPS   = %w[
   svg_rasterizer paint system_monitor markdown mdvsfonts formulas
   crystal3d rounded_window tableview text_input ios_demo multitouch_demo
   responsive_demo camera device_api audio remote_image tray voice_echo
-  wizard lottie_crystal
+  wizard lottie_crystal hello_exml stress_scroll
 ]
 BIN_HTML   = %w[
   html_gallery html_positions box_shadow box_shadow_showcase oval_progress
@@ -133,6 +133,7 @@ end
 # header must trigger a recompile, not just an edited backend/*.c.
 SHIM_HEADERS = {
   "sokol_shim" => %w[
+    backend/bench_font.h
     vendor/sokol/sokol_app.h
     vendor/sokol/sokol_gfx.h
     vendor/sokol/sokol_glue.h

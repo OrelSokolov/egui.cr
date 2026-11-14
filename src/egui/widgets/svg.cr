@@ -112,6 +112,30 @@ module Egui
     class_property external_rasterizer : Proc(String, Color32, Int32,
       Int32, Bytes?) | ::Nil = nil
 
+    # NOOP SVG renderer — the "render nothing" choice of the renderer
+    # selection (`EGUI_NOSVG=1` installs it globally at require time,
+    # see src/egui.cr; a bench can also call `Svg.noop!` directly).
+    # Every bake becomes a blank transparent raster: no polygon fills,
+    # no gradients, no raster loops — the quad still draws (a fully
+    # transparent one), so layout and texture plumbing run unchanged.
+    # The one-time viewBox PARSE in `#initialize` still runs (it sizes
+    # the widget) but stays memoized per (source, tint) in NanoSvgCr.
+    NOOP_RASTERIZER = ->(source : String, tint : Color32,
+                         w : Int32, h : Int32) : Bytes? do
+      Bytes.new({w, 1}.max * {h, 1}.max * 4)
+    end
+
+    # Install the NOOP rasterizer (idempotent).
+    def self.noop! : Nil
+      self.external_rasterizer = NOOP_RASTERIZER
+    end
+
+    # EGUI_NOSVG=1 selects the NOOP renderer globally. Read once per
+    # process.
+    def self.noop_selected? : Bool
+      @@noop_selected ||= (env = ENV["EGUI_NOSVG"]?) ? env != "0" : false
+    end
+
     def paint(ui : Ui, rect : Rect) : Nil
       Egui::Bench.span("Svg#paint") { paint_body(ui, rect) }
     end

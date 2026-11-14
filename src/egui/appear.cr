@@ -122,6 +122,10 @@ module Egui
               time : Float64) : NamedTuple(sx: Float64, sy: Float64,
                                            dx: Float64, dy: Float64,
                                            opacity: Float64)?
+      # EGUI_NOANIMATIONS=1: no run ever starts — nil (settled, no
+      # transform) is the "fully shown" answer, so appear-driven
+      # repaints and cache gates never trip.
+      return nil if Egui.no_animations?
       run = @runs[id]?
       if run.nil? || run.kind != kind
         run = @runs[id] = Run.new(kind, delay, time)

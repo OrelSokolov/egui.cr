@@ -1,0 +1,20 @@
+<!-- hello.exml — the hello.cr UI expressed through the exml pipeline
+     (structure only, no ECSS: hello uses the default style too). The
+     A/B twin of examples/hello.cr for isolating the per-frame exml
+     cost (attr interpolation, subtree-cache keys, style resolution)
+     on hello-sized content: hello = 800-900 fps, music_exml = 200.
+     Same widget count, same continuous-repaint FPS meter. -->
+<exml>
+  <page id="root/root">
+    <central>
+      <column gap="8">
+        <heading text="Hello World!"/>
+        <button text="Click me" on_click="inc"/>
+        <label text="Clicked {count} times"/>
+        <button text="Quit" on_click="quit"/>
+        <label text="FPS: {fps}"/>
+        <label text="GC: {gc}"/>
+      </column>
+    </central>
+  </page>
+</exml>

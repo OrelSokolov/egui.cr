@@ -324,6 +324,33 @@ module Egui
         return ui.min_rect
       end
 
+      # --- off-screen cull ------------------------------------------------
+      # A flex fully outside the ambient clip paints nothing and
+      # hit-tests nothing: replay the last real pass's content extent
+      # into the flow and skip the child runs entirely — a 1000-row
+      # page then pays for its ~30 visible rows, not all thousand (the
+      # browser's compositor-scroll equivalent). Contract matches
+      # Ui#virtual_row / exml below-clip culling: cell ids are
+      # deterministic (nothing mints against this Ui's counter), but
+      # Memory state of widgets inside an unseen row is pruned; a
+      # content change made while off-screen shows one frame late (the
+      # visible re-run detects the miss and drops the memo).
+      if reuse_layout && (c = memo.layout.not_nil!.content)
+        clip = ui.painter.clip
+        crect = Rect.from_min_size(
+          Pos2.new(ui.max_rect.min.x + c.min.x, ui.max_rect.min.y + c.min.y),
+          c.size)
+        if crect.max.x <= clip.min.x || crect.min.x >= clip.max.x ||
+           crect.max.y <= clip.min.y || crect.min.y >= clip.max.y
+          Egui::Bench.count("flex.cull")
+          cell_ids.not_nil!.each { |cid| ui.ctx.memory.use_id(cid) }
+          ui.min_rect = ui.min_rect.union(crect)
+          ui.cursor = Pos2.new(ui.max_rect.min.x,
+            ui.min_rect.bottom + ui.style.spacing.item_spacing.y)
+          return ui.min_rect
+        end
+      end
+
       # --- pass 2: the real layout ----------------------------------------
       # A paint-cache miss inside the pass means some child's CONTENT
       # changed — its natural size may be stale in the memo; drop it so
@@ -341,6 +368,14 @@ module Egui
         end
       end
       ctx.drop_flex_measure(@flex_id, avail) if ctx.paint_cache.real_misses > miss0
+      # Record this real pass's content extent for the off-screen cull
+      # above (relative to max_rect.min, like the slots).
+      if (lay = memo.layout)
+        m = ui.min_rect.min
+        lay.content = Rect.from_min_size(
+          Pos2.new(m.x - ui.max_rect.min.x, m.y - ui.max_rect.min.y),
+          ui.min_rect.size)
+      end
       ui.cursor = Pos2.new(ui.max_rect.min.x,
         ui.min_rect.bottom + ui.style.spacing.item_spacing.y)
       ui.min_rect

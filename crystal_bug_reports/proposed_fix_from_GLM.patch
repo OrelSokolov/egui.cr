@@ -1,0 +1,85 @@
+# Предлагаемый фикс от GLM (агент H2Code, модель GLM) для бага
+# "Proc(*T, R) coerced to Proc(*T, Nil): call site doesn't match the
+# closure's return convention — x87 slots leak (silent NaN) or
+# arguments shift (SIGSEGV)"
+# (контекст: report_en.md / report_ru.md и crystal_bug_repro.cr в этой
+# же папке).
+#
+# Суть: запрет ABI-небезопасной ковариантности возврата к Nil для
+# структурных возвратов. Патч консервативный: точный размер типа
+# неизвестен в semantic-фазе, поэтому отклоняются ВСЕ struct-подобные
+# возвраты (пользовательские структуры, кортежи, именованные кортежи);
+# примитивы, enum'ы, объединения, указатели, проки и ссылки остаются
+# разрешёнными (возвращаются в регистрах). Правильное долгосрочное
+# решение — синтез обёртки в точке коэрции, но оно значительно объёмнее;
+# данный патч превращает тихую порчу данных/стека FPU в ошибку
+# компиляции.
+#
+# Проверено на crystal 1.21.0 (LLVM 20.1.8):
+#   - самосборка компилятора (bootstrap) проходит;
+#   - spec/compiler/semantic/proc_spec.cr — 194 примера, 0 падений;
+#   - оба варианта crystal_bug_repro.cr теперь дают понятную ошибку
+#     компиляции вместо NaN/SIGSEGV;
+#   - безопасные паттерны (захваченные блоки через force_nil, явный
+#     nil, примитивные возвраты) работают как раньше;
+#   - реальное приложение (egui.cr): компилируется, спеки зелёные.
+#
+# Файл: src/compiler/crystal/semantic/restrictions.cr
+# Применять из корня исходников crystal: patch -p1 < proposed_fix_from_GLM.patch
+--- a/src/compiler/crystal/semantic/restrictions.cr
++++ b/src/compiler/crystal/semantic/restrictions.cr
+@@ -1707,6 +1707,11 @@
+         if i == other.type_vars.size - 1
+           # any type matches Nil
+           if nil_type?(other_type_var, context)
++            # But casting a fun to a void-returning one is not
++            # ABI-safe for multi-slot struct returns (see
++            # ProcInstanceType#compatible_with?) — reject those.
++            return nil if unsafe_as_void_cast?
++
+             # Also, all other types matched, so the matching type is this proc type
+             # except that it has a Nil return type
+             new_proc_arg_types = arg_types.dup
+@@ -1732,11 +1737,41 @@
+       node.is_a?(Path) && context.defining_type.lookup_path(node).is_a?(NilType)
+     end
+ 
++    # May `self`'s return value be delivered through a call site
++    # compiled for a void-returning proc (Proc(*T, Nil))? Everything
++    # that fits the platform's return registers on its own (primitives,
++    # enums, pointers, procs, references, unions) is fine; a bigger
++    # struct would ride the x87 stack (x86-64) or a hidden sret
++    # pointer, corrupting the void-typed caller. Type sizes are not
++    # computable in the semantic phase, so this errs on the safe side:
++    # every struct-like return (user structs, tuples, named tuples)
++    # counts as unsafe.
++    def unsafe_as_void_cast? : Bool
++      case return_type
++      when PrimitiveType, EnumType, UnionType,
++           PointerInstanceType, ProcInstanceType
++        false
++      else
++        return_type.struct? || return_type.is_a?(TupleInstanceType | NamedTupleInstanceType)
++      end
++    end
++
+     def compatible_with?(other : ProcInstanceType)
+       if return_type == other.return_type
+         # Ok
+       elsif other.return_type.nil_type?
+-        # Ok, can cast fun to void
++        # Cast a fun to a void-returning one: only ABI-safe when the
++        # return value never needs more than the platform's return
++        # registers. A multi-slot struct return is lowered (x86-64:
++        # parts beyond xmm0/xmm1 ride the x87 stack — fldl in the
++        # callee epilogue; int parts / other targets: a hidden sret
++        # pointer shifts every argument), and a caller compiled from
++        # the void signature neither pops the x87 stack nor passes
++        # the sret buffer — silent FPU-stack overflow (later struct
++        # returns come back as QNaN indefinite) or argument
++        # corruption. Reject it: make the closure return nil
++        # explicitly instead.
++        return false if unsafe_as_void_cast?
+       elsif return_type.no_return?
+         # Ok, NoReturn can be "cast" to anything
+       else

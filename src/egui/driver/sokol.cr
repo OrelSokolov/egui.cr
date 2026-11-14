@@ -280,8 +280,10 @@ lib LibEguiCr
   # `clip` is x,y,w,h in FRAMEBUFFER pixels (points × ppp — same
   # numbers #apply_scissor computes); the shim scales it like every
   # packet clip.
-  fun sdf_batch = egui_cr_sdf_batch(clip : Float32*, instances : Float32*,
-                                    count : Int32)
+  fun text_quads = egui_cr_text_quads(view_id : UInt32, glyphs : Float32*,
+    count : Int32)
+  fun sdf_batch = egui_cr_sdf_batch(view : UInt32, clip : Float32*,
+    instances : Float32*, count : Int32)
 
   # Rounded content clip (border-radius): open/close a stencil mask
   # bracket around a run of commands sharing one rounded clip shape.
@@ -472,13 +474,23 @@ module Egui
       # анимации стоят; любые два запуска (напр. EGUI_SDF=1 vs
       # EGUI_SDF=0) рисуют попиксельно один и тот же кадр.
       @@pause : Bool = ENV["PAUSE"]? ? ENV["PAUSE"] != "0" : false
-      # SDF batch accumulation: instance buffer (28 floats × 2048, the
-      # shim's per-batch cap), fill mark, and the clip (framebuffer px,
-      # the #scissor_rect tuple) the current group runs under.
+      # SDF batch accumulation: instance buffer (40 floats × 2048, the
+      # shim's per-batch cap — see SH_SDF_INST_FLOATS for the layout).
+      # The CLIP and the atlas UV ride each instance, so batches merge
+      # freely across clip groups; only a TEXTURE change or a fallback
+      # to the sgl path flushes.
       SDF_MAX_INSTANCES = 2048
-      @@sdf_buf = Slice(Float32).new(28 * SDF_MAX_INSTANCES)
+      SDF_INST_FLOATS = 40
+      @@sdf_buf = Slice(Float32).new(SDF_INST_FLOATS * SDF_MAX_INSTANCES)
+      # Glyph-quad staging for #paint_text's one-FFI-per-run batches
+      # (12 floats per glyph: corners, uv, rgba — see sh_text_run).
+      TEXT_BUF_GLYPHS = 8192
+      @@text_buf = Slice(Float32).new(12 * TEXT_BUF_GLYPHS)
       @@sdf_n = 0
-      @@sdf_clip : Tuple(Float64, Float64, Float64, Float64)? = nil
+      @@sdf_view : UInt32? = nil
+      # Framebuffer height of the frame being emitted — the per-instance
+      # clip is Y-flipped into gl_FragCoord's bottom-up space.
+      @@sdf_fb_h = 1.0
       # Transparent window mode (run(transparent: true)): clear to
       # alpha 0 and blend UI quads premultiplied.
       @@transparent = false
@@ -511,7 +523,9 @@ module Egui
       #   * sokol side (render thread, C) — a stacked frame-time bar
       #     graph painted over the replayed packet in C
       #     (sh_bench_overlay in backend/sokol_shim.c): texture uploads
-      #     / replay / vsync+swap per tick.
+      #     / replay / vsync+swap per tick, plus the GPU execution time
+      #     of the sokol_gfx frame itself (GL_TIME_ELAPSED, the purple
+      #     segment — "is the GPU the bottleneck").
       # EGUI_BENCH=<any non-"0"> enables both; phase spans are captured
       # unconditionally (two clock reads each) so the loop code stays
       # single-path.
@@ -519,6 +533,17 @@ module Egui
         HISTORY = 240 # frames kept per phase for the p50/p95 columns
         PT = 12.0     # row font size (points)
         LINE = 15.0   # row pitch
+
+        # The HUD's reserved TextCmd family: the backend resolves it to
+        # its own private Noto stack (Sokol#bench_hud_stack), BEFORE
+        # the EGUI_NOFONTS selection — the HUD keeps its numbers on
+        # screen in every renderer mode, like the C-side overlay's
+        # baked font (backend/bench_font.h).
+        FONT_FAMILY = "egui.bench"
+        # The face both sides build from — the same file the C-side
+        # bake script renders (scripts/make_bench_font.py).
+        FONT_PATH = File.expand_path("../../../assets/fonts/NotoSans-Regular.ttf",
+          __DIR__)
 
         @@on = ENV["EGUI_BENCH"]? ? ENV["EGUI_BENCH"] != "0" : false
         @@ns = {} of String => Array(Int64)
@@ -565,11 +590,40 @@ module Egui
           s[(q * (s.size - 1)).to_i.clamp(0, s.size - 1)].to_f64
         end
 
+        # The HUD's own measure stack (the CRYSTAL side — right-column
+        # alignment etc.): the same Noto face the backend bakes, so the
+        # measure matches the draw. Under EGUI_NOFONTS the app serves
+        # the NOOP renderer, but a bench HUD that cannot render its own
+        # numbers is useless — Context#with_fonts serves this stack
+        # inside the HUD paint, and the reserved family routes the draw
+        # to Sokol#bench_hud_stack. Built lazily once; nil = the
+        # bundled face is missing (degrade to whatever is installed).
+        @@hud_fonts : Egui::Fonts? = nil
+
+        private def self.hud_fonts : Egui::Fonts?
+          @@hud_fonts ||= Egui::Driver::CrystalFonts.from_system([FONT_PATH])
+        end
+
         # Paint the table, top-left (below the client-side caption when
         # chrome is active). Painter-only — no layout participation,
         # same trick as WindowFrame's outline/buttons.
         def self.show(ctx : Context) : Nil
           return unless @@on && @@frames > 0
+          painter = ctx.painter
+          saved_family = painter.text_family
+          painter.text_family = FONT_FAMILY
+          begin
+            if Egui::NoopFonts.selected? && (hf = hud_fonts)
+              ctx.with_fonts(hf) { show_body(ctx) }
+            else
+              show_body(ctx)
+            end
+          ensure
+            painter.text_family = saved_family
+          end
+        end
+
+        private def self.show_body(ctx : Context) : Nil
           screen = ctx.input.screen_rect
           painter = ctx.painter
           painter.layer = POPUP_LAYER_Z - 1
@@ -942,12 +996,17 @@ module Egui
       #   chrome). The backdrop is cleared to fully transparent and UI
       #   quads blend into a premultiplied swapchain; on Linux this also
       #   drops MSAA (the ARGB visuals are single-sample).
-      # * *msaa* — `false` disables the 4x multisampled framebuffer.
-      #   MSAA smooths circle/arc/line edges, but on HighDPI each extra
-      #   sample multiplies the swapchain's graphics memory (~100 MB of
-      #   the process footprint on a retina macOS window) — plain
-      #   UI-heavy apps may prefer it off. Implied off by
-      #   `transparent: true`.
+      # * *msaa* — multisample count for the swapchain: `false` disables
+      #   it, `true` is the classic 4x, and an `Int32` requests that
+      #   exact count (`msaa: 0` off, `msaa: 8` eight samples; sokol
+      #   falls back to what the platform offers). MSAA smooths
+      #   circle/arc/line edges, but on HighDPI each extra sample
+      #   multiplies the swapchain's graphics memory (~100 MB of the
+      #   process footprint on a retina macOS window) — plain UI-heavy
+      #   apps may prefer it off. Implied off by `transparent: true`.
+      #   The `EGUI_MSAA` environment variable overrides the parameter
+      #   at startup (live experiments: `EGUI_MSAA=0 crystal run
+      #   examples/widgets_gallery.cr`), like `EGUI_NOVSYNC`.
       # * *chrome* — the client-side frame for a borderless window:
       #   `Egui::WindowFrame` drawn by the backend before every app
       #   frame, including edge resize grips. `nil` (default) = on for
@@ -973,7 +1032,7 @@ module Egui
                      height: Int32)? = nil,
                    decorations : Bool = true,
                    transparent : Bool = false,
-                   msaa : Bool = true,
+                   msaa : Bool | Int32 = true,
                    chrome : Bool? = nil,
                    chrome_style : WindowFrame::Style = WindowFrame::Style::Windows,
                    inspector : Symbol = :off,
@@ -984,6 +1043,13 @@ module Egui
         @@icon = icon
         @@transparent = transparent
         @@title = title
+        # Normalize msaa to a sample count for the shim (Bool keeps its
+        # old meaning: true = 4x, false = off). EGUI_MSAA can still
+        # override this in the shim — this is just the parameter path.
+        msaa = case msaa
+               in Bool then msaa ? 4 : 0
+               in Int32 then msaa
+               end
         @@chrome_enabled = chrome.nil? ? !decorations && !transparent : chrome.not_nil!
         @@chrome_active = @@chrome_enabled && !decorations
         @@chrome_style = chrome_style
@@ -1121,7 +1187,7 @@ module Egui
         {% if flag?(:android) %} egui_android_log("run: before sapp_run") {% end %}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
-          msaa ? 1 : 0, vsync ? 1 : 0)
+          msaa, vsync ? 1 : 0)
       end
 
       {% if flag?(:linux) || flag?(:win32) %}
@@ -1134,7 +1200,7 @@ module Egui
         # idle frames need no work here at all.
         private def self.run_detached(title : String, width : Int32,
                                       height : Int32, decorations : Bool,
-                                      transparent : Bool, msaa : Bool,
+                                      transparent : Bool, msaa : Int32,
                                       vsync : Bool) : Nil
           handle : Int64
           {% if flag?(:win32) %}
@@ -1151,14 +1217,14 @@ module Egui
             server.close
             LibEguiCr.doorbell_set_peer(@@doorbell_peer.not_nil!.fd.to_i64!)
             handle = LibEguiCr.start(title.to_unsafe, width, height,
-              decorations ? 0 : 1, transparent ? 1 : 0, msaa ? 1 : 0,
+              decorations ? 0 : 1, transparent ? 1 : 0, msaa,
               vsync ? 1 : 0)
             return if handle < 0
             # A's end for the C-side non-blocking drains (FIONREAD + recv).
             handle = pipe.fd.to_i64!
           {% else %}
             handle = LibEguiCr.start(title.to_unsafe, width, height,
-              decorations ? 0 : 1, transparent ? 1 : 0, msaa ? 1 : 0,
+              decorations ? 0 : 1, transparent ? 1 : 0, msaa,
               vsync ? 1 : 0)
             return if handle < 0
             pipe = IO::FileDescriptor.new(handle.to_i32)
@@ -1346,6 +1412,7 @@ module Egui
           set_stack_scales
           fb_w = LibEguiCr.sapp_width
           fb_h = LibEguiCr.sapp_height
+          @@sdf_fb_h = fb_h.to_f64
 
           app = @@app.not_nil!
           app.ctx.pixels_per_point = @@pixels_per_point
@@ -1479,7 +1546,12 @@ module Egui
         # port (per-platform). A font installed via select_fonts BEFORE
         # run (e.g. an app's monospace face) wins — don't clobber it
         # with the default.
-        if (preselected = @@fonts)
+        if Egui::NoopFonts.selected?
+          # Renderer selection (EGUI_NOFONTS=1): skip the scan/load —
+          # the Context serves the NOOP stack for every slot anyway
+          # (see NoopFonts and Context#fonts_for).
+          app.ctx.fonts = Egui::NoopFonts.instance
+        elsif (preselected = @@fonts)
           app.ctx.fonts = preselected
         else
           font_paths = Egui::SystemPorts::Fonts.search_paths
@@ -1531,6 +1603,16 @@ module Egui
         {% else %}
           CrystalFonts.from_system(paths, atlas)
         {% end %}
+      end
+
+      # The EGUI_BENCH HUD's backend stack (see #fonts_for_cmd): the
+      # bundled Noto face on a PRIVATE atlas — independent of the
+      # app's stacks, so the HUD survives EGUI_NOFONTS and app font
+      # swaps. Built lazily on the first HUD text command.
+      @@bench_hud_stack : AtlasFonts? = nil
+
+      private def self.bench_hud_stack : AtlasFonts?
+        @@bench_hud_stack ||= fonts_from_system([FrameBench::FONT_PATH])
       end
 
       # The one glyph atlas the backend's own stacks bake into (see
@@ -1620,6 +1702,16 @@ module Egui
       # the cmd is bold/italic and one is installed (nil variants are
       # no emulation — the base stack's own glyphs serve the text).
       private def self.fonts_for_cmd(cmd : Egui::TextCmd) : AtlasFonts?
+        # The EGUI_BENCH HUD's reserved family: its own stack, built
+        # lazily from the bundled Noto face (the same file the C-side
+        # bake uses — scripts/make_bench_font.py), on a PRIVATE atlas.
+        # Resolved BEFORE the EGUI_NOFONTS check so the HUD keeps its
+        # numbers on screen in every renderer mode.
+        return bench_hud_stack if cmd.family == FrameBench::FONT_FAMILY
+        # Renderer selection (EGUI_NOFONTS=1): nil — every other text
+        # command rasterizes and emits nothing (paint_text returns on
+        # a nil stack, the touch pass skips it).
+        return nil if Egui::NoopFonts.selected?
         stack = case family = cmd.family
                 when nil
                   @@fonts
@@ -2472,15 +2564,29 @@ module Egui
         end
       end
 
-      # Reserve one instance slot under `clip` (the #scissor_rect
-      # tuple), flushing the current group on clip change or overflow
-      # first. The caller fills the 28 floats and bumps @@sdf_n.
+      # Reserve one instance slot, flushing on overflow first, and
+      # write the per-instance clip (the #scissor_rect tuple, fb px
+      # top-down → gl_FragCoord bottom-up). The caller fills the rest
+      # of the 40 floats and bumps @@sdf_n.
       private def self.sdf_slot(clip : Tuple(Float64, Float64, Float64, Float64))
-        if @@sdf_n >= SDF_MAX_INSTANCES || clip != @@sdf_clip
-          sdf_flush
-          @@sdf_clip = clip
-        end
-        @@sdf_buf.to_unsafe + @@sdf_n * 28
+        sdf_flush if @@sdf_n >= SDF_MAX_INSTANCES
+        d = @@sdf_buf.to_unsafe + @@sdf_n * SDF_INST_FLOATS
+        x, y, w, h = clip
+        d[28] = x.to_f32
+        d[29] = (@@sdf_fb_h - (y + h)).to_f32
+        d[30] = (x + w).to_f32
+        d[31] = (@@sdf_fb_h - y).to_f32
+        d[32] = d[33] = d[34] = d[35] = 0.0f32
+        d
+      end
+
+      # A slot under the batch's current texture: glyph instances bind
+      # the atlas, so the batch flushes when the texture changes.
+      private def self.sdf_slot_tex(
+          clip : Tuple(Float64, Float64, Float64, Float64), view : UInt32)
+        sdf_flush if @@sdf_view && @@sdf_view != view
+        @@sdf_view = view
+        sdf_slot(clip)
       end
 
       # Straight-alpha 0..1 rgba write into the instance at `at`.
@@ -2498,6 +2604,14 @@ module Egui
 
       def self.sdf_try_rect(cmd : Egui::RectCmd) : Bool
         return false if cmd.replace?
+        # A full CSS Gradient (radial-gradient of the np cards, mesh
+        # blobs) needs the CPU-tessellated gradient_fill path — the
+        # instance carries only the flat fill/fill2 pair and would
+        # silently drop the gradient. EGUI_NOGRADIENTS=1 skips the
+        # fill2 pair here too, so the tessellated path above can drop
+        # it (the "what do gradients cost?" A/B leg).
+        return false if cmd.gradient
+        return false if Egui.no_gradients? && cmd.fill2
         # The SDF shader evaluates in screen space — it cannot express
         # a rotated/skewed rect (the xform stamp), which falls through
         # to the tessellated path under a modelview matrix.
@@ -2551,7 +2665,7 @@ module Egui
         d[22] = 0.0f32
         d[23] = 0.0f32
         d[25] = @@pixels_per_point.to_f32
-        d[26] = 0.0f32
+        d[26] = cmd.diag? ? 1.0f32 : 0.0f32
         d[27] = 0.0f32
         @@sdf_n += 1
         true
@@ -2646,20 +2760,15 @@ module Egui
 
       def self.sdf_flush : Nil
         return if @@sdf_n == 0
-        x, y, w, h = @@sdf_clip.not_nil!
+        # No seg scissor — every instance clips itself; the seg rect
+        # stays the full frame (strip passes / debug prints want A rect).
         clip = StaticArray(Float32, 4).new(0.0f32)
-        clip[0] = x.to_f32
-        clip[1] = y.to_f32
-        clip[2] = w.to_f32
-        clip[3] = h.to_f32
-        LibEguiCr.sdf_batch(clip.to_unsafe, @@sdf_buf.to_unsafe, @@sdf_n)
+        clip[2] = Float32::MAX
+        clip[3] = Float32::MAX
+        LibEguiCr.sdf_batch(@@sdf_view || 0_u32, clip.to_unsafe,
+          @@sdf_buf.to_unsafe, @@sdf_n)
         @@sdf_n = 0
-        @@sdf_clip = nil
-        # The raw draw left the GL scissor on the batch's clip while
-        # sgl's recorded stream (and the dedupe state) knows nothing
-        # about it — force the next #apply_scissor to re-emit, exactly
-        # like the first clip of a frame.
-        @@last_scissor = nil
+        @@sdf_view = nil
       end
 
       # --- rounded-clip groups (see egui_cr_clip_mask) ---------------------
@@ -2821,6 +2930,11 @@ module Egui
           overlay.each { |sub| paint_rect_body(sub) }
           return
         end
+
+        # EGUI_NOGRADIENTS=1: gradient-carrying fills paint nothing —
+        # both the full background-gradient and the two-color
+        # fill/fill2 pair (the border plates above keep drawing).
+        return if Egui.no_gradients? && (cmd.gradient || cmd.fill2)
 
         r = cmd.rect
         round = cmd.rounding
@@ -3290,6 +3404,56 @@ module Egui
         fonts = fonts_for_cmd(cmd)
         return unless fonts
 
+        # The unified instanced path (EGUI_SDF=1): glyphs ride the SAME
+        # batch as rect fills — kind 2, clip and atlas uv per instance,
+        # so text no longer breaks sgl runs, switches pipelines or
+        # touches the scissor. Same-batch rects don't sample the atlas
+        # (kind 0/1), one texture binding serves the whole batch.
+        if @@sdf
+          view = fonts.atlas_view_id
+          return if view.zero?
+          ppp = @@pixels_per_point
+          draw_size = cmd.size * ppp
+          asc, desc = fonts.metrics_at(draw_size)
+          baseline = ((cmd.pos.y + (asc + desc) / 2.0 / ppp) * ppp).round
+          color = cmd.color
+          x_origin = cmd.pos.x * ppp
+          saved_spacing = fonts.letter_spacing
+          fonts.letter_spacing = (cmd.letter_spacing || saved_spacing) * ppp
+          clip = scissor_rect(cmd.clip)
+          fonts.walk(cmd.text, draw_size) do |pen, g|
+            next if g.w == 0 || g.h == 0
+            x0 = ((x_origin + pen + g.xoff).round / ppp).to_f32
+            y0 = ((baseline - g.ytop.to_f32) / ppp).to_f32
+            x1 = (x0 + g.w.to_f32 / ppp).to_f32
+            y1 = (y0 + g.h.to_f32 / ppp).to_f32
+            d = sdf_slot_tex(clip, view)
+            d[0] = (x0 + x1) * 0.5f32
+            d[1] = (y0 + y1) * 0.5f32
+            d[2] = (x1 - x0) * 0.5f32
+            d[3] = (y1 - y0) * 0.5f32
+            d[4] = d[5] = d[6] = d[7] = 0.0f32
+            sdf_rgba8(d, color, 8)
+            sdf_rgba8(d, color, 12)
+            d[16] = d[17] = d[18] = d[19] = 0.0f32
+            d[20] = d[2]
+            d[21] = d[3]
+            d[22] = 2.0f32 # kind 2: textured glyph quad
+            d[23] = 0.0f32
+            d[24] = 0.0f32
+            d[25] = ppp.to_f32
+            d[26] = 0.0f32
+            d[27] = 0.0f32
+            d[32] = g.u0
+            d[33] = g.v0
+            d[34] = g.u1
+            d[35] = g.v1
+            @@sdf_n += 1
+          end
+          fonts.letter_spacing = saved_spacing
+          return
+        end
+
         apply_scissor(cmd.clip)
 
         # Text is the one thing that must be rasterized at PHYSICAL
@@ -3321,24 +3485,38 @@ module Egui
         # (TextCmd) replaces the stack's global for this run.
         saved_spacing = fonts.letter_spacing
         fonts.letter_spacing = (cmd.letter_spacing || saved_spacing) * ppp
-        LibEguiCr.sgl_bind_texture(view)
-        LibEguiCr.sgl_enable_texture
-        LibEguiCr.text_pipeline_push
-        LibEguiCr.sgl_begin_quads
+        # The glyph quads ride ONE float slice and cross the FFI once
+        # per RUN (egui_cr_text_quads → sh_text_run draws them as one
+        # sgl bracket) — the per-vertex path spent ~5 wrapper calls per
+        # glyph, the single largest emit cost of a text-heavy frame.
+        buf = @@text_buf
+        n = 0
         fonts.walk(cmd.text, draw_size) do |pen, g|
           next if g.w == 0 || g.h == 0
           x0 = (x_origin + pen + g.xoff).round.to_f32
           y0 = baseline - g.ytop.to_f32
           x1 = x0 + g.w.to_f32
           y1 = y0 + g.h.to_f32
-          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y0 * inv, g.u0, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y0 * inv, g.u1, g.v0, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x1 * inv, y1 * inv, g.u1, g.v1, color.r, color.g, color.b, color.a)
-          LibEguiCr.sgl_v2f_t2f_c4b(x0 * inv, y1 * inv, g.u0, g.v1, color.r, color.g, color.b, color.a)
+          d = buf.to_unsafe + n * 12
+          d[0] = x0 * inv
+          d[1] = y0 * inv
+          d[2] = x1 * inv
+          d[3] = y1 * inv
+          d[4] = g.u0
+          d[5] = g.v0
+          d[6] = g.u1
+          d[7] = g.v1
+          d[8] = color.r.to_f32
+          d[9] = color.g.to_f32
+          d[10] = color.b.to_f32
+          d[11] = color.a.to_f32
+          n += 1
+          if n == TEXT_BUF_GLYPHS # chunk: one FFI call per buffer-load
+            LibEguiCr.text_quads(view, buf.to_unsafe, n)
+            n = 0
+          end
         end
-        LibEguiCr.sgl_end
-        LibEguiCr.text_pipeline_pop
-        LibEguiCr.sgl_disable_texture
+        LibEguiCr.text_quads(view, buf.to_unsafe, n) if n > 0
         fonts.letter_spacing = saved_spacing
       end
 
@@ -3369,7 +3547,8 @@ module Egui
       # Full-circle tessellation segment count, using the same radius
       # cutoffs as upstream epaint (`Tessellator::add_circle`: 8/16/
       # 32/64/128). Small circles stay cheap, big ones stay round; the
-      # 4x MSAA framebuffer (backend/sokol_shim.c) smooths the edges.
+      # MSAA framebuffer (backend/sokol_shim.c, `msaa:`/EGUI_MSAA — 4x
+      # by default) smooths the edges.
       def self.circle_segments(radius : Float64) : Int32
         if radius <= 2.0
           8

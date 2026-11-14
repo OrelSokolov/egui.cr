@@ -28,6 +28,12 @@
 #   * clip — each command's recorded clip is translated and
 #     re-intersected with the ambient clip (`with_clip` exists on
 #     every command struct);
+#   * captures run with the painter's clip OPENED to infinite (the
+#     bucket must be complete — galley culling would empty it for
+#     off-screen widgets, see Ui#paint_cache_add). Contained captures
+#     store the real ambient clip (unmoved replays skip re-clipping);
+#     off-screen/straddling ones store the infinite sentinel, so
+#     every replay re-clips into the frame's ambient clip;
 #   * captures are only taken with NO transform frame active
 #     (xform-emitted or deferred commands would double-transform on
 #     replay) and discarded wholesale when a Flex measure pass
@@ -36,14 +42,18 @@ module Egui
   class PaintCache
     # One interaction registration inside a captured subtree: replayed
     # (translated) on a subtree hit so hit-testing, hover and clicks
-    # keep working when the block doesn't run.
+    # keep working when the block doesn't run. The clip rides along —
+    # a replayed registration without it (an infinite clip) would let
+    # scrolled/clipped-away widgets report hover they cannot show.
     struct Interact
       getter id : Id
       getter rect : Rect
       getter sense : Sense
       getter layer : LayerId
+      getter clip : Rect
 
-      def initialize(@id, @rect, @sense, @layer)
+      def initialize(@id, @rect, @sense, @layer,
+                     @clip : Rect = Rect.infinite)
       end
     end
 
@@ -90,6 +100,15 @@ module Egui
       @hits = 0
       @misses = 0
       @real_misses = 0
+    end
+
+    # EGUI_NOCACHE=1: bypass the paint cache entirely — Ui#add runs
+    # every widget for real, cached_subtree never captures, no keys
+    # are built, hashed or stored (the "is the cache itself the cost?"
+    # A/B switch; the fonts layout/measure caches stay — they are a
+    # different subsystem). Read once per process.
+    def self.disabled? : Bool
+      @@disabled ||= (env = ENV["EGUI_NOCACHE"]?) ? env != "0" : false
     end
 
     def lookup(key : UInt64, measuring : Bool = false) : Entry?
@@ -161,6 +180,11 @@ module Egui
                    else
                      intersect(rec, ambient)
                    end
+            # Clip-opened captures (off-screen/straddling widgets —
+            # see Ui#paint_cache_add) may replay commands that land
+            # entirely outside the frame's clip: drop them instead of
+            # shipping degenerate-clipped commands to the backend.
+            next if want.max.x <= want.min.x || want.max.y <= want.min.y
             cmd = cmd.with_clip(want, cmd.clip_corners) unless want == rec
           end
         end
@@ -201,8 +225,9 @@ module Egui
     # Rect intersection (axis-aligned): nil-clip commands (infinite)
     # intersect to the ambient clip; disjoint to a degenerate empty
     # rect (matches the painter's clip arithmetic — containment tests
-    # against an empty rect just fail).
-    private def self.intersect(a : Rect, b : Rect) : Rect
+    # against an empty rect just fail). Public: Painter#reclip_range
+    # and #reclip_commands share it.
+    def self.intersect(a : Rect, b : Rect) : Rect
       min_x = {a.min.x, b.min.x}.max
       min_y = {a.min.y, b.min.y}.max
       max_x = {a.max.x, b.max.x}.min

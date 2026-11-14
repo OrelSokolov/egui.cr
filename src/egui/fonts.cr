@@ -341,10 +341,15 @@ module Egui
       end
     end
 
-    private def build_galley(runs : Array(TextRun),
-                             max_width : Float64?,
-                             resolve : ((String?, Bool, Bool) -> Fonts)?,
-                             line_height : Float64?) : Galley
+    # protected (not private): NoopFonts overrides this to fake the
+    # shaping while inheriting #layout's galley cache — an overridden
+    # #layout would bypass the cache and re-allocate every galley every
+    # frame, making the EGUI_NOFONTS A/B leg measure allocator churn,
+    # not "everything except fonts".
+    protected def build_galley(runs : Array(TextRun),
+                               max_width : Float64?,
+                               resolve : ((String?, Bool, Bool) -> Fonts)?,
+                               line_height : Float64?) : Galley
       state = WrapState.new(self, max_width, resolve, line_height)
 
       # Chip padding boundaries: entering a backgrounded-run streak
@@ -609,6 +614,53 @@ module Egui
       end
       widest = current if current > widest
       Vec2.new(widest * size * CHAR_W, lines * size * LINE_H)
+    end
+  end
+
+  # NOOP font renderer — the "render nothing" choice of the renderer
+  # selection (`EGUI_NOFONTS=1` installs it globally, see
+  # Context#fonts=; a bench can also assign it directly). Measurement
+  # is the same allocation-free character estimate as MonospaceFonts,
+  # so layout GEOMETRY (label rects, row heights) stays comparable —
+  # but `build_galley` never shapes glyphs or builds a real galley:
+  # every text becomes one empty-run row of the estimated size, so
+  # paint_galley emits nothing and no atlas/raster work ever happens.
+  # The frame cost this isolates is everything-except-fonts.
+  class NoopFonts < MonospaceFonts
+    # One shared empty run list — rows are immutable once built.
+    EMPTY_RUNS = [] of Galley::RowRun
+
+    # EGUI_NOFONTS=1 selects this stack globally: Context#fonts= (and
+    # the constructor default) swap it in whatever the app/backend
+    # installs, and the Context resolvers (#fonts_for, #mono_font)
+    # short-circuit to it, so NO slot (mono, bold/italic variants,
+    # named families) leaks a real stack. Read once per process.
+    def self.selected? : Bool
+      @@selected ||= (env = ENV["EGUI_NOFONTS"]?) ? env != "0" : false
+    end
+
+    # The shared instance the resolvers hand out (#measure is pure;
+    # #layout's galley cache lives on it — one per process).
+    def self.instance : NoopFonts
+      @@instance ||= new
+    end
+
+    # Overriding #layout here would bypass the inherited galley cache
+    # (every call re-allocating a Galley+Row and re-scanning the text —
+    # hundreds of labels/frame of allocator churn). Instead only the
+    # shaping is faked: #layout's cache machinery stays, and a MISS
+    # builds one empty-run row of the estimated size, so paint_galley
+    # emits nothing and no atlas/raster work ever happens.
+    protected def build_galley(runs : Array(TextRun),
+                               max_width : Float64?,
+                               resolve : ((String?, Bool, Bool) -> Fonts)?,
+                               line_height : Float64?) : Galley
+      first = runs.first?
+      text = first ? (runs.size == 1 ? first.text : runs.map(&.text).join) : ""
+      size = first.try(&.size) || 16.0
+      row = Galley::Row.new(EMPTY_RUNS, measure(text, size).x,
+        size * (line_height || LINE_H), 0.0, size)
+      Galley.new([row])
     end
   end
 end

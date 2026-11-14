@@ -36,6 +36,8 @@ perf.data*
 
 # Local debug/repro scripts
 scripts/*.py
+# …except the committed bench-font generator (source of backend/bench_font.h)
+!scripts/make_bench_font.py
 spec/*_dbg.cr
 spec/*_repro.cr
 __pycache__/

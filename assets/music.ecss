@@ -75,3 +75,30 @@ lib-cards { }
 track-row {
   transition.background: 120;
 }
+
+/* ── Мобильная (вертикальная) раскладка ─────────────────────────────
+   Тот же порог, что и флаг `mobile` в приложении (music_app.cr:
+   окно < 760 pt → сайдбара/панели нет, низ — мини-плеер + таб-бар).
+   Здесь — только геометрия общих классов: теснее поля страницы,
+   мягче скругления карточек. Цвета остаются за луками (apply_look). */
+
+@media (max-width: 760px) {
+  center-page {
+    padding.top: 12;
+    padding.right: 12;
+    padding.bottom: 24;
+    padding.left: 12;
+  }
+
+  album-card {
+    rounding: 8;
+  }
+
+  quick {
+    rounding: 8;
+  }
+
+  nowplaying {
+    padding: 12;
+  }
+}

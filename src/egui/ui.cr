@@ -95,6 +95,8 @@ module Egui
     property cross_up : Bool = false
 
     @child_counter : UInt64 = 0
+    # read by the exml renderer's below-clip culling (extent records)
+    getter child_counter : UInt64
 
     # Horizontal-row cross-axis extent (upstream's cursor cross sides):
     # the height of the row built so far — the max of every widget
@@ -139,6 +141,7 @@ module Egui
 
     def initialize(@ctx : Context, @id : Id, @max_rect : Rect,
                    @layout : Layout = Layout.top_down)
+      Egui.finite_guard("Ui#initialize: max_rect", @max_rect.size, @max_rect)
       # rendering_direction :up (bottom_up layout, dialogue mode): the
       # cursor starts at the region's bottom-left corner and the flow
       # marches upward; every other direction starts at the top-left.
@@ -225,6 +228,7 @@ module Egui
     # `overflow-y`: the content grows past the bottom on purpose,
     # clipped by `clip` and scrolled by the owning ScrollArea).
     def allocate_space(size : Vec2) : Rect
+      Egui.finite_guard("Ui#allocate_space: non-finite widget size", size)
       if @layout.horizontal? && @wrap_x
         # Line wrap (see #wrap_x): break to a fresh line when the
         # widget cannot fit the remainder but fits a full line. A
@@ -437,7 +441,10 @@ module Egui
         # and the interaction is dead anyway, so the measure pass
         # becomes a cache lookup (this is the cross-frame measure memo
         # the per-frame Flex memo can't be).
-        resp = if @ctx.measuring? &&
+        resp = if PaintCache.disabled?
+                 # EGUI_NOCACHE: run for real, no key/lookup/store.
+                 Egui::Bench.span(widget.class.name) { widget.ui(self) }
+               elsif @ctx.measuring? &&
                   (mkey = widget.paint_cache_key(self)) &&
                   (mentry = paint_cache_hit(widget, mkey))
                 rect = allocate_at_least(mentry.size)
@@ -531,32 +538,87 @@ module Egui
         end
         return resp
       end
-      # Miss: run the widget under capture. An appear-animation run
-      # for this id makes the output time-dependent — don't store it.
+      # Miss: run the widget under capture — with the painter's clip
+      # OPENED to infinite. Galley paint culls rows against the
+      # ambient clip (Painter#paint_galley), so a capture taken at the
+      # real clip is position-dependent — a widget below the viewport
+      # captures an EMPTY bucket. That is why off-screen captures were
+      # never storable (see the old gate below) and off-screen widgets
+      # missed the cache EVERY frame: a 1000-row page rebuilt ~960 of
+      # its widgets per scroll tick (the browser oracle pays ~0 for
+      # the same scroll). With the clip open the bucket is always
+      # complete; the frame's own copy is fitted back afterwards —
+      # re-clipped to the ambient clip, or truncated away for a fully
+      # off-screen widget that painted nothing visible anyway.
       counter0 = @child_counter
       cmd0 = painter.snapshot
       epoch0 = painter.xform_epoch
       clip0 = painter.clip
+      painter.clip = Rect.infinite
       resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
+      painter.clip = clip0
       # The key changed — the output changed: fold into the frame's
       # damage region (Painter#mark_dirty).
       painter.mark_dirty(resp.rect)
-      # Store only fully clip-contained captures: galley paint culls
-      # rows against the ambient clip (Painter#paint_galley), so a
-      # partially/fully culled widget's bucket is position-dependent —
-      # replaying an empty (fully culled) bucket would blank the row
-      # when it scrolls into view. Contained captures are complete;
-      # the backend clip still trims their replay at edges.
+      contained = clip0.min.x <= resp.rect.min.x && clip0.max.x >= resp.rect.max.x &&
+                  clip0.min.y <= resp.rect.min.y && clip0.max.y >= resp.rect.max.y
+      # Degenerate rects (a size-0 label — font_size floored to 0)
+      # never count as outside: they sit ON an edge (`max == min ==
+      # clip.min`), and the old path shipped their commands (clipped
+      # to nothing) — the command-list contract tests rely on it.
+      degenerate = resp.rect.min.x == resp.rect.max.x ||
+                   resp.rect.min.y == resp.rect.max.y
+      outside = !degenerate &&
+                (resp.rect.max.x <= clip0.min.x || resp.rect.min.x >= clip0.max.x ||
+                 resp.rect.max.y <= clip0.min.y || resp.rect.min.y >= clip0.max.y)
+      # Storeability gates, unchanged in spirit: an appear-animation
+      # run for this id makes the output time-dependent (skip); a
+      # transform bracket churned during the span (skip); Mesh3D is
+      # not replayable (skip).
+      bucket = nil
       if !@ctx.memory.appear_anims.run?(id) &&
          painter.xform_epoch == epoch0 &&
-         clip0.min.x <= resp.rect.min.x && clip0.max.x >= resp.rect.max.x &&
-         clip0.min.y <= resp.rect.min.y && clip0.max.y >= resp.rect.max.y &&
-         (bucket = painter.take_bucket(cmd0)) &&
-         !bucket[0].any?(&.is_a?(Mesh3DCmd))
-        cmds, layers = bucket
-        cache.store(full, PaintCache::Entry.new(
-          resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
-          resp.sense, resp.rect.min, clip0, cmds, layers, 0))
+         (b = painter.take_bucket(cmd0)) &&
+         !b[0].any?(&.is_a?(Mesh3DCmd))
+        bucket = b
+      end
+      if outside
+        # Fully off-screen: the same pixels as the old culled run
+        # (nothing) — drop the clip-open commands from the frame and
+        # keep the complete bucket. ambient_clip = the infinite
+        # sentinel: replays always re-clip into the frame's real clip
+        # (the wholesale `outside` replay skip keeps them unpainted
+        # while they stay off-screen).
+        painter.truncate_to(cmd0)
+        if (b = bucket)
+          cmds, layers = b
+          cache.store(full, PaintCache::Entry.new(
+            resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
+            resp.sense, resp.rect.min, Rect.infinite, cmds, layers, 0))
+        end
+      else
+        # Contained, or straddling the clip edge: bound the frame copy
+        # by the ambient clip (the capture ran with it open).
+        painter.reclip_range(cmd0, clip0)
+        if (b = bucket)
+          cmds, layers = b
+          if contained
+            # Contained: store with the ambient clip, like the classic
+            # path — an unmoved replay in the same clip skips the
+            # per-command re-clip (the static-frame fast path).
+            cmds = painter.reclip_commands(cmds, clip0)
+            cache.store(full, PaintCache::Entry.new(
+              resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
+              resp.sense, resp.rect.min, clip0, cmds, layers, 0))
+          else
+            # Straddling the edge: store the complete (clip-open)
+            # bucket with the sentinel — when it scrolls fully into
+            # view the replay has every row, re-clipped correctly.
+            cache.store(full, PaintCache::Entry.new(
+              resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
+              resp.sense, resp.rect.min, Rect.infinite, cmds, layers, 0))
+          end
+        end
       end
       resp
     end
@@ -586,18 +648,28 @@ module Egui
     #   * while ANY animation runs anywhere (style transitions, appear,
     #     keyframes, value animations) nothing replays — a subtree
     #     spans ids it cannot enumerate, so this gate is global and
-    #     coarse (the leaf cache gates per widget id instead);
+    #     coarse (the leaf cache gates per widget id instead); the block
+    #     still runs under capture on those frames, so the entry it
+    #     leaves behind is the animation's settled frame, never a
+    #     mid-flight one;
     #   * captures must be fully inside the ambient clip (row culling
     #     makes partially visible spans position-dependent) and free of
     #     transform brackets and Mesh3D commands.
     def cached_subtree(key : UInt64?, & : Ui ->)
       return yield self unless key
       return yield self if @ctx.measuring?
-      return yield self if @ctx.subtree_animations_running?
+      return yield self if PaintCache.disabled?
+      # While ANY animation runs anywhere, a stored entry may not REPLAY
+      # (its content can be mid-flight) — but the block still runs UNDER
+      # CAPTURE below, refreshing the entry: without that, a transition's
+      # first frame (e.g. a hover fade barely started) would be the last
+      # thing stored under the new key, and every replay after the
+      # transition settles would serve that near-invisible paint forever.
+      anims = @ctx.subtree_animations_running?
       cache = @ctx.paint_cache
       full = {key, @id, @max_rect.width, @max_rect.height,
               @ctx.font_scale, @ctx.pixels_per_point}.hash
-      if (entry = cache.lookup(full))
+      if !anims && (entry = cache.lookup(full))
         if subtree_hit_ok?(entry)
           Egui::Bench.span("paintcache.subtree.replay") do
             Egui::Bench.span("paintcache.mint") do
@@ -615,10 +687,13 @@ module Egui
             end
             entry.interacts.each do |ia|
               r = ia.rect
+              c = ia.clip
               @ctx.interact(ia.id,
                 Rect.new(Pos2.new(r.min.x + dx, r.min.y + dy),
                   Pos2.new(r.max.x + dx, r.max.y + dy)),
-                ia.sense, ia.layer)
+                ia.sense, ia.layer,
+                Rect.new(Pos2.new(c.min.x + dx, c.min.y + dy),
+                  Pos2.new(c.max.x + dx, c.max.y + dy)))
             end
             PaintCache.replay_subtree(entry, dx, dy, painter)
           end
@@ -859,6 +934,26 @@ module Egui
     # measure them. Outside a virtual scroll the call is a plain block.
     #
     # Returns true when the row ran, false when it was skipped.
+    # Below-clip culling for exml nodes (incremental layout: the
+    # virtual_row trick generalized to any subtree). The renderer
+    # recorded this subtree's flow extent (dx, dy) and widget-id span
+    # the last time it really rendered; both replay here in O(1)
+    # without building anything, so later siblings keep their widget
+    # ids and the scroll extent stays true.
+    def cull_subtree(dx : Float64, dy : Float64, id_span : UInt64) : Nil
+      top = @cursor
+      @cursor = Pos2.new(@cursor.x + dx, @cursor.y + dy)
+      if dy > 0.0
+        @min_rect = @min_rect.union(Rect.from_min_size(
+          Pos2.new(@max_rect.min.x, top.y),
+          Vec2.new(@max_rect.width, dy)))
+      elsif dx > 0.0
+        @min_rect = @min_rect.union(Rect.from_min_size(
+          top, Vec2.new(dx, {dy, 1.0}.max)))
+      end
+      @child_counter += id_span
+    end
+
     def virtual_row(key : String, &) : Bool
       state = @virtual_rows
       unless state
@@ -1402,15 +1497,21 @@ module Egui
     end
 
     def available_width : Float64
-      {@max_rect.right - @cursor.x, 0.0}.max
+      w = {@max_rect.right - @cursor.x, 0.0}.max
+      Egui.finite_guard("Ui#available_width (max_rect.right - cursor.x)", w,
+        @max_rect)
+      w
     end
 
     def available_height : Float64
       if @layout.bottom_up?
-        {@cursor.y - @max_rect.min.y, 0.0}.max
+        h = {@cursor.y - @max_rect.min.y, 0.0}.max
       else
-        {@max_rect.bottom - @cursor.y, 0.0}.max
+        h = {@max_rect.bottom - @cursor.y, 0.0}.max
       end
+      Egui.finite_guard("Ui#available_height (max_rect.bottom - cursor.y)", h,
+        @max_rect)
+      h
     end
 
     # `ui.box` — THE generic container ("div"): one entry point over
@@ -1561,6 +1662,7 @@ module Egui
           end
         end
       end
+      Egui.finite_guard("Ui#box: max_rect", @max_rect.size, @max_rect) if Egui.strict_math?
       w = if inline_row
         # Measure against the FULL line width — the same rule a
         # wrap-capable label wraps by (its `wrap_base`, see Label#ui):

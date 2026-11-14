@@ -11,6 +11,7 @@
 require "set"
 
 require "./egui/math"
+
 require "./egui/math3d"
 require "./egui/transform"
 require "./egui/driver/base"
@@ -141,3 +142,35 @@ require "./egui/context"
 require "./egui/inspector"
 require "./egui/bench"
 require "./egui/capybara"
+
+# Global renderer selection (the NOOP twins of the font/SVG
+# renderers): EGUI_NOFONTS=1 swaps every font stack the app/backend
+# installs for NoopFonts (Context#fonts= intercepts); EGUI_NOSVG=1
+# makes every Svg bake a blank transparent raster (Svg.noop!). Both
+# keep layout geometry — only the rendering cost disappears, so a
+# benchmark measures everything-except-fonts/svg.
+Egui::Svg.noop! if Egui::Svg.noop_selected?
+
+module Egui
+  # Global kill switches (the same read-once-per-process env pattern as
+  # EGUI_NOFONTS/EGUI_NOSVG above — the "what does X cost?" A/B legs).
+  #
+  # EGUI_NOGRADIENTS=1 — gradient-carrying fills paint NOTHING in
+  # every backend (the GPU tessellated/SDF paths and the CPU reference
+  # raster): the full CSS background-gradient and the two-color
+  # fill/fill2 pair both vanish; plain fills, border plates and
+  # shadows keep drawing, so layout and everything else is unchanged.
+  #
+  # EGUI_NOANIMATIONS=1 — every animation system snaps to its settled
+  # state: style transitions, springs and Id-keyed value animations
+  # return the target immediately, keyframes fall back to the base
+  # cascade values, appear runs never start — no repaint churn and no
+  # animation gates trip on the paint/subtree caches.
+  def self.no_gradients? : Bool
+    @@no_gradients ||= (env = ENV["EGUI_NOGRADIENTS"]?) ? env != "0" : false
+  end
+
+  def self.no_animations? : Bool
+    @@no_animations ||= (env = ENV["EGUI_NOANIMATIONS"]?) ? env != "0" : false
+  end
+end

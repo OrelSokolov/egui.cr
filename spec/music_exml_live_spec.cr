@@ -170,4 +170,34 @@ describe MusicExmlApp do
     t.idle(1)
     app.player.track_obj.not_nil!.title.should eq "Midnight Horizon"
   end
+
+  it "сайдбар: список Your library прокручивается (ScrollBox у Raven)" do
+    t = live_session
+    t.idle(2)
+    # верхний вертикальный scroll-синок под точкой (список строк сайдбара)
+    list_offset = ->(pos : Egui::Pos2) do
+      mem = t.app.as(MusicExmlApp).ctx.memory
+      hit = nil
+      hit_z = 0
+      mem.scroll_rects.each do |id, sink|
+        next unless sink.can_v && sink.rect.contains?(pos)
+        if hit.nil? || sink.layer.z >= hit_z
+          hit = id
+          hit_z = sink.layer.z
+        end
+      end
+      hit ? mem.data.get_vec2(hit, Egui::Vec2.zero).y : raise "нет scroll-синка под #{pos}"
+    end
+    rows_at = Egui::Pos2.new(150.0, 400.0) # над строками, ниже чипов
+    # до фикса списка под строками не было вовсе — синок не находился
+    list_offset.call(rows_at).should eq 0.0
+    # колесо вниз: контент 20×56 px во вьюпорте ~467 px → максимум 653
+    t.scroll(Egui::Vec2.new(0.0, 600.0), at: rows_at)
+    t.idle(60) # кинетика (half-life 0.12 с) успокаивается
+    list_offset.call(rows_at).should be_close(600.0, 60.0)
+    # назад вверх — список возвращается к первой строке
+    t.scroll(Egui::Vec2.new(0.0, -6000.0), at: rows_at)
+    t.idle(60)
+    list_offset.call(rows_at).should eq 0.0
+  end
 end

@@ -437,29 +437,56 @@ module MusicTags
   end
 
   # Оценка высоты ребёнка вертикального стека (col центрируется в строке:
-  # высоту нужно знать ДО отрисовки — красим уже в центрированном ректе)
-  def self.estimate_height(node, rt) : Float64
+  # высоту нужно знать ДО отрисовки — красим уже в центрированном ректе).
+  # t с wrap= считают строки переноса (как виджет t при отрисовке) — иначе
+  # центрирование уедет и вторая строка срежется клипом строки.
+  def self.estimate_height(node, rt, fonts : Egui::Fonts? = nil) : Float64
     case node.name
-    when "t"     then h = f(node, rt, "h", -1.0)
-                     h >= 0 ? h : f(node, rt, "size", 14.0) * 1.35
+    when "t"
+      h = f(node, rt, "h", -1.0)
+      size = f(node, rt, "size", 14.0)
+      base = h >= 0 ? h : size * 1.35
+      if (fs = fonts) && b(node, rt, "wrap") &&
+         (w = f(node, rt, "w", 0.0)) > 0
+        lh = size * f(node, rt, "lh", 1.5)
+        lines = wrap_lines(fs, a(node, rt, "text") || "", size, w).size
+        {base, lines * lh}.max
+      else
+        base
+      end
     when "gap"   then f(node, rt, "h", 0.0)
     when "vis"   then f(node, rt, "h", 12.0)
     when "cover" then f(node, rt, "h", f(node, rt, "s", 46.0))
     when "icon"  then f(node, rt, "size", 18.0)
-    when "col", "column" then node.children.sum { |c| estimate_height(c, rt) }
+    when "col", "column" then node.children.sum { |c| estimate_height(c, rt, fonts) }
     when "hbar" then f(node, rt, "h", 56.0)
     else 20.0
     end
   end
 
   # Ширина одной пружины в строке: (ширина контейнера − сумма оценок детей)
-  # делённая на число пружин; 0, если пружин нет.
+  # делённая на число пружин; 0, если пружин нет. Скрытые if=/unless=
+  # узлы не считаются (мобильная раскладка прячет десктопные кнопки —
+  # их ширина не должна съедать пружину).
   def self.spring_width(children, rt, fonts : Egui::Fonts,
                         width : Float64) : Float64
-    springs = children.count(&.name.==("spring"))
+    kids = children.select { |c| shown?(c, rt) }
+    springs = kids.count(&.name.==("spring"))
     return 0.0 if springs == 0
-    used = children.sum { |c| estimate_width(c, rt, fonts) }
+    used = kids.sum { |c| estimate_width(c, rt, fonts) }
     {(width - used) / springs, 0.0}.max
+  end
+
+  # видимость узла по if=/unless= — тот же предикат, что у рендера
+  # (exml visible?), для предрасчётов строк
+  def self.shown?(node, rt) : Bool
+    if (cond = node.if_cond) && !rt.bool(rt.interpolate(cond))
+      return false
+    end
+    if (cond = node.unless_cond) && rt.bool(rt.interpolate(cond))
+      return false
+    end
+    true
   end
 
   # отладка: MUSIC_GEOM=1 — печатать прямоугольники ключевых тегов (раз)
@@ -526,6 +553,9 @@ module MusicTags
 
   def self.vis_step(key : String, bars : Int32, playing : Bool,
                     now : Float64) : Array(Float64)
+    # EGUI_NOANIMATIONS=1: freeze every visualizer — the bars take the
+    # paused path (ease to the flat 0.08 floor) wherever they're drawn.
+    playing = false if Egui.no_animations?
     st = @@vis_state[key] ||= {Array.new(bars, 0.08), 0.0}
     levels, last = st
     dt = last > 0 ? {now - last, 0.05}.min : 0.016
@@ -742,7 +772,7 @@ end
 # в разметке явные — как в HTML). В начале строки переноса отступ
 # пропускается: хвостовой gap карточного ряда, переехавший на новую
 # строку, не должен сдвигать её первый элемент (flex-gap семантика).
-widget :gap do |node, ui, ctx, rt, r|
+widget :gap, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   w = MusicTags.f(node, rt, "w", 0.0)
   h = MusicTags.f(node, rt, "h", 0.0)
@@ -761,7 +791,7 @@ widget :gap do |node, ui, ctx, rt, r|
 end
 
 # <spring/> — flex:1: строка → вся остаточная ширина, колонка → высота.
-widget :spring do |node, ui, ctx, rt, r|
+widget :spring, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   if ui.layout.horizontal?
     ui.allocate_space(Egui::Vec2.new(ui.available_width, 0.0))
@@ -775,7 +805,7 @@ end
 # (Fonts#with_letter_spacing), и к отрисовке (TextCmd#letter_spacing).
 # С явным w= длинный текст усечывается с «…» (text-overflow: ellipsis,
 # Fonts#fit) — не жёсткой обрезкой клипа.
-widget :t do |node, ui, ctx, rt, r|
+widget :t, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   text = MusicTags.a(node, rt, "text") || ""
   size = MusicTags.f(node, rt, "size", 14.0)
@@ -947,7 +977,7 @@ end
 # <cover c1= c2= txt= s= r= fs= shadow=/> — процедурная обложка;
 # shadow="1" — мягкая тень как у .np-cover/.hero .cover
 # (0 10-14px 30-40px #000000a6).
-widget :cover do |node, ui, ctx, rt, r|
+widget :cover, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   c1 = MusicTags.hex(MusicTags.a(node, rt, "c1")) || MusicTags.accent
   c2 = MusicTags.hex(MusicTags.a(node, rt, "c2")) || c1
@@ -987,6 +1017,10 @@ widget :vis do |node, ui, ctx, rt, r|
   mode = MusicTags.a(node, rt, "mode") || "mini"
 
   t = ctx.input.time
+  # EGUI_NOANIMATIONS=1: the visualizer is app-level animation (time
+  # math + repaint requests in widget code) — freeze it via the paused
+  # path (levels ease to the flat 0.08 floor, no repaints).
+  playing = false if Egui.no_animations?
   levels = MusicTags.vis_step(node.path, n, playing, t)
 
   if mode == "np"
@@ -1042,7 +1076,10 @@ widget :mesh do |node, ui, ctx, rt, r|
        Egui::Color32.rgba(0x2d, 0x1b, 0x4e, 0x99)
   fx = MusicTags.f(node, rt, "fx", 0.0).to_i.clamp(0, 4)
   t = ctx.input.time
-  animate = MusicTags.b(node, rt, "animate")
+  # EGUI_NOANIMATIONS=1: the mesh is app-level animation (time math +
+  # repaint requests in widget code — the engine's animation systems
+  # never see it), so the widget itself must honor the kill switch.
+  animate = MusicTags.b(node, rt, "animate") && !Egui.no_animations?
   mesh_op = MusicTags.f(node, rt, "opacity", 1.0).clamp(0.0, 1.0)
 
   # Блоб: базовый прямоугольник (x, y — центр), цвета/прозрачность и
@@ -1108,7 +1145,7 @@ end
 # умножается на индекс строки repeat-а (волна карточек CSS
 # card-in с задержками nth-child). rgrad= — радиальный градиент
 # поверх фона (radial-gradient(...) из store, следует за обложкой).
-widget :panel do |node, ui, ctx, rt, r|
+widget :panel, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   cls = MusicTags.a(node, rt, "class") || ""
   w_attr = MusicTags.f(node, rt, "w", -1.0)
@@ -1248,7 +1285,7 @@ end
 # нижняя границы полубесконечны (карточки за краем обрезаются clip'ом,
 # как overflow:hidden карточного ряда оракула; allocate_space иначе
 # сжимает карточку в остаточную ширину строки).
-widget :crow do |node, ui, ctx, rt, r|
+widget :crow, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   gap = MusicTags.f(node, rt, "gap", 4.0)
   pad = MusicTags.f(node, rt, "pad", 0.0)
@@ -1306,6 +1343,7 @@ widget :searchinput do |node, ui, ctx, rt, r|
   rect = ui.allocate_space(Egui::Vec2.new(w, 40.0))
   focused = rt.string("_focus") == key
   resp = ui.interact(rect, Egui::Id.from(node.path), Egui::Sense::Click)
+  resp.on_hover_cursor(Egui::CursorIcon::Text)
   if resp.clicked?
     rt.strings["_focus"] = key
     ctx.request_repaint
@@ -1345,6 +1383,12 @@ widget :searchinput do |node, ui, ctx, rt, r|
   if txt.empty?
     ui.painter.text(Egui::Pos2.new(rect.left + 42.0, rect.center.y),
       hint, 14.0, MusicTags.placeholder)
+    # мигающий курсор и на пустом поле — иначе фокус не виден
+    if focused && (ctx.input.time * 2.0).to_i % 2 == 0
+      ui.painter.rect(Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.left + 43.0, rect.center.y - 8.0),
+        Egui::Vec2.new(1.0, 16.0)), 0.0, fill: MusicTags.text)
+    end
   else
     m = ui.fonts.measure(txt, 14.0)
     caret_x = rect.left + 42.0 + {m.x, rect.width - 60.0}.min
@@ -1713,21 +1757,28 @@ widget :island do |node, ui, ctx, rt, r|
     w = 10.0 + 20.0 + 8.0 + tw + 8.0 + (4 * 2.5 + 3 * 2) + 10.0
     rect = o.allocate_space(Egui::Vec2.new(w, 28.0))
     # hover-зона: только пилюля + 8px (не 300px — перехватывала клики
-    # по поисковой пилюле); развёрнутая панель добавляет свою зону ниже
+    # по поисковой пилюле); развёрнутая панель добавляет свою зону ниже.
+    # Как у CSS .island:hover — бокс элемента растёт вместе с панелью:
+    # пока курсор где-то в развёрнутой панели, остров открыт. Для этого
+    # «развёрнутость» тянется из прошлого кадра (island_exp): считая её
+    # только по пилюле, панель схлопывалась, едва курсор пересекал
+    # нижнюю границу пилюли, — оригинал так не сворачивается
     layer = Egui::LayerId.new(Egui::Order::Foreground,
       Egui::Id.from("island"))
     MusicTags.island_layer = layer
+    panel_rect = Egui::Rect.from_min_size(
+      Egui::Pos2.new(rect.center.x - 163.0, rect.top),
+      Egui::Vec2.new(326.0, 191.0))
+    prev_exp = rt.bool("island_exp")
     expanded = rt.bool("island_open") ||
-               ctx.input.pointer_pos.try { |pt| rect.contains?(pt) } ||
-               false
+               ctx.input.pointer_pos.try { |pt|
+                 rect.contains?(pt) || (prev_exp && panel_rect.contains?(pt))
+               } || false
     rt.bools["island_open"] = false
-    hov_rect = Egui::Rect.from_min_size(
+    rt.bools["island_exp"] = expanded
+    hov_rect = expanded ? panel_rect : Egui::Rect.from_min_size(
       Egui::Pos2.new(rect.left - 8.0, rect.top - 4.0),
       Egui::Vec2.new(w + 16.0, 36.0))
-    if expanded
-      hov_rect = Egui::Rect.from_min_size(rect.min,
-        Egui::Vec2.new({w, 300.0}.max, 190.0))
-    end
     hresp = ctx.interact(Egui::Id.from("#{node.path}/hov"), hov_rect,
       Egui::Sense::Click, layer, rect)
     expanded ||= hresp.hovered?
@@ -1756,7 +1807,10 @@ widget :island do |node, ui, ctx, rt, r|
         Egui::Vec2.new(2.5, bh)), 1.0, fill: MusicTags.accent(rt))
     end
 
-    # ── развёрнутый мини-плеер (island.xml): 300px поверх всего ──
+    # ── развёрнутый мини-плеер (island.xml): поверх всего, как у CSS
+    # .island:hover { height:auto; padding:12px } + .unfolded 300px:
+    # бокс 326×191 (контент 300 + padding 12 и border 1 с боков),
+    # центрирован на центре окна и растёт вниз от верхушки пилюли
     if expanded
       lp = ctx.painter
       prev_clip = lp.clip
@@ -1764,42 +1818,44 @@ widget :island do |node, ui, ctx, rt, r|
         Egui::Pos2.new(1e8, 1e8))
       prev_layer = lp.layer
       lp.layer = Egui::Order::Foreground
-      iw = 300.0
-      ipanel = Egui::Rect.from_min_size(rect.min, Egui::Vec2.new(iw, 186.0))
+      ipanel = panel_rect
+      cl = ipanel.left + 13.0 # контент: padding 12 + border 1
       lp.rect(ipanel, 14.0, fill: MusicTags.popup,
         stroke_color: MusicTags.popup_border, stroke_width: 1.0)
       lp.box_shadow(ipanel, Egui::Color32.rgba(0, 0, 0, 0x80), 30.0, 14.0)
-      # u-song: cover 40 + тексты + vis 6
-      sy = ipanel.top + 12.0
+      # u-song (y 13..53): cover 40 + тексты + vis 6
+      sy = ipanel.top + 13.0
       MusicTags.cover(lp, o.fonts,
-        Egui::Rect.from_min_size(Egui::Pos2.new(ipanel.left + 12.0, sy),
+        Egui::Rect.from_min_size(Egui::Pos2.new(cl, sy),
           Egui::Vec2.new(40.0, 40.0)), c1, c2, txt, 6.0, 13.0)
       tt = rt.string("np_title")
       ta = rt.string("np_artist")
-      lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 10.0), tt, 13.0,
+      lp.text(Egui::Pos2.new(cl + 50.0, sy + 10.0), tt, 13.0,
         MusicTags.text, bold: true)
-      lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 26.0), ta, 11.0,
+      lp.text(Egui::Pos2.new(cl + 50.0, sy + 26.0), ta, 11.0,
         MusicTags.muted)
+      # vis 16px по центру строки (align-items:center): y 25..41
       6.times do |i|
         ulevels = MusicTags.vis_step("#{node.path}/unfolded", 6,
           !rt.bool("paused"), t)
         bh = {16.0 * ulevels[i], 2.0}.max
         lp.rect(Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.right - 16.0 - (6 - i) * 4.5,
-            sy + 40.0 - bh),
+          Egui::Pos2.new(cl + 275.0 + i * 4.5, sy + 28.0 - bh),
           Egui::Vec2.new(2.5, bh)), 1.0, fill: MusicTags.accent(rt))
       end
+      # .slider (y 61..73): 180px от левого края контента, дорожка 4
       draw_seek.call(
         Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.left + 12.0, sy + 56.0),
-          Egui::Vec2.new(iw - 24.0, 14.0)), "seek_frac", iw - 24.0)
-      lp.text(Egui::Pos2.new(ipanel.left + 12.0, sy + 76.0),
+          Egui::Pos2.new(cl, ipanel.top + 61.0),
+          Egui::Vec2.new(180.0, 12.0)), "seek_frac", 180.0)
+      # .u-times (y 78..89; margin-top −3px у CSS)
+      lp.text(Egui::Pos2.new(cl, ipanel.top + 83.0),
         rt.string("elapsed"), 10.0, MusicTags.muted)
       lw = o.fonts.measure(rt.string("length"), 10.0).x
-      lp.text(Egui::Pos2.new(ipanel.right - 12.0 - lw, sy + 76.0),
+      lp.text(Egui::Pos2.new(cl + 300.0 - lw, ipanel.top + 83.0),
         rt.string("length"), 10.0, MusicTags.muted)
-      # u-row: heart prev play next panel (30px, play 34)
-      by = sy + 92.0
+      # u-row: heart prev play next panel (30px, play 34) — y 97..131
+      by = ipanel.top + 97.0
       cxm = ipanel.center.x
       buttons = {"heart", "prev", "play", "next", "panel"}
       actions = {"like_current", "prev_track", "toggle_play", "next_track", "toggle_np"}
@@ -1837,11 +1893,11 @@ widget :island do |node, ui, ctx, rt, r|
           ctx.request_repaint
         end
       end
-      # u-sep + u-look
+      # u-sep (y 141) + u-look (y 152..178: moon + mini-combo 26)
       lp.rect(Egui::Rect.from_min_size(
-        Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 40.0),
-        Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags.separator)
-      lp.text(Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 20.0),
+        Egui::Pos2.new(cl, ipanel.top + 141.0),
+        Egui::Vec2.new(300.0, 1.0)), 0.0, fill: MusicTags.separator)
+      lp.text(Egui::Pos2.new(cl, ipanel.top + 165.0),
         "Look: " + rt.string("look_name"), 12.0, MusicTags.muted)
       lp.layer = prev_layer
       lp.clip = prev_clip
@@ -1853,12 +1909,12 @@ end
 # <col w=> — вертикальный стек фиксированной ширины (в отличие от
 # прозрачного <column> создаёт свой child Ui — тексты «в две строки»
 # внутри горизонтального ряда). Высота — по контенту (min_rect детей).
-widget :col do |node, ui, ctx, rt, r|
+widget :col, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   w = MusicTags.f(node, rt, "w", 160.0)
   # высота заранее (по атрибутам детей): allocate отцентрирует стек
   # в строке (кросс-центрирование движка), красим в готовом ректе
-  h = node.children.sum { |c| MusicTags.estimate_height(c, rt) }
+  h = node.children.sum { |c| MusicTags.estimate_height(c, rt, ui.fonts) }
   h = {h, 1.0}.max
   rect = ui.allocate_space(Egui::Vec2.new(w, h))
   child = ui.child_ui(
@@ -1876,6 +1932,13 @@ end
 widget :hbar do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 56.0)
+  # h="auto" — полоса по содержимому: максимум оценок видимых детей
+  # (как col оценивает свой стек). Строки Settings с переносом
+  # описаний так растут под фактическое число строк при сужении окна
+  if MusicTags.a(node, rt, "h") == "auto"
+    h = node.children.select { |c| MusicTags.shown?(c, rt) }
+      .map { |c| MusicTags.estimate_height(c, rt, ui.fonts) }.max? || h
+  end
   rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
   MusicTags.geom!("hbar:#{MusicTags.a(node, rt, "name") || h}", rect) if MusicTags.geom_on?
   pad = MusicTags.f(node, rt, "pad", 0.0)
@@ -1896,6 +1959,37 @@ widget :hbar do |node, ui, ctx, rt, r|
     else
       r.render(cn, child, ctx, rt)
     end
+  end
+end
+
+# <mtab icon= text= active= on_click=/> — вкладка нижнего таб-бара
+# мобильной раскладки: иконка над подписью, активная — цвет акцента
+# (текущего лука), hit-зона — вся ячейка (по высоте ≥ 44 pt).
+widget :mtab do |node, ui, ctx, rt, r|
+  ui.painter.clip = ui.clip
+  name = MusicTags.a(node, rt, "icon") || "home"
+  text = MusicTags.a(node, rt, "text") || ""
+  active = MusicTags.b(node, rt, "active")
+  w = MusicTags.f(node, rt, "w", 80.0)
+  h = MusicTags.f(node, rt, "h", 56.0)
+  isz = MusicTags.f(node, rt, "size", 22.0)
+  fs = MusicTags.f(node, rt, "fs", 11.0)
+  rect = ui.allocate_space(Egui::Vec2.new(w, h))
+  id = Egui::Id.from(node.path)
+  resp = ui.interact(rect, id, Egui::Sense::Click)
+  base = active ? MusicTags.accent(rt) : MusicTags.muted
+  # hover мягко ведёт неактивную вкладку к цвету текста (transition .15s)
+  hov = MusicTags.glide(ctx, id, "hov",
+    resp.hovered? && !active ? 1.0 : 0.0, 150.0)
+  fg = MusicTags.lerp_color(base, MusicTags.strong, hov)
+  MusicTags.icon(name, fg).paint(ui, Egui::Rect.from_min_size(
+    Egui::Pos2.new(rect.center.x - isz / 2.0, rect.top + (h - 40.0) / 2.0),
+    Egui::Vec2.new(isz, isz)))
+  m = ui.fonts.measure(text, fs)
+  ui.painter.text(Egui::Pos2.new(rect.center.x - m.x / 2.0,
+    rect.bottom - 14.0), text, fs, fg, bold: active)
+  if resp.clicked? && (act = MusicTags.a(node, rt, "on_click"))
+    rt.fire(act)
   end
 end
 
@@ -1926,6 +2020,15 @@ widget :pbar do |node, ui, ctx, rt, r|
   MusicTags.geom!("pbar", rect)
   p = ui.painter
   p.rect(rect, 0.0, fill: MusicTags.bar_bg)
+  # mode="stack": одна колонка во всю ширину вместо трёх grid-колонок —
+  # мобильный бар (seek + мини-плеер + таб-бар поверх одного фона)
+  if (MusicTags.a(node, rt, "mode") || "") == "stack"
+    child = ui.child_ui(rect, Egui::Id.from("#{node.path}/stack"),
+      layout: Egui::Layout.top_down)
+    child.clip = MusicTags.clip_intersect(rect, ui.clip)
+    r.render_each(node, child, ctx, rt)
+    next
+  end
   total = rect.width - 32.0
   c13 = total / 3.3
   c2w = total - 2 * c13
@@ -1934,7 +2037,7 @@ widget :pbar do |node, ui, ctx, rt, r|
   node.children.each_with_index do |child_node, i|
     next if i > 2
     # вертикальное центрирование контента колонки (align-items:center)
-    ch = {MusicTags.estimate_height(child_node, rt), h}.min
+    ch = {MusicTags.estimate_height(child_node, rt, ui.fonts), h}.min
     col = Egui::Rect.from_min_size(
       Egui::Pos2.new(xs[i], rect.top + (h - ch) / 2.0),
       Egui::Vec2.new(ws[i], ch))

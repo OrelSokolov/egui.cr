@@ -1018,6 +1018,34 @@ module Egui
       {cmds, layers}
     end
 
+    # Bound every command emitted since `start` by `clip` (in place).
+    # Paint-cache captures run with the clip opened to infinite so the
+    # bucket comes out complete (galley culling would empty it); the
+    # FRAME's own copy must go back to bounded clips. Same shape as
+    # #clip_apply's inner loop.
+    def reclip_range(start : Int32, clip : Rect) : Nil
+      (start...@commands.size).each do |i|
+        cmd = @commands[i]
+        next if cmd.is_a?(NoopCmd)
+        want = PaintCache.intersect(cmd_clip(cmd), clip)
+        next if want == cmd_clip(cmd)
+        @commands[i] = cmd.with_clip(want, cmd_clip_corners(cmd))
+      end
+    end
+
+    # The copy form of #reclip_range: a captured bucket re-clipped by
+    # `clip` into a fresh array (the frame range and the stored bucket
+    # can need different clips — see Ui#paint_cache_add).
+    def reclip_commands(cmds : Array(PaintCmd),
+                        clip : Rect) : Array(PaintCmd)
+      cmds.map do |cmd|
+        next cmd if cmd.is_a?(NoopCmd)
+        want = PaintCache.intersect(cmd_clip(cmd), clip)
+        next cmd if want == cmd_clip(cmd)
+        cmd.with_clip(want, cmd_clip_corners(cmd))
+      end
+    end
+
     # Re-emit a cached command at its recorded layer (paint-cache
     # replay): the layer tag is part of the cached state, so playback
     # restores it exactly even when the ambient layer moved on.
@@ -1218,11 +1246,18 @@ module Egui
     # nil uses the primary one. `bold:`/`italic:` draw through the
     # primary stack's REAL variant faces (a missing variant degrades to
     # the base face — no emulation).
+    #
+    # The Ui's current default family (`#text_family`, nil = none) backs
+    # up a nil `family:` argument — the EGUI_BENCH HUD tags its text
+    # with its reserved family this way (see FrameBench).
+    property text_family : String? = nil
+
     def text(pos : Pos2, text : String, size : Float64, color : Color32,
              family : String? = nil, bold : Bool = false,
              italic : Bool = false,
              letter_spacing : Float64? = nil) : Nil
       return if text.empty? # nothing to rasterize (Fonts#fit gave up)
+      family = @text_family unless family
       add(TextCmd.new(@clip, pos, text, size, color, family, bold, italic,
         letter_spacing))
     end

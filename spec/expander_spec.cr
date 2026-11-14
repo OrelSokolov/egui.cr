@@ -51,10 +51,13 @@ describe Egui::Expander do
     expander_frame(ctx, [] of Egui::Event, 0.064)
     content = ctx.painter.commands.select(Egui::TextCmd)
       .find(&.text.==("content row"))
-    # Laid out (measured) but clipped to a degenerate window —
-    # nothing is visible yet on the measure frame.
-    content.should_not be_nil
-    content.not_nil!.clip.max.y.should be <= content.not_nil!.clip.min.y + 0.5
+    # Laid out (measured) but fully outside the collapsed window —
+    # nothing is visible yet on the measure frame. The paint cache
+    # captures such off-screen widgets with the clip opened and
+    # truncates the frame's copy (Ui#paint_cache_add), so the row is
+    # ABSENT from the command list, not present with a degenerate
+    # clip; it replays in once the reveal slide starts.
+    content.should be_nil
     expander_frame(ctx, [] of Egui::Event, 0.080)
     expander_frame(ctx, [] of Egui::Event, 0.400)
     ctx.painter.commands.any?(&.as?(Egui::TextCmd).try &.text.==("content row"))

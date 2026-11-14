@@ -155,7 +155,9 @@ class MusicExmlApp < Egui::App
     dt = {now - @last_tick, 0.25}.min
     @last_tick = now
     @player.advance(dt, now)
-    ctx.request_repaint if @player.playing
+    # EGUI_NOANIMATIONS=1: the playing track's progress repaint is the
+    # app's own animation churn — gate it with the kill switch.
+    ctx.request_repaint if @player.playing && !Egui.no_animations?
     # цвета текущего лука (разметка: color="{c_muted}" и т.п.)
     rt.strings["c_muted"] = MusicTags.hex_str("muted")
     rt.strings["c_eyebrow"] = MusicTags.hex_str("eyebrow")
@@ -179,9 +181,103 @@ class MusicExmlApp < Egui::App
   end
 
   private def sync(ctx : Egui::Context, now : Float64) : Nil
+    Egui::Bench.span("music.sync") { sync_body(ctx, now) }
+  end
+
+  private def sync_body(ctx : Egui::Context, now : Float64) : Nil
     p = @player
     library = @library
     rt = @rt
+
+    # ── мобильная (вертикальная) раскладка ────────────────────────────
+    # Узкое окно (<760 pt; порог общий с @media (max-width: 760px) в
+    # music.ecss) переключает хром: шапка без поиска, сайдбара и
+    # now-playing нет, низ — мини-плеер + таб-бар, карточки — 2 в ряд
+    # по ширине контента. Все размеры — computed в store (как center_w):
+    # разметка интерполирует {card_w} и т.п., десктопные значения те же
+    # константы, что были в атрибутах.
+    mw = ctx.input.screen_rect.width
+    mobile = mw < 760.0
+    rt.bools["mobile"] = mobile
+
+    # ширина центра — computed (Vue .center{flex:1} без flex-движка):
+    # окно − паддинги mainarea (2×8) − sidebar 300 − зазор 8 − np-панель
+    # (320 + зазор 8, когда видна); центр всегда занимает остаток строки;
+    # в мобильной раскладке центр — единственная колонка, во всю ширину
+    rt.floats["center_w"] = mobile ? mw - 2 * 8
+      : mw - 2 * 8 - 300 - 8 - (p.panel ? 320 + 8 : 0)
+    if mobile
+      # контент страницы: окно − mainarea 2×8 − center-page 2×12 (media-
+      # правило в music.ecss) − 8 полосы скролла center-page (резерв
+      # ScrollArea — тот же запас, что и в десктопных 652 = 708−48−8)
+      content = mw - 48.0
+      card_w = ((content - 4.0) / 2.0).floor
+      rt.floats["main_reserve"] = 136.0 # мини-плеер 80 + таб-бар 56
+      rt.floats["card_w"] = card_w
+      rt.floats["card_cover"] = card_w - 20.0
+      rt.floats["card_txt_w"] = card_w - 24.0
+      rt.floats["card_h"] = card_w + 66.0
+      rt.floats["quick_w"] = content          # подборки — в одну колонку
+      rt.floats["quick_t_w"] = content - 120.0
+      rt.floats["quick_row_h"] = 3 * 60.0 + 2 * 4.0
+      rt.floats["gtile_w"] = content
+      rt.floats["top_w"] = content
+      rt.floats["top_col_w"] = content - 108.0
+      rt.floats["trk_col_w"] = content - 192.0 # строка трека: padx 24 + фикс-части 168
+      rt.floats["trk_t_w"] = content - 192.0  # слот текста с «…» (Fonts#fit)
+      rt.floats["set_col_w"] = 150.0
+      rt.floats["combo_w"] = content - 158.0
+      rt.floats["slider_w"] = 150.0
+      rt.floats["set_row_h"] = 64.0
+      rt.floats["set_row_big_h"] = 88.0
+      rt.floats["about_w"] = content
+      rt.floats["about_h"] = 310.0
+      rt.floats["msg_w"] = content
+      rt.floats["hero_cover"] = 128.0
+      rt.floats["hero_fs"] = 40.0
+      rt.floats["hero_col_w"] = content - 128.0 - 34.0
+      rt.floats["col_title_fs"] = 30.0
+      rt.floats["hero_desc_w"] = rt.floats["hero_col_w"] - 16.0
+      rt.floats["m_txt_w"] = mw - 212.0       # мини-плеер: тексты трека
+      rt.floats["tab_w"] = mw / 4.0
+      rt.floats["search_w"] = content
+    else
+      rt.floats["main_reserve"] = 88.0
+      rt.floats["card_w"] = 188.0
+      rt.floats["card_cover"] = 168.0
+      rt.floats["card_txt_w"] = 164.0
+      rt.floats["card_h"] = 234.0
+      rt.floats["quick_w"] = 210.0
+      rt.floats["quick_t_w"] = 98.0
+      rt.floats["quick_row_h"] = 60.0
+      rt.floats["gtile_w"] = 184.0
+      rt.floats["top_w"] = 480.0
+      rt.floats["top_col_w"] = 340.0
+      rt.floats["trk_col_w"] = 260.0
+      rt.floats["trk_t_w"] = 260.0
+      rt.floats["combo_w"] = 260.0
+      rt.floats["slider_w"] = 180.0
+      # колонка лейблов Settings — computed, не константа: контент
+      # страницы (центр − поля center-page 2×24 − 8 скроллбара) минус
+      # контрол справа; на широком окне кап 500, при сужении описания
+      # переносятся по фактической ширине; пол 220 — ниже мобильный
+      # порог (760) уже переключает раскладку целиком
+      set_content = rt.floats["center_w"] - 48.0 - 8.0
+      rt.floats["set_col_w"] = (set_content - rt.floats["combo_w"]).clamp(220.0..500.0)
+      # высоты строк — h="auto" в разметке (hbar считает по детям);
+      # константы set_row_h/set_row_big_h больше не нужны
+      rt.floats["about_w"] = 748.0
+      rt.floats["about_h"] = 190.0
+      rt.floats["msg_w"] = 600.0
+      rt.floats["hero_cover"] = 232.0
+      rt.floats["hero_fs"] = 48.0
+      rt.floats["hero_col_w"] = 380.0
+      rt.floats["col_title_fs"] = 56.0
+      rt.floats["hero_desc_w"] = 360.0
+      rt.floats["m_txt_w"] = 200.0
+      rt.floats["tab_w"] = 90.0
+      rt.floats["search_w"] = 280.0
+    end
 
     # страницы/навигация
     page = p.page.to_s
@@ -232,11 +328,8 @@ class MusicExmlApp < Egui::App
     rt.floats["volume_frac"] = p.muted ? 0.0 : p.volume
     rt.strings["island_text"] = p.island_text(now)
     rt.bools["np_visible"] = p.panel
-    # ширина центра — computed (Vue .center{flex:1} без flex-движка):
-    # окно − паддинги mainarea (2×8) − sidebar 300 − зазор 8 − np-панель
-    # (320 + зазор 8, когда видна); центр всегда занимает остаток строки
-    rt.floats["center_w"] = ctx.input.screen_rect.width - 2 * 8 - 300 - 8 -
-                            (p.panel ? 320 + 8 : 0)
+    # ширина центра — см. выше, до веток раскладки (от неё зависит
+    # ширина колонки Settings)
 
     # очередь в now playing (до 4 строк, прыжок по клику)
     queue = p.queue[p.queue_pos + 1..].first(4)

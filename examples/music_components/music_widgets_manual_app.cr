@@ -94,6 +94,7 @@ class MusicWidgetsManualApp < Egui::App
     @styled = false
     @focus = false        # фокус поля поиска (аналог rt.strings["_focus"])
     @combo_open = ""      # открытый комбо настроек: "" | "look" | "bg" | "quality"
+    @island_exp = false   # остров развёрнут (hover, тянется между кадрами)
     apply_start_state
   end
 
@@ -141,7 +142,9 @@ class MusicWidgetsManualApp < Egui::App
     dt = {now - @last_tick, 0.25}.min
     @last_tick = now
     @player.advance(dt, now)
-    ctx.request_repaint if @player.playing
+    # EGUI_NOANIMATIONS=1: gate the playing track's progress repaint
+    # (the app's own animation churn) with the kill switch.
+    ctx.request_repaint if @player.playing && !Egui.no_animations?
     ctx.request_repaint if @player.notice != "" && @player.notice_until > now
     now
   end
@@ -445,6 +448,9 @@ class MusicWidgetsManualApp < Egui::App
   private def mesh(ui : Egui::Ui, ctx : Egui::Context, c1 : String,
                    c2 : String, c3 : String, fx : Int32,
                    animate : Bool) : Nil
+    # EGUI_NOANIMATIONS=1: app-level animation — the widget itself must
+    # honor the kill switch (see the :mesh twin in music_tags.cr).
+    animate = animate && !Egui.no_animations?
     ui.painter.clip = ui.clip
     rect = Egui::Rect.new(ui.cursor,
       Egui::Pos2.new(ui.max_rect.right, ui.max_rect.bottom))
@@ -1819,17 +1825,23 @@ class MusicWidgetsManualApp
       rect = o.allocate_space(Egui::Vec2.new(w, 28.0))
       layer = Egui::LayerId.new(Egui::Order::Foreground, Egui::Id.from("island"))
       MusicTags.island_layer = layer
-      expanded = ctx.input.pointer_pos.try { |pt| rect.contains?(pt) } || false
-      hov_rect = Egui::Rect.from_min_size(
+      # как у CSS .island:hover: бокс растёт вместе с панелью, и пока
+      # курсор в развёрнутой панели, остров открыт; «развёрнутость»
+      # тянется из прошлого кадра (@island_exp), иначе панель
+      # схлопывалась на нижней границе пилюли
+      panel_rect = Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.center.x - 163.0, rect.top),
+        Egui::Vec2.new(326.0, 191.0))
+      expanded = ctx.input.pointer_pos.try { |pt|
+        rect.contains?(pt) || (@island_exp && panel_rect.contains?(pt))
+      } || false
+      hov_rect = expanded ? panel_rect : Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.left - 8.0, rect.top - 4.0),
         Egui::Vec2.new(w + 16.0, 36.0))
-      if expanded
-        hov_rect = Egui::Rect.from_min_size(rect.min,
-          Egui::Vec2.new({w, 300.0}.max, 190.0))
-      end
       hresp = ctx.interact(Egui::Id.from("island/hov"), hov_rect,
         Egui::Sense::Click, layer, rect)
       expanded ||= hresp.hovered?
+      @island_exp = expanded
       pnt = o.painter
       radius = MusicTags.glide(ctx, Egui::Id.from("island/rad"), "radius",
         expanded ? 14.0 : 100.0, 180.0)
@@ -1857,58 +1869,60 @@ class MusicWidgetsManualApp
           Egui::Pos2.new(1e8, 1e8))
         prev_layer = lp.layer
         lp.layer = Egui::Order::Foreground
-        iw = 300.0
-        ipanel = Egui::Rect.from_min_size(rect.min, Egui::Vec2.new(iw, 186.0))
+        # как у CSS .island:hover + .unfolded 300px: бокс 326×191
+        # (контент 300 + padding 12 и border 1), центр на центре окна
+        ipanel = panel_rect
+        cl = ipanel.left + 13.0
         lp.rect(ipanel, 14.0, fill: MusicTags.popup,
           stroke_color: Egui::Color32.rgba(255, 255, 255, 0x1a), stroke_width: 1.0)
         lp.box_shadow(ipanel, Egui::Color32.rgba(0, 0, 0, 0x80), 30.0, 14.0)
-        sy = ipanel.top + 12.0
+        sy = ipanel.top + 13.0
         MusicTags.cover(lp, o.fonts,
-          Egui::Rect.from_min_size(Egui::Pos2.new(ipanel.left + 12.0, sy),
+          Egui::Rect.from_min_size(Egui::Pos2.new(cl, sy),
             Egui::Vec2.new(40.0, 40.0)), c1, c2, txt, 6.0, 13.0)
-        lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 10.0),
+        lp.text(Egui::Pos2.new(cl + 50.0, sy + 10.0),
           obj ? obj.title : "", 13.0, MusicTags.text, bold: true)
-        lp.text(Egui::Pos2.new(ipanel.left + 64.0, sy + 26.0),
+        lp.text(Egui::Pos2.new(cl + 50.0, sy + 26.0),
           album.artist, 11.0, MusicTags.muted)
         ulevels = MusicTags.vis_step("island/unfolded", 6, p.playing, now)
         6.times do |i|
           bh = {16.0 * ulevels[i], 2.0}.max
           lp.rect(Egui::Rect.from_min_size(
-            Egui::Pos2.new(ipanel.right - 16.0 - (6 - i) * 4.5, sy + 40.0 - bh),
+            Egui::Pos2.new(cl + 275.0 + i * 4.5, sy + 28.0 - bh),
             Egui::Vec2.new(2.5, bh)), 1.0, fill: accent)
         end
-        # мини-seek
-        seek_w = iw - 24.0
+        # мини-seek: .slider 180px (y 61..73)
+        seek_w = 180.0
         frac = p.seek_frac.clamp(0.0, 1.0)
-        cy = sy + 56.0 + 7.0
+        cy = ipanel.top + 67.0
         lp.rect(Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.left + 12.0, cy - 2.0),
+          Egui::Pos2.new(cl, cy - 2.0),
           Egui::Vec2.new(seek_w, 4.0)), 2.0,
           fill: Egui::Color32.rgba(255, 255, 255, 0x40))
         lp.rect(Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.left + 12.0, cy - 2.0),
+          Egui::Pos2.new(cl, cy - 2.0),
           Egui::Vec2.new(seek_w * frac, 4.0)), 2.0, fill: accent)
-        lp.circle_filled(Egui::Pos2.new(ipanel.left + 12.0 + seek_w * frac, cy),
+        lp.circle_filled(Egui::Pos2.new(cl + seek_w * frac, cy),
           5.0, MusicTags.strong)
         srect = Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.left + 12.0, cy - 7.0),
+          Egui::Pos2.new(cl, cy - 7.0),
           Egui::Vec2.new(seek_w, 14.0))
         sresp = ctx.interact(Egui::Id.from("island/seek"), srect,
           Egui::Sense::Click | Egui::Sense::Drag,
           MusicTags.island_layer.not_nil!, srect)
         if (sresp.dragged? || sresp.clicked?) && (ptr = ctx.input.pointer_pos)
-          p.seek(((ptr.x - ipanel.left - 12.0) / seek_w).clamp(0.0, 1.0))
+          p.seek(((ptr.x - cl) / seek_w).clamp(0.0, 1.0))
           ctx.request_repaint
         end
-        lp.text(Egui::Pos2.new(ipanel.left + 12.0, sy + 76.0),
+        lp.text(Egui::Pos2.new(cl, ipanel.top + 83.0),
           MusicLibrary.fmt_time(p.position), 10.0, MusicTags.muted)
         len_w = o.fonts.measure(
           obj ? MusicLibrary.fmt_time(obj.seconds.to_f64) : "0:00", 10.0).x
-        lp.text(Egui::Pos2.new(ipanel.right - 12.0 - len_w, sy + 76.0),
+        lp.text(Egui::Pos2.new(cl + 300.0 - len_w, ipanel.top + 83.0),
           obj ? MusicLibrary.fmt_time(obj.seconds.to_f64) : "0:00",
           10.0, MusicTags.muted)
-        # u-row: heart prev play next panel
-        by = sy + 92.0
+        # u-row: heart prev play next panel (y 97..131)
+        by = ipanel.top + 97.0
         cxm = ipanel.center.x
         buttons = {"heart", "prev", "play", "next", "panel"}
         actions = {"like", "prev", "toggle", "next", "panel"}
@@ -1948,10 +1962,11 @@ class MusicWidgetsManualApp
             ctx.request_repaint
           end
         end
+        # u-sep (y 141) + u-look (y 152..178)
         lp.rect(Egui::Rect.from_min_size(
-          Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 40.0),
-          Egui::Vec2.new(iw - 24.0, 1.0)), 0.0, fill: MusicTags.separator)
-        lp.text(Egui::Pos2.new(ipanel.left + 12.0, ipanel.bottom - 20.0),
+          Egui::Pos2.new(cl, ipanel.top + 141.0),
+          Egui::Vec2.new(300.0, 1.0)), 0.0, fill: MusicTags.separator)
+        lp.text(Egui::Pos2.new(cl, ipanel.top + 165.0),
           "Look: #{MusicLibrary::LOOKS[p.look]}", 12.0, MusicTags.muted)
         lp.layer = prev_layer
         lp.clip = prev_clip

@@ -187,6 +187,18 @@ module Egui
       end
       offset = Vec2.new(h_kin.try(&.offset) || 0.0, v_kin.offset)
 
+      # Draw offset on the physical pixel grid: the backend snaps glyph
+      # quads to whole framebuffer pixels (sokol `paint_text` rounds
+      # baseline + pen), so a fractionally gliding offset moves the row
+      # chrome subpixel-smoothly while its text steps whole pixels —
+      # text wobbles against its background while scrolling. Shift the
+      # content by the offset ROUNDED onto the pixel grid (1/ppp
+      # points); the stored offset keeps its fractional value so the
+      # kinetics stay smooth.
+      ppp = ui.ctx.pixels_per_point
+      draw_offset = Vec2.new((offset.x * ppp).round / ppp,
+        (offset.y * ppp).round / ppp)
+
       # Scroll chaining (browser rule): a viewport whose content fits
       # (neither axis can scroll) does not claim the wheel — the sink
       # UNDER it gets the delta instead. Each axis is declared separately
@@ -223,7 +235,7 @@ module Egui
       # allocating below it — clipped by `clip`, scrolled by this
       # ScrollArea — instead of collapsing into zero-height rows.
       inner = ui.child_ui(
-        Rect.from_min_size(viewport.min - offset,
+        Rect.from_min_size(viewport.min - draw_offset,
           Vec2.new(@hbar ? 1e6 : viewport.width, viewport.height)),
         id: id.child(1))
       inner.v_overflow = true

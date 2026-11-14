@@ -303,6 +303,9 @@ module Egui
     # target and drops any run. Returns {affine, animating?}.
     def drive(id : Id, target : Affine2, dur : Float64,
               now : Float64) : Tuple(Affine2, Bool)
+      # EGUI_NOANIMATIONS=1: snap — the transform IS the target, no
+      # run starts, `animating` reads false (no repaint churn).
+      return {target, false} if Egui.no_animations?
       return {target, false} if dur <= 0.0
       if (r = @runs[id]?)
         if r.to != target

@@ -105,6 +105,7 @@ binaries:
   apps/remote_image:        {main: examples/remote_image.cr}
   apps/tray:                {main: examples/tray.cr}
   apps/voice_echo:          {main: examples/voice_echo.cr}
+  apps/stress_scroll:       {main: examples/stress_scroll.cr}
 
   # The Vue SFC port tool (plans/vue2velvet.md) — template+style →
   # .exml/.ecss, the script half is a report for the Crystal

@@ -1606,6 +1606,13 @@ module Egui
 
       @custom = {} of String => CustomHandler
       @warned_custom = Set(String).new
+      # Retained-subtree bookkeeping (see #subtree_generation): the
+      # per-path appearance generation, the paths rendered LAST frame
+      # and the ones rendered so far THIS frame (rotated in
+      # #render_routes — the per-frame entry point)
+      @subtree_gens = {} of String => Int32
+      @subtree_last = Set(String).new
+      @subtree_cur = Set(String).new
       # Hotkeys markup bound LAST frame (`hotkey=` from `@keyup.enter`
       # and friends): lapsed at every #render_routes — only the keys
       # of nodes visible THIS frame re-bind during the walk, so a
@@ -1651,7 +1658,18 @@ module Egui
       # is on screen). `if`/`unless` on a page gate its registration —
       # a modal declared only while a confirmation is pending.
       def render_routes(ctx : Context, doc : Document, rt : Runtime) : Nil
+        Egui::Bench.span("exml.render_routes") do
+          render_routes_body(ctx, doc, rt)
+        end
+      end
+
+      private def render_routes_body(ctx : Context, doc : Document,
+                                     rt : Runtime) : Nil
         @refs.clear # refs describe the frame being rendered
+        # rotate the presence sets: generations bump for nodes that
+        # were absent last frame but are back now
+        @subtree_last, @subtree_cur = @subtree_cur, @subtree_last
+        @subtree_cur.clear
         # Last frame's markup hotkeys lapse; visible nodes re-bind
         # theirs during the walk (bind_hotkey below)
         @markup_hotkeys.each { |hk| ctx.hotkeys.unbind(hk) }
@@ -1784,7 +1802,39 @@ module Egui
       end
 
       # The per-widget dispatch — the hot path (microseconds per page).
+      # Below-clip culling — the incremental-layout layer. A node whose
+      # cursor starts fully below the ambient clip is invisible; its
+      # flow extent (dx, dy) and widget-id span, recorded the last time
+      # it really rendered, replay in O(1) (Ui#cull_subtree). The
+      # record refreshes on every real render, so scrolling it back
+      # into view (or a structure change under the same path) rebuilds
+      # it for real. Trade-offs, the same contract as a virtualized
+      # row: markup hotkeys and refs of a culled subtree lapse for the
+      # culled frames, and its Memory state (hover) may be pruned —
+      # invisible widgets have none of that anyway.
+      @culled = {} of String => Tuple(Float64, Float64, UInt64)
+
       def render(node : Node, ui : Ui, ctx : Context, rt : Runtime) : Nil
+        unless ctx.measuring?
+          if ui.cursor.y >= ui.clip.max.y
+            if (rec = @culled[node.path]?)
+              Egui::Bench.count("exml.cull.replay")
+              ui.cull_subtree(rec[0], rec[1], rec[2])
+              return
+            end
+            Egui::Bench.count("exml.cull.first")
+          end
+        end
+        x0 = ui.cursor.x
+        y0 = ui.cursor.y
+        c0 = ui.child_counter
+        render_body(node, ui, ctx, rt)
+        dx = ui.cursor.x - x0
+        dy = ui.cursor.y - y0
+        @culled[node.path] = {dx, dy, ui.child_counter - c0} if dy > 0.0 || dx > 0.0
+      end
+
+      def render_body(node : Node, ui : Ui, ctx : Context, rt : Runtime) : Nil
         return unless visible?(node, rt)
         bind_hotkey(node, ui, ctx, rt)
 
@@ -1949,7 +1999,21 @@ module Egui
             base_dir: node.base_dir))
         in .custom?
           if handler = @custom[node.name]? || Exml.widgets[node.name]?
-            handler.call(node, ui, ctx, rt, self)
+            # Retained subtree (see #custom_subtree_key): a pure custom
+            # element replays its whole span from the paint cache —
+            # layout, children and paint skipped on a hit.
+            if (skey = custom_subtree_key(node, ui, ctx, rt))
+              # An appear run must survive end-frame pruning even on a
+              # replay frame (the handler that drives it did not run):
+              # a pruned run would make drive() start a fresh one and
+              # re-play the entrance animation forever.
+              if node.attrs["appear"]?
+                ctx.memory.use_id(Egui::Id.from("#{node.path}/appear"))
+              end
+              ui.cached_subtree(skey) { handler.call(node, ui, ctx, rt, self) }
+            else
+              handler.call(node, ui, ctx, rt, self)
+            end
           else
             unless @warned_custom.includes?(node.name)
               @warned_custom << node.name
@@ -1961,6 +2025,132 @@ module Egui
           # a bare item outside a menu renders as a button
           if ui.button(rt.interpolate(node.label_attr || "?"), id: node.path).clicked?
             fire_named(node.on_click, rt)
+          end
+        end
+      end
+
+      # ── retained subtrees for custom elements ─────────────────────
+      #
+      # FPS_OPTIMIZATION.md §2 applied to custom tags: a handler whose
+      # output is a PURE function of (attrs, store, style, region)
+      # replays from the paint cache instead of re-running every frame
+      # (Ui#cached_subtree does the capture/replay). Opt-in per tag —
+      # `widget :panel, cache: true` — because purity is the tag
+      # library's promise, not the renderer's to verify: a stateful
+      # handler (time-driven visuals, edit state, popups) would freeze
+      # on replay. The `cache:` mark doubles as the purity mark for
+      # ANCESTOR walks: a cached panel may only contain other marked
+      # tags and inert builtins (row/column), never a repeat (row set
+      # is dynamic) or a conditional (if=/unless= — structure changes
+      # with the store).
+      #
+      # The key folds everything a pure handler's output depends on:
+      # the node's path (site identity — repeat rows re-path per row),
+      # every attr of every node in the subtree (dynamic {…} attrs
+      # re-interpolated each frame — row content changes miss), the
+      # class-resolved style bags (object identity — a rule/look change
+      # mints fresh bags, see paint_cache.cr) and the hover/active
+      # verdict of the "/hover" interact id (the common on_click
+      # convention of tag libraries; absent ids read nil forever).
+      # The appear-run PRESENCE fold keeps a re-appearance (back nav)
+      # a miss — the handler must run to restart the entrance
+      # animation — while a settled run lingering in Memory keeps
+      # steady frames hitting.
+      private def custom_subtree_key(node : Node, ui : Ui, ctx : Context,
+                                     rt : Runtime) : UInt64?
+        return nil unless Exml.cacheable_tags.includes?(node.name)
+        # Only containers: the win is skipping a whole SUBTREE. A
+        # childless tag's handler costs about what a replay does —
+        # wrapping it would be pure overhead (it still dispatches when
+        # its parent panel is not cacheable, e.g. holds a <vis>).
+        if node.children.empty?
+          Egui::Bench.count("exml.key.leaf")
+          return nil
+        end
+        if node.attrs["scroll"]? # a ScrollArea holds state
+          Egui::Bench.count("exml.key.scroll")
+          return nil
+        end
+        # Outside the ambient clip the capture rules would refuse to
+        # store anyway (a subtree entry must be fully clip-contained),
+        # so a below-the-fold scroll row would MISS forever — paying
+        # the key fold and capture bookkeeping on top of the full
+        # render. Skip before any of that work: a node starting below
+        # the clip, or (with a static height attr) ending above it.
+        clip = ui.clip
+        if ui.cursor.y >= clip.max.y
+          Egui::Bench.count("exml.key.below")
+          return nil
+        end
+        if (hs = node.attrs["h"]?) && (hh = hs.to_f?)
+          # известная статическая высота: попытка только у полностью
+          # видимого узла (частично видимый ряд никогда не сохранится)
+          if ui.cursor.y + hh > clip.max.y || ui.cursor.y + hh <= clip.min.y
+            Egui::Bench.count("exml.key.straddle")
+            return nil
+          end
+        end
+        unless subtree_pure?(node)
+          Egui::Bench.count("exml.key.impure")
+          return nil
+        end
+        cls = (raw = node.attrs["class"]?) ?
+                (raw.includes?('{') ? rt.interpolate(raw) : raw) : ""
+        istate = ctx.memory.interaction_state(
+          Egui::Id.from("#{node.path}/hover"))
+        {node.path,
+         fold_subtree(node, rt),
+         ctx.stylesheet.resolve(cls).object_id,
+         ctx.stylesheet.resolve(cls, "hover").object_id,
+         istate,
+         subtree_generation(node)}.hash
+      end
+
+      # Appearance generation: bumps every time the node was NOT
+      # rendered last frame (a hidden `if=` branch came back, a page
+      # re-appeared). Folded into the key, a re-appearance is always a
+      # miss — the handler must run to restart its entrance animation
+      # (a stale small-cache entry can never serve it; large caches
+      # evict, small ones never do). The generation counter itself
+      # keeps the appear-run liveness question OUT of the key: a
+      # settled run lingering in Memory is fine, and the frame-1 entry
+      # (stored before the run existed) can never collide with a
+      # steady-frame key again.
+      private def subtree_generation(node : Node) : Int32
+        path = node.path
+        unless @subtree_last.includes?(path)
+          @subtree_gens[path] = (@subtree_gens[path]? || 0) + 1
+        end
+        @subtree_cur << path
+        @subtree_gens[path].not_nil!
+      end
+
+      # Fold one node's name + attrs (dynamic ones re-interpolated),
+      # then its children recursively. UInt64 overflow wraps — the
+      # chain is a plain rolling hash, same trade as the paint cache.
+      private def fold_subtree(node : Node, rt : Runtime) : UInt64
+        h = node.name.hash
+        node.attrs.each do |k, v|
+          h = h &* 1_000_003 &+ k.hash
+          h = h &* 1_000_003 &+
+              (v.includes?('{') ? rt.interpolate(v) : v).hash
+        end
+        node.children.each { |c| h = h &* 1_000_003 &+ fold_subtree(c, rt) }
+        h
+      end
+
+      # The subtree may only hold `cache:`-marked custom tags and inert
+      # row/column builtins, with no conditionals anywhere inside.
+      private def subtree_pure?(node : Node) : Bool
+        return false if node.if_cond || node.unless_cond
+        node.children.all? do |c|
+          case c.kind
+          when .row?, .column?
+            subtree_pure?(c)
+          when .custom?
+            Exml.cacheable_tags.includes?(c.name) && subtree_pure?(c)
+          else
+            false
           end
         end
       end
@@ -1991,6 +2181,7 @@ module Egui
         end
 
         rt.rows?(over).not_nil!.each_with_index do |row, i|
+          Egui::Bench.count("exml.row")
           scope = ScopedRuntime.new(rt)
           row.each { |k, v| scope.strings["#{as_name}.#{k}"] = v }
           scope.strings["_i"] = i.to_s
@@ -2108,6 +2299,12 @@ module Egui
     # override, and registration order never matters (a widget may be
     # declared after the renderer exists).
     class_property widgets = {} of String => Renderer::CustomHandler
+
+    # Tags declared pure (the `cache: true` mark of the `widget`
+    # sugar): candidates for Renderer's retained subtrees AND the only
+    # custom tags a cached subtree may contain (see
+    # Renderer#custom_subtree_key).
+    class_property cacheable_tags = Set(String).new
   end
 end
 
@@ -2121,7 +2318,26 @@ end
 #     rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, 160.0))
 #     SysMon.graph(ui.painter, rect, series, Time.relative, 100.0)
 #   end
-def widget(name : String | Symbol,
+#                                  # NOT cache: — Time-relative
+#
+# `cache: true` ALSO promises the handler is a pure function of
+# (attrs, store, style, region) — no time-driven output, no edit or
+# popup state — letting the renderer replay its subtree from the
+# paint cache (see Renderer#custom_subtree_key). A pure container
+# (panel) keeps the mark even when its CHILDREN render through the
+# regular dispatch: the purity walk checks the children's tags.
+def widget(name : String | Symbol, cache : Bool = false,
             &handler : Egui::Exml::Renderer::CustomHandler) : Nil
-  Egui::Exml.widgets[name.to_s] = handler
+  tag = name.to_s
+  # Per-tag bench span: the span table answers "which block renders
+  # worst" without hand-written spans per widget. Self time excludes
+  # nested tags, so a panel's row excludes the cards it walks inside.
+  inner = handler
+  wrapped = ->(node : Egui::Exml::Node, ui : Egui::Ui,
+               ctx : Egui::Context, rt : Egui::Exml::Runtime,
+               r : Egui::Exml::Renderer) do
+    Egui::Bench.span("exml.tag.#{tag}") { inner.call(node, ui, ctx, rt, r) }
+  end
+  Egui::Exml.widgets[tag] = wrapped
+  Egui::Exml.cacheable_tags << tag if cache
 end

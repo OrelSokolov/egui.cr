@@ -78,12 +78,15 @@ module Egui
     property fonts : Fonts
 
     def fonts=(fonts : Fonts)
-      @fonts = fonts
+      # Renderer selection (EGUI_NOFONTS=1): the NOOP stack overrides
+      # whatever the app/backend installs — the global
+      # "measure, never render" mode (see NoopFonts).
+      @fonts = NoopFonts.selected? ? NoopFonts.instance : fonts
       # The primary family name derives from the stack's source file —
       # a swapped stack (backend init, theme swap) re-derives it.
       @primary_family_name_set = false
       @primary_family_name = nil
-      fonts
+      @fonts
     end
 
     # The monospace font stack (terminal grids, code) — nil means "same
@@ -100,9 +103,34 @@ module Egui
     property italic_fonts : Fonts? = nil
     property bold_italic_fonts : Fonts? = nil
 
+    # The active #with_fonts override (nil = none): resolvers serve it
+    # from EVERY slot before the EGUI_NOFONTS selection, so must-have
+    # text (the EGUI_BENCH HUD) keeps drawing under a NOOP frame.
+    @fonts_override : Fonts? = nil
+
+    # Serve `fonts` from every slot (primary, mono, family, bold/italic
+    # variant) inside the block. The EGUI_NOFONTS renderer selection
+    # and the backend-installed stacks both step aside: a bench HUD
+    # that cannot render its own numbers is useless. The caller owns
+    # the stack (FrameBench builds a private Noto one); nesting keeps
+    # the innermost.
+    def with_fonts(fonts : Fonts, &)
+      saved_fonts, saved_override = @fonts, @fonts_override
+      @fonts, @fonts_override = fonts, fonts
+      begin
+        yield
+      ensure
+        @fonts, @fonts_override = saved_fonts, saved_override
+      end
+    end
+
     # The font stack mono text measures/draws through: #mono_fonts when
     # the backend installed one, #fonts otherwise.
     def mono_font : Fonts
+      return @fonts_override.not_nil! if @fonts_override
+      # Renderer selection (EGUI_NOFONTS=1): no slot leaks a real
+      # stack — mono included (see NoopFonts).
+      return NoopFonts.instance if NoopFonts.selected?
       @mono_fonts || @fonts
     end
 
@@ -116,6 +144,9 @@ module Egui
     property font_families : Hash(String, Fonts) = {} of String => Fonts
 
     def register_font_family(name : String, fonts : Fonts) : Nil
+      # Renderer selection: the NOOP stack wins over a registered
+      # family too (EGUI_NOFONTS=1, see Context#fonts=).
+      fonts = NoopFonts.instance if NoopFonts.selected?
       @font_families[name] = fonts
       @mono_fonts = fonts if name == "monospace"
       @fonts = fonts if name == "system"
@@ -237,6 +268,11 @@ module Egui
     # Contexts included: #fonts serves everything there.
     def fonts_for(family : String?, bold : Bool = false,
                   italic : Bool = false) : Fonts
+      return @fonts_override.not_nil! if @fonts_override
+      # Renderer selection (EGUI_NOFONTS=1): every resolution —
+      # family, mono, bold/italic variant — serves the NOOP stack, so
+      # nothing measures or rasterizes through a real face.
+      return NoopFonts.instance if NoopFonts.selected?
       base = fonts_for_family(family)
       return base unless base.same?(@fonts)
       if bold && italic
@@ -371,7 +407,7 @@ module Egui
       @theme = Theme.dark
       @cursor_icon = CursorIcon::Default
       @cursor_image = nil
-      @fonts = MonospaceFonts.new
+      @fonts = NoopFonts.selected? ? NoopFonts.instance : MonospaceFonts.new
       @textures = DummyTextureRegistry.new
       @prev_time = nil
       @fps = 0.0
@@ -705,6 +741,11 @@ module Egui
       class FlexLayout
         getter inputs : UInt64
         getter slots : Array(Rect)
+        # The last REAL pass's content extent (min_rect relative to
+        # max_rect.min, children overflow included). An off-screen cull
+        # replays it into the flow without running the children — see
+        # #render_uncached's cull block.
+        property content : Rect?
 
         def initialize(@inputs, @slots)
         end
@@ -757,7 +798,8 @@ module Egui
       # so a hit can re-register it translated without running the
       # block. Deduped by id when the capture closes (last wins — the
       # later registration is the z-meaningful one).
-      @interact_log.try &.push(PaintCache::Interact.new(id, rect, sense, layer))
+      @interact_log.try &.push(PaintCache::Interact.new(id, rect, sense,
+        layer, clip))
       response = Response.new(self, id, rect, sense, v.hovered?, v.clicked?,
         v.click_count, v.pressed?, v.active?, v.dragged?, v.drag_started?,
         v.drag_stopped?, v.drag_delta)
