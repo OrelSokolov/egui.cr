@@ -225,6 +225,14 @@ module Egui
         Pos2.new(outer.min.x, outer.min.y + above_h + label_h),
         Vec2.new(width, thickness))
       response = ui.interact(rect, id, Sense.drag | Sense::Focusable)
+      # The interact rect is the rail row only; the painted widget
+      # spans the label above it and the ticks/tips below. The paint
+      # cache must record/replay through the FULL outer rect — an
+      # entry sized to the rail would re-allocate too little (the
+      # parent under-reserves, stacked sliders merge) and shift the
+      # replayed paint up by the reserved-but-unallocated rows (the
+      # label climbs into the widget above and clips).
+      response.paint_rect = outer
 
       new_value = @value
       if response.dragged? && (pos = ui.ctx.input.pointer_pos)

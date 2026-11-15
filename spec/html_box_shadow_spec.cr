@@ -1,7 +1,7 @@
 require "spec"
 require "../src/egui/html"
 
-SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 300.0))
+BOX_SHADOW_SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 300.0))
 
 describe "box-shadow vocabulary" do
   it "Html.shadow parses the CSS shorthand" do
@@ -20,7 +20,7 @@ describe "box-shadow vocabulary" do
 
   it "div style: box-shadow emits a ShadowCmd under the fill" do
     ctx = Egui::Context.new
-    raw = Egui::RawInput.new(SCREEN, [] of Egui::Event, 0.016)
+    raw = Egui::RawInput.new(BOX_SHADOW_SCREEN, [] of Egui::Event, 0.016)
     ctx.begin_frame(raw)
     ctx.central_panel do |ui|
       ui.div(style: "background: #26262d; border-radius: 8; box-shadow: 0 4px 12px rgba(0,0,0,.5)") do |d|
@@ -42,7 +42,7 @@ describe "box-shadow vocabulary" do
 
   it "div style: inset shadow paints over the fill" do
     ctx = Egui::Context.new
-    raw = Egui::RawInput.new(SCREEN, [] of Egui::Event, 0.016)
+    raw = Egui::RawInput.new(BOX_SHADOW_SCREEN, [] of Egui::Event, 0.016)
     ctx.begin_frame(raw)
     ctx.central_panel do |ui|
       ui.div(style: "background: #1e1e24; box-shadow: inset 0 2px 8px rgba(0,0,0,.6)") do |d|
@@ -67,7 +67,7 @@ describe "box-shadow vocabulary" do
       "shadow.blur"  => 12.0,
       "shadow.y"     => 4.0,
     })
-    raw = Egui::RawInput.new(SCREEN, [] of Egui::Event, 0.016)
+    raw = Egui::RawInput.new(BOX_SHADOW_SCREEN, [] of Egui::Event, 0.016)
     ctx.begin_frame(raw)
     ctx.central_panel do |ui|
       ui.div(classes: "floaty") { |d| d.p("x") }

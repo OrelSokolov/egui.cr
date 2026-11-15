@@ -523,7 +523,17 @@ module Egui
           Egui::Bench.span("paintcache.replay") do
             rect = exact ? allocate_space(entry.size)
                          : allocate_at_least(entry.size)
-            r = interact(rect, entry.id, entry.sense)
+            # Sub-rect interact (Response#paint_rect widgets): the hit
+            # test lands where the widget really put it, so the replayed
+            # Response#rect matches a real run's.
+            if sr = entry.sense_rect
+              hit = Rect.new(
+                Pos2.new(rect.min.x + sr.min.x, rect.min.y + sr.min.y),
+                Pos2.new(rect.min.x + sr.max.x, rect.min.y + sr.max.y))
+              r = interact(hit, entry.id, entry.sense)
+            else
+              r = interact(rect, entry.id, entry.sense)
+            end
             # Fully outside the ambient clip → emit nothing, matching
             # the galley culling of the uncached path (replayed
             # commands with degenerate clips would still show up in
@@ -557,20 +567,30 @@ module Egui
       painter.clip = Rect.infinite
       resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
       painter.clip = clip0
+      # The widget's full outer extent — Response#paint_rect when the
+      # interact rect is a sub-rect of it (Slider's rail). Everything
+      # below (damage region, containment, entry size/origin) tracks
+      # what the widget PAINTED, not just what it hit-tests as.
+      pr = resp.paint_rect
+      # The interact rect relative to the outer one (nil when they
+      # coincide — the store then takes the classic path).
+      srel = pr == resp.rect ? nil : Rect.new(
+        Pos2.new(resp.rect.min.x - pr.min.x, resp.rect.min.y - pr.min.y),
+        Pos2.new(resp.rect.max.x - pr.min.x, resp.rect.max.y - pr.min.y))
       # The key changed — the output changed: fold into the frame's
       # damage region (Painter#mark_dirty).
-      painter.mark_dirty(resp.rect)
-      contained = clip0.min.x <= resp.rect.min.x && clip0.max.x >= resp.rect.max.x &&
-                  clip0.min.y <= resp.rect.min.y && clip0.max.y >= resp.rect.max.y
+      painter.mark_dirty(pr)
+      contained = clip0.min.x <= pr.min.x && clip0.max.x >= pr.max.x &&
+                  clip0.min.y <= pr.min.y && clip0.max.y >= pr.max.y
       # Degenerate rects (a size-0 label — font_size floored to 0)
       # never count as outside: they sit ON an edge (`max == min ==
       # clip.min`), and the old path shipped their commands (clipped
       # to nothing) — the command-list contract tests rely on it.
-      degenerate = resp.rect.min.x == resp.rect.max.x ||
-                   resp.rect.min.y == resp.rect.max.y
+      degenerate = pr.min.x == pr.max.x ||
+                   pr.min.y == pr.max.y
       outside = !degenerate &&
-                (resp.rect.max.x <= clip0.min.x || resp.rect.min.x >= clip0.max.x ||
-                 resp.rect.max.y <= clip0.min.y || resp.rect.min.y >= clip0.max.y)
+                (pr.max.x <= clip0.min.x || pr.min.x >= clip0.max.x ||
+                 pr.max.y <= clip0.min.y || pr.min.y >= clip0.max.y)
       # Storeability gates, unchanged in spirit: an appear-animation
       # run for this id makes the output time-dependent (skip); a
       # transform bracket churned during the span (skip); Mesh3D is
@@ -593,8 +613,9 @@ module Egui
         if (b = bucket)
           cmds, layers = b
           cache.store(full, PaintCache::Entry.new(
-            resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
-            resp.sense, resp.rect.min, Rect.infinite, cmds, layers, 0))
+            resp.id, (@child_counter - counter0).to_i32, pr.size,
+            resp.sense, pr.min, Rect.infinite, cmds, layers, 0,
+            sense_rect: srel))
         end
       else
         # Contained, or straddling the clip edge: bound the frame copy
@@ -608,15 +629,17 @@ module Egui
             # per-command re-clip (the static-frame fast path).
             cmds = painter.reclip_commands(cmds, clip0)
             cache.store(full, PaintCache::Entry.new(
-              resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
-              resp.sense, resp.rect.min, clip0, cmds, layers, 0))
+              resp.id, (@child_counter - counter0).to_i32, pr.size,
+              resp.sense, pr.min, clip0, cmds, layers, 0,
+              sense_rect: srel))
           else
             # Straddling the edge: store the complete (clip-open)
             # bucket with the sentinel — when it scrolls fully into
             # view the replay has every row, re-clipped correctly.
             cache.store(full, PaintCache::Entry.new(
-              resp.id, (@child_counter - counter0).to_i32, resp.rect.size,
-              resp.sense, resp.rect.min, Rect.infinite, cmds, layers, 0))
+              resp.id, (@child_counter - counter0).to_i32, pr.size,
+              resp.sense, pr.min, Rect.infinite, cmds, layers, 0,
+              sense_rect: srel))
           end
         end
       end
@@ -1533,7 +1556,9 @@ module Egui
     # colors (usually resolved from style keys by
     # `StyleVars#stroke_sides?`). `corners` carries the per-corner
     # CSS `border-radius: a b c d` shorthand (nil = uniform
-    # `rounding`). `shadow` is the CSS `box-shadow` (an explicit
+    # `rounding`). `stroke_dash` is CSS `border-style: dashed` — the
+    # uniform stroke draws as a 3:1 dash pattern along the rounded
+    # perimeter (per-side borders ignore it). `shadow` is the CSS `box-shadow` (an explicit
     # argument over the box's class chain — the same `shadow.*` keys
     # widgets read); outset paints under the fill, inset over it, in
     # both cases under the contents. `appear`/`appear_delay` override the
@@ -1547,6 +1572,7 @@ module Egui
             style_class : String? = nil,
             stroke_sides : StrokeSides? = nil,
             corners : CornerRadii? = nil,
+            stroke_dash : Bool = false,
             shadow : BoxShadowSpec? = nil,
             appear : String | Symbol? = nil,
             appear_delay : Float64? = nil,
@@ -1573,7 +1599,8 @@ module Egui
           cell.box(direction: direction, wrap: wrap, fill: fill,
             stroke: stroke, rounding: rounding, margin: margin,
             stroke_width: stroke_width, style_class: style_class,
-            stroke_sides: stroke_sides, corners: corners, shadow: shadow,
+            stroke_sides: stroke_sides, corners: corners,
+            stroke_dash: stroke_dash, shadow: shadow,
             appear: appear,
             appear_delay: appear_delay, transform: transform,
             transform_origin: transform_origin, overflow: overflow,
@@ -1611,7 +1638,7 @@ module Egui
       if positioning.is_a?(BoxPlacement)
         return placed_box(positioning, direction, wrap, style_class,
           flat_fill, grad, stroke, sides, rounding, corners, m,
-          stroke_width, shadow, &block)
+          stroke_width, shadow, stroke_dash: stroke_dash, &block)
       end
       rel = positioning || Vec2.zero
       # CSS `box-shadow`: explicit argument over the box's class chain
@@ -1867,7 +1894,7 @@ module Egui
           painter.set(bg_index,
             RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
               stroke_width.as?(Float64) || 1.0, nil, sides, corners,
-              gradient: grad))
+              gradient: grad, stroke_dash: stroke_dash))
         end
         if (s = sh)
           # The reserved slot on the right side of the fill (nil slot =
@@ -2197,6 +2224,7 @@ module Egui
                            corners : CornerRadii?, m : Vec2,
                            stroke_width : Float64 | StyleBox,
                            shadow : BoxShadowSpec? = nil,
+                           stroke_dash : Bool = false,
                            &block : Ui ->) : Rect
       ctx = @ctx
       ctx.memory.use_id(placement.id)
@@ -2293,7 +2321,7 @@ module Egui
         painter.set(bg_index,
           RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
             stroke_width.as?(Float64) || 1.0, nil, sides, corners,
-            gradient: grad))
+            gradient: grad, stroke_dash: stroke_dash))
       end
       if (s = sh)
         slot = s.inset? ? sh_over : sh_under

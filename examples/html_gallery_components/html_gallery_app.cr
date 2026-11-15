@@ -42,6 +42,12 @@ class HtmlGalleryApp < Egui::App
   # Search string (cards are filtered by it against their code text).
   @query = ""
   @rules_ready = false
+  # `--only <needle>` (or `--only=<needle>`): show ONLY the cards whose
+  # section/demo title matches the needle — for oracle screenshots of a
+  # single widget. The search bar is hidden in this mode, so the shot
+  # contains nothing but the matching cards.
+  @only : String? = ARGV.each_cons(2).find { |p| p[0] == "--only" }.try(&.[1]) ||
+                    ARGV.find(&.starts_with?("--only=")).try(&.[7..])
 
   # Interactive demo state — Signals so values survive card filtering
   # (positional widget ids shift when cards drop out; signals don't).
@@ -67,28 +73,32 @@ class HtmlGalleryApp < Egui::App
     setup_rules(ctx) unless @rules_ready
 
     needle = @query.strip.downcase
+    only = @only.try &.strip.downcase
     total = sections.sum(&.demos.size)
-    visible = sections.sum { |s| s.demos.count { |d| d.matches?(needle) } }
+    visible = sections.sum { |s| s.demos.count { |d| card_matches?(s, d, only, needle) } }
 
     # The HTML `#top` bar: a real search strip (~60px, not egui's thin
     # one-line default), the title at 16px, the input a 480px field
     # styled through the "search.text_edit" rule (registered in
     # #setup_rules), everything vertically centered.
-    ctx.top_panel(id: "search", height: 60.0, resizable: false) do |bar|
-      bar.seed_row_height(bar.available_height)
-      # Side padding aligned with the card column below (the panel
-      # already adds its own window_padding).
-      bar.allocate_space(Egui::Vec2.new(16.0, 0.0))
-      bar.rich(Egui::RichText.new("html gallery")
-        .size(bar.style.font_size * 1.05))
-      resp = bar.with_style_scope("search") do |s|
-        s.add(Egui::TextEdit.new(@query,
-          hint: "filter by code / ecss / exml / title…",
-          focus_id: "html_gallery_search").width(480.0))
+    # Skipped in --only mode: oracle shots want only the cards.
+    unless only
+      ctx.top_panel(id: "search", height: 60.0, resizable: false) do |bar|
+        bar.seed_row_height(bar.available_height)
+        # Side padding aligned with the card column below (the panel
+        # already adds its own window_padding).
+        bar.allocate_space(Egui::Vec2.new(16.0, 0.0))
+        bar.rich(Egui::RichText.new("html gallery")
+          .size(bar.style.font_size * 1.05))
+        resp = bar.with_style_scope("search") do |s|
+          s.add(Egui::TextEdit.new(@query,
+            hint: "filter by code / ecss / exml / title…",
+            focus_id: "html_gallery_search").width(480.0))
+        end
+        @query = resp.widget_text.not_nil! if resp.changed?
+        bar.rich(Egui::RichText.new("#{visible}/#{total}")
+          .weak(bar.style.visuals))
       end
-      @query = resp.widget_text.not_nil! if resp.changed?
-      bar.rich(Egui::RichText.new("#{visible}/#{total}")
-        .weak(bar.style.visuals))
     end
 
     ctx.central_panel do |ui|
@@ -103,7 +113,7 @@ class HtmlGalleryApp < Egui::App
         scroll.div(style: "padding-x: #{pad}; padding-y: 16") do |page|
           any = false
           sections.each do |sec|
-            demos = sec.demos.select { |d| d.matches?(needle) }
+            demos = sec.demos.select { |d| card_matches?(sec, d, only, needle) }
             next if demos.empty?
             any = true
             # The HTML `h2`: small, dim, uppercase — not a heading-scale
@@ -116,7 +126,7 @@ class HtmlGalleryApp < Egui::App
               page.virtual_row(d.title) { |card| render_card(card, d) }
             end
           end
-          page.label("(no cards match #{@query})") unless any
+          page.label("(no cards match #{only || @query})") unless any
         end
       end
     end
@@ -253,6 +263,14 @@ class HtmlGalleryApp < Egui::App
 
   # === the demo list ===============================================
 
+  # --only mode matches section/demo titles (the widget name); the
+  # search box matches titles AND the three code panels.
+  private def card_matches?(sec : Section, demo : Demo,
+                            only : String?, needle : String) : Bool
+    return "#{sec.title} #{demo.title}".downcase.includes?(only) if only
+    demo.matches?(needle)
+  end
+
   private def sections : Array(Section)
     @sections ||= [
       Section.new("Text", text_demos),
@@ -303,7 +321,7 @@ class HtmlGalleryApp < Egui::App
       Demo.new("span — inline row",
         %(ui.span do |s|\n  s.strong("bold")\n  s.em("italic")\n  s.code("mono")\n  s.label("plain")\nend),
         %(/* strong/em/code are RichText runs, not style rules */),
-        %(<row>\n  <b text="bold"/> <i text="italic"/>\n  <mono-run text="mono"/> <label text="plain"/>\n</row>)) do |ui|
+        %(<row>\n  <b text="bold"/> <i text="italic"/>\n  <mono text="mono"/> <label text="plain"/>\n</row>)) do |ui|
         ui.span do |s|
           s.strong("bold")
           s.em("italic")
@@ -323,8 +341,8 @@ class HtmlGalleryApp < Egui::App
       end,
       Demo.new("strong / em / code",
         %(ui.strong("strong text")\nui.em("emphasized text")\nui.code("code text")),
-        %(mono-run { font_family: monospace }),
-        %(<b text="strong text"/>\n<i text="emphasized text"/>\n<mono-run text="code text"/>)) do |ui|
+        %(mono { font_family: monospace }),
+        %(<b text="strong text"/>\n<i text="emphasized text"/>\n<mono text="code text"/>)) do |ui|
         ui.strong("strong text")
         ui.em("emphasized text")
         ui.code("code text")
@@ -601,12 +619,12 @@ class HtmlGalleryApp < Egui::App
         end
       end,
       Demo.new("columns(3)",
-        %(ui.columns(3) do |cols|\n  cols.each_with_index do |col, i|\n    col.p("column \#{i}")\n    col.p("second line")\n  end\nend),
+        %(ui.columns(3) do |cols|\n  cols.each_with_index do |col, i|\n    col.div(style: "border: 1px dashed #777; padding: 6") do |d|\n      d.p("column \#{i}")\n      d.p("second line")\n    end\n  end\nend),
         %(/* equal-width columns are layout, not style */),
         %(<row>\n  <column><label text="column 0"/><label text="second line"/></column>\n  <column><label text="column 1"/><label text="second line"/></column>\n  <column><label text="column 2"/><label text="second line"/></column>\n</row>)) do |ui|
         ui.columns(3) do |cols|
           cols.each_with_index do |col, i|
-            col.div(style: "stroke: #777; padding: 6") do |d|
+            col.div(style: "border: 1px dashed #777; border-radius: 6; padding: 6") do |d|
               d.p("column #{i}")
               d.p("second line")
             end
@@ -618,15 +636,23 @@ class HtmlGalleryApp < Egui::App
         %(/* panels are app-level chrome; styled\n   through the theme/ECSS per panel class */\nnav-panel { background: #24242b; width: 84 }\naside-panel { background: #24242b; width: 70 }),
         %(<menubar><item label="header"/></menubar>\n<central><row>\n  <nav-panel><label text="nav"/>\n  <label text="main content"/>\n  <aside-panel><label text="aside"/>\n</row></central>\n<statusbar><label text="footer"/></statusbar>)) do |ui|
         # Panels frame the WHOLE window — inside the card a schematic
-        # mock instead (the calls above are the real API).
+        # mock instead (the calls above are the real API). The mid row
+        # mirrors the reference page's `.mrow`: a flex with fixed-basis
+        # nav (84) and aside (70) flanking a grow:1 main, 70 tall.
         ui.div(style: "stroke: #3a3a44; padding: 0") do |m|
-          m.div(style: "background: #2d2d36; padding: 4") { |h| h.small("header") }
-          m.horizontal(wrap: false) do |row|
-            row.div(style: "background: #24242b; padding: 4") { |n| n.small("nav") }
-            row.div(style: "background: #1e1e24; padding: 4") { |c| c.small("main content") }
-            row.div(style: "background: #24242b; padding: 4") { |a| a.small("aside") }
+          m.div(style: "background: #2d2d36; padding-x: 8; padding-y: 4") { |h| h.small("header") }
+          m.flex(height: 70.0) do |f|
+            f.child(basis: 84.0, shrink: 0.0) do |cell|
+              cell.div(style: "background: #24242b; padding-x: 8; padding-y: 4; height: 100%") { |n| n.small("nav") }
+            end
+            f.child(grow: 1.0) do |cell|
+              cell.div(style: "background: #1e1e24; padding-x: 8; padding-y: 4; height: 100%") { |c| c.small("main content flows in what is left between the panels") }
+            end
+            f.child(basis: 70.0, shrink: 0.0) do |cell|
+              cell.div(style: "background: #24242b; padding-x: 8; padding-y: 4; height: 100%") { |a| a.small("aside") }
+            end
           end
-          m.div(style: "background: #2d2d36; padding: 4") { |f| f.small("footer") }
+          m.div(style: "background: #2d2d36; padding-x: 8; padding-y: 4") { |f| f.small("footer") }
         end
         ui.small("(mock — the real panels frame the whole window)")
       end,
@@ -858,7 +884,7 @@ class HtmlGalleryApp < Egui::App
       Demo.new("select",
         %(ui.select("pick", @sel,\n  ["One", "Two", "Three"]) { |o| @sel = o }),
         %(combo { rounding: 6 }),
-        %(<combo bind="sel" options="One,Two,Three"/>)) do |ui|
+        %(<combo bind="sel" options="One|Two|Three"/>)) do |ui|
         ui.select("html_gallery_pick", @sel, ["One", "Two", "Three"])
       end,
       Demo.new("button",
@@ -902,7 +928,7 @@ class HtmlGalleryApp < Egui::App
       Demo.new("radio",
         %(ui.radio(@sel == 0, "First")\nui.radio(@sel == 1, "Second")\n# state through changed? blocks),
         %(radio { text_color: text }),
-        %(<combo bind="sel" options="First,Second"/>)) do |ui|
+        %(<combo bind="sel" options="First|Second"/>)) do |ui|
         ui.radio(@radio == 0, "First").tap { |r| @radio = 0 if r.changed? }
         ui.radio(@radio == 1, "Second").tap { |r| @radio = 1 if r.changed? }
       end,

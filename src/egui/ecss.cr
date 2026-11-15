@@ -46,7 +46,9 @@
 # `stroke_width: 1; stroke_width.right: 0; stroke_width.bottom: 0;
 # stroke_width.left: 0`). Per-side colors ride `stroke.<side>`.
 #
-# Values: colors `#rgb`/`#rrggbb`/`#rrggbbaa`, numbers, `true`/`false`,
+# Values: colors `#rgb`/`#rrggbb`/`#rrggbbaa` and the CSS named-color
+# keywords (`green`, `tomato`, `transparent`, … — case-insensitive),
+# numbers, `true`/`false`,
 # quoted strings (font families), and the `spring(…)` transition value
 # (`transition: background spring(bouncy)` / `transition: width
 # spring(0.3, 0.8) 50ms`). The parser is deliberately lenient —
@@ -582,6 +584,9 @@ explicit id to persist element overrides"
               # elsewhere mean milliseconds)
           elsif (l = StyleLength.parse?(s))
             l
+          elsif (c = named_color?(s))
+            c # a CSS named color (`selection_fill: green`) — a Color32,
+              # before the bare-keyword String fallback drops it silently
           elsif (kw = bare_keyword?(s))
             kw # CSS keywords are bare identifiers (`rounding: capsule`);
                # quoted strings remain the form for values with spaces
@@ -610,6 +615,171 @@ explicit id to persist element overrides"
       private def self.warn_color(s : String) : Nil
         warn "bad color \"#{s}\" — ignored"
         nil
+      end
+
+      # The CSS named-color keywords (Color Module Level 4 list) as
+      # 0xRRGGBB — `selection_fill: green` must land in the bag as a
+      # Color32, not the bare-keyword String the typed getters silently
+      # drop. `transparent` (rgba 0,0,0,0) rides along in #named_color?.
+      NAMED_COLORS = {
+        "aliceblue"            => 0xf0f8ff_u32,
+        "antiquewhite"         => 0xfaebd7_u32,
+        "aqua"                 => 0x00ffff_u32,
+        "aquamarine"           => 0x7fffd4_u32,
+        "azure"                => 0xf0ffff_u32,
+        "beige"                => 0xf5f5dc_u32,
+        "bisque"               => 0xffe4c4_u32,
+        "black"                => 0x000000_u32,
+        "blanchedalmond"       => 0xffebcd_u32,
+        "blue"                 => 0x0000ff_u32,
+        "blueviolet"           => 0x8a2be2_u32,
+        "brown"                => 0xa52a2a_u32,
+        "burlywood"            => 0xdeb887_u32,
+        "cadetblue"            => 0x5f9ea0_u32,
+        "chartreuse"           => 0x7fff00_u32,
+        "chocolate"            => 0xd2691e_u32,
+        "coral"                => 0xff7f50_u32,
+        "cornflowerblue"       => 0x6495ed_u32,
+        "cornsilk"             => 0xfff8dc_u32,
+        "crimson"              => 0xdc143c_u32,
+        "cyan"                 => 0x00ffff_u32,
+        "darkblue"             => 0x00008b_u32,
+        "darkcyan"             => 0x008b8b_u32,
+        "darkgoldenrod"        => 0xb8860b_u32,
+        "darkgray"             => 0xa9a9a9_u32,
+        "darkgreen"            => 0x006400_u32,
+        "darkgrey"             => 0xa9a9a9_u32,
+        "darkkhaki"            => 0xbdb76b_u32,
+        "darkmagenta"          => 0x8b008b_u32,
+        "darkolivegreen"       => 0x556b2f_u32,
+        "darkorange"           => 0xff8c00_u32,
+        "darkorchid"           => 0x9932cc_u32,
+        "darkred"              => 0x8b0000_u32,
+        "darksalmon"           => 0xe9967a_u32,
+        "darkseagreen"         => 0x8fbc8f_u32,
+        "darkslateblue"        => 0x483d8b_u32,
+        "darkslategray"        => 0x2f4f4f_u32,
+        "darkslategrey"        => 0x2f4f4f_u32,
+        "darkturquoise"        => 0x00ced1_u32,
+        "darkviolet"           => 0x9400d3_u32,
+        "deeppink"             => 0xff1493_u32,
+        "deepskyblue"          => 0x00bfff_u32,
+        "dimgray"              => 0x696969_u32,
+        "dimgrey"              => 0x696969_u32,
+        "dodgerblue"           => 0x1e90ff_u32,
+        "firebrick"            => 0xb22222_u32,
+        "floralwhite"          => 0xfffaf0_u32,
+        "forestgreen"          => 0x228b22_u32,
+        "fuchsia"              => 0xff00ff_u32,
+        "gainsboro"            => 0xdcdcdc_u32,
+        "ghostwhite"           => 0xf8f8ff_u32,
+        "gold"                 => 0xffd700_u32,
+        "goldenrod"            => 0xdaa520_u32,
+        "gray"                 => 0x808080_u32,
+        "green"                => 0x008000_u32,
+        "greenyellow"          => 0xadff2f_u32,
+        "grey"                 => 0x808080_u32,
+        "honeydew"             => 0xf0fff0_u32,
+        "hotpink"              => 0xff69b4_u32,
+        "indianred"            => 0xcd5c5c_u32,
+        "indigo"               => 0x4b0082_u32,
+        "ivory"                => 0xfffff0_u32,
+        "khaki"                => 0xf0e68c_u32,
+        "lavender"             => 0xe6e6fa_u32,
+        "lavenderblush"        => 0xfff0f5_u32,
+        "lawngreen"            => 0x7cfc00_u32,
+        "lemonchiffon"         => 0xfffacd_u32,
+        "lightblue"            => 0xadd8e6_u32,
+        "lightcoral"           => 0xf08080_u32,
+        "lightcyan"            => 0xe0ffff_u32,
+        "lightgoldenrodyellow" => 0xfafad2_u32,
+        "lightgray"            => 0xd3d3d3_u32,
+        "lightgreen"           => 0x90ee90_u32,
+        "lightgrey"            => 0xd3d3d3_u32,
+        "lightpink"            => 0xffb6c1_u32,
+        "lightsalmon"          => 0xffa07a_u32,
+        "lightseagreen"        => 0x20b2aa_u32,
+        "lightskyblue"         => 0x87cefa_u32,
+        "lightslategray"       => 0x778899_u32,
+        "lightslategrey"       => 0x778899_u32,
+        "lightsteelblue"       => 0xb0c4de_u32,
+        "lightyellow"          => 0xffffe0_u32,
+        "lime"                 => 0x00ff00_u32,
+        "limegreen"            => 0x32cd32_u32,
+        "linen"                => 0xfaf0e6_u32,
+        "magenta"              => 0xff00ff_u32,
+        "maroon"               => 0x800000_u32,
+        "mediumaquamarine"     => 0x66cdaa_u32,
+        "mediumblue"           => 0x0000cd_u32,
+        "mediumorchid"         => 0xba55d3_u32,
+        "mediumpurple"         => 0x9370db_u32,
+        "mediumseagreen"       => 0x3cb371_u32,
+        "mediumslateblue"      => 0x7b68ee_u32,
+        "mediumspringgreen"    => 0x00fa9a_u32,
+        "mediumturquoise"      => 0x48d1cc_u32,
+        "mediumvioletred"      => 0xc71585_u32,
+        "midnightblue"         => 0x191970_u32,
+        "mintcream"            => 0xf5fffa_u32,
+        "mistyrose"            => 0xffe4e1_u32,
+        "moccasin"             => 0xffe4b5_u32,
+        "navajowhite"          => 0xffdead_u32,
+        "navy"                 => 0x000080_u32,
+        "oldlace"              => 0xfdf5e6_u32,
+        "olive"                => 0x808000_u32,
+        "olivedrab"            => 0x6b8e23_u32,
+        "orange"               => 0xffa500_u32,
+        "orangered"            => 0xff4500_u32,
+        "orchid"               => 0xda70d6_u32,
+        "palegoldenrod"        => 0xeee8aa_u32,
+        "palegreen"            => 0x98fb98_u32,
+        "paleturquoise"        => 0xafeeee_u32,
+        "palevioletred"        => 0xdb7093_u32,
+        "papayawhip"           => 0xffefd5_u32,
+        "peachpuff"            => 0xffdab9_u32,
+        "peru"                 => 0xcd853f_u32,
+        "pink"                 => 0xffc0cb_u32,
+        "plum"                 => 0xdda0dd_u32,
+        "powderblue"           => 0xb0e0e6_u32,
+        "purple"               => 0x800080_u32,
+        "rebeccapurple"        => 0x663399_u32,
+        "red"                  => 0xff0000_u32,
+        "rosybrown"            => 0xbc8f8f_u32,
+        "royalblue"            => 0x4169e1_u32,
+        "saddlebrown"          => 0x8b4513_u32,
+        "salmon"               => 0xfa8072_u32,
+        "sandybrown"           => 0xf4a460_u32,
+        "seagreen"             => 0x2e8b57_u32,
+        "seashell"             => 0xfff5ee_u32,
+        "sienna"               => 0xa0522d_u32,
+        "silver"               => 0xc0c0c0_u32,
+        "skyblue"              => 0x87ceeb_u32,
+        "slateblue"            => 0x6a5acd_u32,
+        "slategray"            => 0x708090_u32,
+        "slategrey"            => 0x708090_u32,
+        "snow"                 => 0xfffafa_u32,
+        "springgreen"          => 0x00ff7f_u32,
+        "steelblue"            => 0x4682b4_u32,
+        "tan"                  => 0xd2b48c_u32,
+        "teal"                 => 0x008080_u32,
+        "thistle"              => 0xd8bfd8_u32,
+        "tomato"               => 0xff6347_u32,
+        "turquoise"            => 0x40e0d0_u32,
+        "violet"               => 0xee82ee_u32,
+        "wheat"                => 0xf5deb3_u32,
+        "white"                => 0xffffff_u32,
+        "whitesmoke"           => 0xf5f5f5_u32,
+        "yellow"               => 0xffff00_u32,
+        "yellowgreen"          => 0x9acd32_u32,
+      }
+
+      # A CSS named-color keyword → Color32 (case-insensitive, like CSS);
+      # `transparent` is fully transparent black. nil when `s` names no
+      # color (the bare-keyword String path stays for real keywords).
+      private def self.named_color?(s : String) : Color32?
+        return Color32.rgba(0, 0, 0, 0) if s.downcase == "transparent"
+        return nil unless (v = NAMED_COLORS[s.downcase]?)
+        Color32.rgba(((v >> 16) & 0xff).to_i, ((v >> 8) & 0xff).to_i,
+          (v & 0xff).to_i)
       end
 
       private def self.parse_string(s : String) : String?

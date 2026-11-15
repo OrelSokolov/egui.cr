@@ -78,6 +78,25 @@ describe "ecss" do
     base.color?("stroke").should eq Egui::Color32.rgb(0, 255, 0)
   end
 
+  it "parses CSS named-color keywords (case-insensitive, transparent)" do
+    doc = Egui::Ecss::Doc.parse(<<-ECSS)
+      progressbar {
+        selection_fill: green;
+        stroke: TOMATO;
+      }
+      button { background: transparent; }
+      progressbar2 { rounding: capsule; }
+    ECSS
+    base = doc.class_vars("progressbar", nil).not_nil!
+    base.color?("selection_fill").should eq Egui::Color32.rgb(0, 128, 0)
+    base.color?("stroke").should eq Egui::Color32.rgb(255, 99, 71)
+    doc.class_vars("button", nil).not_nil!
+      .color?("background").should eq Egui::Color32.rgba(0, 0, 0, 0)
+    # Non-color bare keywords keep their String shape.
+    doc.class_vars("progressbar2", nil).not_nil!
+      .str?("rounding").should eq "capsule"
+  end
+
   it "parses the @ecss version directive" do
     doc = Egui::Ecss::Doc.parse("@ecss v1;\nbutton { padding.top: 4.0; }")
     doc.version.should eq 1

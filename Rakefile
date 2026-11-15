@@ -402,7 +402,10 @@ def example_names_for(args)
   # space form (rake build:dev macos_gallery) lands in ARGV and is picked
   # up here — the bare name resolves to the per-example shorthand task
   # below, so rake doesn't treat it as an unknown task.
-  names = ([args[:name]] + ARGV.select { |a| EXAMPLES.include?(a) }).compact
+  # .uniq: the bare form (rake markdown) delivers the name through BOTH
+  # channels (the shorthand invokes build:dev with it AND rake put it in
+  # ARGV) — without the dedup the example compiled twice.
+  names = ([args[:name]] + ARGV.select { |a| EXAMPLES.include?(a) }).compact.uniq
   names = EXAMPLES if names.empty?
   unknown = names - EXAMPLES
   raise "unknown example(s): #{unknown.sort.join(', ')}" unless unknown.empty?

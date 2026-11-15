@@ -169,6 +169,20 @@ module Egui
       end
 
       private def rect_cmd(cmd : RectCmd) : Nil
+        # CSS `border-style: dashed`: the dashed stroke decomposes into
+        # line segments (Egui.dashed_stroke_segments) — the fill (if
+        # any) paints first WITHOUT the solid border plate, the dashes
+        # ride the plain line path (the CPU mirror of sokol's branch).
+        if (dashes = Egui.dashed_stroke_segments(cmd))
+          if cmd.fill || cmd.fill2 || cmd.gradient
+            fill_only = RectCmd.new(cmd.clip, cmd.rect, cmd.rounding,
+              cmd.fill, nil, 0.0, cmd.fill2, nil, cmd.corners, cmd.replace?,
+              cmd.diag?, gradient: cmd.gradient)
+            rect_cmd(fill_only)
+          end
+          dashes.each { |d| line_cmd(d) }
+          return
+        end
         # The standard border algorithm: a bordered background paints
         # as the overlay of nested fills (`.border_overlay_layers`) —
         # outer border plate(s) + the inset background — straight
@@ -338,7 +352,7 @@ module Egui
           py = y + 0.5
           (x0...x1).each do |x|
             px = x + 0.5
-            cov = cov_from_sdf(sd_segment(px, py, cmd.p1, cmd.p2) - half)
+            cov = cov_from_sdf(sd_segment_butt(px, py, cmd.p1, cmd.p2, half))
             blend_px(x, y, cmd.color, cov, cmd.clip, corners: cmd.clip_corners) if cov > 0.0
           end
         end
@@ -572,6 +586,32 @@ module Egui
         dx = apx - abx * t
         dy = apy - aby * t
         Math.sqrt(dx * dx + dy * dy)
+      end
+
+      # Signed distance to the RECTANGLE a butt-cap segment of the
+      # given half-width covers — the exact shape sokol paints (#paint_line
+      # emits a plain quad, no round cap). The along-axis falloff keeps
+      # endpoint AA on the quad edge, so narrow dash gaps survive like
+      # they do on the GPU (the round-cap #sd_segment would fill them).
+      private def sd_segment_butt(px : Float64, py : Float64, a : Pos2,
+                                  b : Pos2, half : Float64) : Float64
+        abx = b.x - a.x
+        aby = b.y - a.y
+        apx = px - a.x
+        apy = py - a.y
+        len = Math.sqrt(abx * abx + aby * aby)
+        return -half if len <= 0.0
+        raw = (apx * abx + apy * aby) / (len * len)
+        tc = raw.clamp(0.0, 1.0)
+        dx = apx - abx * tc
+        dy = apy - aby * tc
+        perp = Math.sqrt(dx * dx + dy * dy)
+        # box SDF: q = |p| - half-extents (along-axis, perpendicular)
+        qx = perp - half
+        qy = (raw - 0.5).abs * len - len / 2.0
+        ex = {qx, 0.0}.max
+        ey = {qy, 0.0}.max
+        { {qx, qy}.max, 0.0 }.min + Math.sqrt(ex * ex + ey * ey)
       end
 
       # Signed distance to a triangle contour, negative inside.

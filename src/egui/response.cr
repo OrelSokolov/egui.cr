@@ -24,6 +24,14 @@ module Egui
     # value here so the Ui block-form helpers can hand it back to the
     # app (`ui.slider(v, range) { |new_v| … }`).
     property widget_value : Float64?
+    # The widget's full outer rect, when `#rect` (the interact rect) is
+    # only a SUB-rect of what it allocated and painted — Slider: the
+    # rail row under the label/tips. The paint cache records and
+    # replays the widget through this (entry size + origin + damage
+    # region), while `#rect` stays the interact rect callers see. Nil
+    # (= the vast majority: interact rect == allocation) reads back as
+    # `#rect`.
+    @paint_rect : Rect? = nil
     # Text widgets (TextEdit) publish the edited buffer the same way
     # (`ui.text_edit_singleline(buf) { |new| … }`).
     property widget_text : String?
@@ -40,6 +48,14 @@ module Egui
 
     def changed? : Bool
       @changed
+    end
+
+    def paint_rect : Rect
+      @paint_rect || @rect
+    end
+
+    def paint_rect=(rect : Rect) : Nil
+      @paint_rect = rect
     end
 
     # A passive container Response: containers migrating onto the

@@ -326,7 +326,7 @@ module Egui
           rest << kid
         end
       end
-      attrs << {"options", opts.reject(&.empty?).join(",")} unless opts.empty?
+      attrs << {"options", opts.reject(&.empty?).join("|")} unless opts.empty?
       open_tag = ind + "<" + name
       attrs.each { |k, v| open_tag += %( #{k}="#{escape_attr(v)}") }
       has_content = rest.any? { |k| k.is_a?(Elem) || !k.as(String).strip.empty? }

@@ -17,6 +17,7 @@ require "../../egui"
 require "./text"
 require "./crystalfonts"
 require "./camera"
+require "../capybara/png" # --screenshot PNG encode
 # Win32 detached loop: the doorbell's A-side end is an overlapped socket
 # (see run_detached) — Socket comes from the stdlib, egui itself never
 # needs it elsewhere.
@@ -331,6 +332,11 @@ lib LibEguiCr
 
   # cursor (shim): `name` is a CSS cursor keyword
   fun set_cursor = egui_cr_set_cursor(name : UInt8*)
+  # one-shot --screenshot (see egui_cr_screenshot_request in the shim):
+  # request at startup, poll from the frame loop, free after encoding
+  fun screenshot_request = egui_cr_screenshot_request(path : UInt8*)
+  fun screenshot_poll = egui_cr_screenshot_poll(w : Int32*, h : Int32*) : UInt8*
+  fun screenshot_free = egui_cr_screenshot_free
   # cursor (shim): straight-alpha RGBA bitmap cursor (CSS
   # `cursor: url(…)`); (hx, hy) is the hotspot from the top-left
   fun set_cursor_image = egui_cr_set_cursor_image(rgba : UInt8*, w : Int32,
@@ -488,6 +494,9 @@ module Egui
       @@text_buf = Slice(Float32).new(12 * TEXT_BUF_GLYPHS)
       @@sdf_n = 0
       @@sdf_view : UInt32? = nil
+      # --screenshot <path>: parsed in #run before the loop starts,
+      # consumed by the frame-loop poll (see egui_cr_screenshot_request).
+      @@screenshot_path : String? = nil
       # Framebuffer height of the frame being emitted — the per-instance
       # clip is Y-flipped into gl_FragCoord's bottom-up space.
       @@sdf_fb_h = 1.0
@@ -1078,6 +1087,22 @@ module Egui
         if (route = cli[:route])
           app.ctx.router.navigate(route)
         end
+        # --screenshot <path> (or --screenshot=<path>): after ~1 s of
+        # runtime the committed frame is read back (see
+        # egui_cr_screenshot_request in the shim), written as a PNG and
+        # the app quits — deterministic single-widget shots for the
+        # twinshot oracles, no screen grabber involved. Pulled out of
+        # ARGV in place, like --page above.
+        if (idx = ARGV.index("--screenshot")) && (shot = ARGV[idx + 1]?)
+          ARGV.delete_at(idx, 2)
+          @@screenshot_path = shot
+        elsif (shot = ARGV.find(&.starts_with?("--screenshot=")))
+          ARGV.delete(shot)
+          @@screenshot_path = shot["--screenshot=".size..]
+        end
+        if (path = @@screenshot_path)
+          LibEguiCr.screenshot_request(path.to_unsafe)
+        end
         # The native (Win32) icon above + the client-side caption's
         # icon slot show the same pixels.
         Egui::WindowFrame.icon = icon if icon
@@ -1371,6 +1396,12 @@ module Egui
         # or a resize make a new frame necessary. Idle frames are R's
         # business alone (it replays the last packet every tick).
         private def self.frame_pending?(app : Egui::App) : Bool
+          # A pending --screenshot must keep producing frames: the
+          # delivery poll runs in #produce_frame, so an app that never
+          # requests repaints (a static probe) would otherwise stall
+          # right after the shot is stashed — never writing, never
+          # quitting.
+          return true if @@screenshot_path
           return true unless @@events.empty?
           return true if app.ctx.needs_repaint?
           return true if app.ctx.textures.pending_destroys?
@@ -1402,6 +1433,7 @@ module Egui
         # every draw call it makes lands in the packet builder instead
         # of GL (see the shim's routing).
         private def self.produce_frame : Nil
+          return if screenshot_delivery?
           dbg_frame("full", "events=#{@@events.size} moves=#{@@dbg_moves}")
           frame_t0 = Time.instant if @@frame_debug
           bt0 = Time.instant # FrameBench "frame" span (see on_frame_inner)
@@ -1975,7 +2007,41 @@ module Egui
         end
       end
 
+      # --screenshot delivery: the shim stashed the back buffer after a
+      # commit (≥1 s of runtime — fonts baked). Encode, write, quit.
+      # True = shot taken, the caller should skip the rest of the frame.
+      # Called from both frame entries (the legacy on_frame_inner and the
+      # detached produce_frame).
+      private def self.screenshot_delivery? : Bool
+        path = @@screenshot_path
+        return false unless path
+        begin
+          w = uninitialized Int32
+          h = uninitialized Int32
+          if (px = LibEguiCr.screenshot_poll(pointerof(w), pointerof(h)))
+            begin
+              bytes = Slice.new(px, w.to_i32 * h.to_i32 * 4)
+              File.write(path,
+                Egui::Capybara::PNG.encode_rgba(bytes, w.to_i32, h.to_i32))
+              STDERR.puts "screenshot: #{path} (#{w}x#{h})"
+            ensure
+              LibEguiCr.screenshot_free
+            end
+            @@screenshot_path = nil
+            LibEguiCr.request_quit
+            return true
+          end
+        rescue ex
+          STDERR.puts "screenshot failed: #{ex.message}"
+          @@screenshot_path = nil
+          LibEguiCr.request_quit
+          return true
+        end
+        false
+      end
+
       protected def self.on_frame_inner : Nil
+        return if screenshot_delivery?
         # Driver::Base#run_on_main deliveries — the drawing thread, so
         # GPU/GL context work is legal here. Before every pump: a
         # queued block may itself enqueue repaints.
@@ -2938,6 +3004,21 @@ module Egui
       end
 
       def self.paint_rect_body(cmd : Egui::RectCmd) : Nil
+        # CSS `border-style: dashed`: the dashed stroke decomposes into
+        # line segments (Egui.dashed_stroke_segments) — the fill (if
+        # any) paints first WITHOUT the solid border plate, the dashes
+        # ride the plain line path.
+        if (dashes = Egui.dashed_stroke_segments(cmd))
+          if cmd.fill || cmd.fill2 || cmd.gradient
+            fill_only = Egui::RectCmd.new(cmd.clip, cmd.rect, cmd.rounding,
+              cmd.fill, nil, 0.0, cmd.fill2, nil, cmd.corners, cmd.replace?,
+              cmd.diag?, gradient: cmd.gradient)
+            paint_rect_body(fill_only)
+          end
+          dashes.each { |d| paint_line(d) }
+          return
+        end
+
         # The standard border algorithm: a bordered background paints
         # as the overlay of nested fills (`.border_overlay_layers`) —
         # outer border plate(s) + the inset background, all through
@@ -3220,16 +3301,26 @@ module Egui
         LibEguiCr.sgl_end
       end
 
-      # The rounded-rect perimeter polygon (corner arcs, ~1 segment per
-      # 5px of arc, 6..24 per corner) — extracted from
+      # Arc tessellation density: segments per quarter chosen so the
+      # chord sagitta stays under ~1/500 px — fine enough that MSAA
+      # sample coverage of the polygon matches the analytic SDF arc
+      # (the EGUI_SDF=1 parity oracle; the old ~5px/segment density
+      # left a 0.07px bulge at r=8 corners), still cheap for the CPU
+      # fan (≤64 segments per quarter).
+      def self.arc_segments(rad : Float64) : Int32
+        return 8 if rad <= 0.5
+        theta = 2.0 * Math.acos({1.0 - 0.002 / rad, -1.0}.max)
+        return 64 if theta <= 0.0
+        (Math::PI / 2.0 / theta).ceil.to_i.clamp(8, 64)
+      end
+
+      # The rounded-rect perimeter polygon (corner arcs) — extracted from
       # #rounded_rect_fill for the gradient path to share.
       def self.rounded_perimeter(r : Egui::Rect, round : Float64) : Array(Egui::Pos2)
         pts = [] of Egui::Pos2
         return perimeter_corners(r) if round <= 0.5
         round = {round, r.width / 2.0, r.height / 2.0}.min
-        # сегменты на угол: крупные радиусы без «многоугольности»
-        # (~1 сегмент на 5px дуги, 6..24) — карточки r=84 были шестиугольниками
-        nseg = {(round * Math::PI / 2.0 / 5.0).ceil.to_i, 6}.max.clamp(6, 24)
+        nseg = arc_segments(round)
         corner = ->(cx : Float64, cy : Float64, a0 : Float64) do
           nseg.times do |i|
             a = a0 + (Math::PI / 2.0) * i / (nseg - 1).to_f
@@ -3255,7 +3346,7 @@ module Egui
         bl = {c.bottom_left, lim}.min
         pts = [] of Egui::Pos2
         corner = ->(cx : Float64, cy : Float64, a0 : Float64, rad : Float64) do
-          nseg = {(rad * Math::PI / 2.0 / 5.0).ceil.to_i, 6}.max.clamp(6, 24)
+          nseg = arc_segments(rad)
           nseg.times do |i|
             a = a0 + (Math::PI / 2.0) * i / (nseg - 1).to_f
             pts << Egui::Pos2.new(cx + rad * Math.cos(a),
@@ -3812,10 +3903,13 @@ module Egui
         # Bands cover the falloff's reach (1.5·blur — same tail as the
         # SDF shader), ~1px each (alpha stops follow the gaussian,
         # interpolated linearly INSIDE a band — coarser bands read as
-        # visible steps on large blurs); capped at 12. Peak 0.5: the
-        # gaussian is centered on the edge (see #shadow_stop).
+        # visible steps on large blurs); capped at 24 (the finer the
+        # bands, the closer the piecewise-linear CPU falloff converges
+        # to the SDF shader's smooth gaussian — the twinshot html
+        # parity threshold). Peak 0.5: the gaussian is centered on the
+        # edge (see #shadow_stop).
         reach = blur * 1.5
-        bands = {reach.ceil.to_i, 1}.max.clamp(1..12)
+        bands = {reach.ceil.to_i, 1}.max.clamp(1..24)
         depths = Array.new(pts.size, reach)
         LibEguiCr.sgl_begin_quads
         bands.times do |k|

@@ -1,11 +1,19 @@
-# Twinshot config for the macOS widget oracle (plans/macos-oracle-gallery.md).
+# Twinshot config for the widget oracles.
 #
+# default group — the macOS widget oracle (plans/macos-oracle-gallery.md):
 #   oracle  = native AppKit renders (golden, from render.swift)
 #   current = egui.cr renders of the same flat sheets
 #
+# html group — SDF parity on the real GPU (scripts/make_html_sdf_shots.py):
+#   oracle  = EGUI_SDF=0 tessellated path (golden, the shipped default)
+#   current = EGUI_SDF=1 analytic SDF instanced path
+# Both sides: html_gallery --only <widget> per card, PAUSE=1 (frozen frame
+# time — any two runs paint the same frame), DISPLAY :0.
+#
 # Run from the repo root:
 #   PATH="/opt/homebrew/bin:$PATH" twinshot compare --no-open -c oracle/twinshot.yml
-# Reports land in oracle/twinshot-report/default/ (diff images, heat
+#   twinshot review html --no-open -c oracle/twinshot.yml   # regen + compare SDF parity
+# Reports land in oracle/twinshot-report/<group>/ (diff images, heat
 # overlays, report_for_agent.md).
 
 oracle:
@@ -16,8 +24,24 @@ current:
   path: egui/png
   generate: sh -c 'cd .. && crystal run scripts/make_macos_oracle_shots.cr'
 
+groups:
+  html:
+    oracle:
+      path: html/sdf0
+      generate: python3 ../scripts/make_html_sdf_shots.py 0 html/sdf0
+    current:
+      path: html/sdf1
+      generate: python3 ../scripts/make_html_sdf_shots.py 1 html/sdf1
+
 png:
   # Flat widget sheets on a solid background: antialiasing aside, the
   # themes are far apart — the diff images are the deliverable, the
   # threshold only decides pass/fail.
   max_diff_ratio: 0.002
+
+soft_check:
+  # The gradient cards render through Canvas2D whose async bake races
+  # the captured frame (the canvas lands baked or empty run-to-run,
+  # both legs equally) — visible in the reports, never failing.
+  # Tree-relative paths: the html group's trees root at html/sdf0|sdf1.
+  - gradient.png

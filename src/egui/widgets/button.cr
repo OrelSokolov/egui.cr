@@ -402,8 +402,12 @@ module Egui
       elsif (b = icon_box) && (name = @icon) && Icons::NAMES.includes?(name)
         Icons.draw(ui.painter, name, b, style.visuals.text_color)
       end
-      text_color = state_vars.color?("text_color") ||
-                   style.visuals.text_color
+      # The label color rides the SAME cascade as the stroke
+      # (`Widget#cascade_color`: inline `#style` → element override →
+      # class rules → theme) — a `#style { text_color }` beats a class
+      # rule like CSS `style="…"`.
+      text_color = cascade_color("text_color", ui, id, state,
+        style.visuals.text_color)
       ui.painter.text(pos, label, font_size, text_color,
         family: face_family, bold: face_bold)
 

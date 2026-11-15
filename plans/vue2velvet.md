@@ -33,7 +33,7 @@ egui.cr / NativeHTML до отдельного решения о переиме�
 | `{{ x }}` | `{x}` в тексте и в атрибутах | `interp` |
 | текст элемента | `text="…"` (парсер exml текст-ноды не читает): `<p>{{x}}</p>` → `<label text="{x}"/>` | `serialize_elem` |
 | `class="a b"` | точечный путь `"a.b"` (конвенция ECSS) | `map_elem` |
-| `<select>`+`<option>` | `<combo options="A,B,C">` (текст опции; value-ключи — вне подмножества) | `serialize_select` |
+| `<select>`+`<option>` | `<combo options="A|B|C">` (текст опции; value-ключи — вне подмножества) | `serialize_select` |
 | `input[type=range/checkbox]` | `slider`/`checkbox`; прочие типы — `input` + запись в отчёт | `map_elem` |
 
 Словарь тегов TAG_MAP: div/section/article/aside/header/footer/nav

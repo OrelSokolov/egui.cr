@@ -37,8 +37,11 @@
 # parses as a Custom node and dispatches to a handler the APPLICATION
 # registered — either per renderer instance (`Renderer#on`) or
 # globally with the top-level `widget` sugar (every renderer sees
-# it; an instance `#on` overrides). Each developer extends the
-# vocabulary per app — domain widgets, custom containers — with
+# it; an instance `#on` overrides). Custom handlers run BEFORE the
+# built-in dispatch, so a registered name wins even when it IS a
+# builtin (`on("label")` claims `<label>`) — no naming convention
+# (hyphens) is required to add an element. Each developer extends
+# the vocabulary per app — domain widgets, custom containers — with
 # full access to node/ui/ctx/store and `render_each` for children;
 # the module itself never needs editing.
 #
@@ -46,8 +49,8 @@
 #
 #   page     id, title?, if?/unless?        routed full-window page
 #   modal    id, title?, buttons="A|B|C",   routed modal page; the
-#            on_button, if?/unless?         clicked label lands in
-#                                            strings["_modal_button"]
+#            delimiter?, on_button,          clicked label lands in
+#            if?/unless?                     strings["_modal_button"]
 #                                            before the action fires
 #   menubar                                 ctx.menu_bar section
 #   menu     label                          one menu_button dropdown
@@ -64,7 +67,10 @@
 #   textarea bind, hint?, rows, frame, editor_id? multi-line; editor_id
 #            interpolates and switches the child-Ui (per-tab editors),
 #            auto-focusing a CHANGED id (focus follows the tab)
-#   combo    bind, options="A,B,C", on_change?
+#   combo    bind, options="A|B|C", delimiter?, on_change?
+#            :options="{list}" — a list slot (rt.lists) instead of
+#            a literal split; the dynamic counterpart, same push
+#            model as <repeat over=…> rows
 #   separator
 #   repeat   for="doc"?, in="items", key="id"?,    the v-for (Python
 #            index="i"?                             reading order): rows
@@ -123,6 +129,8 @@ module Egui
     # name outside KIND_BY_NAME parses as Custom and dispatches to a
     # handler the app registered on its Renderer (`Renderer#on`) —
     # the vocabulary is open per application, no module edits needed.
+    # A handler registered for a BUILT-IN name overrides the builtin
+    # (custom dispatch runs first — see Renderer#render_body).
     enum Kind
       Page; Modal; MenuBar; Menu; MenuItem; Central; Statusbar
       Row; Column; Box; Heading; Label; Button; Slider; Checkbox
@@ -192,6 +200,8 @@ module Egui
       getter title_attr : String?
       getter buttons_list : Array(String)
       getter on_button : String?
+      # list attrs — the `delimiter=` override for options/buttons splits
+      getter list_delimiter : String?
       # menus
       getter label_attr : String?
       getter hint_attr : String?
@@ -210,6 +220,9 @@ module Egui
       getter rows_count : Int32
       getter framed : Bool
       getter combo_options : Array(String)
+      # `:options="{list}"` — the bound variant: a list slot name the
+      # app publishes (rt.lists), nil for a literal options= split
+      getter options_key : String?
       # repeat
       getter repeat_for : String?
       getter repeat_in : String?
@@ -256,8 +269,9 @@ module Egui
         @ref_name = id.try { |s| s.empty? ? nil : s }
         @panel_id = id || (@kind.central? ? "central_panel" : "bottom_panel")
         @title_attr = @attrs["title"]?
-        @buttons_list = @attrs["buttons"]?.to_s.split('|')
-          .map(&.strip).reject(&.empty?)
+        @list_delimiter = @attrs["delimiter"]?.try { |d| d.empty? ? nil : d }
+        @buttons_list = Exml.split_list(@attrs["buttons"]?,
+          @list_delimiter || "|")
         @on_button = @attrs["on_button"]?
         @label_attr = @attrs["label"]?
         @hint_attr = @attrs["hint"]?
@@ -273,8 +287,9 @@ module Egui
         @editor_id = @attrs["editor_id"]?
         @rows_count = @attrs["rows"]?.try(&.to_i?) || 8
         @framed = @attrs["frame"]? != "false"
-        @combo_options = @attrs["options"]?.to_s.split(",")
-          .map(&.strip).reject(&.empty?)
+        @options_key = Exml.slot_ref?(@attrs["options"]?)
+        @combo_options = @options_key ? Array(String).new
+          : Exml.split_list(@attrs["options"]?, @list_delimiter || "|")
         @repeat_for = @attrs["for"]?
         @repeat_in = @attrs["in"]?
         @repeat_key = @attrs["key"]?
@@ -352,6 +367,25 @@ module Egui
     def self.parse_box_stroke(s : String) : Color32?
       return nil unless s.starts_with?('#')
       parse_hex_color(s)
+    end
+
+    # List-valued attributes (`options=`, `buttons=`) split on their
+    # default separator `|` unless the element carries `delimiter="…"`
+    # (any string, a comma or space included); blank items drop out
+    # either way.
+    def self.split_list(s : String?, delim : String) : Array(String)
+      return [] of String unless s
+      s.split(delim).map(&.strip).reject(&.empty?)
+    end
+
+    # An options= value of the single-slot form "{name}" — the
+    # desugared `:options="name"` — BINDS a list slot (rt.lists)
+    # instead of splitting a literal; nil for plain literal lists.
+    def self.slot_ref?(s : String?) : String?
+      return nil unless s
+      return nil unless s.starts_with?('{') && s.ends_with?('}')
+      inner = s[1..-2]
+      inner.matches?(/^[a-zA-Z_][a-zA-Z0-9_.]*$/) ? inner : nil
     end
 
     # ── codegen (plans/NativeHTML.md §6, Route A) ──────────────────────
@@ -1251,7 +1285,7 @@ module Egui
 
     ATTRS_BY_KIND = {
       Kind::Page      => %w(title),
-      Kind::Modal     => %w(title buttons on_button),
+      Kind::Modal     => %w(title buttons delimiter on_button),
       Kind::MenuBar   => %w(),
       Kind::Menu      => %w(label),
       Kind::MenuItem  => %w(label on_click hint),
@@ -1270,7 +1304,7 @@ module Egui
       Kind::Progress  => %w(bind text),
       Kind::Input     => %w(bind hint focus_id on_change numeric trim),
       Kind::Textarea  => %w(bind hint rows frame editor_id on_change),
-      Kind::Combo     => %w(bind options on_change),
+      Kind::Combo     => %w(bind options delimiter on_change),
       Kind::Toggle    => %w(bind text on_change),
       Kind::Custom    => %w(), # handler-defined — not checked
       Kind::Partial   => %w(),
@@ -1313,12 +1347,17 @@ module Egui
 
     def self.validate_node(node : Node, known_custom : Enumerable(String),
                            issues : Array(String)) : Nil
+      # A handler-claimed name is custom vocabulary — including a
+      # built-in name overridden via `#on`/`widget` (the dispatcher
+      # gives custom handlers priority over builtins; the linter
+      # mirrors it): the handler owns the attrs, nothing builtin
+      # to check.
+      return if known_custom.includes?(node.name)
+
       case node.kind
       when .custom?
-        unless known_custom.includes?(node.name)
-          issues << "#{node.path}: <#{node.name}> — no handler registered" \
-                    " for this app's renderer"
-        end
+        issues << "#{node.path}: <#{node.name}> — no handler registered" \
+                  " for this app's renderer"
         return
       when .partial?, .use?, .template?
         issues << "#{node.path}: <#{node.name}> leaked into the tree" \
@@ -1422,13 +1461,24 @@ module Egui
       property actions = {} of String => -> Nil
       # List slots — the `<repeat over="…">` data: rows of string
       # fields the app publishes (one nesting level; format numbers
-      # on the app side, like every other slot).
+      # on the app side, like every other slot). Combo `<combo
+      # :options="…">` uses the same push model with a plain
+      # Array(String): the app owns the array's lifetime (may mutate
+      # it in place), the renderer only reads — a steady-state frame
+      # allocates nothing.
       property rows = {} of String => Array(Hash(String, String))
+      property lists = {} of String => Array(String)
 
       # The rows of a list slot; nil = no such slot (a warn-once at
       # render time, not here — lenient).
       def rows?(key : String) : Array(Hash(String, String))?
         rows[key]?
+      end
+
+      # The options of a bound combo (`:options=`); nil = no such
+      # slot — the same lenient warn-once at render time.
+      def list?(key : String) : Array(String)?
+        lists[key]?
       end
 
       # One key's display string — strings verbatim, floats with two
@@ -1570,6 +1620,10 @@ module Egui
         super || @parent.rows?(key)
       end
 
+      def list?(key : String) : Array(String)?
+        super || @parent.list?(key)
+      end
+
       def bool(key : String) : Bool
         v = bools[key]?
         return v unless v.nil?
@@ -1656,8 +1710,11 @@ module Egui
       #     ui.label("FPS: #{"%.1f" % ctx.fps}")
       #   end
       #
-      # ...and `<fps_meter/>` in markup renders it. `if`/`unless` and
-      # visibility work like any built-in element.
+      # ...and `<fps_meter/>` in markup renders it. A name that IS a
+      # builtin works too — the handler overrides the builtin (custom
+      # dispatch runs before the built-in one), so any plain word can
+      # be claimed. `if`/`unless` and visibility work like any
+      # built-in element.
       def on(name : String, &handler : CustomHandler) : Nil
         @custom[name] = handler
       end
@@ -1856,6 +1913,15 @@ module Egui
         return unless visible?(node, rt)
         bind_hotkey(node, ui, ctx, rt)
 
+        # Custom vocabulary has PRIORITY over builtins: a handler
+        # registered for a name runs even when that name is a
+        # built-in element (`on("label")` claims `<label>`). No
+        # hyphen/naming convention is required to add an element.
+        if (handler = custom_handler?(node))
+          render_custom(node, ui, ctx, rt, handler)
+          return
+        end
+
         case node.kind
         in .menu_bar?
           # layout sections only render through render_children
@@ -2008,7 +2074,23 @@ module Egui
         in .combo?
           key = node.bind_key || ""
           on_act = node.on_change
-          ui.combo_box(node.path, rt.string(key), node.combo_options) do |opt|
+          # `:options="list"` (desugared to options="{list}") reads a
+          # LIST slot the app publishes (rt.lists) — the dynamic
+          # counterpart of the parse-time literal split. Missing slot:
+          # warn-once and an empty list (the placeholder row).
+          opts = node.combo_options
+          if lkey = node.options_key
+            if list = rt.list?(lkey)
+              opts = list
+            else
+              unless @warned_custom.includes?("list:#{lkey}")
+                @warned_custom << "list:#{lkey}"
+                STDERR.puts "exml: options=\"{#{lkey}}\" — no such list" \
+                            " slot; publish it as rt.lists[\"#{lkey}\"]"
+              end
+            end
+          end
+          ui.combo_box(node.path, rt.string(key), opts) do |opt|
             rt.strings[key] = opt
             rt.fire(on_act.not_nil!) if on_act
           end
@@ -2016,34 +2098,47 @@ module Egui
           ref_set(node, ui.markdown(text_of(node, rt),
             base_dir: node.base_dir))
         in .custom?
-          if handler = @custom[node.name]? || Exml.widgets[node.name]?
-            # Retained subtree (see #custom_subtree_key): a pure custom
-            # element replays its whole span from the paint cache —
-            # layout, children and paint skipped on a hit.
-            if (skey = custom_subtree_key(node, ui, ctx, rt))
-              # An appear run must survive end-frame pruning even on a
-              # replay frame (the handler that drives it did not run):
-              # a pruned run would make drive() start a fresh one and
-              # re-play the entrance animation forever.
-              if node.attrs["appear"]?
-                ctx.memory.use_id(Egui::Id.from("#{node.path}/appear"))
-              end
-              ui.cached_subtree(skey) { handler.call(node, ui, ctx, rt, self) }
-            else
-              handler.call(node, ui, ctx, rt, self)
-            end
-          else
-            unless @warned_custom.includes?(node.name)
-              @warned_custom << node.name
-              STDERR.puts "exml: no handler for <#{node.name}> — " \
-                          "register one with Renderer#on; element skipped"
-            end
+          # No handler for this name (a registered one never reaches
+          # the case — custom dispatch runs before it)
+          unless @warned_custom.includes?(node.name)
+            @warned_custom << node.name
+            STDERR.puts "exml: no handler for <#{node.name}> — " \
+                        "register one with Renderer#on; element skipped"
           end
         in .menu_item?
           # a bare item outside a menu renders as a button
           if ui.button(rt.interpolate(node.label_attr || "?"), id: node.path).clicked?
             fire_named(node.on_click, rt)
           end
+        end
+      end
+
+      # The custom-element handler for this node: instance `#on`
+      # first, then the global `widget` registry. Runs BEFORE the
+      # built-in dispatch (#render_body), so a registered name wins
+      # over its builtin — the linter mirrors this order.
+      private def custom_handler?(node : Node) : CustomHandler?
+        @custom[node.name]? || Exml.widgets[node.name]?
+      end
+
+      # Custom dispatch shared by every handler-claimed node: the
+      # retained-subtree replay (a pure custom element replays its
+      # whole span from the paint cache — layout, children and paint
+      # skipped on a hit), else the plain handler call.
+      private def render_custom(node : Node, ui : Ui, ctx : Context,
+                                rt : Runtime,
+                                handler : CustomHandler) : Nil
+        if (skey = custom_subtree_key(node, ui, ctx, rt))
+          # An appear run must survive end-frame pruning even on a
+          # replay frame (the handler that drives it did not run):
+          # a pruned run would make drive() start a fresh one and
+          # re-play the entrance animation forever.
+          if node.attrs["appear"]?
+            ctx.memory.use_id(Egui::Id.from("#{node.path}/appear"))
+          end
+          ui.cached_subtree(skey) { handler.call(node, ui, ctx, rt, self) }
+        else
+          handler.call(node, ui, ctx, rt, self)
         end
       end
 

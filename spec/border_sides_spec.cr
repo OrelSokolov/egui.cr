@@ -178,4 +178,29 @@ describe "raster per-side border" do
     i = (10 * raster.width + 40) * 4 # top band row (edge y=10, width 2)
     raster.pixels[i + 2].should be > 200 # blue stroke present
   end
+
+  it "dashes a uniform stroke along the perimeter (border-style: dashed)" do
+    # Stroke-only rect, 2px red dashed on green: the centerline sits
+    # 1px inside (row 11), the 3:1 pattern walks 6 on / 2 off from x=11
+    # — ON [11,17), OFF [17,19), ON [19,25) …
+    cmd = Egui::RectCmd.new(
+      Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 300.0)),
+      Egui::Rect.from_min_size(Egui::Pos2.new(10.0, 10.0),
+        Egui::Vec2.new(60.0, 30.0)),
+      0.0, nil, Egui::Color32.rgb(255, 0, 0), 2.0, stroke_dash: true)
+
+    raster = Egui::Capybara::Raster.new(80, 50, Egui::Color32.rgb(0, 255, 0))
+    raster.render([cmd])
+    px = ->(x : Int32, y : Int32) : Int32 do
+      i = (y * raster.width + x) * 4
+      raster.pixels[i].to_i
+    end
+    px.call(14, 11).should be > 200   # middle of the first dash
+    px.call(18, 11).should be < 50    # middle of the first gap
+    px.call(20, 11).should be > 200   # the second dash is back on
+    # the vertical edges dash too (left column, centerline x=11; the
+    # walk runs bottom→top there, the pattern lands ON (25,31] OFF (23,25])
+    px.call(11, 28).should be > 200
+    px.call(11, 24).should be < 50
+  end
 end

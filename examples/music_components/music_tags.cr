@@ -1609,7 +1609,7 @@ widget :ocombo do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   key = node.attrs["bind"]?
   # опции — из store (rt.rows["<key>_opts"], как <option v-for> у Vue),
-  # фолбэк — статичный атрибут options="a,b,c"
+  # фолбэк — статичный атрибут options="a|b|c"
   options = if key && (rows = rt.rows["#{key}_opts"]?)
               rows.map { |row| row["t"]? || "" }
             else

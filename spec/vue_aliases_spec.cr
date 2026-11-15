@@ -28,7 +28,7 @@ describe "vue attribute aliases" do
 
   it "renames @click / v-on:change → on_click= / on_change=" do
     n = vue_nodes(
-      %(<button text="Go" @click="save"/><combo bind="x" options="a,b" v-on:change="apply"/>))
+      %(<button text="Go" @click="save"/><combo bind="x" options="a|b" v-on:change="apply"/>))
     n[0].on_click.should eq("save")
     n[1].on_change.should eq("apply")
     Egui::Exml.warnings.should be_empty
@@ -45,6 +45,21 @@ describe "vue attribute aliases" do
     n = vue_nodes(%(<box :padding="5"/>))
     n[0].attrs["padding"].should eq("5")
     Egui::Exml.warnings.any?(&.includes?("write padding=\"5\"")).should be_true
+  end
+
+  it "binds :options= to a list slot instead of splitting a literal" do
+    n = vue_nodes(
+      %(<combo bind="sel" :options="genres"/>) +
+      %(<combo bind="lit" v-bind:options="modes"/>) +
+      %(<combo bind="old" options="a|b"/>)
+    )
+    n[0].attrs["options"].should eq("{genres}")
+    n[0].options_key.should eq("genres")
+    n[0].combo_options.should be_empty
+    n[1].options_key.should eq("modes")
+    n[2].options_key.should be_nil
+    n[2].combo_options.should eq(%w(a b))
+    Egui::Exml.warnings.should be_empty
   end
 
   it "warns on JS expression values (no expression engine, by design)" do

@@ -192,7 +192,7 @@ end</textarea>
       <div class="plabel">EXML</div>
       <textarea data-mode="exml" class="exml" readonly rows="4" spellcheck="false"><row>
   <b text="bold"/> <i text="italic"/>
-  <mono-run text="mono"/> <label text="plain"/>
+  <mono text="mono"/> <label text="plain"/>
 </row></textarea>
     </div>
     <div class="result"><span><b>bold</b> <i>italic</i> <code>mono</code> plain</span></div>
@@ -228,11 +228,11 @@ end</textarea>
 ui.em("emphasized text")
 ui.code("code text")</textarea>
       <div class="plabel">ECSS</div>
-      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">mono-run { font_family: monospace }</textarea>
+      <textarea data-mode="ecss" class="ecss" readonly rows="3" spellcheck="false">mono { font_family: monospace }</textarea>
       <div class="plabel">EXML</div>
       <textarea data-mode="exml" class="exml" readonly rows="3" spellcheck="false"><b text="strong text"/>
 <i text="emphasized text"/>
-<mono-run text="code text"/></textarea>
+<mono text="code text"/></textarea>
     </div>
     <div class="result"><strong>strong text</strong><br><em>emphasized text</em><br><code>code text</code></div>
   </div>
@@ -1365,7 +1365,7 @@ end</textarea>
       <div class="plabel">ECSS</div>
       <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">combo { rounding: 6 }</textarea>
       <div class="plabel">EXML</div>
-      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="One,Two,Three"/></textarea>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="One|Two|Three"/></textarea>
     </div>
     <div class="result"><select><option>One</option><option selected>Two</option><option>Three</option></select></div>
   </div>
@@ -1478,7 +1478,7 @@ ui.radio(@sel == 1, "Second")
       <div class="plabel">ECSS</div>
       <textarea data-mode="ecss" class="ecss" readonly rows="1" spellcheck="false">radio { text_color: text }</textarea>
       <div class="plabel">EXML</div>
-      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="First,Second"/></textarea>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><combo bind="sel" options="First|Second"/></textarea>
     </div>
     <div class="result"><label><input type="radio" name="r" checked> First</label> <label><input type="radio" name="r"> Second</label></div>
   </div>

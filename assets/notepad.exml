@@ -58,7 +58,7 @@
     <input bind="search" hint="Search settings…" focus_id="search"/>
     <separator/>
     <label text="Theme:"/>
-    <combo bind="theme" options="Dark, Light" on_change="theme_changed"/>
+    <combo bind="theme" options="Dark|Light" on_change="theme_changed"/>
     <separator/>
     <label text="Editor font size: 14"/>
     <label text="Tab width: 4"/>

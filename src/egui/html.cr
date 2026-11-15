@@ -158,6 +158,12 @@ module Egui
     class BoxParams
       property fill : Color32?
       property stroke : Color32?
+      # CSS `border-style: dashed` / the `border:` shorthand — the box
+      # stroke draws as dashes (RectCmd#stroke_dash).
+      property stroke_dash : Bool = false
+      # The `border: <width> …` shorthand's width (nil = the call-site
+      # default 1.0).
+      property stroke_width : Float64?
       property rounding : Float64?
       property corners : CornerRadii?
       property margin : Vec2?
@@ -229,6 +235,25 @@ module Egui
           base.fill = color(val)
         when "stroke", "border-color"
           base.stroke = color(val)
+        when "border-style"
+          # CSS `border-style`: `dashed` turns the uniform stroke into
+          # dashes; the other keywords keep the solid path.
+          base.stroke_dash = true if val.strip == "dashed"
+        when "border"
+          # The `border: <width> <style> <color>` shorthand (any order,
+          # like CSS): width/color take their slots, `dashed` sets the
+          # dash flag, `none` drops the stroke entirely.
+          val.split.each do |tok|
+            if tok == "dashed"
+              base.stroke_dash = true
+            elsif tok == "none"
+              base.stroke = nil
+            elsif (c = tok.starts_with?('#') ? color(tok) : rgba_color?(tok))
+              base.stroke = c
+            elsif (n = tok.delete("px").to_f64?)
+              base.stroke_width = n
+            end
+          end
         when "border-radius", "rounding"
           # The CSS shorthand (1-4 radii, `px` optional): multi-value
           # parses per-corner, a single value stays the scalar it
@@ -512,6 +537,8 @@ module Egui
             fill: params.fill, stroke: params.stroke,
             rounding: params.rounding || params.corners.try(&.max) || 6.0,
             margin: params.margin,
+            stroke_width: params.stroke_width || 1.0,
+            stroke_dash: params.stroke_dash,
             corners: params.corners,
             shadow: params.shadow,
             transform: params.transform,
@@ -520,6 +547,7 @@ module Egui
             position: Html.position_sym(params.position),
             top: params.top, right: params.right,
             bottom: params.bottom, left: params.left,
+            width: params.width, height: params.height,
             &block
           )
         end

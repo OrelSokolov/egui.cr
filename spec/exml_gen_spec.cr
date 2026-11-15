@@ -21,7 +21,7 @@ MARKUP = <<-XML
         <button label="Save" on_click="save"/>
         <box direction="row" fill="#ff0000" rounding="8">
           <input bind="name" hint="your name"/>
-          <combo options="One, Two" bind="pick"/>
+          <combo options="One|Two" bind="pick"/>
         </box>
       </column>
     </page>
@@ -68,7 +68,7 @@ describe "exml codegen" do
       {"bind" => "name", "hint" => "your name"}, [] of Egui::Exml::Node,
       "/exml[0]/page[1]:home/column[0]/box[2]/input[0]")
     combo = Egui::Exml::Node.new(Egui::Exml::Kind::Combo, "combo",
-      {"options" => "One, Two", "bind" => "pick"}, [] of Egui::Exml::Node,
+      {"options" => "One|Two", "bind" => "pick"}, [] of Egui::Exml::Node,
       "/exml[0]/page[1]:home/column[0]/box[2]/combo[1]")
     box = Egui::Exml::Node.new(Egui::Exml::Kind::Box, "box",
       {"direction" => "row", "fill" => "#ff0000", "rounding" => "8"},

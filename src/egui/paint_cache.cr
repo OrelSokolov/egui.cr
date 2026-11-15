@@ -77,6 +77,12 @@ module Egui
       getter interacts : Array(Interact)
       getter cursor : Pos2?
       getter min_rect : Rect?
+      # The widget's interact rect relative to `origin`, when it differs
+      # from the widget's own extent (Response#paint_rect): replay
+      # registers the hit-test there, so `Response#rect` is identical on
+      # a replay and on a real run. Nil = interact covered the whole
+      # widget (the common case).
+      getter sense_rect : Rect?
       property last_gen : Int32
 
       def initialize(@id : Id, @ids_consumed : Int32, @size : Vec2,
@@ -84,7 +90,8 @@ module Egui
                      @ambient_clip : Rect, @commands : Array(PaintCmd),
                      @layers : Array(Int32), @last_gen : Int32,
                      @interacts : Array(Interact) = [] of Interact,
-                     @cursor : Pos2? = nil, @min_rect : Rect? = nil)
+                     @cursor : Pos2? = nil, @min_rect : Rect? = nil,
+                     @sense_rect : Rect? = nil)
       end
     end
 

@@ -836,6 +836,8 @@ static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
                          float ch, const float* inst, int count, int copy,
                          int stencil, uint32_t view);
 static void sh_sdf_frame(float w_pts, float h_pts);
+// one-shot --screenshot readback (defined with the SDF section below)
+static void sh_screenshot_try(int w, int h);
 // pixels-per-point scale. Detached platforms: set from Crystal via
 // egui_cr_set_ppp every produced frame. Direct path (macOS): set_ppp is
 // never called, so egui_cr_begin_pass refreshes it from sapp_dpi_scale()
@@ -2073,6 +2075,7 @@ void egui_cr_end_pass(void) {
     sg_end_pass();
     sg_commit();
     g_pass_open = false;
+    sh_screenshot_try(g_fb_w, g_fb_h);
     sh_shot_legacy();
 }
 
@@ -2522,6 +2525,18 @@ static sg_pipeline g_sdf_pip;
 // same SDF rounded-rect shape, color mask off, stencil REPLACE 1
 // (mask) / REPLACE 0 (unmask, square bbox).
 static sg_pipeline g_sdf_pip_st, g_sdf_mask_pip, g_sdf_unmask_pip;
+// MSAA hard-edge mode: the batch FS replaces its smoothstep AA with an
+// analytic 4-sample average over the driver's real MSAA sample positions
+// (baked into the shader — see sh_sdf_ensure), matching the tessellated
+// quads' MSAA coverage for pixel parity with EGUI_SDF=0. 0 on
+// single-sample swapchains, non-4x MSAA and GLES3.
+static int g_sdf_hard;
+#if defined(SOKOL_GLCORE)
+#ifndef GL_SAMPLE_SHADING
+#define GL_SAMPLE_SHADING 0x8C36
+#endif
+extern void glMinSampleShading(float);
+#endif
 static sg_buffer g_sdf_quad; // static corner quad (-1..1), 6 × vec2
 static sg_buffer* g_sdf_ring; // growable (sh_sdf_ring_grow), SH_SDF_RING to start
 static int g_sdf_ring_cap;
@@ -2634,9 +2649,15 @@ static const char SH_SDF_FS[] =
     "    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n"
     "}\n"
     "void main() {\n"
+    "#ifdef SDF_SS_TEST\n"
+    "    frag_color = vec4(float(gl_SampleID) * 0.25, 0.0, 0.0, 1.0);\n"
+    "    return;\n"
+    "#endif\n"
     // Per-instance scissor: the clip rect rides the instance in FB
     // pixels, Y ALREADY BOTTOM-UP (the caller flips — gl_FragCoord is
-    // bottom-up). A hard step matches the hardware scissor's edge.
+    // bottom-up). Under hard mode the FS runs per sample (enabled in
+    // sh_draw_sdf), so gl_FragCoord is the SAMPLE position — this step
+    // then matches the sample-accurate hardware scissor exactly.
     "    vec2 fp = gl_FragCoord.xy;\n"
     "    float cm = step(v_clip.x, fp.x) * step(fp.x, v_clip.z)\n"
     "             * step(v_clip.y, fp.y) * step(fp.y, v_clip.w);\n"
@@ -2654,24 +2675,65 @@ static const char SH_SDF_FS[] =
     "    if (v_params.z > 1.5) {\n"
     // Textured glyph quad: the atlas texel carries the coverage in its
     // alpha, the instance color is the text color — same math the sgl
-    // text path did (tex * color under the shared alpha blend).
-    "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, v_uv01));\n"
-    "        float a = t.a * v_fill.a * cm;\n"
+    // text path did (tex * color under the shared alpha blend). Under
+    // hard mode the FS runs per sample, but EVERYTHING here evaluates
+    // at the PIXEL CENTER (pc): the per-sample outputs then coincide,
+    // the resolve keeps the per-pixel sgl text look — per-sample UVs
+    // would fetch 4 subpixel-shifted texels and per-sample clip steps
+    // would soften every glyph edge (the twinshot html text diffs).
+    "#if !SDF_EDGE_AA\n"
+    "        vec2 pc = floor(gl_FragCoord.xy) + vec2(0.5);\n"
+    "        vec2 vpc = v_p - (gl_FragCoord.xy - pc) / ppp;\n"
+    "        vec2 uv01 = vpc / max(2.0 * v_half, 1e-4) + 0.5;\n"
+    "        float cmc = step(v_clip.x, pc.x) * step(pc.x, v_clip.z)\n"
+    "                  * step(v_clip.y, pc.y) * step(pc.y, v_clip.w);\n"
+    "#else\n"
+    "#define uv01 v_uv01\n"
+    "#define cmc cm\n"
+    "#endif\n"
+    "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, uv01));\n"
+    "#ifdef SDF_TEX_TEST\n"
+    "        frag_color = vec4(t.a, t.a, t.a, 1.0);\n"
+    "        return;\n"
+    "#endif\n"
+    "#ifdef SDF_UV_TEST\n"
+    // the ACTUAL fetched uv — a geometry offset shows up directly
+    // against the Crystal-side glyph dump ([sdf-glyph] uv=…).
+    "        frag_color = vec4(mix(v_uv.x, v_uv.z, uv01.x), mix(v_uv.y, v_uv.w, uv01.y), 0.0, 1.0);\n"
+    "        return;\n"
+    "#endif\n"
+    "        float a = t.a * v_fill.a * cmc;\n"
     "        if (a <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, a);\n"
     "        return;\n"
     "    }\n"
     "        float blur = max(v_params.w * ppp, 1.0);\n"
-    "        float t = d / blur;\n"
-    "        if (t >= 1.5) discard;\n"
+    "        float t = d / (blur * 1.5);\n"
+    "        if (t >= 1.0) discard;\n"
     "        float cov = t <= 0.0 ? 1.0\n"
-    "            : 0.5 * (exp(-2.0 * t * t) - 0.011109) * 1.011235;\n"
+    "            : 0.5 * (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov * cm);\n"
     "        return;\n"
     "    }\n"
     "    float aa = 1.0;\n"
-    "    float cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "    float cov;\n"
+    "#if SDF_EDGE_AA\n"
+    "    cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "#else\n"
+    // Hard edges under MSAA: the FS runs PER SAMPLE (sample shading is
+    // enabled around the batch draws in sh_draw_sdf), so this in/out
+    // test on the interpolated d lands per sample — exactly the
+    // coverage the tessellated quads get from MSAA rasterization, and
+    // per-sample BLENDING matches them too (an analytic per-pixel alpha
+    // average cannot reproduce stacked-edge blending). The smoothstep
+    // would double-antialias.
+    "    cov = d > 0.0 ? 0.0 : 1.0;\n"
+    "#endif\n"
+    "#ifdef SDF_COV_TEST\n"
+    "    frag_color = vec4(cov, cm, 0.0, 1.0);\n"
+    "    return;\n"
+    "#endif\n"
     "    if (cov <= 0.0) discard;\n"
     "    float t = v_ext.z > 0.5\n"
     "        ? clamp((v_p.x / max(2.0 * v_half.x, 1e-4)\n"
@@ -2682,7 +2744,11 @@ static const char SH_SDF_FS[] =
     "    vec4 color = fill;\n"
     "    if (v_stroke.a > 0.0 && v_ext.x > 0.0) {\n"
     "        float sw = v_ext.x * ppp;\n"
+    "#if SDF_EDGE_AA\n"
     "        float inside = 1.0 - smoothstep(-aa, aa, d + sw);\n"
+    "#else\n"
+    "        float inside = (d + sw) > 0.0 ? 0.0 : 1.0;\n"
+    "#endif\n"
     "        color = mix(v_stroke, fill, inside);\n"
     "    }\n"
     "    frag_color = vec4(color.rgb, color.a * cov * cm);\n"
@@ -2785,9 +2851,15 @@ static const char SH_SDF_FS[] =
     "    return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n"
     "}\n"
     "void main() {\n"
+    "#ifdef SDF_SS_TEST\n"
+    "    frag_color = vec4(float(gl_SampleID) * 0.25, 0.0, 0.0, 1.0);\n"
+    "    return;\n"
+    "#endif\n"
     // Per-instance scissor: the clip rect rides the instance in FB
     // pixels, Y ALREADY BOTTOM-UP (the caller flips — gl_FragCoord is
-    // bottom-up). A hard step matches the hardware scissor's edge.
+    // bottom-up). Under hard mode the FS runs per sample (enabled in
+    // sh_draw_sdf), so gl_FragCoord is the SAMPLE position — this step
+    // then matches the sample-accurate hardware scissor exactly.
     "    vec2 fp = gl_FragCoord.xy;\n"
     "    float cm = step(v_clip.x, fp.x) * step(fp.x, v_clip.z)\n"
     "             * step(v_clip.y, fp.y) * step(fp.y, v_clip.w);\n"
@@ -2805,24 +2877,65 @@ static const char SH_SDF_FS[] =
     "    if (v_params.z > 1.5) {\n"
     // Textured glyph quad: the atlas texel carries the coverage in its
     // alpha, the instance color is the text color — same math the sgl
-    // text path did (tex * color under the shared alpha blend).
-    "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, v_uv01));\n"
-    "        float a = t.a * v_fill.a * cm;\n"
+    // text path did (tex * color under the shared alpha blend). Under
+    // hard mode the FS runs per sample, but EVERYTHING here evaluates
+    // at the PIXEL CENTER (pc): the per-sample outputs then coincide,
+    // the resolve keeps the per-pixel sgl text look — per-sample UVs
+    // would fetch 4 subpixel-shifted texels and per-sample clip steps
+    // would soften every glyph edge (the twinshot html text diffs).
+    "#if !SDF_EDGE_AA\n"
+    "        vec2 pc = floor(gl_FragCoord.xy) + vec2(0.5);\n"
+    "        vec2 vpc = v_p - (gl_FragCoord.xy - pc) / ppp;\n"
+    "        vec2 uv01 = vpc / max(2.0 * v_half, 1e-4) + 0.5;\n"
+    "        float cmc = step(v_clip.x, pc.x) * step(pc.x, v_clip.z)\n"
+    "                  * step(v_clip.y, pc.y) * step(pc.y, v_clip.w);\n"
+    "#else\n"
+    "#define uv01 v_uv01\n"
+    "#define cmc cm\n"
+    "#endif\n"
+    "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, uv01));\n"
+    "#ifdef SDF_TEX_TEST\n"
+    "        frag_color = vec4(t.a, t.a, t.a, 1.0);\n"
+    "        return;\n"
+    "#endif\n"
+    "#ifdef SDF_UV_TEST\n"
+    // the ACTUAL fetched uv — a geometry offset shows up directly
+    // against the Crystal-side glyph dump ([sdf-glyph] uv=…).
+    "        frag_color = vec4(mix(v_uv.x, v_uv.z, uv01.x), mix(v_uv.y, v_uv.w, uv01.y), 0.0, 1.0);\n"
+    "        return;\n"
+    "#endif\n"
+    "        float a = t.a * v_fill.a * cmc;\n"
     "        if (a <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, a);\n"
     "        return;\n"
     "    }\n"
     "        float blur = max(v_params.w * ppp, 1.0);\n"
-    "        float t = d / blur;\n"
-    "        if (t >= 1.5) discard;\n"
+    "        float t = d / (blur * 1.5);\n"
+    "        if (t >= 1.0) discard;\n"
     "        float cov = t <= 0.0 ? 1.0\n"
-    "            : 0.5 * (exp(-2.0 * t * t) - 0.011109) * 1.011235;\n"
+    "            : 0.5 * (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov * cm);\n"
     "        return;\n"
     "    }\n"
     "    float aa = 1.0;\n"
-    "    float cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "    float cov;\n"
+    "#if SDF_EDGE_AA\n"
+    "    cov = 1.0 - smoothstep(-aa, aa, d);\n"
+    "#else\n"
+    // Hard edges under MSAA: the FS runs PER SAMPLE (sample shading is
+    // enabled around the batch draws in sh_draw_sdf), so this in/out
+    // test on the interpolated d lands per sample — exactly the
+    // coverage the tessellated quads get from MSAA rasterization, and
+    // per-sample BLENDING matches them too (an analytic per-pixel alpha
+    // average cannot reproduce stacked-edge blending). The smoothstep
+    // would double-antialias.
+    "    cov = d > 0.0 ? 0.0 : 1.0;\n"
+    "#endif\n"
+    "#ifdef SDF_COV_TEST\n"
+    "    frag_color = vec4(cov, cm, 0.0, 1.0);\n"
+    "    return;\n"
+    "#endif\n"
     "    if (cov <= 0.0) discard;\n"
     "    float t = v_ext.z > 0.5\n"
     "        ? clamp((v_p.x / max(2.0 * v_half.x, 1e-4)\n"
@@ -2833,7 +2946,11 @@ static const char SH_SDF_FS[] =
     "    vec4 color = fill;\n"
     "    if (v_stroke.a > 0.0 && v_ext.x > 0.0) {\n"
     "        float sw = v_ext.x * ppp;\n"
+    "#if SDF_EDGE_AA\n"
     "        float inside = 1.0 - smoothstep(-aa, aa, d + sw);\n"
+    "#else\n"
+    "        float inside = (d + sw) > 0.0 ? 0.0 : 1.0;\n"
+    "#endif\n"
     "        color = mix(v_stroke, fill, inside);\n"
     "    }\n"
     "    frag_color = vec4(color.rgb, color.a * cov * cm);\n"
@@ -2847,10 +2964,43 @@ static void sh_sdf_ensure(void) {
     if (g_sdf_state) { SH_LAZY_UNLOCK(); return; }
     if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; } // retry next frame
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+    // Assemble the batch FS with SDF_EDGE_AA injected after the #version
+    // line: 1 keeps the shader's own smoothstep AA (single-sample), 0
+    // takes hard edges under MSAA (sample coverage does the AA — the
+    // smoothstep would double-antialias every edge; g_sdf_hard). The
+    // mask/unmask twin below always gets 1: it draws in BOTH render
+    // modes (the rounded-clip bracket), so it must not change behavior.
+    char fs_src[8192];
+    const char* fs = SH_SDF_FS;
+    const char* nl = strchr(fs, '\n');
+    g_sdf_hard = 0;
+    char prelude[64] = "";
+#if defined(SOKOL_GLCORE)
+    sg_swapchain sc_seen = sglue_swapchain();
+    // Hard-edge mode needs the FS per sample (sample shading, see
+    // sh_draw_sdf) — any multisampled swapchain qualifies.
+    if (sc_seen.sample_count > 1) g_sdf_hard = 1;
+    // EGUI_SDF_DEBUG=2: sample-shading probe — gl_SampleID into red.
+    // A resolved red ≈ 95 (255·0.375) means the FS runs per sample; a
+    // flat 0 means pixel broadcast. DEBUG=3: SDF_TEX_TEST — the glyph
+    // branch dumps the fetched atlas alpha instead of blending it.
+    if (getenv("EGUI_SDF_DEBUG")) {
+        char v = getenv("EGUI_SDF_DEBUG")[0];
+        if (v == '2') snprintf(prelude, sizeof prelude, "#define SDF_SS_TEST 1\n");
+        if (v == '3') snprintf(prelude, sizeof prelude, "#define SDF_TEX_TEST 1\n");
+        if (v == '4') snprintf(prelude, sizeof prelude, "#define SDF_UV_TEST 1\n");
+        if (v == '5') snprintf(prelude, sizeof prelude, "#define SDF_COV_TEST 1\n");
+    }
+    if (getenv("EGUI_SDF_DEBUG"))
+        fprintf(stderr, "[sdf] hard=%d (swapchain samples=%d)\n",
+                g_sdf_hard, sc_seen.sample_count);
+#endif
+    snprintf(fs_src, sizeof fs_src, "%.*s\n#define SDF_EDGE_AA %d\n%s%s",
+             (int)(nl - fs), fs, g_sdf_hard ? 0 : 1, prelude, nl + 1);
     sg_shader_desc sd;
     memset(&sd, 0, sizeof sd);
     sd.vertex_func.source = SH_SDF_VS;
-    sd.fragment_func.source = SH_SDF_FS;
+    sd.fragment_func.source = fs_src;
     sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
     sd.uniform_blocks[0].size = 64;
     sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "u_mvp";
@@ -2872,10 +3022,14 @@ static void sh_sdf_ensure(void) {
         return;
     }
     // Mask/unmask twin: same FS, a VS fed by uniforms — no instance
-    // buffer, so bracket edges never touch the update-once ring.
+    // buffer, so bracket edges never touch the update-once ring. Always
+    // SDF_EDGE_AA 1 (its own smoothstep AA): the bracket draws in BOTH
+    // render modes, so its look must not depend on the SDF mode.
+    snprintf(fs_src, sizeof fs_src, "%.*s\n#define SDF_EDGE_AA 1\n%s",
+             (int)(nl - fs), fs, nl + 1);
     memset(&sd, 0, sizeof sd);
     sd.vertex_func.source = SH_SDF_MASK_VS;
-    sd.fragment_func.source = SH_SDF_FS;
+    sd.fragment_func.source = fs_src;
     sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
     sd.uniform_blocks[0].size = 64;
     sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "u_mvp";
@@ -3040,6 +3194,7 @@ static void sh_sdf_ring_grow(int cap) {
 static sg_view sh_view_of(uint32_t id);
 static void sh_sampler_ensure(void);
 static sg_sampler g_linear_sampler; // tentative (init'd in its def below)
+static sg_sampler g_nearest_sampler; // tentative (see its def below)
 
 static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
                         float ch, const float* inst, int count,
@@ -3053,8 +3208,28 @@ static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
         fprintf(stderr, "[sdf] batch n=%d clip=%g,%g %gx%g pts=%gx%g\n",
                 count, cx, cy, cw, ch, w_pts, h_pts);
     if (w_pts <= 0.0f || h_pts <= 0.0f) return;
-    if (apply_clip)
+    if (apply_clip) {
+        // The seg clip may be the full-frame sentinel (Crystal's
+        // #sdf_flush passes FLT_MAX) or an out-of-range rect — the
+        // float→int casts inside sg_apply_scissor_rectf are UB for
+        // those and glScissor rejects them with GL_INVALID_VALUE, which
+        // then trips sokol's error check at the next apply_pipeline
+        // (the EGUI_SDF=1 startup crash). NaN-safe clamp to the pass.
+        if (!(cw >= 0.0f && ch >= 0.0f &&
+              cw <= (float)g_fb_w && ch <= (float)g_fb_h)) {
+            cx = 0.0f; cy = 0.0f;
+            cw = (float)g_fb_w; ch = (float)g_fb_h;
+        }
         sg_apply_scissor_rectf(cx, cy, cw, ch, true);
+    }
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+    if (getenv("EGUI_SDF_DEBUG")) {
+        int glerr = glGetError();
+        if (glerr)
+            fprintf(stderr, "[sdf] pending GL error 0x%04x before "
+                    "apply_pipeline (clip=%d)\n", glerr, apply_clip);
+    }
+#endif
     sg_apply_pipeline(stencil ? g_sdf_pip_st : g_sdf_pip);
     // sgl_ortho(0, w, h, 0, -1, 1) as a column-major mat4 (y-down).
     float mvp[16];
@@ -7009,6 +7184,84 @@ static void sh_shot(sh_packet_t* p) {
 static sh_texop_t* g_post_pending;
 static int g_post_pending_n;
 
+// ---- one-shot app screenshot (--screenshot <path>) -----------------------
+//
+// Egui.run parses the flag and calls egui_cr_screenshot_request before
+// the loop starts. After SH_SHOT_AT seconds of runtime (default 1.0 —
+// fonts baked, the first presented frames down; EGUI_SCREENSHOT_AT
+// overrides), the first committed frame is read back RGBA from the back
+// buffer and stashed; Crystal polls it on its next frame, PNG-encodes
+// (Capybara::PNG), writes the file and quits. Both render paths hook in
+// right after sg_commit (direct end_pass / detached replay tick).
+#if !defined(SOKOL_VULKAN)
+#define SH_SHOT_AT_DEFAULT 1.0
+static char* g_shot_path;
+static sh_atom_i sh_shot_state; // 0 idle, 1 requested, 2 ready, 3 taken
+static double sh_shot_t0 = -1.0;
+static unsigned char* g_shot_px; // RGBA, top-down (rows flipped)
+static int sh_shot_w, sh_shot_h;
+
+void egui_cr_screenshot_request(const char* path) {
+    if (!path || !*path) return;
+    if (sh_ai_load(&sh_shot_state) != 0) return; // one-shot
+    char* dup = strdup(path);
+    if (!dup) return;
+    g_shot_path = dup;
+    sh_shot_t0 = sh_now();
+    sh_ai_store(&sh_shot_state, 1);
+}
+
+unsigned char* egui_cr_screenshot_poll(int* w, int* h) {
+    if (sh_ai_load(&sh_shot_state) != 2) return NULL;
+    sh_ai_store(&sh_shot_state, 3);
+    *w = sh_shot_w;
+    *h = sh_shot_h;
+    return g_shot_px; // freed by egui_cr_screenshot_free after encoding
+}
+
+void egui_cr_screenshot_free(void) {
+    free(g_shot_px);
+    g_shot_px = NULL;
+}
+
+static void sh_screenshot_try(int w, int h) {
+    if (sh_ai_load(&sh_shot_state) != 1) return;
+    if (w <= 0 || h <= 0) return;
+    static double at = -1.0;
+    if (at < 0.0) {
+        at = SH_SHOT_AT_DEFAULT;
+        if (const char* v = getenv("EGUI_SCREENSHOT_AT")) {
+            double d = atof(v);
+            if (d >= 0.0) at = d;
+        }
+    }
+    if (sh_now() - sh_shot_t0 < at) return;
+    unsigned char* raw = (unsigned char*)malloc((size_t)w * h * 4);
+    unsigned char* flip = (unsigned char*)malloc((size_t)w * h * 4);
+    if (!raw || !flip) { free(raw); free(flip); return; }
+    #if !defined(_SAPP_WIN32)
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    #endif
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, raw);
+    for (int y = 0; y < h; y++) // GL origin is bottom-left
+        memcpy(flip + (size_t)y * w * 4, raw + (size_t)(h - 1 - y) * w * 4,
+               (size_t)w * 4);
+    free(raw);
+    free(g_shot_px); // a late resize could stash twice; keep the last
+    g_shot_px = flip;
+    sh_shot_w = w;
+    sh_shot_h = h;
+    sh_ai_store(&sh_shot_state, 2);
+}
+#else // Vulkan: no GL entry points — the request stays pending forever
+void egui_cr_screenshot_request(const char* path) { (void)path; }
+unsigned char* egui_cr_screenshot_poll(int* w, int* h) { (void)w; (void)h; return NULL; }
+void egui_cr_screenshot_free(void) {}
+static void sh_screenshot_try(int w, int h) { (void)w; (void)h; }
+#endif
+
+
 // Window position cache: R refreshes it every few ticks (on its own
 // connection / window thread) so A reads a slightly stale position
 // instead of a condvar roundtrip. Without the cache a per-frame position
@@ -7105,6 +7358,7 @@ static void sh_rt_frame(void) {
         double bt = sh_now();
         sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
         if (sh_b_on > 0) sh_b_rep_acc += sh_now() - bt;
+        sh_screenshot_try(g_pkt_last->fb_w, g_pkt_last->fb_h);
         sh_shot(g_pkt_last);
     } else {
         // No packet yet (before the first Crystal frame): present the

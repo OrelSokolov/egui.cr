@@ -83,4 +83,20 @@ describe "widget text_color cascade" do
     end
     wtc_text_color(ctx, "Two").should eq violet
   end
+
+  it "button: inline #style text_color beats a class rule" do
+    ctx = Egui::Context.new
+    blue = Egui::Color32.rgb(80, 120, 240)
+    red = Egui::Color32.rgb(220, 60, 60)
+    ctx.stylesheet.rule("button", Egui::StyleVars{"text_color" => blue})
+    wtc_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.add(Egui::Button.new("Blue from rule"))
+        ui.add(Egui::Button.new("Red from inline")
+          .style { |s| s.text_color = red })
+      end
+    end
+    wtc_text_color(ctx, "Blue from rule").should eq blue
+    wtc_text_color(ctx, "Red from inline").should eq red
+  end
 end

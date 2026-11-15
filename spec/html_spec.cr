@@ -76,6 +76,47 @@ describe "html vocabulary" do
     swatches.first.rect.height.should be_close(26.0, 0.01)
   end
 
+  it "border: 1px dashed — the shorthand flags the box stroke" do
+    ctx = Egui::Context.new
+    gray = Egui::Color32.rgb(0x77, 0x77, 0x77)
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.div(style: "border: 1px dashed #777; border-radius: 6; padding: 6") do |d|
+          d.p("column")
+        end
+      end
+    end
+    frame = ctx.painter.commands.select(Egui::RectCmd)
+      .find { |r| r.stroke_color == gray && r.stroke_width == 1.0 }
+    frame.should_not be_nil
+    frame.not_nil!.stroke_dash?.should be_true
+  end
+
+  it "border-style: dashed decomposes the stroke into 3:1 dashes" do
+    # A flat 100x20 rect, 1px dashed stroke: the centerline sits 0.5
+    # inside, the pattern walks 3 on / 1 off from the top edge.
+    box = Egui::Rect.new(Egui::Pos2.new(0, 0), Egui::Pos2.new(100, 20))
+    cmd = Egui::RectCmd.new(box, box, 0.0, nil,
+      Egui::Color32.rgb(255, 255, 255), 1.0, stroke_dash: true)
+    segs = Egui.dashed_stroke_segments(cmd).not_nil!
+    segs.should_not be_empty
+    # every segment is a dash piece on the 1px-wide centerline band
+    segs.each do |s|
+      s.width.should eq(1.0)
+      if s.p1.y == s.p2.y # horizontal piece: top or bottom centerline
+        {(s.p1.y - 0.5).abs, (s.p1.y - 19.5).abs}.min.should be_close(0.0, 1e-6)
+      end
+    end
+    # the first dash starts at the top-left corner and runs 3px
+    first = segs.first
+    first.p1.x.should be_close(0.5, 1e-6)
+    (first.p2.x - first.p1.x).should be_close(3.0, 1e-6)
+    # solid strokes and stroke-less rects stay on their own paths
+    solid = Egui::RectCmd.new(box, box, 0.0, nil,
+      Egui::Color32.rgb(255, 255, 255), 1.0)
+    Egui.dashed_stroke_segments(solid).should be_nil
+  end
+
   it "hidden: skips rendering entirely" do
     ctx = Egui::Context.new
     html_frame(ctx) do |c|

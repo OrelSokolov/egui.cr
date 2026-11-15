@@ -52,7 +52,7 @@ class NotepadExmlApp < Egui::App
   end
 
   # The theme dropdown options, in display order (the markup's combo
-  # carries the same list — options="Dark, Light").
+  # carries the same list — options="Dark|Light").
   THEMES = ["Dark", "Light"]
 
   TEXT_MIME_EXTRAS = {"application/json", "application/xml",

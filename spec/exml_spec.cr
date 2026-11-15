@@ -94,6 +94,70 @@ describe Egui::Exml do
     modal.attrs["if"].should eq("pending")
   end
 
+  it "splits options= on a custom delimiter" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <combo bind="a" options="one|two|three" delimiter="|"/>
+        <combo bind="b" options="One two three" delimiter=" "/>
+        <combo bind="c" options="x,y" delimiter=","/>
+        <combo bind="d" options="x|y"/>
+      </page>
+    ))
+    kids = doc.pages.first.children
+    kids[0].combo_options.should eq(%w(one two three))
+    kids[1].combo_options.should eq(%w(One two three))
+    kids[2].combo_options.should eq(%w(x y))
+    kids[3].combo_options.should eq(%w(x y))
+  end
+
+  it "renders a combo from a bound :options= list slot, live per frame" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><combo bind="sel" :options="genres"/></page>
+    ))
+    rt = Egui::Exml::Runtime.new
+    rt.strings["sel"] = "Jazz"
+    rt.lists["genres"] = ["Rock", "Pop", "Jazz"]
+    renderer = Egui::Exml::Renderer.new
+
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+
+    # click the closed button's text → the popup opens in-frame
+    label = ctx.painter.commands.select(Egui::TextCmd)
+      .find { |c| c.text == "Jazz" }.should_not be_nil
+    pos = Egui::Pos2.new(label.pos.x + 2, label.pos.y - label.size / 2)
+    exml_frame(ctx, doc.pages.first.children, rt, renderer,
+      events: [Egui::Event.pointer_pressed(pos)], time: 0.032)
+    exml_frame(ctx, doc.pages.first.children, rt, renderer,
+      events: [Egui::Event.pointer_released(pos)], time: 0.048)
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("Rock")
+
+    # the app mutates the SAME array in place — no realloc, the next
+    # frame reads it fresh (the push model: the store owns the data)
+    rt.lists["genres"] << "Blues"
+    exml_frame(ctx, doc.pages.first.children, rt, renderer, time: 0.064)
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("Blues")
+  end
+
+  it "scoped runtimes fall back to the parent's list slot" do
+    parent = Egui::Exml::Runtime.new
+    parent.lists["genres"] = %w(a b)
+    scope = Egui::Exml::ScopedRuntime.new(parent)
+    scope.list?("genres").should eq(%w(a b))
+    scope.lists["genres"] = %w(c)
+    scope.list?("genres").should eq(%w(c))
+  end
+
+  it "splits modal buttons= on a custom delimiter" do
+    doc = Egui::Exml.parse(%(
+      <modal id="m" buttons="Yes; No; Cancel" delimiter=";"
+             on_button="pick"><label text="sure?"/></modal>
+    ))
+    doc.pages.first.buttons_list.should eq(%w(Yes No Cancel))
+  end
+
   it "resolves entity escapes in attributes" do
     doc = Egui::Exml.parse(
       %(<page id="p"><label text="&quot;q&quot; &amp; &lt;tag&gt;"/></page>)
@@ -426,6 +490,26 @@ describe Egui::Exml do
 
     WIDGET_SEEN.size.should eq(before + 1)
     WIDGET_SEEN.last.should eq("instance:g")
+  end
+
+  # Custom vocabulary has priority over builtins: a handler for a
+  # BUILT-IN name claims the element — no hyphen convention needed.
+  it "custom handler overrides a built-in element" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><label text="shadowed"/><label text="kept"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    renderer.on("label") do |node, ui, ctx, r2, r|
+      ui.label("claimed:#{node.attrs["text"]?}")
+    end
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("claimed:shadowed")
+    texts.should contain("claimed:kept")
+    texts.should_not contain("shadowed")
   end
 
   it "reports a missing file as an empty document, not a crash" do
