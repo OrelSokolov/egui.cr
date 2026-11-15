@@ -178,14 +178,23 @@ module Egui
           cmd = frame.try(&.apply(cmd)) || cmd
           if reclipped
             rec = cmd.clip
+            # Shadows re-clip against the HARD ambient (Painter#
+            # #shadow_clip), not the bounds clip — the same rule that
+            # baked them (#box_shadow); popup layers escape it too.
+            amb = if cmd.is_a?(ShadowCmd)
+                    entry.layers[i] >= POPUP_LAYER_Z ? Rect.infinite :
+                      painter.shadow_clip
+                  else
+                    ambient
+                  end
             want = if moved
                      # The recorded clip moved with the widget; the
                      # ambient clip did not — intersect both.
                      shifted = Rect.new(Pos2.new(rec.min.x + dx, rec.min.y + dy),
                        Pos2.new(rec.max.x + dx, rec.max.y + dy))
-                     intersect(shifted, ambient)
+                     intersect(shifted, amb)
                    else
-                     intersect(rec, ambient)
+                     intersect(rec, amb)
                    end
             # Clip-opened captures (off-screen/straddling widgets —
             # see Ui#paint_cache_add) may replay commands that land
@@ -215,12 +224,18 @@ module Egui
           cmd = frame.try(&.apply(cmd)) || cmd
           if reclipped
             rec = cmd.clip
+            amb = if cmd.is_a?(ShadowCmd)
+                    entry.layers[i] >= POPUP_LAYER_Z ? Rect.infinite :
+                      painter.shadow_clip
+                  else
+                    ambient
+                  end
             want = if moved
                      shifted = Rect.new(Pos2.new(rec.min.x + dx, rec.min.y + dy),
                        Pos2.new(rec.max.x + dx, rec.max.y + dy))
-                     intersect(shifted, ambient)
+                     intersect(shifted, amb)
                    else
-                     intersect(rec, ambient)
+                     intersect(rec, amb)
                    end
             cmd = cmd.with_clip(want, cmd.clip_corners) unless want == rec
           end

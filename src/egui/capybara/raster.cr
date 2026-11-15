@@ -52,6 +52,9 @@ module Egui
           in ShadowCmd  then shadow_cmd(cmd)
           in ImageCmd   then image_cmd(cmd)
           in Mesh3DCmd  then # no-op: 3D content has no CPU path (yet)
+          in ScrollBracketCmd then # no-op: composited scroll is a backend
+            # present-time concern (see ScrollBracketCmd); the CPU raster
+            # paints the bracket's content at its baked offset.
           in NoopCmd    then # reserved index, paints nothing
           end
         end

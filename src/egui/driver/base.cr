@@ -48,6 +48,18 @@ module Egui
         current.try(&.natural_scheduler?) || false
       end
 
+      # Композиторный скролл доступен (plans/COMPOSITED_SCROLL.md):
+      # драйвер с detached render-потоком может применять оффсет
+      # скролла при replay — ScrollArea с `composited: true` эмитит
+      # брекет. Переопределяется драйвером; nil-безопасно.
+      def composited_scroll? : Bool
+        false
+      end
+
+      def self.composited_scroll? : Bool
+        current.try(&.composited_scroll?) || false
+      end
+
       # Legacy-костыль однопоточного цикла: один ограниченный проход
       # планировщика на кадр, чтобы файберы событийного IO (PTY-сессии)
       # двигались внутри блокирующего C-цикла sapp_run. Ставится

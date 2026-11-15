@@ -87,10 +87,15 @@ module Bs
     return chosen unless ctx.popup_open?(key)
 
     # Shadow first so it lands under the frame the popup paints next.
+    # The Foreground lift is scoped: leaking it would ride every LATER
+    # command of the host (labels painted after the dropdown) on the
+    # popup's layer — straight through the open menu.
     if (prev = ctx.memory.popup_rects[Egui::Id.from("popup/#{key}")]?)
+      saved_layer = ctx.painter.layer
       ctx.painter.layer = Egui::Order::Foreground
       ctx.painter.box_shadow(prev, MENU_SHADOW, blur: 10.0, rounding: ROUNDING,
         offset: Egui::Vec2.new(0.0, 5.0))
+      ctx.painter.layer = saved_layer
     end
 
     # Menu rows are flush — no item spacing inside the popup.

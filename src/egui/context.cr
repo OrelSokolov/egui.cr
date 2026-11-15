@@ -423,6 +423,14 @@ module Egui
       @claimed_ids = Set(Id).new
       @id_style_overrides = {} of Id => Hash(String?, StyleVars)
       @current_widget = nil
+      # Composited scroll (plans/COMPOSITED_SCROLL.md): ids whose
+      # offset the RENDER thread owns this frame (a live wheel/fling
+      # gesture). Filled by the backend's produce-time read-back
+      # (Sokol#adopt_composited_offsets) BEFORE begin_frame, so the
+      # same frame's hit-testing runs against the adopted geometry;
+      # ScrollArea skips its kinetic scroller for these ids — the
+      # render thread's fling is the authority while the gesture lives.
+      @composited_gesture_ids = Set(Id).new
       @inspector = nil
       @inspector_enabled = false
       @popup_opened_this_frame = false
@@ -474,6 +482,9 @@ module Egui
 
     def begin_frame(raw : RawInput) : Nil
       @in_frame = true
+      # Composited-scroll gesture set: the backend's produce-time
+      # read-back filled it BEFORE this call (Sokol#
+      # adopt_composited_offsets); it lives exactly one frame.
       @input = InputState.build(raw, @input, @prev_time)
       @prev_time = raw.time
       # Platform safe-area insets (backend detector — see RawInput)
@@ -587,6 +598,25 @@ module Egui
 
     def frame_damage : Rect?
       @painter.dirty
+    end
+
+    # --- composited scroll (plans/COMPOSITED_SCROLL.md) ------------------
+    # True while the render thread owns this scroll area's offset (a
+    # live wheel/fling gesture): the frame adopts the applied offset
+    # and the area's kinetic scroller must not fight the render
+    # thread's fling (see ScrollArea#render).
+    def composited_gesture?(id : Id) : Bool
+      @composited_gesture_ids.includes?(id)
+    end
+
+    # Backend hooks (Sokol#adopt_composited_offsets): reset + fill the
+    # frame's gesture set before begin_frame.
+    def clear_composited_gestures : Nil
+      @composited_gesture_ids.clear
+    end
+
+    def add_composited_gesture(id : Id) : Nil
+      @composited_gesture_ids << id
     end
 
     def end_frame : Array(PaintCmd)

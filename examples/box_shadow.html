@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<!-- box-shadow demo — the browser reference for bin/html/box_shadow
+     (examples/box_shadow.cr): the same Bootstrap 2.0.4 buttons and
+     dropdowns, plus the section this page exists for — how a real HTML
+     engine clips box-shadows (overflow, rounded clips, scrollports and
+     popups inside clipped panels). Open next to the binary and compare. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>egui.cr — box-shadow (bootstrap 2.0.4, browser reference)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #fff; color: #333;
+         font: 14px/1.5 system-ui, sans-serif; padding: 12px 24px; }
+  h1 { font-size: 20px; margin: 8px 0 2px; }
+  h2 { font-size: 18px; margin: 22px 0 4px; }
+  p.sub { color: #666; margin: 0 0 8px; }
+  hr { border: 0; border-top: 1px solid #e5e5e5; margin: 16px 0; }
+  p.status { color: #666; }
+
+  /* ---- Bootstrap 2.0.4 .btn, verbatim shadow recipe ---- */
+  .btn {
+    display: inline-block; padding: 4px 14px; margin: 0;
+    font: inherit; line-height: 20px; text-align: center;
+    cursor: pointer; border-radius: 4px; color: #333;
+    background-color: #e6e6e6;
+    background-image: linear-gradient(to bottom, #f5f5f5, #e6e6e6);
+    border: 1px solid rgba(0,0,0,.15);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.2), 0 1px 2px rgba(0,0,0,.05);
+  }
+  .btn:hover  { filter: brightness(.92); }
+  .btn:active { filter: brightness(.80);
+                box-shadow: inset 0 3px 5px rgba(0,0,0,.125); }
+  .btn-primary { color: #fff; background-color: #0044cc;
+                 background-image: linear-gradient(to bottom, #0088cc, #0044cc); }
+  .btn-info    { color: #fff; background-color: #2f96b4;
+                 background-image: linear-gradient(to bottom, #5bc0de, #2f96b4); }
+  .btn-success { color: #fff; background-color: #51a351;
+                 background-image: linear-gradient(to bottom, #62c462, #51a351); }
+  .btn-warning { color: #fff; background-color: #f89406;
+                 background-image: linear-gradient(to bottom, #fbb450, #f89406); }
+  .btn-danger  { color: #fff; background-color: #bd362f;
+                 background-image: linear-gradient(to bottom, #ee5f5b, #bd362f); }
+  .btn-inverse { color: #fff; background-color: #222;
+                 background-image: linear-gradient(to bottom, #444, #222); }
+  .row { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+
+  /* ---- .caret ---- */
+  .caret { display: inline-block; width: 0; height: 0; margin-left: 2px;
+           border-top: 4px solid currentColor;
+           border-left: 4px solid transparent;
+           border-right: 4px solid transparent; }
+
+  /* ---- .dropdown-menu: shadow 0 5px 10px rgba(0,0,0,.2) ---- */
+  .dropdown { position: relative; display: inline-block; }
+  .dropdown-menu {
+    display: none; position: absolute; top: 100%; left: 0; z-index: 100;
+    min-width: 200px; margin: 2px 0 0; padding: 5px 0; list-style: none;
+    background: #fff; border: 1px solid rgba(0,0,0,.2); border-radius: 4px;
+    box-shadow: 0 5px 10px rgba(0,0,0,.2);
+  }
+  .dropdown.open .dropdown-menu { display: block; }
+  .dropdown-menu a { display: block; padding: 3px 20px; color: #0088cc;
+                     text-decoration: none; cursor: pointer; }
+  .dropdown-menu a:hover, .dropdown-menu a:active { color: #fff; background: #0081cc; }
+  .dropdown-menu .divider { height: 1px; margin: 4px 1px; background: #e5e5e5; }
+  .dropdown.open > .btn { filter: brightness(.80); } /* the crystal demo's open==active look */
+  .dropdown-menu.fixed { position: fixed; }           /* the clip-escape variant */
+
+  /* ---- split .btn-group: the v2 seam is an inset shadow on the caret half */
+  .btn-group { display: inline-flex; }
+  .btn-group .btn-main  { border-radius: 4px 0 0 4px; }
+  .btn-group .btn-caret { border-radius: 0 4px 4px 0; margin-left: -1px;
+                          padding: 4px 8px;
+                          box-shadow: inset 1px 0 0 rgba(0,0,0,.15),
+                                      inset 0 1px 0 rgba(255,255,255,.2),
+                                      0 1px 2px rgba(0,0,0,.05); }
+  .btn-group .btn-caret:active {
+    box-shadow: inset 1px 0 0 rgba(0,0,0,.15),
+                inset 0 3px 5px rgba(0,0,0,.125); }
+  .btn-group .btn-caret .dropdown-menu { left: auto; right: 0; }
+
+  /* ---- stylesheet-shadows section (the shadow.* class-key rules) */
+  .sheet-btn { border: 1px solid #ccc; border-radius: 4px; background: #e6e6e6;
+               padding: 4px 14px; font: inherit; cursor: pointer;
+               box-shadow: 0 2px 6px rgba(0,0,0,.27); }
+  .sheet-btn:active { box-shadow: inset 0 3px 5px rgba(0,0,0,.25); }
+
+  /* ---- clip tests: what does a real engine do to a shadow? ---- */
+  .cases { display: flex; gap: 24px; align-items: flex-start; flex-wrap: wrap; }
+  .case  { width: 220px; }
+  .case h3 { font-size: 13px; color: #666; margin: 0 0 6px; font-weight: 600; }
+  .case p  { font-size: 12px; color: #888; margin: 6px 0 0; }
+  .shadowed { width: 120px; height: 70px; border-radius: 8px; background: #2e2e36;
+              color: #e8e8ec; display: flex; align-items: center;
+              justify-content: center;
+              box-shadow: 0 8px 24px 4px rgba(0,0,0,.35); }
+  /* A: overflow:hidden square panel, card flush to the corner */
+  .clip-square { width: 220px; height: 150px; overflow: hidden;
+                 border: 1px dashed #999; }
+  .clip-square .shadowed { margin: 65px 0 0 85px; } /* flush bottom-right, 15px left of shadow escapes */
+  /* B: overflow:hidden + border-radius — the clip itself is rounded */
+  .clip-round { width: 220px; height: 150px; overflow: hidden;
+                border-radius: 24px; border: 1px dashed #999; }
+  .clip-round .shadowed { border-radius: 50%; margin: 20px 0 0 10px;
+                          width: 110px; height: 110px; }
+  /* C: dropdown inside an overflow:hidden panel — the menu shadow is cut;
+        the portaled (position:fixed) variant escapes the same clip */
+  .clip-panel { width: 220px; height: 96px; overflow: hidden;
+                border: 1px dashed #999; padding: 8px; }
+  .clip-panel + .clip-panel { margin-top: 24px; }
+  /* D: scrollport — the shadow is NOT part of scrollable overflow:
+        no extra scroll room is reserved for it, and the scrollport
+        edge cuts it */
+  .scroll-box { width: 220px; height: 150px; overflow: auto;
+                border: 1px solid #ccc; border-radius: 8px; }
+  .scroll-box .shadowed { margin: 16px; }
+  .scroll-box .shadowed:last-child { margin-bottom: 0; }
+</style>
+</head>
+<body>
+  <h1>Buttons</h1>
+  <p class="sub">Bootstrap 2.0.4 — gradient fills, inset sheen, pressed inset shadow</p>
+  <div class="row" id="plainRow">
+    <button class="btn">Button</button>
+    <button class="btn btn-primary">Primary</button>
+    <button class="btn btn-info">Info</button>
+    <button class="btn btn-success">Success</button>
+    <button class="btn btn-warning">Warning</button>
+    <button class="btn btn-danger">Danger</button>
+    <button class="btn btn-inverse">Inverse</button>
+  </div>
+  <p class="status">last clicked: <span id="plainLast">—</span></p>
+
+  <hr>
+  <h1>Button dropdowns</h1>
+  <div class="row">
+    <div class="dropdown" id="single">
+      <button class="btn btn-danger">Action <span class="caret"></span></button>
+      <ul class="dropdown-menu"></ul>
+    </div>
+    <div class="dropdown btn-group" id="split">
+      <button class="btn btn-primary btn-main">Action</button>
+      <button class="btn btn-primary btn-caret"><span class="caret"></span></button>
+      <ul class="dropdown-menu"></ul>
+    </div>
+  </div>
+  <p class="status">single: <span id="singleSel">—</span>
+     split action: <span id="splitSel">—</span> (<span id="splitClicks">0</span> action clicks)</p>
+
+  <hr>
+  <h1>Stylesheet shadows (standard Button)</h1>
+  <p class="sub">plain shadow rules — :active flips to inset</p>
+  <div class="row">
+    <button class="sheet-btn">One</button>
+    <button class="sheet-btn">Two</button>
+    <button class="sheet-btn">Three</button>
+  </div>
+
+  <hr>
+  <h1>Shadow vs clipping — the point of this page</h1>
+  <p class="sub">A real engine clips box-shadow exactly like egui.cr clips
+     Painter#box_shadow to the clip rect. What to look for in each case:</p>
+  <div class="cases">
+    <div class="case">
+      <h3>A · overflow: hidden square</h3>
+      <div class="clip-square"><div class="shadowed">card</div></div>
+      <p>The outset shadow is cut flush at the panel's bottom and right
+         edges — the part outside the panel simply does not paint.</p>
+    </div>
+    <div class="case">
+      <h3>B · overflow: hidden + border-radius</h3>
+      <div class="clip-round"><div class="shadowed">card</div></div>
+      <p>The clip is rounded: the shadow is carved by the 24px radius,
+         not by the box — same as a rounded painter clip.</p>
+    </div>
+    <div class="case">
+      <h3>C · popup inside a clipped panel</h3>
+      <div class="clip-panel">
+        <div class="dropdown" id="clipped">
+          <button class="btn btn-warning">Clipped <span class="caret"></span></button>
+          <ul class="dropdown-menu"></ul>
+        </div>
+      </div>
+      <div class="clip-panel">
+        <div class="dropdown portal" id="portaled">
+          <button class="btn btn-info">Portaled <span class="caret"></span></button>
+          <ul class="dropdown-menu"></ul>
+        </div>
+      </div>
+      <p>Top: the absolute-positioned menu cannot escape an ancestor
+         overflow clip — menu and shadow are cut. Bottom: a
+         position:fixed menu escapes it — egui.cr popups do this by
+         default (Foreground layer).</p>
+    </div>
+    <div class="case">
+      <h3>D · scrollport</h3>
+      <div class="scroll-box">
+        <div class="shadowed">1</div>
+        <div class="shadowed">2</div>
+        <div class="shadowed">3</div>
+      </div>
+      <p>Scroll to the bottom: the last card sits flush at the edge and
+         its shadow is cut. box-shadow never adds to scrollable
+         overflow — no scroll room is reserved for it.</p>
+    </div>
+  </div>
+
+<script>
+"use strict";
+const ITEMS = ["Action", "Another action", "Something else here",
+               "-", "Separated link"];
+
+// Build a dropdown menu's <li> list from ITEMS ("-" is a divider).
+function fillMenu(ul) {
+  for (const item of ITEMS) {
+    const li = document.createElement("li");
+    if (item === "-") {
+      li.className = "divider";
+    } else {
+      const a = document.createElement("a");
+      a.textContent = item;
+      li.appendChild(a);
+    }
+    ul.appendChild(li);
+  }
+}
+
+// Plain dropdown: toggle on click, select on item click, close on
+// outside click. `onPick` receives the chosen item.
+function dropdown(id, onPick) {
+  const root = document.getElementById(id);
+  const menu = root.querySelector(".dropdown-menu");
+  fillMenu(menu);
+  const buttons = root.querySelectorAll(".btn");
+  const toggle = buttons[buttons.length - 1]; // the caret half on a split group
+  toggle.addEventListener("click", e => {
+    e.stopPropagation();
+    root.classList.toggle("open");
+  });
+  menu.addEventListener("click", e => {
+    const a = e.target.closest("a");
+    if (!a) return;
+    root.classList.remove("open");
+    onPick(a.textContent);
+  });
+}
+
+dropdown("single", item => {
+  document.getElementById("singleSel").textContent = item;
+  document.querySelector("#single > .btn").childNodes[0].textContent = item + " ";
+});
+
+let splitClicks = 0;
+dropdown("split", item => {
+  document.getElementById("splitSel").textContent = item;
+  document.querySelector("#split .btn-main").textContent = item;
+});
+document.querySelector("#split .btn-main").addEventListener("click", () => {
+  document.getElementById("splitClicks").textContent = ++splitClicks;
+});
+
+// The portaled variant: on open, hoist the menu to position:fixed at
+// the toggle's viewport rect so it escapes the clipped panel.
+function portalDropdown(id) {
+  const root = document.getElementById(id);
+  const menu = root.querySelector(".dropdown-menu");
+  fillMenu(menu);
+  menu.classList.add("fixed");
+  const toggle = root.querySelector(".btn");
+  toggle.addEventListener("click", e => {
+    e.stopPropagation();
+    const open = root.classList.toggle("open");
+    if (open) {
+      const r = toggle.getBoundingClientRect();
+      menu.style.left = r.left + "px";
+      menu.style.top = (r.bottom + 2) + "px";
+    }
+  });
+}
+dropdown("clipped", () => {});
+portalDropdown("portaled");
+
+// Plain buttons row: report the last clicked variant.
+document.querySelectorAll("#plainRow .btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    document.getElementById("plainLast").textContent =
+      btn.textContent.trim().toLowerCase();
+  });
+});
+
+// Any click outside an open dropdown closes it (the popup system's
+// click-outside behavior).
+document.addEventListener("click", () => {
+  document.querySelectorAll(".dropdown.open")
+    .forEach(d => d.classList.remove("open"));
+});
+</script>
+</body>
+</html>

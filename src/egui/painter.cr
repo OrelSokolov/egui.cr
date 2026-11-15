@@ -652,7 +652,50 @@ module Egui
     end
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | NoopCmd
+  # Composited-scroll bracket (plans/COMPOSITED_SCROLL.md — the
+  # browser's compositor path for scrolling): everything emitted
+  # between Painter#scroll_begin and #scroll_end is the CONTENT of a
+  # scroll layer. The content is laid out and painted against the
+  # BAND — `window` (the viewport ∩ ambient clip) expanded by the
+  # overscan margin — because the ambient clip is the one thing every
+  # culling consumer reads (galley rows, paint-cache replays, exml
+  # subtrees), so band content survives below the fold. At replay the
+  # backend brackets the ops with a present-time translate and
+  # re-clips every scissor to `window`: the scroll offset becomes a
+  # presentation-time parameter the render thread can change without
+  # producing a frame (smooth under CPU starvation, like a browser
+  # compositor). `offset` is what the recorded geometry already
+  # bakes in; `max_offset`/`vertical`/`horizontal`/`speed` ride along
+  # for the render thread's wheel handling (stage 2).
+  struct ScrollBracketCmd
+    getter clip : Rect
+    getter id : UInt64
+    getter window : Rect
+    getter offset : Vec2
+    getter max_offset : Vec2
+    getter band : Vec2
+    getter scroll_speed : Float64
+    getter z : Int32
+    getter? vertical : Bool
+    getter? horizontal : Bool
+    getter? end : Bool
+    getter clip_corners : CornerRadii?
+    getter xform : Affine2?
+
+    def initialize(@clip : Rect, @id : UInt64, @window : Rect,
+                   @offset : Vec2, @max_offset : Vec2, @band : Vec2,
+                   @scroll_speed : Float64, @z : Int32,
+                   @vertical : Bool, @horizontal : Bool, @end : Bool)
+    end
+
+    # Brackets keep their identity through re-clip passes: the window
+    # is the scroll layer's own geometry, not ambient paint state.
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      self
+    end
+  end
+
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | ScrollBracketCmd | NoopCmd
 
   class Painter
     # A bracketed subtree transform (plans/NATIVE_HTML_DEMO.md §3.2):
@@ -923,6 +966,7 @@ module Egui
       @layers = [] of Int32
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @shadow_clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
       @xforms = [] of TransformFrame
       # Counting-sort scratch for #commands_in_layer_order — z is
       # clamped into [0, MAX_LAYER_Z] by both layer setters, so the
@@ -933,6 +977,7 @@ module Egui
       # only spans with a stable epoch (a transform bracket inside the
       # span would double-transform the cached commands on replay).
       @xform_epoch = 0
+      @scroll_layer_ids = [] of UInt64
     end
 
     def clear : Nil
@@ -940,6 +985,10 @@ module Egui
       @layers.clear
       @layer = Order::Background.z
       @clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @shadow_clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @scroll_bracket = -1
+      @scroll_mesh3d = false
+      @scroll_layer_ids.clear
       @xforms.clear
       @dirty = nil
     end
@@ -979,6 +1028,25 @@ module Egui
 
     def clip : Rect
       @clip
+    end
+
+    # The clip box-shadows are baked with (see #box_shadow): the
+    # intersection of the HARD clips only — scroll viewports
+    # (ScrollArea) and overflow brackets (#clip_apply). Bounds-only
+    # clips (a window/area/popup/modal/panel extent) do NOT restrict
+    # shadows: in CSS nothing but `overflow`/scrollports cuts a
+    # box-shadow, a plain container's edge never does — the browser
+    # reference for this is examples/box_shadow.html (case A/C). Layers
+    # at or above POPUP_LAYER_Z ignore it too (a menu's shadow must not
+    # be cut by the host it floats above — the same exemption
+    # #clip_apply gives popup layers).
+    property shadow_clip : Rect = Rect.new(Pos2.new(-1e9, -1e9),
+      Pos2.new(1e9, 1e9))
+
+    # The clip a ShadowCmd baked NOW should carry: the hard shadow clip,
+    # escaped entirely on popup layers.
+    def shadow_bake_clip : Rect
+      @layer >= POPUP_LAYER_Z ? Rect.infinite : @shadow_clip
     end
 
     # --- rounded subtree clip (border-radius content clipping) ----------
@@ -1039,6 +1107,7 @@ module Egui
       when ImageCmd    then cmd.clip
       when ShadowCmd   then cmd.clip
       when Mesh3DCmd   then cmd.clip
+      when ScrollBracketCmd then Rect.infinite
       when NoopCmd     then Rect.infinite
       else                  Rect.infinite
       end
@@ -1061,6 +1130,9 @@ module Egui
 
     def add(cmd : PaintCmd) : Int32
       cmd = emit_xform(cmd) unless @xforms.empty?
+      # A 3D mesh owns its mvp — it cannot ride a scroll bracket's
+      # present-time translate (see #scroll_begin).
+      @scroll_mesh3d = true if cmd.is_a?(Mesh3DCmd) && @scroll_bracket >= 0
       @commands << cmd
       @layers << @layer
       @commands.size - 1
@@ -1122,7 +1194,15 @@ module Egui
       (start...@commands.size).each do |i|
         cmd = @commands[i]
         next if cmd.is_a?(NoopCmd)
-        want = PaintCache.intersect(cmd_clip(cmd), clip)
+        # Shadows carry the hard-clip ambient, not the bounds clip (see
+        # #shadow_clip) — re-clipping them by `clip` would undo exactly
+        # what #box_shadow skipped. Popup layers escape it too.
+        c = if cmd.is_a?(ShadowCmd)
+              @layers[i] >= POPUP_LAYER_Z ? Rect.infinite : @shadow_clip
+            else
+              clip
+            end
+        want = PaintCache.intersect(cmd_clip(cmd), c)
         next if want == cmd_clip(cmd)
         @commands[i] = cmd.with_clip(want, cmd_clip_corners(cmd))
       end
@@ -1130,12 +1210,20 @@ module Egui
 
     # The copy form of #reclip_range: a captured bucket re-clipped by
     # `clip` into a fresh array (the frame range and the stored bucket
-    # can need different clips — see Ui#paint_cache_add).
-    def reclip_commands(cmds : Array(PaintCmd),
-                        clip : Rect) : Array(PaintCmd)
-      cmds.map do |cmd|
+    # can need different clips — see Ui#paint_cache_add). `layers` are
+    # the bucket's layer tags (the popup-layer shadow exemption needs
+    # them; nil means no ShadowCmd exemption can be checked).
+    def reclip_commands(cmds : Array(PaintCmd), clip : Rect,
+                        layers : Array(Int32)? = nil) : Array(PaintCmd)
+      cmds.map_with_index do |cmd, i|
         next cmd if cmd.is_a?(NoopCmd)
-        want = PaintCache.intersect(cmd_clip(cmd), clip)
+        c = if cmd.is_a?(ShadowCmd)
+              (layers && layers[i]? && layers[i] >= POPUP_LAYER_Z) ?
+                Rect.infinite : @shadow_clip
+            else
+              clip
+            end
+        want = PaintCache.intersect(cmd_clip(cmd), c)
         next cmd if want == cmd_clip(cmd)
         cmd.with_clip(want, cmd_clip_corners(cmd))
       end
@@ -1149,6 +1237,59 @@ module Egui
       @layer = z
       add(cmd)
       @layer = saved
+    end
+
+    # --- composited scroll bracket (see ScrollBracketCmd) ----------------
+    #
+    # Open bracket state: the command index of the BEGIN and whether
+    # the content forced a fallback (a Mesh3DCmd cannot ride the
+    # present-time translate). Reset in #clear; unbalanced #scroll_end
+    # (a dropped frame) is a no-op.
+    @scroll_bracket : Int32 = -1
+    @scroll_mesh3d : Bool = false
+    @scroll_window : Rect = Rect.infinite
+    @scroll_fallback_clip : Rect = Rect.infinite
+    # Ids of the scroll layers opened this frame (the produce loop's
+    # read-back list — see Sokol#adopt_composited_offsets).
+    getter scroll_layer_ids : Array(UInt64)
+
+    # Open a scroll-layer bracket around the content emitted until the
+    # matching #scroll_end. `window` is the FIXED screen-space rect the
+    # content must present inside (viewport ∩ ambient clip at record
+    # time); the CALLER has already widened the painter clip to the
+    # band so culling keeps overscan content alive. `offset` is the
+    # scroll offset baked into the recorded geometry (what the content
+    # was laid out against); the render thread's replay translates by
+    # the delta from it.
+    def scroll_begin(id : UInt64, window : Rect, offset : Vec2,
+                     max_offset : Vec2, band : Vec2,
+                     scroll_speed : Float64, vertical : Bool,
+                     horizontal : Bool) : Nil
+      return if @scroll_bracket >= 0 # nesting inside one widget is a bug
+      @scroll_mesh3d = false
+      @scroll_window = window
+      @scroll_fallback_clip = @clip
+      @scroll_layer_ids << id
+      @scroll_bracket = add(ScrollBracketCmd.new(@clip, id, window, offset,
+        max_offset, band, scroll_speed, @layer, vertical, horizontal,
+        false))
+    end
+
+    def scroll_end : Nil
+      return if @scroll_bracket < 0
+      idx = @scroll_bracket
+      @scroll_bracket = -1
+      if @scroll_mesh3d
+        # Fallback: drop the bracket and bound the content back to the
+        # window (the classic path's semantics — without a bracket the
+        # band would present outside the viewport).
+        @commands[idx] = NoopCmd.new
+        reclip_range(idx + 1, @scroll_window)
+      else
+        add(ScrollBracketCmd.new(@scroll_fallback_clip, 0_u64,
+          @scroll_window, Vec2.zero, Vec2.zero, Vec2.zero, 0.0, @layer,
+          false, false, true))
+      end
     end
 
     def set(index : Int32, cmd : PaintCmd) : Nil
@@ -1300,14 +1441,17 @@ module Egui
     # CSS `box-shadow` — see `ShadowCmd`. Paint order is the caller's
     # business, mirroring CSS: an outset shadow goes UNDER the widget
     # (call before the fill rect), an inset one over it (after).
+    # The baked clip is #shadow_clip (hard clips only — see there), NOT
+    # the ambient bounds clip: a shadow must bleed past its container's
+    # edge like in a browser.
     def box_shadow(rect : Rect, color : Color32, blur : Float64 = 4.0,
                    rounding : Float64 = 0.0, spread : Float64 = 0.0,
                    offset : Vec2 = Vec2.new(0.0, 0.0),
                    inset : Bool = false) : Nil
       return if blur <= 0.0 && spread <= 0.0 &&
                 offset.x.abs < 0.5 && offset.y.abs < 0.5
-      add(ShadowCmd.new(@clip, rect, rounding, blur, spread, offset,
-        color, inset))
+      add(ShadowCmd.new(shadow_bake_clip, rect, rounding, blur, spread,
+        offset, color, inset))
     end
 
     # Capsule (stadium): a rect whose ends are semicircles — the

@@ -76,12 +76,24 @@ module Egui
     # offscreen are not built — the scroll replays their extent (see
     # VirtualRowState). Heights are invalidated wholesale when the
     # viewport width changes.
+    # `composited: true` opts the area into the browser-style
+    # compositor scroll (plans/COMPOSITED_SCROLL.md): the content is
+    # rasterized with an overscan band and the render thread applies
+    # the scroll offset at replay time — wheel scrolling keeps
+    # presenting at vsync even when the Crystal main thread is starved
+    # by CPU load. Silently ignored without a detached render thread.
+    # The overscan band (how far past the window the content stays
+    # rasterized, in viewports) bounds how long the compositor can
+    # scroll before the main thread's catch-up frame arrives.
+    OVERSCAN_VIEWPORTS = 2.0
+
     def initialize(@max_height : Float64? = nil,
                    @scrollbar : Symbol = :overlay,
                    @vbar : Symbol = :right,
                    @hbar : Symbol? = nil,
                    @id : Id? = nil,
-                   @virtual : Bool = false)
+                   @virtual : Bool = false,
+                   @composited : Bool = false)
     end
 
     def classic? : Bool
@@ -227,7 +239,52 @@ module Egui
         {outer_clip.min.y, viewport.min.y}.max)
       clip_max = Pos2.new({outer_clip.max.x, viewport.max.x}.min,
         {outer_clip.max.y, viewport.max.y}.min)
-      ui.painter.clip = Rect.new(clip_min, clip_max)
+      window = Rect.new(clip_min, clip_max)
+      # The scrollport is a HARD clip — the one clip that still cuts a
+      # box-shadow (Painter#shadow_clip; a browser scrollport does the
+      # same — examples/box_shadow.html case D) — but at the SCROLLER's
+      # edge, not the content viewport's. A bounded scroll (max_height,
+      # the widget-in-a-page kind) cuts at its viewport like a browser
+      # `overflow-y: auto` div. The panel's auto-scroll is the page
+      # scroller: its padding box is the canvas, so shadows bleed
+      # across the panel margin to the screen edge (the browser body —
+      # `body { padding }` — does exactly this; nothing clips a shadow
+      # until the canvas). A rounded painted host still adds its own
+      # overflow bracket via #clip_apply either way.
+      outer_shadow = ui.painter.shadow_clip
+      host = @max_height ? viewport : ui.ctx.input.screen_rect
+      shadow_min = Pos2.new({outer_shadow.min.x, host.min.x}.max,
+        {outer_shadow.min.y, host.min.y}.max)
+      shadow_max = Pos2.new({outer_shadow.max.x, host.max.x}.min,
+        {outer_shadow.max.y, host.max.y}.min)
+      shadow_window = Rect.new(shadow_min, shadow_max)
+
+      # Composited scroll (plans/COMPOSITED_SCROLL.md): open the scroll
+      # bracket and widen the ambient clip to the overscan BAND. The
+      # clip is the one thing every culling consumer reads (galley
+      # rows, paint-cache capture/replay, exml subtrees), so band
+      # content stays rasterized below the fold; the render thread
+      # re-clips the bracket's ops to `window` at present time and
+      # translates them by the live scroll offset — the classic path's
+      # semantics with delta = 0, so output is pixel-identical until
+      # the render thread actually scrolls.
+      composited = @composited && Egui::Driver::Base.composited_scroll?
+      band = Vec2.new(
+        @hbar ? viewport.width * OVERSCAN_VIEWPORTS : 0.0,
+        viewport.height * OVERSCAN_VIEWPORTS)
+      if composited
+        ui.painter.scroll_begin(id.value, window, draw_offset,
+          Vec2.new(max_h_prev, max_v_prev), band,
+          style.scroll_speed, can_v, can_h)
+        band_rect = Rect.new(
+          Pos2.new(window.min.x - band.x, window.min.y - band.y),
+          Pos2.new(window.max.x + band.x, window.max.y + band.y))
+        ui.painter.clip = band_rect
+        ui.painter.shadow_clip = shadow_window
+      else
+        ui.painter.clip = window
+        ui.painter.shadow_clip = shadow_window
+      end
 
       # The inner Ui is viewport-sized but vertically unbounded
       # (`v_overflow`, CSS overflow-y): fill-height widgets size to the
@@ -240,13 +297,15 @@ module Egui
         id: id.child(1))
       inner.v_overflow = true
       inner.layer = ui.layer
-      inner.clip = Rect.new(clip_min, clip_max)
+      inner.clip = composited ? band_rect.not_nil! : window
       if @virtual
         # Row virtualization state (Ui#virtual_row): the extent cache
         # lives in Memory (survives frames), keyed by this scroll's
         # id; the visible band is padded by VIRTUAL_MARGIN so a row
         # straddling the edge is built (no pop-in at the fold). A
-        # viewport width change invalidates every height — the next
+        # composited area uses the overscan band instead — the
+        # compositor keeps presenting band content while it scrolls.
+        # A viewport width change invalidates every height — the next
         # frame re-measures all rows once.
         heights = memory.virtual_rows[id] ||= {} of UInt64 => Tuple(Float64, UInt64)
         if memory.virtual_row_widths[id]? != viewport.width
@@ -255,7 +314,8 @@ module Egui
         end
         heights.clear if heights.size > VIRTUAL_ROWS_MAX
         inner.virtual_rows = VirtualRowState.new(heights,
-          viewport.min.y - VIRTUAL_MARGIN, viewport.max.y + VIRTUAL_MARGIN)
+          composited ? band_rect.not_nil!.min.y : viewport.min.y - VIRTUAL_MARGIN,
+          composited ? band_rect.not_nil!.max.y : viewport.max.y + VIRTUAL_MARGIN)
       end
       yield inner
 
@@ -267,6 +327,8 @@ module Egui
       memory.data.set_vec2(id.child(0), content_size)
 
       ui.painter.clip = outer_clip
+      ui.painter.shadow_clip = outer_shadow
+      ui.painter.scroll_end if composited
 
       # Scrollbars when the content overflows. Both flavors report
       # whether the user directly drove the offset this frame (thumb

@@ -564,9 +564,12 @@ module Egui
       cmd0 = painter.snapshot
       epoch0 = painter.xform_epoch
       clip0 = painter.clip
+      shadow0 = painter.shadow_clip
       painter.clip = Rect.infinite
+      painter.shadow_clip = Rect.infinite
       resp = Egui::Bench.span(widget.class.name) { widget.ui(self) }
       painter.clip = clip0
+      painter.shadow_clip = shadow0
       # The widget's full outer extent — Response#paint_rect when the
       # interact rect is a sub-rect of it (Slider's rail). Everything
       # below (damage region, containment, entry size/origin) tracks
@@ -627,7 +630,7 @@ module Egui
             # Contained: store with the ambient clip, like the classic
             # path — an unmoved replay in the same clip skips the
             # per-command re-clip (the static-frame fast path).
-            cmds = painter.reclip_commands(cmds, clip0)
+            cmds = painter.reclip_commands(cmds, clip0, layers)
             cache.store(full, PaintCache::Entry.new(
               resp.id, (@child_counter - counter0).to_i32, pr.size,
               resp.sense, pr.min, clip0, cmds, layers, 0,
@@ -1901,8 +1904,8 @@ module Egui
           # wrong-sided shadow was never reserved — nothing to paint).
           slot = s.inset? ? sh_over : sh_under
           painter.set(slot.not_nil!,
-            ShadowCmd.new(painter.clip, outer, rounding, s.blur, s.spread,
-              s.offset, s.color, s.inset?))
+            ShadowCmd.new(painter.shadow_bake_clip, outer, rounding, s.blur,
+              s.spread, s.offset, s.color, s.inset?))
         end
         outer_rect = outer
       ensure
@@ -2326,8 +2329,8 @@ module Egui
       if (s = sh)
         slot = s.inset? ? sh_over : sh_under
         painter.set(slot.not_nil!,
-          ShadowCmd.new(painter.clip, outer, rounding, s.blur, s.spread,
-            s.offset, s.color, s.inset?))
+          ShadowCmd.new(painter.shadow_bake_clip, outer, rounding, s.blur,
+            s.spread, s.offset, s.color, s.inset?))
       end
       # Same rounded-subtree clip as #box (the absolute variant's
       # children ride `layer`; the mark recorded it).
