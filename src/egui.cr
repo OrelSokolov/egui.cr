@@ -142,6 +142,7 @@ require "./egui/context"
 require "./egui/inspector"
 require "./egui/bench"
 require "./egui/capybara"
+require "./egui/crash_report"
 
 # Global renderer selection (the NOOP twins of the font/SVG
 # renderers): EGUI_NOFONTS=1 swaps every font stack the app/backend

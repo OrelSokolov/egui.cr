@@ -499,6 +499,15 @@ module Egui
       @@frame_counter = 0_u64
       @@stack_frames = {} of Egui::Driver::AtlasFonts => UInt64
       @@icon : NamedTuple(rgba: Bytes, width: Int32, height: Int32)? = nil
+      # True once a Sokol loop (detached or legacy) has been entered —
+      # the at_exit CrashReport launcher (driver_selector.cr) must NOT
+      # boot a second loop over a live window/GL context; in-loop
+      # raises go through frame_crash/run_update instead.
+      @@loop_started = false
+
+      def self.loop_started? : Bool
+        @@loop_started
+      end
       # On-demand repaint: the last painted command list (re-emitted
       # verbatim on idle frames) and the framebuffer size it matched.
       @@last_commands : Array(Egui::PaintCmd)?
@@ -1254,12 +1263,14 @@ module Egui
         # be excluded explicitly.
         {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
+            @@loop_started = true
             run_detached(title, width, height, decorations, transparent,
               msaa, vsync)
             return
           end
         {% end %}
 
+        @@loop_started = true
         {% if flag?(:android) %} egui_android_log("run: before sapp_run") {% end %}
         LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
           width, height, decorations ? 0 : 1, transparent ? 1 : 0,
@@ -1399,7 +1410,11 @@ module Egui
             drain_events(records)
             if frame_pending?(app)
               last_produce = Time.instant
-              produce_frame
+              begin
+                produce_frame
+              rescue ex : Exception
+                frame_crash(ex)
+              end
               busy = app.ctx.needs_repaint?
             else
               busy = false
@@ -1531,7 +1546,7 @@ module Egui
           bt = Time.instant
           app.ctx.inspector.before_update if app.ctx.inspector_enabled?
           Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
-          app.update(app.ctx)
+          run_update(app)
           FrameBench.span("update", bt)
           bt = Time.instant
           FrameBench.show(app.ctx)
@@ -2126,9 +2141,23 @@ module Egui
         @@in_frame = true
         begin
           on_frame_inner
+        rescue ex : Exception
+          frame_crash(ex)
         ensure
           @@in_frame = false
         end
+      end
+
+      # A raise ANYWHERE in frame construction — most often from a
+      # deferred `central_panel` block running inside `ctx.end_frame`,
+      # AFTER run_update's own rescue (the block escapes update and
+      # surfaces at end_frame). Capture the exception, skip painting
+      # this half-built frame and let the next frame's run_update draw
+      # the CrashReport panel (egui/crash_report.cr).
+      private def self.frame_crash(ex : Exception) : Nil
+        ex.inspect_with_backtrace(STDERR)
+        Egui::CrashReport.capture(ex)
+        @@app.not_nil!.ctx.request_repaint
       end
 
       # --screenshot delivery: the shim stashed the back buffer after a
@@ -2162,6 +2191,23 @@ module Egui
           return true
         end
         false
+      end
+
+      # App#update with the engine crash window (egui/crash_report.cr):
+      # a raise mid-update is captured — STDERR keeps the classic
+      # unhandled-exception report — and every following frame draws
+      # CrashReport instead, so the loop keeps running and the report
+      # can be scrolled/copied. Used by both loop flavors.
+      private def self.run_update(app : Egui::App) : Nil
+        if (crash = Egui::CrashReport.captured)
+          Egui::CrashReport.draw(app.ctx, crash)
+          return
+        end
+        app.update(app.ctx)
+      rescue ex : Exception
+        ex.inspect_with_backtrace(STDERR)
+        Egui::CrashReport.capture(ex)
+        Egui::CrashReport.draw(app.ctx, ex)
       end
 
       protected def self.on_frame_inner : Nil
@@ -2288,7 +2334,7 @@ module Egui
         # so the app's own panels land below it.
         Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
         bt = Time.instant
-        app.update(app.ctx)
+        run_update(app)
         FrameBench.span("update", bt)
         bt = Time.instant
         FrameBench.show(app.ctx)
