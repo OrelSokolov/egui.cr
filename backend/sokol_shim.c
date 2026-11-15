@@ -3103,8 +3103,33 @@ static void sh_draw_sdf(int apply_clip, float cx, float cy, float cw,
     if (!g_linear_sampler.id) sh_sampler_ensure();
     b.views[0] = sh_view_of(view);
     b.samplers[0] = g_linear_sampler;
+#if defined(SOKOL_GLCORE)
+    // Hard-edge mode: fill batches (no texture view) run the FS per
+    // SAMPLE — the shape/clip/stroke in-out tests land per sample,
+    // exactly the AA and per-sample BLENDING the tessellated quads get
+    // from MSAA (pixel parity with EGUI_SDF=0, the twinshot html
+    // group). Glyph batches (an atlas view bound — Crystal's #sdf_slot
+    // keeps batches homogeneous) stay per-PIXEL: the alpha is already
+    // antialiased in the atlas texels and per-sample execution on
+    // Mesa/Xe softens every glyph edge. A per-pixel fill test would
+    // drop whole edge pixels; an analytic alpha average cannot
+    // reproduce stacked-edge blending.
+    int ss = g_sdf_hard && !view;
+    if (ss) {
+        glEnable(GL_SAMPLE_SHADING);
+        glMinSampleShading(1.0f);
+    }
+#endif
     sg_apply_bindings(&b);
     sg_draw(0, 6, count);
+#if defined(SOKOL_GLCORE)
+    if (ss) glDisable(GL_SAMPLE_SHADING);
+    // Reset the VALUE too: a stuck glMinSampleShading(1.0) broke every
+    // LATER sgl draw in the same pass on Mesa/Xe (the tessellated
+    // gradient fallbacks silently vanished — only the sample-shading
+    // cap itself is disabled above, the fraction stays set).
+    if (ss) glMinSampleShading(0.0f);
+#endif
 }
 
 // --- deferred SDF interleaving (order without mid-frame sgl_draw) --------
