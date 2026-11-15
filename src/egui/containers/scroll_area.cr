@@ -161,6 +161,11 @@ module Egui
       # `style.scroll_speed` scales it to pixels. Shift+wheel goes to
       # the horizontal axis when one exists (upstream convention).
       #
+      # Composited gesture (plans/COMPOSITED_SCROLL.md): while the
+      # render thread owns this area's offset (wheel/fling consumed on
+      # R, adopted at produce time), the kinetic scroller stands down
+      # — the offset below is already R's applied value.
+      #
       # Canvas drag-to-scroll (touch finger / mouse drag on empty
       # space): Memory's gesture (latched at press — see
       # Memory#canvas_drag_delta) feeds the pointer delta through the
@@ -172,7 +177,10 @@ module Egui
       active = memory.active_scroll_area? == id
       canvas_drag = memory.canvas_drag_active?(id)
       to_h = @hbar && input.modifiers.shift && !input.scroll.y.zero?
-      if canvas_drag
+      if ui.ctx.composited_gesture?(id)
+        v_kin.takeover
+        h_kin.try(&.takeover)
+      elsif canvas_drag
         v_kin.input(-memory.canvas_drag_delta(id).y, input.time, max_v_prev)
       elsif active && !input.scroll.y.zero? && !to_h
         v_kin.input(input.scroll.y * style.scroll_speed,

@@ -298,6 +298,33 @@ lib LibEguiCr
                                         w : Float32, h : Float32,
                                         ppp : Float32)
 
+  # Composited-scroll bracket (plans/COMPOSITED_SCROLL.md): opens a
+  # scroll-layer span in the packet opstream and registers its
+  # descriptor — `window` is the fixed present-time clip (points),
+  # `offset` what the recorded geometry bakes in, `max` the scroll
+  # range, `speed` points per wheel notch, `z` the paint layer for the
+  # render thread's wheel hit-test. The render thread replays the span
+  # under a translate of (applied - offset) and re-clips every scissor
+  # inside to `window`.
+  fun pkt_scroll_begin = egui_cr_pkt_scroll_begin(id : UInt64,
+    wx : Float32, wy : Float32, ww : Float32, wh : Float32,
+    ox : Float32, oy : Float32, mx : Float32, my : Float32,
+    band_x : Float32, band_y : Float32, speed : Float32, z : Float32,
+    vertical : Int32, horizontal : Int32)
+  fun pkt_scroll_end = egui_cr_pkt_scroll_end
+  # A non-composited scroll sink (textarea, terminal, …) under this
+  # packet's layers: the render thread forwards wheel events over it
+  # to A instead of consuming them for a scroll layer.
+  fun pkt_blocker = egui_cr_pkt_blocker(x : Float32, y : Float32,
+    w : Float32, h : Float32, z : Float32, can_v : Int32,
+    can_h : Int32)
+  # Read-back of the render thread's applied offsets (points): per-id
+  # x/y pair, NAN in both when the id has no live gesture.
+  fun scroll_offsets = egui_cr_scroll_offsets(ids : UInt64*,
+    offs : Float64*, n : Int32) : Int32
+  # Clear-on-read: the render thread scrolled since the last adoption.
+  fun scroll_dirty = egui_cr_scroll_dirty : Int32
+
   # textures (shim)
   fun make_texture = egui_cr_make_texture(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun make_stream_texture = egui_cr_make_stream_texture(w : Int32, h : Int32) : UInt32
@@ -412,6 +439,20 @@ module Egui
         def natural_scheduler? : Bool
           Sokol.natural_scheduler?
         end
+
+        # Composited scroll (plans/COMPOSITED_SCROLL.md): the detached
+        # render thread can translate a scroll bracket at replay time.
+        # Off on the legacy loop (no render thread), under EGUI_SDF
+        # (SDF instances draw outside the modelview bracket) and via
+        # the EGUI_COMPOSITED_SCROLL=0 kill-switch.
+        def composited_scroll? : Bool
+          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
+            return false if ENV["EGUI_COMPOSITED_SCROLL"]? == "0"
+            Sokol.natural_scheduler? && !Sokol.sdf?
+          {% else %}
+            false
+          {% end %}
+        end
       end
 
       # On-screen keyboard state (iOS): text focus → show/hide, edge-
@@ -480,6 +521,11 @@ module Egui
       # see tmp/twinshot). EGUI_SDF=1 opts back in (the tessellated
       # path stays byte-for-byte the same).
       @@sdf : Bool = ENV["EGUI_SDF"]? ? ENV["EGUI_SDF"] == "1" : false
+
+      # Reader for the Handle#composited_scroll? gate.
+      def self.sdf? : Bool
+        @@sdf
+      end
       # PAUSE=1: детерминированные скриншоты — время кадра заморожено
       # (on_frame_inner), так что mesh-дрейф, визуализатор и appear-
       # анимации стоят; любые два запуска (напр. EGUI_SDF=1 vs
@@ -1263,6 +1309,10 @@ module Egui
           # thread (the Driver::Base#wake doorbell forwards to the
           # render-thread doorbell — see Handle#wake).
           @@natural_scheduler = true
+          # Composited scroll is live (the Handle gate's hot-loop
+          # cache — see adopt_composited_offsets): the render thread
+          # can consume wheel events and the produce handshake runs.
+          @@composited = Egui::Driver::Base.current.try(&.composited_scroll?) || false
           doorbell = Bytes.new(256)
           records = Pointer(LibEguiCr::EventRecord).malloc(64)
 
@@ -1411,6 +1461,9 @@ module Egui
           return true if app.ctx.needs_repaint?
           return true if app.ctx.textures.pending_destroys?
           return true if Egui::SystemPorts::AsyncDialogs.take_delivered > 0
+          # Composited scroll: the render thread applied deltas A has
+          # not adopted — produce a catch-up frame (clear-on-read).
+          return true if @@composited && LibEguiCr.scroll_dirty != 0
           LibEguiCr.sapp_width != @@last_fb_w ||
             LibEguiCr.sapp_height != @@last_fb_h
         end
@@ -1454,6 +1507,14 @@ module Egui
           app = @@app.not_nil!
           app.ctx.pixels_per_point = @@pixels_per_point
 
+          # Composited scroll (plans/COMPOSITED_SCROLL.md): adopt the
+          # render thread's applied offsets BEFORE begin_frame — the
+          # frame's geometry (and its hit-testing) then matches what
+          # the screen already shows, so clicks land on the right
+          # widgets; the gesture set keeps ScrollArea's kinetic
+          # scroller from fighting the render thread's fling.
+          adopt_composited_offsets(app)
+
           time = (Time.instant - @@start).total_seconds
           time = 5.0 if @@pause # детерминированный кадр (см. @@pause)
           raw = Egui::RawInput.new(
@@ -1480,6 +1541,12 @@ module Egui
           commands = app.ctx.end_frame
           FrameBench.span("end_frame", bt)
 
+          # Non-composited scroll sinks (textareas, terminals, plots)
+          # ride the packet as blockers: the render thread forwards
+          # wheel events over them instead of consuming them for a
+          # scroll layer (see sh_scroll_consume).
+          push_scroll_blockers(app.ctx)
+
           @@last_commands = commands
           @@last_fb_w = fb_w
           @@last_fb_h = fb_h
@@ -1492,6 +1559,53 @@ module Egui
              (ms = (Time.instant - t0).total_milliseconds) > 100.0
             STDERR.puts "[frame] %8.3f SLOW full frame: %.0fms" %
               {dbg_now, ms}
+          end
+        end
+
+        # Composited scroll, resolved once per process (the Handle
+        # gate re-checks env per call; this is the hot-loop cache for
+        # the produce-time handshake below).
+        @@composited : Bool = false
+
+        # Adopt the render thread's applied scroll offsets into Memory
+        # (before begin_frame — see produce_frame). Ids come from the
+        # LAST frame's brackets (Painter#scroll_layer_ids): brackets
+        # not rendered this frame simply don't adopt (their gesture
+        # died with the layer). The velocity cells (id.child(3)/
+        # child(6)) zero out so the Crystal-side glide can't fight the
+        # render thread's fling.
+        private def self.adopt_composited_offsets(app : Egui::App) : Nil
+          ctx = app.ctx
+          ctx.clear_composited_gestures
+          return unless @@composited
+          ids = ctx.painter.scroll_layer_ids
+          return if ids.empty?
+          offs = Slice(Float64).new(ids.size * 2)
+          LibEguiCr.scroll_offsets(ids.to_unsafe, offs.to_unsafe, ids.size)
+          ids.each_with_index do |v, i|
+            x = offs[i * 2]
+            y = offs[i * 2 + 1]
+            next if x.nan? || y.nan?
+            id = Egui::Id.new(v)
+            ctx.memory.data.set_vec2(id, Egui::Vec2.new(x, y))
+            ctx.memory.data.set_f64(id.child(3), 0.0)
+            ctx.memory.data.set_f64(id.child(6), 0.0)
+            ctx.add_composited_gesture(id)
+          end
+        end
+
+        # Publish the frame's NON-composited scroll sinks as packet
+        # blockers (rect/z in points; the render thread's wheel
+        # hit-test forwards over them — textareas, terminals, plots).
+        private def self.push_scroll_blockers(ctx : Egui::Context) : Nil
+          return unless @@composited
+          layers = ctx.painter.scroll_layer_ids
+          ctx.memory.scroll_rects.each do |id, sink|
+            next if layers.includes?(id.value)
+            r = sink.rect
+            LibEguiCr.pkt_blocker(r.min.x.to_f32, r.min.y.to_f32,
+              r.width.to_f32, r.height.to_f32, sink.layer.z.to_f32,
+              sink.can_v ? 1 : 0, sink.can_h ? 1 : 0)
           end
         end
       {% end %}
@@ -2458,6 +2572,7 @@ module Egui
           # every RectCmd the shader cannot express — paints as before,
           # in stream order (a batch flushes before any fallback).
           commands.each do |cmd|
+            next paint(cmd) if cmd.is_a?(Egui::ScrollBracketCmd)
             sync_clip_group(cmd)
             unless sdf_try(cmd)
               sdf_flush
@@ -2467,6 +2582,7 @@ module Egui
           sdf_flush
         else
           commands.each do |cmd|
+            next paint(cmd) if cmd.is_a?(Egui::ScrollBracketCmd)
             sync_clip_group(cmd)
             paint(cmd)
           end
@@ -2564,6 +2680,22 @@ module Egui
           paint_image(cmd)
         when Egui::Mesh3DCmd
           paint_mesh3d(cmd)
+        when Egui::ScrollBracketCmd
+          # The bracket rides the opstream itself (SH_OP_SCROLL_*); the
+          # packet builder routes it. Never reaches here on the legacy
+          # path — Handle#composited_scroll? gated the emission.
+          if cmd.end?
+            LibEguiCr.pkt_scroll_end
+          else
+            LibEguiCr.pkt_scroll_begin(cmd.id,
+              cmd.window.min.x.to_f32, cmd.window.min.y.to_f32,
+              cmd.window.width.to_f32, cmd.window.height.to_f32,
+              cmd.offset.x.to_f32, cmd.offset.y.to_f32,
+              cmd.max_offset.x.to_f32, cmd.max_offset.y.to_f32,
+              cmd.band.x.to_f32, cmd.band.y.to_f32,
+              cmd.scroll_speed.to_f32, cmd.z.to_f32,
+              cmd.vertical? ? 1 : 0, cmd.horizontal? ? 1 : 0)
+          end
         end
       end
 

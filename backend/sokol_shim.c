@@ -882,6 +882,27 @@ static void egui_cr_pkt_clip_mask(float x, float y, float w, float h,
                                   float rbl, float ppp);
 static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
                                     float ppp);
+// composited-scroll bracket (plans/COMPOSITED_SCROLL.md): opens a
+// scroll-layer span in the opstream and registers its descriptor (the
+// render thread replays the span under a live translate, re-clipping
+// to the fixed `w*` window)
+void egui_cr_pkt_scroll_begin(uint64_t id, float wx, float wy,
+                              float ww, float wh, float ox, float oy,
+                              float mx, float my, float band_x,
+                              float band_y, float speed, float z,
+                              int vertical, int horizontal);
+void egui_cr_pkt_scroll_end(void);
+// A non-composited scroll sink under this packet's layers (rect in
+// points, layer z): the render thread forwards wheel events over it
+// to A instead of consuming them for a scroll layer.
+void egui_cr_pkt_blocker(float x, float y, float w, float h, float z,
+                         int can_v, int can_h);
+// The applied offsets R holds for `n` ids (points). Per-index fill:
+// NAN in both components when that id has no live gesture (A's own
+// offset leads). Returns the number of live ones.
+int egui_cr_scroll_offsets(const uint64_t* ids, double* offs, int n);
+// Clear-on-read: R applied a scroll delta A has not adopted yet.
+int egui_cr_scroll_dirty(void);
 #if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
@@ -945,16 +966,31 @@ static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
                                     float ppp) {
     (void)x; (void)y; (void)w; (void)h; (void)ppp;
 }
+void egui_cr_pkt_scroll_begin(uint64_t id, float wx, float wy,
+                              float ww, float wh, float ox, float oy,
+                              float mx, float my, float band_x,
+                              float band_y, float speed, float z,
+                              int vertical, int horizontal) {
+    (void)id; (void)wx; (void)wy; (void)ww; (void)wh; (void)ox; (void)oy;
+    (void)mx; (void)my; (void)band_x; (void)band_y; (void)speed; (void)z;
+    (void)vertical; (void)horizontal;
+}
+void egui_cr_pkt_scroll_end(void) {}
+void egui_cr_pkt_blocker(float x, float y, float w, float h, float z,
+                         int can_v, int can_h) {
+    (void)x; (void)y; (void)w; (void)h; (void)z; (void)can_v; (void)can_h;
+}
 static void egui_cr_pkt_pipe(int kind) { (void)kind; }
 static void egui_cr_pkt_pipe_pop(void) {}
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
-                           int stream, const void* data, size_t size) {
+                           int stream, const void* data, size_t size,
+                           int r8) {
     (void)kind; (void)id; (void)w; (void)h; (void)stream; (void)data;
-    (void)size;
+    (void)size; (void)r8;
 }
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
-                                     int stream) {
-    (void)w; (void)h; (void)rgba8; (void)stream;
+                                     int stream, int r8) {
+    (void)w; (void)h; (void)rgba8; (void)stream; (void)r8;
     return 0;
 }
 #endif
@@ -5970,7 +6006,21 @@ void egui_cr_drop_payload_free(void* payload) {
 // for A's real-size packet instead of presenting a stale-size frame.
 static double g_rsz_at = -1e9;
 
+// Composited scroll (defined with the packet section below — needs
+// g_pkt_last): try to serve a wheel event on the render thread, and
+// advance live flings once per tick before the replay presents them.
+static int sh_scroll_consume(const sapp_event* ev);
+static void sh_scroll_fling_tick(void);
+
 static void sh_rt_event_cb(const sapp_event* ev) {
+    // Composited scroll: a wheel over a scroll layer is consumed HERE
+    // — the replay translates by the applied offset and A gets a wake
+    // (not the event) for its catch-up frame. Ctrl+wheel, blockers
+    // (textareas, …) and misses fall through to the ring as always.
+    if (sh_scroll_consume(ev)) {
+        sh_wake_a(SH_WAKE_EVENTS);
+        return;
+    }
     // Stamp interactive resizes (R thread): frame_cb runs after event
     // processing in the same tick, and sh_rt_frame uses the stamp to
     // wait for A's real-size packet — see the resize draw-sync there.
@@ -6193,7 +6243,29 @@ enum {
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
     SH_OP_MESH3D, SH_OP_SDF, SH_OP_CLIP_MASK, SH_OP_CLIP_UNMASK,
     SH_OP_XFORM, SH_OP_XFORM_POP, SH_OP_TEXT,
+    SH_OP_SCROLL_BEGIN, SH_OP_SCROLL_END,
 };
+
+// One composited scroll layer: rides the packet, indexed by
+// SH_OP_SCROLL_BEGIN. Points space throughout; `ppp` of the packet
+// converts to device pixels. `w*` is the fixed present-time window
+// (viewport ∩ ambient clip at record), `o*` the offset the recorded
+// geometry bakes in, `m*` the scroll range, `band_*` the overscan
+// margin the content stays rasterized for (the applied offset may
+// not leave [o - band, o + m + band]).
+typedef struct {
+    uint64_t id;
+    float wx, wy, ww, wh;
+    float ox, oy;
+    float mx, my;
+    float band_x, band_y;
+    float speed;
+    float z;               // paint layer at record — hit-test priority
+    int vertical, horizontal;
+    int blocker;           // 1 = non-composited sink (textarea, …):
+                           // never scrolled on R, only hit-tested so
+                           // the wheel forwards to A instead
+} sh_scroll_t;
 
 typedef struct {
     int fb_w, fb_h;
@@ -6202,6 +6274,7 @@ typedef struct {
     uint32_t* ops; int ops_len, ops_cap;
     sh_texop_t* pre;  int pre_n,  pre_cap;   // before the pass
     sh_texop_t* post; int post_n, post_cap;  // after the next pass
+    sh_scroll_t* scrolls; int scrolls_n, scrolls_cap; // scroll-layer descriptors
 } sh_packet_t;
 
 static sh_packet_t* g_build;    // A-side builder (between publishes)
@@ -6217,7 +6290,7 @@ static void sh_packet_free(sh_packet_t* p) {
     if (!p) return;
     for (int i = 0; i < p->pre_n; i++) free(p->pre[i].data);
     for (int i = 0; i < p->post_n; i++) free(p->post[i].data);
-    free(p->ops); free(p->pre); free(p->post);
+    free(p->ops); free(p->pre); free(p->post); free(p->scrolls);
     free(p);
 }
 
@@ -6290,6 +6363,7 @@ static void egui_cr_pkt_begin(int fb_w, int fb_h) {
     free(g_build->ops); // draw ops never carry past a publish; a fresh
     g_build->ops = NULL; // frame resets them (texture ops accumulate)
     g_build->ops_len = 0;
+    g_build->scrolls_n = 0; // descriptor indexes are per-packet too
     g_build->fb_w = fb_w;
     g_build->fb_h = fb_h;
     g_build->ppp = g_pkt_ppp > 0.0f ? g_pkt_ppp : 1.0f;
@@ -6498,6 +6572,320 @@ static void egui_cr_pkt_clip_unmask(float x, float y, float w, float h,
     uint32_t o[6] = { SH_OP_CLIP_UNMASK, sh_f2u(x), sh_f2u(y), sh_f2u(w),
                       sh_f2u(h), sh_f2u(ppp) };
     sh_push_words(o, 6);
+}
+
+// ---- composited scroll: R-side applied offsets -------------------------------
+// The render thread's authoritative scroll offsets for the live scroll
+// layers. Wheel ticks over a scroll-layer descriptor (see
+// sh_scroll_consume) move `ox/oy` here — the replay translates by
+// (applied - recorded) and the catch-up frame on A adopts the value
+// back (egui_cr_scroll_offsets). Gesture authority: while fresh wheel
+// input keeps `last_wheel` within SH_SCROLL_GESTURE_S, R's value
+// wins; after that each new packet's recorded offset leads again
+// (programmatic scrolls, thumb drags). `vx/vy` carry the fling
+// (KineticScroller's feel: half-life 0.12 s, stop 15 px/s, clamp
+// 1500 px/s) advanced once per presented tick in sh_scroll_fling_tick.
+#define SH_APPLIED_MAX 128
+#define SH_SCROLL_GESTURE_S 0.15
+#define SH_SCROLL_STOP_V 15.0
+#define SH_SCROLL_MAX_V 1500.0
+#define SH_SCROLL_HALF_LIFE 0.12
+typedef struct {
+    uint64_t id;
+    double ox, oy;     // applied offset (points)
+    double vx, vy;     // fling velocity (points/s)
+    double last_wheel; // sh_now() of the last consumed wheel tick
+    double last_tick;  // sh_now() of the last fling advance
+    long long used;    // generation stamp: last packet that carried the id
+} sh_applied_t;
+static sh_applied_t g_applied[SH_APPLIED_MAX];
+static int g_applied_n;
+static sh_mutex g_applied_mx = SH_MUTEX_STATIC_INIT;
+static long long g_pkt_gen; // bumped on every taken packet
+// Set whenever R applied a delta A has not adopted; clear-on-read
+// through egui_cr_scroll_dirty (the A loop produces a catch-up frame).
+static sh_atom_i g_scroll_dirty;
+
+static sh_applied_t* sh_applied_find(uint64_t id) {
+    for (int i = 0; i < g_applied_n; i++)
+        if (g_applied[i].id == id) return &g_applied[i];
+    return NULL;
+}
+
+static int sh_applied_live(sh_applied_t* a) {
+    return sh_now() - a->last_wheel < SH_SCROLL_GESTURE_S;
+}
+
+// The presentable offset range for `s`: the rasterized band around
+// the recorded offset, clamped to the scroll range. Outside it the
+// compositor would present unrasterized content (the browser's
+// checkerboard edge) — stop at the band instead.
+static void sh_scroll_bounds(sh_scroll_t* s, int vertical,
+                             float* lo, float* hi) {
+    if (vertical) {
+        float band = s->band_y > 0.0f ? s->band_y : 0.0f;
+        *lo = s->ox - band;
+        *hi = s->ox + band;
+        if (s->my > 0.0f || *hi > s->my) {
+            // max is known (>= 0): cap by it
+            *lo = *lo < 0.0f ? 0.0f : *lo;
+            if (*hi > s->my) *hi = s->my;
+        }
+        if (*lo < 0.0f) *lo = 0.0f;
+        if (*hi < *lo) *hi = *lo;
+    } else {
+        float band = s->band_x > 0.0f ? s->band_x : 0.0f;
+        *lo = s->ox - band;
+        *hi = s->ox + band;
+        if (s->mx > 0.0f || *hi > s->mx) {
+            *lo = *lo < 0.0f ? 0.0f : *lo;
+            if (*hi > s->mx) *hi = s->mx;
+        }
+        if (*lo < 0.0f) *lo = 0.0f;
+        if (*hi < *lo) *hi = *lo;
+    }
+}
+
+// The delta a replay applies for `s` (points). ROUNDED to whole
+// framebuffer pixels — recorded glyph quads are snapped to the device
+// grid on A, a fractional translate would wobble text against chrome
+// (the same reason ScrollArea rounds its draw offset).
+static void sh_scroll_delta(sh_scroll_t* s, float ppp, float* dx,
+                            float* dy) {
+    sh_applied_t* a = sh_applied_find(s->id);
+    double ax = s->ox, ay = s->oy;
+    if (a && sh_applied_live(a)) {
+        ax = a->ox;
+        ay = a->oy;
+    } else if (a) {
+        // No live gesture: A's recorded offset leads (programmatic
+        // scrolls, thumb drags) — adopt and cache it.
+        a->ox = ax;
+        a->oy = ay;
+        a->vx = a->vy = 0.0;
+    }
+    float fx = (float)(ax - (double)s->ox);
+    float fy = (float)(ay - (double)s->oy);
+    if (ppp > 0.0f) {
+        fx = floorf(fx * ppp + 0.5f) / ppp;
+        fy = floorf(fy * ppp + 0.5f) / ppp;
+    }
+    *dx = fx;
+    *dy = fy;
+}
+
+// A-side read-back: per-index fill, NAN in both components when the
+// id has no live gesture. `offs` is 2 doubles per id (x, y).
+int egui_cr_scroll_offsets(const uint64_t* ids, double* offs, int n) {
+    sh_mx_lock(&g_applied_mx);
+    int live = 0;
+    for (int i = 0; i < n; i++) {
+        offs[i * 2 + 0] = NAN;
+        offs[i * 2 + 1] = NAN;
+        sh_applied_t* a = sh_applied_find(ids[i]);
+        if (a && sh_applied_live(a)) {
+            offs[i * 2 + 0] = a->ox;
+            offs[i * 2 + 1] = a->oy;
+            live++;
+        }
+    }
+    sh_mx_unlock(&g_applied_mx);
+    return live;
+}
+
+int egui_cr_scroll_dirty(void) {
+    return sh_ai_xchg(&g_scroll_dirty, 0);
+}
+
+// Feed one wheel tick into the applied entry: clamped move, velocity
+// estimate from the inter-tick gap (the discrete-tick twin of
+// KineticScroller's History), edge hits kill the fling (content
+// cannot compress). Returns the amount actually applied (for
+// chaining the leftover to the sink under this one).
+static double sh_scroll_feed(sh_scroll_t* s, int vertical, double delta,
+                             double now) {
+    sh_applied_t* a = sh_applied_find(s->id);
+    if (!a) return 0.0;
+    float lo, hi;
+    sh_scroll_bounds(s, vertical, &lo, &hi);
+    double before = vertical ? a->oy : a->ox;
+    double target = before + delta;
+    if (target < lo) target = lo;
+    if (target > hi) target = hi;
+    double applied = target - before;
+    if (vertical) a->oy = target; else a->ox = target;
+    double dt = now - a->last_wheel;
+    if (a->last_wheel <= 0.0 || dt < 0.001 || dt > 0.2) dt = 0.05;
+    double v = applied / dt;
+    if (v > SH_SCROLL_MAX_V) v = SH_SCROLL_MAX_V;
+    if (v < -SH_SCROLL_MAX_V) v = -SH_SCROLL_MAX_V;
+    if (vertical) a->vy = v; else a->vx = v;
+    if ((applied < 0.0 && target <= lo) || (applied > 0.0 && target >= hi))
+        if (vertical) a->vy = 0.0; else a->vx = 0.0; // edge: no fling
+    a->last_wheel = now;
+    a->last_tick = now;
+    return applied;
+}
+
+// Wheel interception (the compositor path proper): try to serve
+// SAPP_EVENTTYPE_MOUSE_SCROLL from the live packet's scroll layers.
+// Returns 1 when consumed — the event never reaches A's ring, the
+// replay translates instead. Ctrl+wheel (zoom semantics) and wheels
+// over blockers (textareas, terminals — sinks A owns) always forward.
+static int sh_scroll_consume(const sapp_event* ev) {
+    if (ev->type != SAPP_EVENTTYPE_MOUSE_SCROLL) return 0;
+    if (ev->modifiers & SAPP_MODIFIER_CTRL) return 0;
+    sh_packet_t* p = g_pkt_last;
+    if (!p || p->scrolls_n <= 0) return 0;
+    float ppp = p->ppp > 0.0f ? p->ppp : 1.0f;
+    float x = ev->mouse_x / ppp;
+    float y = ev->mouse_y / ppp;
+    // Sign conventions mirror translate_event + ScrollArea: sapp
+    // scroll_y > 0 = wheel-UP; egui.cr's input.scroll.y is the
+    // NEGATION (positive = content scrolls down = offset grows);
+    // scroll_x > 0 = view-LEFT → the offset's view-right direction
+    // negates it. Shift+wheel drives the horizontal axis.
+    int shift = (ev->modifiers & SAPP_MODIFIER_SHIFT) != 0;
+    double dvy = -(double)ev->scroll_y;
+    double dvx = -(double)ev->scroll_x;
+    if (ev->scroll_x == 0.0f && shift && ev->scroll_y != 0.0f) {
+        dvx = dvy; // shift+wheel-up = view-left family → same direction
+        dvy = 0.0;
+    }
+    double now = sh_now();
+    int consumed = 0;
+    // Candidates topmost-first: highest z containing the pointer wins,
+    // ties broken by later registration (paint order — the same rule
+    // as Memory#topmost_scroll_at). Chaining: a saturated sink passes
+    // its leftover to the sink under it. `skip` is per-EVENT — the
+    // packet's descriptors must not be mutated (later wheels re-ask).
+    unsigned char skip[SH_APPLIED_MAX];
+    memset(skip, 0, sizeof skip);
+    for (int round = 0; round < 4; round++) {
+        int best = -1;
+        float best_z = -1e30f;
+        for (int i = 0; i < p->scrolls_n && i < SH_APPLIED_MAX; i++) {
+            sh_scroll_t* s = &p->scrolls[i];
+            if (skip[i]) continue;
+            if (x < s->wx || x >= s->wx + s->ww ||
+                y < s->wy || y >= s->wy + s->wh) continue;
+            if (s->z < best_z) continue;
+            best = i;
+            best_z = s->z;
+        }
+        if (best < 0) break;
+        sh_scroll_t* s = &p->scrolls[best];
+        if (s->blocker) break;               // A owns this wheel
+        skip[best] = 1;
+        int want_v = dvy != 0.0 && s->vertical;
+        int want_h = dvx != 0.0 && s->horizontal;
+        if (!want_v && !want_h) break;       // cannot serve: forward
+        double speed = s->speed > 0.0f ? (double)s->speed : 40.0;
+        double applied = 0.0;
+        if (want_v) {
+            applied = sh_scroll_feed(s, 1, dvy * speed, now);
+            if (applied != 0.0) dvy = 0.0;   // served; only a fully
+        } else if (want_h) {                 // saturated sink chains
+            applied = sh_scroll_feed(s, 0, dvx * speed, now);
+            if (applied != 0.0) dvx = 0.0;
+        }
+        if (applied != 0.0) {
+            consumed = 1;
+            sh_ai_store(&g_scroll_dirty, 1);
+        }
+        if (dvy == 0.0 && dvx == 0.0) break;
+    }
+    return consumed;
+}
+
+// Fling advance, once per presented tick (before the replay so the
+// tick presents the advanced offsets — the compositor-thread twin of
+// KineticScroller#glide). A live fling keeps R authoritatively dirty:
+// A keeps getting catch-up wakeups, the screen keeps moving at vsync
+// even while A is starved.
+static void sh_scroll_fling_tick(void) {
+    sh_packet_t* p = g_pkt_last;
+    if (!p) return;
+    double now = sh_now();
+    int moved = 0;
+    for (int i = 0; i < g_applied_n; i++) {
+        sh_applied_t* a = &g_applied[i];
+        double v = a->vy;
+        int vertical = 1;
+        if (a->vy == 0.0 && a->vx != 0.0) { v = a->vx; vertical = 0; }
+        if (v == 0.0) continue;
+        if (!sh_applied_live(a)) continue; // gesture over: A leads
+        // find this id's descriptor in the live packet
+        sh_scroll_t* s = NULL;
+        for (int k = 0; k < p->scrolls_n; k++)
+            if (!p->scrolls[k].blocker && p->scrolls[k].id == a->id) {
+                s = &p->scrolls[k];
+                break;
+            }
+        if (!s) { a->vx = a->vy = 0.0; continue; }
+        double dt = now - a->last_tick;
+        if (dt < 0.001) continue;
+        if (dt > 0.2) dt = 0.2;
+        a->last_tick = now;
+        float lo, hi;
+        sh_scroll_bounds(s, vertical, &lo, &hi);
+        double before = vertical ? a->oy : a->ox;
+        double target = before + v * dt;
+        int hit_edge = 0;
+        if (target < lo) { target = lo; hit_edge = 1; }
+        if (target > hi) { target = hi; hit_edge = 1; }
+        if (vertical) a->oy = target; else a->ox = target;
+        v *= pow(0.5, dt / SH_SCROLL_HALF_LIFE);
+        if (hit_edge || fabs(v) < SH_SCROLL_STOP_V) v = 0.0;
+        if (vertical) a->vy = v; else a->vx = v;
+        if (target != before || v != 0.0) moved = 1;
+    }
+    if (moved) sh_ai_store(&g_scroll_dirty, 1);
+}
+
+
+void egui_cr_pkt_scroll_begin(uint64_t id, float wx, float wy,
+                             float ww, float wh, float ox, float oy,
+                             float mx, float my, float band_x,
+                             float band_y, float speed, float z,
+                             int vertical, int horizontal) {
+    sh_build_ensure();
+    sh_grow((void**)&g_build->scrolls, &g_build->scrolls_cap,
+            g_build->scrolls_n + 1, sizeof(sh_scroll_t));
+    sh_scroll_t* s = &g_build->scrolls[g_build->scrolls_n++];
+    memset(s, 0, sizeof *s);
+    s->id = id;
+    s->wx = wx; s->wy = wy; s->ww = ww; s->wh = wh;
+    s->ox = ox; s->oy = oy;
+    s->mx = mx; s->my = my;
+    s->band_x = band_x; s->band_y = band_y;
+    s->speed = speed;
+    s->z = z;
+    s->vertical = vertical;
+    s->horizontal = horizontal;
+    uint32_t o[2] = { SH_OP_SCROLL_BEGIN,
+                      (uint32_t)(g_build->scrolls_n - 1) };
+    sh_push_words(o, 2);
+}
+
+void egui_cr_pkt_scroll_end(void) {
+    uint32_t o[1] = { SH_OP_SCROLL_END };
+    sh_push_words(o, 1);
+}
+
+void egui_cr_pkt_blocker(float x, float y, float w, float h, float z,
+                         int can_v, int can_h) {
+    sh_build_ensure();
+    sh_grow((void**)&g_build->scrolls, &g_build->scrolls_cap,
+            g_build->scrolls_n + 1, sizeof(sh_scroll_t));
+    sh_scroll_t* s = &g_build->scrolls[g_build->scrolls_n++];
+    memset(s, 0, sizeof *s);
+    s->id = 0;
+    s->wx = x; s->wy = y; s->ww = w; s->wh = h;
+    s->z = z;
+    s->vertical = can_v;
+    s->horizontal = can_h;
+    s->blocker = 1;
 }
 
 // ---- R-side texture table -----------------------------------------------------
@@ -7009,6 +7397,16 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
     // SH_OP_CLIP_MASK/UNMASK flip it, SH_OP_PIPE/SDF consume it — one
     // op stream, one thread, no cross-thread state.
     int clip_on = 0;
+    // Open scroll brackets (composited scroll — SH_OP_SCROLL_*): each
+    // frame carries its own delta (own + enclosing, points) and its
+    // EFFECTIVE window — the recorded window shifted by the deltas of
+    // the ENCLOSING brackets only. Geometry under an open bracket
+    // rides the modelview translate; scissors and stencil masks are
+    // translated by the cumulative delta and intersected with every
+    // enclosing window (the window is the fixed present-time clip).
+    struct { float dx, dy, ex, ey, ew, eh; } scr[8];
+    int scr_n = 0;
+    float scr_dx = 0.0f, scr_dy = 0.0f; // cumulative of all open brackets
     // A fresh sgl layer per pass keeps a stashed SDF batch of a LATER
     // pass from drawing after this pass's head commands (one batch per
     // layer — see sh_sdf_frame). Layer 0 on the first pass.
@@ -7034,13 +7432,35 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
     const uint32_t* end = p->ops + p->ops_len;
     while (op < end) {
         switch (*op++) {
-        case SH_OP_SCISSOR:
+        case SH_OP_SCISSOR: {
+            float x = sh_u2f(op[0]), y = sh_u2f(op[1]);
+            float sw = sh_u2f(op[2]), sh = sh_u2f(op[3]);
+            if (!strip && scr_n > 0) {
+                // Inside a scroll bracket: the recorded rect is
+                // content-relative — move with the cumulative delta,
+                // then bound it by every enclosing effective window
+                // (screen-fixed). A fully-scissored-away rect clamps
+                // to empty and draws nothing, like the A-side culling.
+                x -= scr_dx;
+                y -= scr_dy;
+                for (int i = 0; i < scr_n; i++) {
+                    float x0 = scr[i].ex, y0 = scr[i].ey;
+                    float x1 = scr[i].ex + scr[i].ew;
+                    float y1 = scr[i].ey + scr[i].eh;
+                    if (x < x0) { sw -= x0 - x; x = x0; }
+                    if (y < y0) { sh -= y0 - y; y = y0; }
+                    if (x + sw > x1) sw = x1 - x;
+                    if (y + sh > y1) sh = y1 - y;
+                }
+                if (sw < 0.0f) sw = 0.0f;
+                if (sh < 0.0f) sh = 0.0f;
+            }
             if (!strip) {
-                sgl_scissor_rectf(sh_u2f(op[0]) * sx, sh_u2f(op[1]) * sy,
-                                  sh_u2f(op[2]) * sx, sh_u2f(op[3]) * sy, true);
+                sgl_scissor_rectf(x * sx, y * sy, sw * sx, sh * sy, true);
             }
             op += 4;
             break;
+        }
         case SH_OP_PIPE: {
             int st = clip_on && sh_stencil_ok();
             sgl_pipeline pip = op[0] == 1 ? (st ? g_replace_pip_st : g_replace_pip)
@@ -7137,6 +7557,9 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             // bbox in packet px → replay px via sx/sy; the geometry
             // ppp magnifies with the same sx. Strip passes skip masks
             // like they skip scissors (their content is unmasked).
+            // The mask draws through its own uniform-fed pipeline —
+            // the bracket's modelview does NOT reach it, so inside a
+            // scroll bracket the bbox is translated by hand.
             float x = sh_u2f(op[0]), y = sh_u2f(op[1]);
             float w = sh_u2f(op[2]), h = sh_u2f(op[3]);
             float rtl = sh_u2f(op[4]), rtr = sh_u2f(op[5]);
@@ -7144,6 +7567,8 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             float ppp = sh_u2f(op[8]);
             op += 9;
             if (!strip && sh_stencil_ok()) {
+                x -= scr_dx * sx;
+                y -= scr_dy * sy;
                 sh_clip_stash(1, 1, x * sx, y * sy, w * sx, h * sy,
                               rtl, rtr, rbr, rbl, ppp * ((sx + sy) * 0.5f));
                 clip_on = 1;
@@ -7157,6 +7582,8 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             float ppp = sh_u2f(op[4]);
             op += 5;
             if (!strip && sh_stencil_ok()) {
+                x -= scr_dx * sx;
+                y -= scr_dy * sy;
                 sh_clip_stash(2, 1, x * sx, y * sy, w * sx, h * sy,
                               0.0f, 0.0f, 0.0f, 0.0f,
                               ppp * ((sx + sy) * 0.5f));
@@ -7178,6 +7605,47 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             break;
         }
         case SH_OP_XFORM_POP: sgl_pop_matrix(); break;
+        case SH_OP_SCROLL_BEGIN: {
+            uint32_t idx = op[0];
+            op += 1;
+            if (scr_n < 8 && idx < (uint32_t)p->scrolls_n) {
+                sh_scroll_t* s = &p->scrolls[idx];
+                float dx, dy;
+                sh_scroll_delta(s, p->ppp, &dx, &dy);
+                // Register in the applied table (stage 2 gesture state
+                // reads it; the stamp prunes churned ids).
+                sh_applied_t* a = sh_applied_find(s->id);
+                if (!a && g_applied_n < SH_APPLIED_MAX) {
+                    a = &g_applied[g_applied_n++];
+                    a->id = s->id;
+                    a->ox = s->ox;
+                    a->oy = s->oy;
+                    a->last_wheel = -1e9;
+                }
+                if (a) a->used = g_pkt_gen;
+                scr[scr_n].dx = scr_dx + dx;
+                scr[scr_n].dy = scr_dy + dy;
+                scr[scr_n].ex = s->wx - scr_dx; // enclosing-only shift
+                scr[scr_n].ey = s->wy - scr_dy;
+                scr[scr_n].ew = s->ww;
+                scr[scr_n].eh = s->wh;
+                scr_dx = scr[scr_n].dx;
+                scr_dy = scr[scr_n].dy;
+                scr_n++;
+                sgl_push_matrix();
+                sgl_matrix_mode_modelview();
+                sgl_translate(-dx, -dy, 0.0f);
+            }
+            break;
+        }
+        case SH_OP_SCROLL_END:
+            if (scr_n > 0) {
+                scr_n--;
+                scr_dx = scr_n ? scr[scr_n - 1].dx : 0.0f;
+                scr_dy = scr_n ? scr[scr_n - 1].dy : 0.0f;
+                sgl_pop_matrix();
+            }
+            break;
         default: // corrupted stream — drop the rest of the frame
             op = end;
             break;
@@ -7541,6 +8009,21 @@ static void sh_rt_frame(void) {
         if (sh_b_on > 0) sh_b_tex_acc += sh_now() - bt;
         sh_packet_free(g_pkt_last); // replaced content
         g_pkt_last = fresh;
+        // Composited scroll: a new generation of descriptors — prune
+        // applied-offset entries whose id the packet no longer carries
+        // (virtual-list id churn must not grow the table).
+        g_pkt_gen++;
+        {
+            int n = 0;
+            for (int i = 0; i < g_applied_n; i++) {
+                int keep = 0;
+                for (int k = 0; k < fresh->scrolls_n; k++)
+                    if (fresh->scrolls[k].id == g_applied[i].id) { keep = 1; break; }
+                if (keep || sh_now() - g_applied[i].last_wheel < 1.0)
+                    g_applied[n++] = g_applied[i];
+            }
+            g_applied_n = n;
+        }
         // this packet's destroys run before the NEXT packet's draws
         g_post_pending = fresh->post;
         g_post_pending_n = fresh->post_n;
@@ -7603,6 +8086,8 @@ static void sh_rt_frame_cb(void) {
         sh_b_verts_acc = 0;
     }
     egui_cr_wd_on_frame_begin();
+    sh_scroll_fling_tick(); // advance live flings BEFORE the replay —
+                            // this tick presents the moved content
     sh_rt_frame();
     egui_cr_wd_on_frame_end();
 #if defined(_SAPP_LINUX)
