@@ -388,6 +388,31 @@ module Egui
       child
     end
 
+    # The "fill editor" region as one call: a child Ui covering this
+    # region's REMAINDER — everything from the cursor to the far edge
+    # (a textarea/editor that stretches to the container's bottom
+    # instead of sizing to its own rows, like a browser
+    # `<textarea style="height:100%">`). Replaces the three-line manual
+    # idiom (allocate_at_least + child_ui + clamp) copied around apps.
+    #
+    # v_overflow is switched OFF on the child on purpose: the panel
+    # body is a ScrollArea whose overflow-y a plain #child_ui would
+    # inherit, and inside an overflowing Ui the max-size rule is
+    # disabled — a fill widget sized beyond the fold (textarea
+    # `rows: 100`) would keep its natural height past the visible
+    # edge, its viewport would tower over the content, and its own
+    # scrolling (bar + wheel) would never engage while the tail is
+    # clipped off-screen (the crash-report/notepad bug). With the
+    # clamp on, the widget sizes to the visible remainder and scrolls
+    # itself. Vertical flow only.
+    def fill_child(id : Id? = nil) : Ui
+      rect = allocate_at_least(
+        Vec2.new(available_width, available_height))
+      child = child_ui(rect, id)
+      child.v_overflow = false
+      child
+    end
+
     # CSS-like scoping for complex components: while the block runs,
     # widgets added through this Ui carry an extra class path
     # `"{scope}.{own class}"` on top of their base `style_class` (see
