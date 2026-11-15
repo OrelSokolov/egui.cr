@@ -207,6 +207,7 @@ Deviations (🔶):
 | `@keyframes` | ✅ `animation:*` rule keys + `StyleSheet#keyframes` / ecss `@keyframes` blocks (deviations §5) |
 | `position` | ✅ `relative`/`absolute`/`fixed` + `top/right/bottom/left` (px, `%` of the containing block, vw/vh/rem) on `Ui#box` / `ui.div`, from arguments, inline `style:` or ECSS class rules (see `Ui#box_positioning`); `sticky` ⏳ |
 | Vue template syntax (exml `v-*` aliases) | ✅ contract §7 — parse-time desugar, one canonical tree |
+| window chrome (frame + caption buttons) | ✅ exml `<window-frame>` (stock) / `<window-frame-custom>` (`<window-button type=…>` + caption content) → `Egui::WindowFrame`; drag/resize/maximize behavior stays in the binary |
 
 ## 7. Vue directive subset (exml aliases)
 

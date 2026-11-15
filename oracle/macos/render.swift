@@ -17,7 +17,7 @@ struct RenderOracle {
     static func main() {
         let app = NSApplication.shared
         // `gallery` argument: a live visible window with every sheet
-        // stacked up (the egui.cr twin is examples/macos_gallery.cr).
+        // stacked up (the egui.cr twin is examples/theme_gallery.cr).
         // Without it: headless PNG rendering into png/.
         let gallery = CommandLine.arguments.contains("gallery")
         // .accessory: no Dock icon, but the app CAN activate — key
@@ -93,7 +93,7 @@ struct RenderOracle {
     // --- live gallery -----------------------------------------------------
 
     // One visible window with every sheet stacked as a row plus a
-    // small caption — run side by side with examples/macos_gallery.cr.
+    // small caption — run side by side with examples/theme_gallery.cr.
     private static func runGallery(app: NSApplication,
                                    aqua: NSAppearance?,
                                    sheets: [(String, (HostView) -> Void)]) {

@@ -164,6 +164,7 @@ module Egui
         "background"     => Color32.rgb(231, 231, 231),
         "stroke"         => Color32.rgb(193, 193, 193),
         "selection_fill" => Color32.rgb(193, 193, 193),
+        "selection_text" => Color32.rgb(61, 61, 61),
       })
 
       theme

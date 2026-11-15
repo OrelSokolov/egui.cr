@@ -26,12 +26,18 @@
 # state — the property retained toolkits lose when a tree is swapped.
 #
 # What exml deliberately does NOT cover (the binary keeps it):
-#   * the borderless-caption hooks (TitleBarTabs et al) — callback
-#     hooks into WindowFrame, not a renderable region;
 #   * derived values — the app computes stats and writes store slots;
 #     there is no expression engine;
 #   * anything needing new platform capabilities — the fixed widget
 #     vocabulary is the price of "no interpreter in the loop".
+#
+# The window frame IS markup (the one deliberate exception from the
+# old "caption hooks stay binary" rule): `<window-frame>` draws the
+# stock chrome, `<window-frame-custom>` composes it — an explicit
+# `<window-button type=…>` set plus arbitrary caption content — while
+# the drag/resize/maximize BEHAVIOR stays inside Egui::WindowFrame
+# (native move/resize handoff is not markup). The binary `.caption`
+# hook remains for apps that don't use exml.
 #
 # Extensibility: any element name outside the built-in vocabulary
 # parses as a Custom node and dispatches to a handler the APPLICATION
@@ -71,6 +77,18 @@
 #            :options="{list}" — a list slot (rt.lists) instead of
 #            a literal split; the dynamic counterpart, same push
 #            model as <repeat over=…> rows
+#   openfile bind, text?, text_choosing?, text_done?,  native file
+#            filters?, title?, directory?,              dialog (never
+#            label_class?, on_change?                   blocks the
+#   savefile …+ default_name?                          frame) + a
+#            path label. The chosen path lands in the bound string
+#            slot; "bind/choosing" (bool) is true while the dialog is
+#            up; a cancel keeps the old value. Button text walks the
+#            three states (idle → choosing → chosen). filters are
+#            pipe-separated globs ("*.png|*.jpg"); the label (class
+#            "file-label", or label_class) shows the path and turns
+#            off with the `visible: false` style key — which ANY
+#            class-carrying element understands (see style_visible?)
 #   separator
 #   repeat   for="doc"?, in="items", key="id"?,    the v-for (Python
 #            index="i"?                             reading order): rows
@@ -80,6 +98,24 @@
 #            row write "_i" to the root store first; `key` gives
 #            stable widget ids across reorders
 #   markdown text, base_dir?                     the markdown widget
+#   window-frame style?, title?                  the stock client-side
+#                                               window chrome — one
+#                                               line, the style's
+#                                               default caption; put
+#                                               it first in the page
+#   window-frame-custom style?, title?, height?  the composable frame:
+#                                               <window-button> children
+#                                               name the caption button
+#                                               set, every other child
+#                                               renders into the caption
+#                                               (tabs, a search strip)
+#   window-button type, on_click?                one caption button —
+#                                               minimize/maximize/close;
+#                                               on_click replaces the
+#                                               native action
+#   formula  tex, size?, display?, color?        LaTeX via mathjax.cr —
+#            OPT-IN: require "egui/exml_formula" (a dev dependency,
+#            registered as a global `widget`, not a builtin kind)
 #
 # Widgets carrying `id="name"` register their Response in the
 # renderer's ref registry for the frame — the app reads them after
@@ -134,8 +170,10 @@ module Egui
     enum Kind
       Page; Modal; MenuBar; Menu; MenuItem; Central; Statusbar
       Row; Column; Box; Heading; Label; Button; Slider; Checkbox
-      Separator; Progress; Input; Textarea; Combo; Toggle; Custom
+      Separator; Progress; Input; Textarea; Combo; Toggle
+      OpenFile; SaveFile; Custom
       Partial; Use; Repeat; Markdown; FlexItem; Template
+      WindowFrame; WindowFrameCustom; WindowButton
     end
 
     CONTAINERS = {Kind::Page, Kind::Modal, Kind::MenuBar, Kind::Menu,
@@ -162,6 +200,9 @@ module Egui
       "combo" => Kind::Combo, "combobox" => Kind::Combo,
       # `<toggle>` — the switch-style checkbox (ToggleButton)
       "toggle" => Kind::Toggle,
+      # `<openfile>`/`<savefile>` — a button driving the native file
+      # dialog plus a label with the bound path (see render_file_picker)
+      "openfile" => Kind::OpenFile, "savefile" => Kind::SaveFile,
       "exml" => Kind::Column,
       "partial" => Kind::Partial, "use" => Kind::Use,
       "repeat" => Kind::Repeat, "markdown" => Kind::Markdown,
@@ -171,6 +212,14 @@ module Egui
       # `<template>` — parse-time group wrapper (Vue's): spliced away
       # by `desugar_vue_tree`, never reaches the renderer.
       "template" => Kind::Template,
+      # `<window-frame>` / `<window-frame-custom>` — the client-side
+      # window chrome (Egui::WindowFrame) as markup: the stock one
+      # draws the style's default caption (title + buttons); the
+      # custom one takes an explicit `<window-button>` set plus
+      # arbitrary caption content (tabs, a search strip).
+      "window-frame" => Kind::WindowFrame,
+      "window-frame-custom" => Kind::WindowFrameCustom,
+      "window-button" => Kind::WindowButton,
     } of String => Kind
 
     # One parsed element: kind + attributes + children + the stable
@@ -259,6 +308,22 @@ module Egui
       # plus the key event whose action it fires (window-global)
       getter hotkey_attr : String?
       getter on_key_event : String?
+      # file pickers (`<openfile>`/`<savefile>`) — the per-state button
+      # texts, the pipe-separated filter globs, the dialog plumbing and
+      # the class of the path label ("file-label" when not given)
+      getter file_choosing_text : String?
+      getter file_done_text : String?
+      getter file_filters : Array(String)
+      getter file_label_class : String?
+      getter file_default_name : String?
+      getter file_directory : String?
+      # window frame (`<window-frame>`/`<window-frame-custom>`) — the
+      # style NAME (a WindowFrame::STYLE_NAMES key, interpolatable for
+      # live theme switching) and the custom frame's caption-height
+      # override; `<window-button type=…>` — the button name
+      getter frame_style : String?
+      getter frame_height : Float64?
+      getter button_type : String?
 
       @children_under : Hash(String, Array(Node))? = nil
 
@@ -317,6 +382,15 @@ module Egui
         @trim = @attrs["trim"]? == "true"
         @hotkey_attr = @attrs["hotkey"]?
         @on_key_event = @attrs["on_keyup"]? || @attrs["on_keydown"]?
+        @file_choosing_text = @attrs["text_choosing"]?
+        @file_done_text = @attrs["text_done"]?
+        @file_filters = Exml.split_list(@attrs["filters"]?, "|")
+        @file_label_class = @attrs["label_class"]?
+        @file_default_name = @attrs["default_name"]?
+        @file_directory = @attrs["directory"]?
+        @frame_style = @attrs["style"]?
+        @frame_height = @attrs["height"]?.try(&.to_f?)
+        @button_type = @attrs["type"]?
       end
 
       def container? : Bool
@@ -1306,6 +1380,10 @@ module Egui
       Kind::Textarea  => %w(bind hint rows frame editor_id on_change),
       Kind::Combo     => %w(bind options delimiter on_change),
       Kind::Toggle    => %w(bind text on_change),
+      Kind::OpenFile  => %w(bind text text_choosing text_done filters title directory
+                             class label_class on_change),
+      Kind::SaveFile  => %w(bind text text_choosing text_done filters title directory
+                             default_name class label_class on_change),
       Kind::Custom    => %w(), # handler-defined — not checked
       Kind::Partial   => %w(),
       Kind::Use       => %w(partial),
@@ -1313,6 +1391,9 @@ module Egui
       Kind::Markdown  => %w(text base_dir),
       Kind::FlexItem  => %w(grow shrink basis order align),
       Kind::Template  => %w(), # parse-time only — spliced away
+      Kind::WindowFrame => %w(style title),
+      Kind::WindowFrameCustom => %w(style title height),
+      Kind::WindowButton => %w(type on_click),
     } of Kind => Array(String)
 
     REQUIRED_BY_KIND = {
@@ -1323,7 +1404,9 @@ module Egui
       Kind::Checkbox => "bind", Kind::Progress => "bind",
       Kind::Input => "bind", Kind::Textarea => "bind",
       Kind::Combo => "bind", Kind::Use => "partial",
+      Kind::OpenFile => "bind", Kind::SaveFile => "bind",
       Kind::Repeat => "in", Kind::Markdown => "text",
+      Kind::WindowButton => "type",
     } of Kind => String
 
     # Returns the list of issues (empty = clean). Each line carries the
@@ -1443,9 +1526,37 @@ module Egui
         if (v = node.attrs["order"]?) && v.to_i?.nil?
           issues << "#{node.path}: order=#{v.inspect} is not an integer"
         end
+      when .window_frame?
+        unless node.children.empty?
+          issues << "#{node.path}: <window-frame> takes no children — " \
+                    "use <window-frame-custom> for explicit buttons/content"
+        end
+        issue_frame_style(node, issues)
+      when .window_frame_custom?
+        issue_frame_style(node, issues)
+        if (v = node.attrs["height"]?) && v.to_f?.nil?
+          issues << "#{node.path}: height=#{v.inspect} is not a number"
+        end
+      when .window_button?
+        if (v = node.attrs["type"]?) &&
+           !%w(minimize maximize close).includes?(v)
+          issues << "#{node.path}: type=#{v.inspect} must be" \
+                    " minimize/maximize/close"
+        end
       end
 
       node.children.each { |c| validate_node(c, known_custom, issues) }
+    end
+
+    # `style=` on a frame element: a WindowFrame::STYLE_NAMES key (a
+    # `{placeholder}` value is store-interpolated at render time and
+    # skipped here, like a dynamic box fill).
+    private def self.issue_frame_style(node : Node, issues : Array(String))
+      if (v = node.attrs["style"]?) && !v.includes?('{') &&
+         !WindowFrame::STYLE_NAMES.has_key?(v)
+        issues << "#{node.path}: style=#{v.inspect} must be one of " \
+                  "#{WindowFrame::STYLE_NAMES.keys.join(", ")}"
+      end
     end
 
     # ── runtime ────────────────────────────────────────────────────────
@@ -1911,6 +2022,7 @@ module Egui
 
       def render_body(node : Node, ui : Ui, ctx : Context, rt : Runtime) : Nil
         return unless visible?(node, rt)
+        return unless style_visible?(node, ctx, rt)
         bind_hotkey(node, ui, ctx, rt)
 
         # Custom vocabulary has PRIORITY over builtins: a handler
@@ -2048,6 +2160,8 @@ module Egui
             rt.bools[key] = v
             rt.fire(on_act.not_nil!) if on_act
           end)
+        in .open_file?, .save_file?
+          render_file_picker(node, ui, ctx, rt, save: node.kind.save_file?)
         in .input?
           key = node.bind_key || ""
           on_act = node.on_change
@@ -2097,6 +2211,23 @@ module Egui
         in .markdown?
           ref_set(node, ui.markdown(text_of(node, rt),
             base_dir: node.base_dir))
+        in .window_frame?
+          # The stock client-side chrome: one line, the style's default
+          # caption (title + buttons). Draws its own top panel — the
+          # node must come FIRST among the page's children so the
+          # app's panels lay out below the caption.
+          Egui::WindowFrame.show(ctx, interp(node.title_attr, rt) || "",
+            frame_style_of(node, rt))
+        in .window_frame_custom?
+          render_window_frame_custom(node, ui, ctx, rt)
+        in .window_button?
+          # Only meaningful inside <window-frame-custom> (drawn by the
+          # frame walk); reaching here means it sits elsewhere.
+          unless @warned_custom.includes?("window_button")
+            @warned_custom << "window_button"
+            STDERR.puts "exml: <window-button> outside" \
+                        " <window-frame-custom> — ignored"
+          end
         in .custom?
           # No handler for this name (a registered one never reaches
           # the case — custom dispatch runs before it)
@@ -2309,6 +2440,73 @@ module Egui
         end
       end
 
+      # `<openfile>`/`<savefile>`: a button driving the native file
+      # dialog (SystemPorts, fiber-backed — the frame loop never
+      # blocks) plus a label showing the bound slot's path. The button
+      # text walks three states — idle (`text=`, default "Open…"/
+      # "Save…"), choosing (`text_choosing=`, while the dialog is up)
+      # and chosen (`text_done=`, the slot holds a path). The choosing
+      # flag lives in the store under "<bind>/choosing" — it survives
+      # renderer rebuilds and stays readable from markup
+      # (`{src/choosing}`); a cancel keeps the old slot value and the
+      # state falls back to what it was. The path label carries the
+      # class "file-label" (overridable via `label_class=`) for
+      # styling, including the `visible: false` style key — the
+      # display:none way to turn the label off. `filters=` is a
+      # pipe-separated glob list ("*.png|*.jpg"); savefile's suggested
+      # name is `default_name=`, falling back to the chosen path's
+      # basename. `on_change=` fires after a successful pick.
+      private def render_file_picker(node : Node, ui : Ui, ctx : Context,
+                                     rt : Runtime, save : Bool) : Nil
+        key = node.bind_key || ""
+        choosing_key = "#{key}/choosing"
+        path = rt.string(key)
+        choosing = rt.bool(choosing_key)
+        idle = text_of(node, rt, save ? "Save…" : "Open…")
+        text = if choosing
+          node.file_choosing_text.try { |t| rt.interpolate(t) } || idle
+        elsif !path.empty?
+          node.file_done_text.try { |t| rt.interpolate(t) } || idle
+        else
+          idle
+        end
+
+        ui.horizontal do |h|
+          if h.button(text, id: node.path).clicked? && !choosing
+            rt.bools[choosing_key] = true
+            title = node.title_attr.try { |t| rt.interpolate(t) } ||
+                    (save ? "Save file" : "Open file")
+            filters = node.file_filters
+            directory = node.file_directory.try { |d| rt.interpolate(d) }
+            done = ->(picked : String?) do
+              rt.bools[choosing_key] = false
+              if picked
+                rt.strings[key] = picked
+                fire_named(node.on_change, rt)
+              end
+            end
+            if save
+              Egui::SystemPorts::SaveFileDialog.show(
+                title: title, filters: filters, directory: directory,
+                default_name: node.file_default_name.try { |n| rt.interpolate(n) } ||
+                              (path.empty? ? nil : File.basename(path))) do |picked|
+                done.call(picked)
+              end
+            else
+              Egui::SystemPorts::OpenFileDialog.show(
+                title: title, filters: filters, directory: directory) do |picked|
+                done.call(picked)
+              end
+            end
+          end
+          next if path.empty?
+          raw_cls = node.file_label_class || "file-label"
+          label_cls = raw_cls.includes?('{') ? rt.interpolate(raw_cls) : raw_cls
+          next if ctx.stylesheet.resolve(label_cls).bool?("visible") == false
+          h.with_style_scope(label_cls) { |s| s.label(path) }
+        end
+      end
+
       # The multi-line editor. With `editor_id` the textarea runs in a
       # child Ui id'd by the INTERPOLATED attribute — per-tab editors,
       # each keeping its own caret/selection — and a changed id takes
@@ -2343,6 +2541,63 @@ module Egui
             rt.strings[key] = t
             rt.fire(on_act.not_nil!) if on_act
           end)
+        end
+      end
+
+      # ── window frame ────────────────────────────────────────────────
+
+      # `style=` of a frame element → the WindowFrame::Style (unknown
+      # names fall back to Windows, warn-once); `{placeholder}` values
+      # re-resolve every frame — a live theme switch.
+      private def frame_style_of(node : Node,
+                                 rt : Runtime) : Egui::WindowFrame::Style
+        raw = node.frame_style.try { |s| rt.interpolate(s) } || "windows"
+        Egui::WindowFrame.parse_style?(raw) ||
+          Egui::WindowFrame::Style::Windows
+      end
+
+      # <window-frame-custom>: the explicit caption composition. The
+      # <window-button> children name the button set (laid out in the
+      # style's cluster idiom); every OTHER child renders INTO the
+      # caption's content area (tabs, a search strip) in tree order —
+      # with content present the title text is not painted (the
+      # WindowFrame caption-hook idiom, now markup). A button's
+      # on_click= replaces the native action; without it minimize /
+      # maximize / close do what they always did.
+      private def render_window_frame_custom(node : Node, ui : Ui,
+                                             ctx : Context,
+                                             rt : Runtime) : Nil
+        # `if=`/`unless=` gate a button out of the set (hide maximize in
+        # a dialog); content children check their own gates in #render.
+        buttons = node.children.select(&.kind.window_button?)
+          .select { |b| visible?(b, rt) }
+        content = node.children.reject(&.kind.window_button?)
+        content_proc = if content.empty?
+          nil
+        else
+          # Rendered inside the frame's draw, at the caption's content
+          # area: a child Ui over the area on the caption-content layer
+          # (above the drag strip, below the caption buttons — the
+          # TitleBarTabs layering).
+          ->(c : Context, area : Rect) do
+            cap = ui.child_ui(area, Id.from(node.path))
+            cap.layer = LayerId.new(Order::Middle,
+              Id.from("window_frame/content"), 40)
+            cap.clip = area
+            content.each { |child| render(child, cap, c, rt) }
+          end
+        end
+        spec = buttons.map do |b|
+          name = rt.interpolate(b.button_type || "close")
+          {name, b.on_click.nil?}
+        end
+        drawn = Egui::WindowFrame.show_custom(ctx,
+          interp(node.title_attr, rt) || "", frame_style_of(node, rt),
+          height: node.frame_height, buttons: spec, content: content_proc)
+        drawn.each_with_index do |(name, resp), i|
+          if (act = buttons[i]?.try(&.on_click)) && resp.clicked?
+            fire_named(act, rt)
+          end
         end
       end
 
@@ -2399,6 +2654,20 @@ module Egui
           return false if rt.bool(rt.interpolate(cond))
         end
         true
+      end
+
+      # The `visible` style key (a bool): a class rule
+      # `.x { visible: false }` drops the element — and its subtree —
+      # from the frame, the display:none cousin. Applies to every
+      # element carrying `class=`; the label of a file picker reads it
+      # separately (see render_file_picker). Unlike `if=/unless=`,
+      # widget memory lives on by Id-path — same trade as v-show.
+      private def style_visible?(node : Node, ctx : Context, rt : Runtime) : Bool
+        raw = node.attrs["class"]?
+        return true unless raw
+        cls = raw.includes?('{') ? rt.interpolate(raw) : raw
+        return true if cls.empty?
+        ctx.stylesheet.resolve(cls).bool?("visible") != false
       end
 
       # Fire the (optional, possibly interpolated) named action.

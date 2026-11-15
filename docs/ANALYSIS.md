@@ -345,15 +345,19 @@ the runtime path. Three backends share it:
   from the Fonts system port (`src/egui/system_ports/fonts.cr`:
   per-platform lists selected at compile time — win32/darwin/Linux).
   libfreetype is a build/run dep only when the dev accelerator (or
-  the fontpreview example) is in play; shipped binaries are pure
-  Crystal.
-- `bin/apps/fontpreview` (`examples/fontpreview.cr`): full Latin + Cyrillic
-  alphabets, digits, punctuation at sizes 12–32 — the visual test bed,
-  with two live-switchable backend tabs (C FreeType vs the Crystal
-  port, both loaded and swapped via `Sokol.select_fonts`) and a font
-  cut switcher (Regular / Bold / Italic / Bold Italic of the active
-  family, each cut loaded from its own file through the active
-  backend; automation: `echo 0|1 > /tmp/fontpreview.tab`). Verified
+  the font_lab example's Rendering tab) is in play; shipped binaries
+  are pure Crystal.
+- `bin/apps/font_lab` (`examples/font_lab.cr`, the former
+  fontbrowser/fontpreview pair; the former mdvsfonts metric-twins
+  probe is folded away — the markdown widget renders through the same
+  font elements now): the Rendering tab — full
+  Latin + Cyrillic alphabets, digits, punctuation at sizes 12–32 —
+  the visual test bed, with two live-switchable backend tabs
+  (C FreeType vs the Crystal port, both loaded and swapped via
+  `Sokol.select_fonts`) and a font cut switcher (Regular / Bold /
+  Italic / Bold Italic of the active family, each cut loaded from
+  its own file through the active backend; automation:
+  `echo 0|1 > /tmp/fontpreview.tab`). Verified
   by pixel analysis with the FreeType backend: crossbars of e/A/Е/Б
   render full-row at even weight with 1px stems, baselines stay
   uniform, Cyrillic descenders (д ц щ у) intact.

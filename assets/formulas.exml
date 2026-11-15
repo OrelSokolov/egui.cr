@@ -1,0 +1,37 @@
+<exml>
+  <!-- The formulas demo page: the interface IS this file — hot-reloaded
+       on save. <formula> is the opt-in mathjax.cr tag (require
+       "egui/exml_formula" in the app, src/egui/exml_formula.cr). -->
+  <page id="root/root">
+    <heading text="LaTeX formulas — exml formula tag"/>
+    <label text="TeX → MathJax core port → v3 path SVG (defs+use, no fonts) → NanoSVG bake → texture."/>
+    <label text="Same pipeline as icons; typeset once per formula, cached."/>
+    <separator/>
+    <row>
+      <label text="size:"/>
+      <slider bind="em" min="14" max="48"/>
+      <label text="{em_label}"/>
+    </row>
+    <row>
+      <label text="style:"/>
+      <combo bind="style" options="Paper card|Theme ink"/>
+    </row>
+    <repeat for="f" in="formulas">
+      <separator/>
+      <label text="{f.name}"/>
+      <label text="{f.tex}"/>
+      <!-- Centered like CSS margin: 0 auto — a row flex with
+           justify-content: center; the wrapper stretches to the full
+           line (width: auto = 100%), the content centers in it. -->
+      <box if="paper" flex="true" justify="center">
+        <box fill="#ffffff" border="#d8d8e2" rounding="8" padding="10">
+          <formula tex="{f.tex}" size="{em}" color="#1a1a2e"/>
+        </box>
+      </box>
+      <!-- Theme ink: the bare formula in the theme text color -->
+      <box unless="paper" flex="true" justify="center">
+        <formula tex="{f.tex}" size="{em}"/>
+      </box>
+    </repeat>
+  </page>
+</exml>

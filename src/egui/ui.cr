@@ -94,6 +94,15 @@ module Egui
     # downward growth. Never set by hand; #horizontal flips it.
     property cross_up : Bool = false
 
+    # This Ui is a flex item's MEASURE cell (Flex pass 1): block boxes
+    # inside shrink-to-fit instead of stretching to the region's right
+    # edge — CSS flexbox, where a block child of a flex container is an
+    # ITEM whose `width: auto` sizes to content. Without the flag a
+    # box item measures at the full available width and justify-content
+    # has no free space to distribute. Set only by Flex's measure pass;
+    # the real-pass cells stretch into their slots as before.
+    property flex_item_measure : Bool = false
+
     @child_counter : UInt64 = 0
     # read by the exml renderer's below-clip culling (extent records)
     getter child_counter : UInt64
@@ -1888,11 +1897,14 @@ module Egui
           # compare against the SHIFTED slot, not the raw cursor —
           # otherwise the clamp eats the shift. The stretch to
           # @max_rect.right is the CSS `width: auto` block fill; a
-          # definite width (explicit argument or class rule) opts out.
+          # definite width (explicit argument or class rule) opts out,
+          # and so does a flex item's measure cell (see
+          # #flex_item_measure — items shrink-to-fit).
           slot = Pos2.new(@cursor.x + rel.x, @cursor.y + rel.y)
+          stretch = !definite_w && !@flex_item_measure
           outer = Rect.new(
             Pos2.new({outer.min.x, slot.x}.min, {outer.min.y, slot.y}.min),
-            Pos2.new(definite_w ? outer.max.x : {outer.max.x, @max_rect.right}.max,
+            Pos2.new(stretch ? {outer.max.x, @max_rect.right}.max : outer.max.x,
               outer.max.y))
           min_rect = @min_rect.union(outer)
           if row && @layout.horizontal?

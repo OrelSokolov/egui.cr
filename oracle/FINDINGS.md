@@ -8,7 +8,7 @@ listed at the bottom). Two live apps run side by side:
 
 ```sh
 cd oracle/macos && ./render gallery      # native AppKit gallery window
-rake build:dev[macos_gallery] && bin/macos_gallery   # egui.cr twin
+rake build:dev[theme_gallery] && bin/clones/theme_gallery macos   # egui.cr twin
 ```
 
 **Round 4** (capsule/rounded-rect pass): the switch knob is now a
@@ -159,7 +159,7 @@ style-rule-driven, defaults unchanged):
   the default system font after the app is built), and
   `Sokol.select_fonts` BEFORE `Egui.run` makes the app exit silently —
   swap the font from the FIRST `#update` frame instead (what
-  examples/macos_gallery.cr does; `PROGRAM_NAME` guards the run for a
+  examples/theme_gallery.cr does; `PROGRAM_NAME` guards the run for a
   compiled binary too).
 - Regenerate: `cd oracle/macos && make` (native), `crystal run
   scripts/make_macos_oracle_shots.cr` (egui), then

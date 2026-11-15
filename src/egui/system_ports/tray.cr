@@ -4,14 +4,17 @@
 # the OrelSokolov/systray fork). The core keeps the port headless: it
 # owns the cross-platform menu model (`TrayItem`, `IconSource`) and the
 # click queue, and delegates the native surface to an installable
-# implementation — backend/sokol.cr wires backend/tray_darwin.cr
-# (NSStatusBar/NSStatusItem) on macOS; other platforms keep the no-op
-# default (`supported?` false).
+# implementation — the sokol driver wires driver/tray_darwin.cr
+# (NSStatusBar/NSStatusItem) on macOS; Linux apps opt into
+# driver/tray_linux.cr (Ayatana AppIndicator, `require
+# "egui/driver/tray_linux"`); other platforms keep the no-op default
+# (`supported?` false).
 #
-# Clicks arrive on the app's main thread between frames (from the
-# native menu tracker), so the queue needs no locking. Two consumption
-# styles, pick one:
-#   * `on_click { |id| }` — handler fires as the click arrives;
+# Clicks arrive between frames — from the native menu tracker on the
+# GUI thread (macOS) or from the tray's GTK thread (Linux) — so the
+# queue is mutex-guarded. Two consumption styles, pick one:
+#   * `on_click { |id| }` — handler fires as the click arrives (on
+#     macOS: the GUI thread; on Linux: the tray's GTK thread);
 #   * `take_clicks` — drain the queue from `update` (immediate-mode
 #     apps mutate state there anyway).
 
@@ -96,27 +99,36 @@ module Egui
 
       # --- Click queue ---
 
-      # Register a click handler; fires from the GUI thread as the
-      # native menu item is activated (between frames).
+      # Register a click handler; fires as the native menu item is
+      # activated — on the GUI thread (macOS) or the tray's GTK thread
+      # (Linux); prefer `take_clicks` for immediate-mode apps.
       def self.on_click(&block : Int32 ->) : Nil
         @@handler = block
       end
 
       # Drain and clear pending menu-item clicks (poll from `update`).
       def self.take_clicks : Array(Int32)
-        clicks = @@pending
-        @@pending = [] of Int32
-        clicks
+        @@lock.synchronize do
+          clicks = @@pending
+          @@pending = [] of Int32
+          clicks
+        end
       end
 
-      # Implementations report menu-item activations here.
+      # Implementations report menu-item activations here (any thread).
       def self.enqueue_click(id : Int32) : Nil
-        @@pending << id
-        @@handler.try(&.call(id))
+        handler = @@lock.synchronize do
+          @@pending << id
+          @@handler
+        end
+        # Outside the lock: a handler that drains take_clicks would
+        # otherwise deadlock against itself.
+        handler.try(&.call(id))
       end
 
       @@pending = [] of Int32
       @@handler : Proc(Int32, Nil)?
+      @@lock = Thread::Mutex.new
 
       # A single entry in the tray menu. `parent_id > 0` nests the item
       # in that item's submenu; a separator is any item whose title is

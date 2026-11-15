@@ -38,6 +38,10 @@ dependencies:
   # kodkod падали на клоне.
   minaudio:
     github: OrelSokolov/minaudio.cr
+  # FP-инструментарий: многоклозовые функции с матчингом значений
+  # (deff + fn с when:-guard'ами), pipe-пайплайн, compose/curry.
+  functional:
+    github: OrelSokolov/functional.cr
 
 # Demos only (examples/ + spec/) — never pulled in when egui-cr is
 # used as a library. examples/system_monitor.cr reads RAM, CPU and
@@ -71,8 +75,7 @@ binaries:
   apps/hello:               {main: examples/hello.cr}
   apps/widgets_gallery:     {main: examples/widgets_gallery.cr}
   apps/openfiledialog:      {main: examples/openfiledialog.cr}
-  apps/fontpreview:         {main: examples/fontpreview.cr}
-  apps/fontbrowser:         {main: examples/fontbrowser.cr}
+  apps/font_lab:            {main: examples/font_lab.cr}
   apps/logos:               {main: examples/logos.cr}
   apps/counter_reactive:    {main: examples/counter_reactive.cr}
   apps/chat:                {main: examples/chat.cr}
@@ -90,7 +93,6 @@ binaries:
   apps/paint:               {main: examples/paint.cr}
   apps/system_monitor:      {main: examples/system_monitor.cr}
   apps/markdown:            {main: examples/markdown.cr}
-  apps/mdvsfonts:           {main: examples/mdvsfonts.cr}
   apps/formulas:            {main: examples/formulas.cr}
   apps/crystal3d:           {main: examples/crystal3d.cr}
   apps/rounded_window:      {main: examples/rounded_window.cr}

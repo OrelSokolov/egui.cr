@@ -1171,8 +1171,10 @@ module Egui
         Egui::SystemPorts::Screen.use(ScreenPort.new)
         Egui::SystemPorts::Clipboard.use(ClipboardPort.new)
         {% if flag?(:darwin) && !flag?(:ios) %}
-          # System tray: NSStatusItem surface (backend/tray_darwin.cr);
-          # other platforms keep the port's no-op default.
+          # System tray: NSStatusItem surface (driver/tray_darwin.cr).
+          # Linux's AppIndicator surface is opt-in per app (driver/
+          # tray_linux.cr); other platforms keep the port's no-op
+          # default.
           Egui::SystemPorts::Tray.use(Driver::DarwinTray.new)
         {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
@@ -1521,6 +1523,9 @@ module Egui
 
           app = @@app.not_nil!
           app.ctx.pixels_per_point = @@pixels_per_point
+          # Texture bookkeeping first (see on_frame): the per-frame
+          # update set resets before update/paint can touch textures.
+          app.ctx.textures.begin_frame
 
           # Composited scroll (plans/COMPOSITED_SCROLL.md): adopt the
           # render thread's applied offsets BEFORE begin_frame — the
@@ -2140,6 +2145,10 @@ module Egui
       protected def self.on_frame : Nil
         @@in_frame = true
         begin
+          # Texture bookkeeping first: the per-frame update set must be
+          # empty before anything below can call TextureRegistry#update
+          # (sokol: one sg_update_image per image and frame).
+          @@app.try(&.ctx.textures.begin_frame)
           on_frame_inner
         rescue ex : Exception
           frame_crash(ex)
@@ -4195,6 +4204,26 @@ module Egui
         # see the base-class comment.
         @pending_destroys = [] of UInt64
 
+        # Guards for caller mistakes that would otherwise be sokol
+        # VALIDATION panics and abort the whole process: #update is
+        # only legal on a live stream texture, at its create-time
+        # size, once per frame (VALIDATE_UPDIMG_ONCE). A dropped
+        # update just shows one frame later — the callers are video /
+        # camera feeds, never authoritative UI state.
+        @streams = {} of UInt64 => {Int32, Int32}
+        @frame_updated = Set(UInt64).new
+        @warned = Set(Symbol).new
+
+        private def warn_once(kind : Symbol, msg : String) : Nil
+          return if @warned.includes?(kind)
+          @warned << kind
+          STDERR.puts("egui: textures: #{msg} (further occurrences silent)")
+        end
+
+        def begin_frame : Nil
+          @frame_updated.clear
+        end
+
         def destroy_later(id : UInt64) : Nil
           @pending_destroys << id unless id.zero?
         end
@@ -4205,31 +4234,62 @@ module Egui
 
         def flush_destroys : Nil
           @pending_destroys.each do |id|
-            LibEguiCr.destroy_texture(id.to_u32!)
+            destroy(id)
           end
           @pending_destroys.clear
         end
 
         def register_rgba(width : Int32, height : Int32,
                           data : Bytes) : UInt64
-          return 0_u64 if width <= 0 || height <= 0
-          LibEguiCr.make_texture(width, height,
+          # a short buffer would be an out-of-bounds read inside the shim
+          return 0_u64 if width <= 0 || height <= 0 ||
+                          data.size < width * height * 4
+          id = LibEguiCr.make_texture(width, height,
             data.to_unsafe).to_u64
+          # sokol may hand a destroyed stream id back out — a recycled
+          # handle is no longer a stream texture
+          @streams.delete(id)
+          id
         end
 
         def create_stream(width : Int32, height : Int32) : UInt64
-          LibEguiCr.make_stream_texture(width, height).to_u64
+          return 0_u64 if width <= 0 || height <= 0
+          id = LibEguiCr.make_stream_texture(width, height).to_u64
+          @streams[id] = {width, height} unless id.zero?
+          id
         end
 
         def update(id : UInt64, width : Int32, height : Int32,
                    data : Bytes) : Nil
           return if id.zero?
+          if (dims = @streams[id]?)
+            if width != dims[0] || height != dims[1] ||
+               data.size != width * height * 4
+              warn_once(:bad_size, "update of stream texture #{id} with " \
+                "#{width}x#{height}/#{data.size}B dropped (created " \
+                "#{dims[0]}x#{dims[1]})")
+              return
+            end
+            if @frame_updated.includes?(id)
+              warn_once(:twice, "second update of texture #{id} in one " \
+                "frame dropped (sokol: one sg_update_image per image " \
+                "and frame)")
+              return
+            end
+          else
+            warn_once(:not_stream, "update of unknown or static " \
+              "texture #{id} dropped")
+            return
+          end
+          @frame_updated << id
           LibEguiCr.update_texture(id.to_u32!, width, height,
             data.to_unsafe)
         end
 
         def destroy(id : UInt64) : Nil
           return if id.zero?
+          @streams.delete(id)
+          @frame_updated.delete(id)
           LibEguiCr.destroy_texture(id.to_u32!)
         end
       end

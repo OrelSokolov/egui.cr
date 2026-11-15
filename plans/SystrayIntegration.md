@@ -1,6 +1,10 @@
 # System tray (перенос из positron.cr)
 
-> **Статус: план, кода нет.** Источник — рабочая реализация в
+> **Статус: macOS сделан** (`src/egui/driver/tray_darwin.cr`, вшит в
+> драйвер). **Linux сделан** (`src/egui/driver/tray_linux.cr` — Ayatana
+> AppIndicator + GTK меню на выделенном pthread с gtk_main, opt-in
+> `require "egui/driver/tray_linux"`). Windows — не начат (донор:
+> `adapters/windows/tray.cr`). Источник — рабочая реализация в
 > `~/positron.cr/` (портирована с getlantern/systray и её форка
 > OrelSokolov/systray). Ниже — инвентаризация донора, целевой дизайн
 > под паттерн `SystemPorts` и фазами, с рисками по платформам.

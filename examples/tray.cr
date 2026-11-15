@@ -1,4 +1,5 @@
-# System tray example: NSStatusItem with a native menu (macOS).
+# System tray example: NSStatusItem with a native menu (macOS),
+# Ayatana AppIndicator + GTK menu (Linux).
 #
 # The tray surface is created from `update` (the GUI thread) on the
 # first frame; menu clicks are drained through `take_clicks` — the
@@ -7,6 +8,12 @@
 # submenu item reports which branch fired.
 
 require "../src/egui/driver_selector"
+
+{% if flag?(:linux) && !flag?(:android) %}
+  # Linux tray: Ayatana AppIndicator (SNI/D-Bus) + GTK menu — opt-in
+  # require, links GTK; other apps keep the headless no-op port.
+  require "../src/egui/driver/tray_linux"
+{% end %}
 
 class TrayApp < Egui::App
   ITEM_PING     = 1
@@ -59,7 +66,12 @@ class TrayApp < Egui::App
         ui.label("Tray is not supported on this platform/backend.")
         next
       end
-      ui.label("The menu lives in the macOS status bar — open it from there.")
+      {% if flag?(:darwin) %}
+        ui.label("The menu lives in the macOS status bar — open it from there.")
+      {% else %}
+        ui.label("The menu lives in the system tray (StatusNotifier host: KDE/XFCE,")
+        ui.label("GNOME needs the AppIndicator extension).")
+      {% end %}
       ui.separator
       ui.label("Pings: #{@pings}")
       ui.label("Checkable: #{@checked}")

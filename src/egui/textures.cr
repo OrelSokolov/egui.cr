@@ -61,6 +61,14 @@ module Egui
     # Run the pending #destroy_later entries (sokol: after the pass).
     def flush_destroys : Nil
     end
+
+    # Frame boundary hook, called by graphical backends before any
+    # app/update code runs. sokol allows ONE sg_update_image per image
+    # per frame — the backend registry tracks (and drops, instead of
+    # panicking on) same-frame repeat updates, and resets that set
+    # here. Headless default: no-op.
+    def begin_frame : Nil
+    end
   end
 
   # Headless registry: hands out deterministic incrementing ids so

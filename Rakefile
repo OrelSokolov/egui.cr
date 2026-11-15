@@ -38,20 +38,20 @@ LOTTIE_FEATURE = ENV["LOTTIE"] == "1"
 # Benchmarks (bench/*.cr) build manually into bin/benchmarks/ — see the
 # header comment of each bench file.
 BIN_APPS   = %w[
-  hello widgets_gallery openfiledialog fontpreview fontbrowser logos
+  hello widgets_gallery openfiledialog font_lab logos
   counter_reactive chat chat_100k notepad notepad_with_exml borderless
   splash terminal win_properties_demo video inspector_demo icons_browser
-  svg_rasterizer paint system_monitor markdown mdvsfonts formulas
+  svg_rasterizer paint system_monitor markdown formulas
   crystal3d rounded_window tableview text_input ios_demo multitouch_demo
   responsive_demo camera device_api audio remote_image tray voice_echo
-  wizard lottie_crystal hello_exml stress_scroll
+  wizard lottie_crystal hello_exml stress_scroll crash_demo
 ]
 BIN_HTML   = %w[
-  html_gallery html_positions box_shadow box_shadow_showcase oval_progress
-  partial_border border_radius clipping clip_child_demo spring appear
-  flex_demo transform_showcase card_flip
+  html_gallery html_positions box_shadow box_shadow_showcase
+  partial_border css_showcase
+  flex_demo transform_showcase
 ]
-BIN_CLONES = %w[macos_gallery gnome_gallery kde_gallery music_exml music_gen music_widgets_manual]
+BIN_CLONES = %w[theme_gallery music_exml music_gen music_widgets_manual]
 BIN_DBG    = %w[resize_dbg]
 BIN_DIR    = (BIN_APPS.product(["apps"]) + BIN_HTML.product(["html"]) +
               BIN_CLONES.product(["clones"]) + BIN_DBG.product(["dbg"])).to_h

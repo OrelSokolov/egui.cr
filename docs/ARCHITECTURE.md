@@ -87,7 +87,8 @@ shard target), and apps never change again.
 Apps select fonts through backend class methods —
 `Sokol.fonts_from_system` / `select_fonts(font : AtlasFonts, …)` /
 `register_font` / `register_deferred_font` (sokol.cr:926-986,
-terminal.cr:341-342, fontpreview.cr:87) — typed by `AtlasFonts`, a
+terminal.cr:341-342, font_lab.cr — FontPreviewSection) — typed by
+`AtlasFonts`, a
 backend-internal type. Meanwhile the Context mirrors the same state
 (`fonts`, `mono_fonts`, `font_families`, `deferred_font_paths`,
 context.cr:35-75), and `select_fonts` syncs the copies with

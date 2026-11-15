@@ -36,6 +36,11 @@
 # region the content may claim — the whole bar minus the caption
 # buttons (Windows) or the whole bar (other styles). `WindowFrame.caption`
 # with no block removes the content and restores the plain caption.
+#
+# exml: the frame is markup vocabulary too — `<window-frame>` (stock,
+# one line) and `<window-frame-custom>` (an explicit `<window-button>`
+# set plus arbitrary caption content — tabs, a search strip) render
+# through `.show` / `.show_custom`; see src/egui/exml.cr.
 
 module Egui
   class WindowFrame
@@ -45,6 +50,20 @@ module Egui
       WindowsXpSilver
       Ubuntu
       Macos
+    end
+
+    # The markup spellings of the styles — what exml `style=` (and
+    # `Sokol.chrome_style=` callers reading a config value) take.
+    STYLE_NAMES = {
+      "windows"           => Style::Windows,
+      "windows-xp"        => Style::WindowsXp,
+      "windows-xp-silver" => Style::WindowsXpSilver,
+      "ubuntu"            => Style::Ubuntu,
+      "macos"             => Style::Macos,
+    } of String => Style
+
+    def self.parse_style?(name : String) : Style?
+      STYLE_NAMES[name]?
     end
 
     EDGE = 6.0 # resize grip thickness (points)
@@ -59,6 +78,30 @@ module Egui
               in Style::Macos           then Macos.new(ctx, title)
               end
       frame.draw
+    end
+
+    # The composable entry (exml `<window-frame-custom>`): like `.show`,
+    # but the button SET is explicit and the caption content comes from
+    # the caller. `buttons` pairs each button's name ("minimize",
+    # "maximize", "close") with `fire_default` — whether the NATIVE
+    # action fires on click (false when markup carries `on_click=`, the
+    # caller fires its own action off the returned Response). `content`
+    # (when given) renders into the caption's content area instead of
+    # the plain title; `height` overrides the caption strip height (the
+    # `.caption` hook's `height:` — a taller bar for tab strips).
+    # Returns the drawn buttons with their Responses.
+    def self.show_custom(ctx : Context, title : String, style : Style,
+                         height : Float64? = nil,
+                         buttons : Array(Tuple(String, Bool)) = [] of Tuple(String, Bool),
+                         content : (Context, Rect ->)? = nil) : Array(Tuple(String, Response))
+      frame = case style
+              in Style::Windows         then Windows.new(ctx, title)
+              in Style::WindowsXp       then WindowsXp.new(ctx, title)
+              in Style::WindowsXpSilver then WindowsXpSilver.new(ctx, title)
+              in Style::Ubuntu          then Ubuntu.new(ctx, title)
+              in Style::Macos           then Macos.new(ctx, title)
+              end
+      frame.draw_custom(height, buttons, content)
     end
 
     # Tracked locally (the ports cannot report the maximize state);
@@ -183,6 +226,55 @@ module Egui
       paint_border(screen)
     end
 
+    # The composable draw (`.show_custom`): same skeleton as #draw, but
+    # the button set is the caller's (laid out by #button_rects) and
+    # the caption content is the caller's proc instead of the class
+    # caption hook. Returns the drawn buttons with their Responses.
+    def draw_custom(height : Float64?,
+                    buttons : Array(Tuple(String, Bool)),
+                    content : (Context, Rect ->)?) : Array(Tuple(String, Response))
+      screen = @ctx.input.screen_rect
+      self.class.resize_grips(@ctx, screen)
+      h = height || caption_height
+      bar = @ctx.top_panel("window_frame/caption", height: h, resizable: false) { }
+      reserve_border(bar)
+      handle_drag(bar)
+      paint_caption(bar)
+      paint_icon(bar)
+      if (c = content) && (area = content_area(bar))
+        c.call(@ctx, area)
+      else
+        paint_title(bar)
+      end
+      rects = button_rects(buttons.map(&.[0]), bar)
+      drawn = [] of Tuple(String, Response)
+      buttons.each_with_index do |(name, fire_default), i|
+        drawn << {name,
+          draw_button(name, rects[i]? || Rect.zero, i, fire_default)}
+      end
+      paint_border(screen)
+      drawn
+    end
+
+    # --- composable button API (per style) -----------------------------------
+    #
+    # #button_rects lays out a button SET (the markup's <window-button>
+    # list, listed left→right) in the style's cluster idiom; #draw_button
+    # interacts + paints ONE button — the stock #paint_buttons is these
+    # two over the style's default set. `index` disambiguates widget ids
+    # when a custom set repeats a name; `fire_default: false` suppresses
+    # the native action (the caller fires its own off the Response).
+
+    # Base defaults — only style subclasses draw (see `.show`).
+    def button_rects(names : Array(String), bar : Rect) : Array(Rect)
+      Array(Rect).new(names.size) { Rect.zero }
+    end
+
+    def draw_button(name : String, rect : Rect, index : Int32 = 0,
+                    fire_default : Bool = true) : Response
+      click_action(rect, name, fire_default, index)
+    end
+
     # The caption region app content may claim (#caption hook): the
     # whole bar by default; the Windows style overrides it to exclude
     # the caption buttons.
@@ -272,14 +364,21 @@ module Egui
       @ctx.painter
     end
 
-    private def click_action(rect : Rect, name : String) : Response
-      resp = @ctx.interact(Id.from("window_frame/btn/#{name}"),
-        rect, Sense::Click,
+    private def click_action(rect : Rect, name : String,
+                             fire_default : Bool = true,
+                             index : Int32 = 0) : Response
+      id = index.zero? ? Id.from("window_frame/btn/#{name}")
+        : Id.from("window_frame/btn/#{index}/#{name}")
+      resp = @ctx.interact(id, rect, Sense::Click,
         LayerId.new(Order::Middle, Id.from("window_frame/buttons")), rect)
-      case name
-      when "minimize" then SystemPorts::Window.minimize if resp.clicked?
-      when "maximize" then WindowFrame.toggle_maximize if resp.clicked?
-      when "close"    then SystemPorts::Quit.quit! if resp.clicked?
+      # An on_click= override in markup suppresses the native action —
+      # the caller fires its own off the returned Response.
+      if fire_default
+        case name
+        when "minimize" then SystemPorts::Window.minimize if resp.clicked?
+        when "maximize" then WindowFrame.toggle_maximize if resp.clicked?
+        when "close"    then SystemPorts::Quit.quit! if resp.clicked?
+        end
       end
       resp
     end
@@ -435,35 +534,32 @@ module Egui
         painter.image(rect, texture)
       end
 
-      def paint_buttons(bar : Rect) : Nil
-        # Buttons live in the TOP standard strip (CAPTION_H tall,
-        # pinned to the top-right corner) — a taller caption (tabs in
-        # the title bar) extends the strip BELOW them, exactly like
-        # Windows extends the title bar under fixed caption buttons.
-        btn_h = CAPTION_H
-        close = Rect.from_min_size(
-          Pos2.new(bar.right - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
-        max = Rect.from_min_size(
-          Pos2.new(close.left - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
-        min = Rect.from_min_size(
-          Pos2.new(max.left - BTN_W, bar.top), Vec2.new(BTN_W, btn_h))
-
-        min_resp = button(min, "minimize")
-        max_resp = button(max, "maximize")
-        close_resp = button(close, "close")
-
-        glyph("minimize", min, fg)
-        glyph("maximize", max, fg)
-        # The close glyph goes white over the red hover/press fill in
-        # BOTH palettes (Win11 keeps it white in light mode too).
-        glyph("close", close,
-          close_resp.hovered? ? GLYPH_ON_RED : fg)
+      # Cluster idiom: 46pt-wide squares flush to the right edge, the
+      # listed order left→right (stock: min, max, close).
+      def button_rects(names : Array(String), bar : Rect) : Array(Rect)
+        n = names.size
+        names.each_with_index.map do |_, i|
+          Rect.from_min_size(
+            Pos2.new(bar.right - BTN_W * (n - i), bar.top),
+            Vec2.new(BTN_W, CAPTION_H))
+        end.to_a
       end
 
-      # A square caption button: hover/press fill (Win11 overlay colors)
-      # + a click Response. The glyph is painted by #glyph.
-      private def button(rect : Rect, name : String) : Response
-        resp = click_action(rect, name)
+      def paint_buttons(bar : Rect) : Nil
+        names = ["minimize", "maximize", "close"]
+        button_rects(names, bar).each_with_index do |rect, i|
+          draw_button(names[i], rect)
+        end
+      end
+
+      # A square caption button: hover/press fill (Win11 overlay
+      # colors) + the glyph. Buttons live in the TOP standard strip
+      # (CAPTION_H tall) — a taller caption (tabs in the title bar)
+      # extends the strip BELOW them, exactly like Windows extends the
+      # title bar under fixed caption buttons.
+      def draw_button(name : String, rect : Rect, index : Int32 = 0,
+                      fire_default : Bool = true) : Response
+        resp = click_action(rect, name, fire_default, index)
         painter.layer = Order::Middle
         painter.clip = rect
         fill = if resp.active? && resp.hovered?
@@ -472,6 +568,9 @@ module Egui
           name == "close" ? CLOSE_HOVER : hover_fill
         end
         painter.rect(rect, 0.0, fill, nil, 0.0)
+        # The close glyph goes white over the red hover/press fill in
+        # BOTH palettes (Win11 keeps it white in light mode too).
+        glyph(name, rect, name == "close" && resp.hovered? ? GLYPH_ON_RED : fg)
         resp
       end
 
@@ -708,36 +807,41 @@ module Egui
             bar.height))
       end
 
-      def paint_buttons(bar : Rect) : Nil
-        # Buttons pinned to the TOP standard strip — a taller caption
-        # (content hook) extends the bar below them.
+      # Cluster idiom: glossy 25pt boxes inset from the right edge,
+      # the listed order left→right (stock: min, max, close).
+      def button_rects(names : Array(String), bar : Rect) : Array(Rect)
+        n = names.size
         y = bar.top + (CAPTION_H - BTN) / 2.0
-        close = Rect.from_min_size(
-          Pos2.new(bar.right - BTN_INSET - BTN, y), Vec2.new(BTN, BTN))
-        max_r = Rect.from_min_size(
-          Pos2.new(close.left - BTN_GAP - BTN, y), Vec2.new(BTN, BTN))
-        min_r = Rect.from_min_size(
-          Pos2.new(max_r.left - BTN_GAP - BTN, y), Vec2.new(BTN, BTN))
+        names.each_with_index.map do |_, i|
+          x = bar.right - BTN_INSET - BTN * (n - i) - BTN_GAP * (n - 1 - i)
+          Rect.from_min_size(Pos2.new(x, y), Vec2.new(BTN, BTN))
+        end.to_a
+      end
 
-        glossy_button(min_r, "minimize",
-          btn_fill, btn_hot, btn_down, btn_ring, fg)
-        glossy_button(max_r, "maximize",
-          btn_fill, btn_hot, btn_down, btn_ring, fg)
-        glossy_button(close, "close",
-          close_fill, close_hot, close_down, close_ring, close_glyph)
+      # Buttons pinned to the TOP standard strip — a taller caption
+      # (content hook) extends the bar below them.
+      def paint_buttons(bar : Rect) : Nil
+        names = ["minimize", "maximize", "close"]
+        button_rects(names, bar).each_with_index do |rect, i|
+          draw_button(names[i], rect)
+        end
       end
 
       # A glossy Luna caption button: rounded gradient fill with a
-      # darker ring, brighter on hover, deeper on press.
-      private def glossy_button(rect : Rect, name : String,
-                                fill : {Color32, Color32},
-                                hover : {Color32, Color32},
-                                down : {Color32, Color32},
-                                ring : Color32,
-                                glyph_color : Color32) : Response
-        resp = click_action(rect, name)
+      # darker ring, brighter on hover, deeper on press — the palette
+      # picked per name (blue min/max, red close) through the palette
+      # hooks (the Silver variant recolors them).
+      def draw_button(name : String, rect : Rect, index : Int32 = 0,
+                      fire_default : Bool = true) : Response
+        close = name == "close"
+        resp = click_action(rect, name, fire_default, index)
         painter.layer = Order::Middle
         painter.clip = rect
+        fill   = close ? close_fill : btn_fill
+        hover  = close ? close_hot : btn_hot
+        down   = close ? close_down : btn_down
+        ring   = close ? close_ring : btn_ring
+        glyph_color = close ? close_glyph : fg
         top, bottom = if resp.active? && resp.hovered?
           down
         elsif resp.hovered?
@@ -983,29 +1087,37 @@ module Egui
           title, TITLE_PT, FG)
       end
 
-      # min / max / close from left to right, round, at the right edge.
+      # Cluster idiom: round buttons at the right edge (INSET from it),
+      # the listed order left→right (stock: min, max, close).
+      def button_rects(names : Array(String), bar : Rect) : Array(Rect)
+        n = names.size
+        cy = bar.top + CAPTION_H / 2.0
+        names.each_with_index.map do |_, i|
+          cx = bar.right - INSET - BTN_D / 2.0 - (n - 1 - i) * (BTN_D + BTN_GAP)
+          Rect.from_min_size(Pos2.new(cx - BTN_D / 2.0, cy - BTN_D / 2.0),
+            Vec2.new(BTN_D, BTN_D))
+        end.to_a
+      end
+
       # Centered in the TOP standard strip (a taller caption extends
       # the bar below the buttons, they stay pinned up top).
       def paint_buttons(bar : Rect) : Nil
-        cy = bar.top + CAPTION_H / 2.0
-        close_x = bar.right - INSET - BTN_D / 2.0
-        max_x = close_x - BTN_D - BTN_GAP
-        min_x = max_x - BTN_D - BTN_GAP
-
-        round_button(min_x, cy, "minimize", BTN, BTN_HOT, BTN_DOWN)
-        round_button(max_x, cy, "maximize", BTN, BTN_HOT, BTN_DOWN)
-        round_button(close_x, cy, "close", CLOSE, CLOSE_HOT, CLOSE_DOWN)
+        names = ["minimize", "maximize", "close"]
+        button_rects(names, bar).each_with_index do |rect, i|
+          draw_button(names[i], rect)
+        end
       end
 
-      private def round_button(cx : Float64, cy : Float64, name : String,
-                               fill : Color32, hover : Color32,
-                               down : Color32) : Nil
-        rect = Rect.from_min_size(Pos2.new(cx - BTN_D / 2.0, cy - BTN_D / 2.0),
-          Vec2.new(BTN_D, BTN_D))
-        resp = click_action(rect, name)
-        c = rect.center
+      # A round Ambiance button: dark grey (Ubuntu orange for close),
+      # lighter on hover, deeper on press, a 1px white glyph inside.
+      def draw_button(name : String, rect : Rect, index : Int32 = 0,
+                      fire_default : Bool = true) : Response
+        fill, hover, down = name == "close" ?
+          {CLOSE, CLOSE_HOT, CLOSE_DOWN} : {BTN, BTN_HOT, BTN_DOWN}
+        resp = click_action(rect, name, fire_default, index)
         painter.layer = Order::Middle
         painter.clip = rect
+        c = rect.center
         circle_fill = if resp.active? && resp.hovered?
           down
         elsif resp.hovered?
@@ -1032,6 +1144,7 @@ module Egui
           painter.line(Pos2.new(c.x + 4.0, c.y - 4.0),
             Pos2.new(c.x - 4.0, c.y + 4.0), 1.0, color)
         end
+        resp
       end
     end
 
@@ -1090,33 +1203,47 @@ module Egui
           title, TITLE_PT, FG)
       end
 
-      # Traffic lights: close, minimize, zoom from the left edge. Each
-      # light reacts to its OWN hover only — the glyph appears in the
-      # hovered circle alone (real macOS reveals the group; per-button
-      # is what actually reads clean at this DPI).
-      def paint_buttons(bar : Rect) : Nil
-        # Lights pinned to the TOP standard strip — a taller caption
-        # (content hook) extends the bar below them, like a macOS
-        # toolbar area under the titlebar.
+      # Cluster idiom: traffic lights from the LEFT edge (FIRST_CX),
+      # the listed order left→right (stock: close, minimize, zoom —
+      # Apple's order).
+      def button_rects(names : Array(String), bar : Rect) : Array(Rect)
         cy = bar.top + CAPTION_H / 2.0
         step = LIGHT_D + LIGHT_GAP
-        defs = {
-          {FIRST_CX,             "close",    CLOSE, CLOSE_RING, CLOSE_DOWN, CLOSE_GLYPH},
-          {FIRST_CX + step,      "minimize", MIN,   MIN_RING,   MIN_DOWN,   MIN_GLYPH},
-          {FIRST_CX + 2 * step,  "maximize", ZOOM,  ZOOM_RING,  ZOOM_DOWN,  ZOOM_GLYPH},
-        }
-
-        defs.each do |(cx, name, fill, ring, down, glyph_color)|
-          rect = Rect.from_min_size(
+        names.each_with_index.map do |_, i|
+          cx = FIRST_CX + i * step
+          Rect.from_min_size(
             Pos2.new(cx - LIGHT_D / 2.0, cy - LIGHT_D / 2.0),
             Vec2.new(LIGHT_D, LIGHT_D))
-          resp = click_action(rect, name)
-          painter.layer = Order::Middle
-          painter.clip = rect
-          painter.circle(rect.center, LIGHT_D / 2.0,
-            resp.active? && resp.hovered? ? down : fill, ring, 1.0)
-          light_glyph(rect, name, glyph_color) if resp.hovered?
+        end.to_a
+      end
+
+      # One traffic light — pinned to the TOP standard strip (a taller
+      # caption extends the bar below it, like a macOS toolbar area
+      # under the titlebar). Each light reacts to its OWN hover only —
+      # the glyph appears in the hovered circle alone (real macOS
+      # reveals the group; per-button is what actually reads clean at
+      # this DPI).
+      def paint_buttons(bar : Rect) : Nil
+        names = ["close", "minimize", "maximize"]
+        button_rects(names, bar).each_with_index do |rect, i|
+          draw_button(names[i], rect)
         end
+      end
+
+      def draw_button(name : String, rect : Rect, index : Int32 = 0,
+                      fire_default : Bool = true) : Response
+        fill, ring, down, glyph_color = case name
+          when "close"    then {CLOSE, CLOSE_RING, CLOSE_DOWN, CLOSE_GLYPH}
+          when "minimize" then {MIN, MIN_RING, MIN_DOWN, MIN_GLYPH}
+          else                 {ZOOM, ZOOM_RING, ZOOM_DOWN, ZOOM_GLYPH}
+        end
+        resp = click_action(rect, name, fire_default, index)
+        painter.layer = Order::Middle
+        painter.clip = rect
+        painter.circle(rect.center, LIGHT_D / 2.0,
+          resp.active? && resp.hovered? ? down : fill, ring, 1.0)
+        light_glyph(rect, name, glyph_color) if resp.hovered?
+        resp
       end
 
       private def light_glyph(rect : Rect, name : String,

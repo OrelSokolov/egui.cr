@@ -2,7 +2,9 @@
 # `Context#window` can't render: the gradient caption with a glossy
 # red close button, the blue window frame, the #ECE9D8 body and real
 # XP push buttons (75×23, bottom-right). Caption/frame colors are
-# shared with the main window's chrome (WindowFrame::WindowsXp).
+# shared with the main window's chrome (WindowFrame::WindowsXp); the
+# body face and the Luna push button come from Egui::WinXpTheme
+# (src/egui/winxp_theme.cr).
 #
 # Modal like the OS originals: everything below is blocked
 # (`Memory#mark_modal`) but there is no scrim — XP disables the
@@ -28,20 +30,9 @@ module PaintXp
     # closes the dialog.
     CLOSE = "✕"
 
-    # Dialog face (#f8f6e7 — lighter than the panels' #ECE9D8, the
-    # jspaint/xp dialog background).
-    FACE = Egui::Color32.rgb(248, 246, 231)
-
-    # Luna push button: light gradient with a navy ring, the XP orange
-    # glow on hover, sunken fill on press.
-    PB_TOP      = Egui::Color32.rgb(255, 255, 255)
-    PB_BOTTOM   = Egui::Color32.rgb(238, 235, 218)
-    PB_RING     = Egui::Color32.rgb(0, 60, 116)
-    PB_HOT_TOP  = Egui::Color32.rgb(255, 243, 200)
-    PB_HOT_BOT  = Egui::Color32.rgb(255, 222, 155)
-    PB_HOT_RING = Egui::Color32.rgb(198, 119, 0)
-    PB_DOWN_TOP = Egui::Color32.rgb(224, 220, 200)
-    PB_DOWN_BOT = Egui::Color32.rgb(205, 200, 176)
+    # Dialog face (lighter than the panels' #ECE9D8, the jspaint/xp
+    # dialog background).
+    FACE = Egui::WinXpTheme::DIALOG_FACE
 
     def initialize(@ctx : Egui::Context, @key : String)
     end
@@ -185,19 +176,8 @@ module PaintXp
         resp = ctx.interact(Egui::Id.from("paint_dialog/#{@key}/btn/#{i}"),
           rect, Egui::Sense::Click, layer, outer)
         clicked = label if resp.clicked?
-        ring = resp.hovered? && !(resp.active? && resp.hovered?) ?
-               PB_HOT_RING : PB_RING
-        top, bottom = if resp.active? && resp.hovered?
-                        {PB_DOWN_TOP, PB_DOWN_BOT}
-                      elsif resp.hovered?
-                        {PB_HOT_TOP, PB_HOT_BOT}
-                      else
-                        {PB_TOP, PB_BOTTOM}
-                      end
-        p.rect(rect, 3.0, top, ring, 1.0, bottom)
-        tw = ctx.fonts.measure(label, 14.0).x
-        p.text(Egui::Pos2.new(rect.center.x - tw / 2.0, rect.center.y),
-          label, 14.0, Egui::Color32.rgb(0, 0, 0))
+        Egui::WinXpTheme.push_button(p, rect, label,
+          resp.hovered?, resp.active?, ctx.fonts)
       end
 
       # --- keyboard: Esc closes, Enter pushes the default button ------

@@ -5,10 +5,12 @@
 # the 16-tool toolbox with per-tool option strips, the menu bar, the
 # 28-color palette with the overlapped fg/bg swatch, the status bar
 # with live cursor coordinates, and a real pixel canvas driven by the
-# new Egui::Canvas widget (nearest-sampled stream texture).
+# Egui::Canvas widget (nearest-sampled stream texture).
 #
 # Color styling is deliberately NOT 1:1 (Luna-ish silver instead of
-# exact XP bitmaps) — only the buttons and layout are.
+# exact XP bitmaps) — only the buttons and layout are. The Luna theme
+# itself is shared: Egui::WinXpTheme (src/egui/winxp_theme.cr), the
+# twin of the macOS/GNOME/KDE platform themes.
 #
 # File I/O goes through the SystemPorts dialogs (zenity/kdialog on
 # Linux, osascript on macOS, WinForms/Win32 on Windows) and a pure
@@ -29,14 +31,20 @@ require "../paint/text"
 require "./artwork"
 
 module PaintXp
-  # Luna-ish face color (close enough; deliberately not exact XP).
-  FACE      = Egui::Color32.rgb(236, 233, 216)
+  # Luna chrome colors and the theme live in Egui::WinXpTheme
+  # (src/egui/winxp_theme.cr) — shared with the other platform themes;
+  # only the app-specific bits (the MSPaint workspace gray, the tool
+  # set, the palette) stay here.
   WORKSPACE = Egui::Color32.rgb(124, 124, 124)
-  WHITE     = Egui::Color32.rgb(255, 255, 255)
-  BLACK     = Egui::Color32.rgb(0, 0, 0)
-  BEVEL_DK  = Egui::Color32.rgb(128, 128, 128)
-  NAVY      = Egui::Color32.rgb(10, 36, 106)
-  SEL_BG    = Egui::Color32.rgb(182, 186, 199)
+
+  # (.as casts: constant aliases alone don't carry a type for
+  # instance-var inference — a Crystal quirk, see tmp/alias_test3.cr)
+  FACE      = Egui::WinXpTheme::FACE.as(Egui::Color32)
+  WHITE     = Egui::WinXpTheme::WHITE.as(Egui::Color32)
+  BLACK     = Egui::WinXpTheme::BLACK.as(Egui::Color32)
+  BEVEL_DK  = Egui::WinXpTheme::BEVEL_DK.as(Egui::Color32)
+  NAVY      = Egui::WinXpTheme::NAVY.as(Egui::Color32)
+  SEL_BG    = Egui::WinXpTheme::SEL_BG.as(Egui::Color32)
 
   # The 16 classic tools, in MS Paint / jspaint toolbox order. The icon
   # index is the position in assets/paint/tools.png (16×16 cells).
@@ -103,29 +111,7 @@ module PaintXp
   PNG_SIG = Bytes[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
 
   def self.theme : Egui::Theme
-    theme = Egui::DefaultTheme.build("paint-xp", dark: false)
-    v = theme.style.visuals
-    v.window_fill = FACE
-    v.window_stroke = BLACK
-    v.window_rounding = 0.0
-    v.panel_fill = FACE
-    v.text_color = BLACK
-    v.button_weak = FACE
-    v.button_hovered = FACE
-    v.button_active = FACE
-    # Native menu selection: a navy band with white text. The button
-    # colors stay FACE on purpose — the toolbox draws its own bevel
-    # cells — so menus get a dedicated highlight instead.
-    v.menu_highlight_fill = NAVY
-    v.menu_highlight_text = WHITE
-    # Classic scrollbars: Luna-blue thumb and arrow buttons (#b8c7e6)
-    # with slate arrows (#6b7596) on a white track.
-    v.scrollbar_fill = Egui::Color32.rgb(0xb8, 0xc7, 0xe6)
-    v.scrollbar_arrow = Egui::Color32.rgb(0x6b, 0x75, 0x96)
-    v.scrollbar_track = WHITE
-    v.selection_fill = NAVY
-    v.separator_color = BEVEL_DK
-    theme
+    Egui::WinXpTheme.light
   end
 end
 
@@ -446,7 +432,8 @@ class PaintApp < Egui::App
       elsif @status == hint
         @status = DEFAULT_HINT
       end
-      paint_bevel_cell(p, rect, selected, resp.hovered? || selected)
+      Egui::WinXpTheme.bevel(p, rect, selected,
+        selected ? PaintXp::SEL_BG : PaintXp::FACE)
       # icon (16×16 cell i of the 256×16 sprite)
       icon_rect = Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.min.x + 4.0, rect.min.y + 4.0),
@@ -468,23 +455,6 @@ class PaintApp < Egui::App
     # the framework.
     draw_tool_options(ui)
   end
-
-  # Raised/sunken 1px bevel cell with the XP selected-tool look.
-  private def paint_bevel_cell(p : Egui::Painter, rect : Egui::Rect,
-                               sunken : Bool, highlight : Bool) : Nil
-    fill = sunken && highlight ? PaintXp::SEL_BG : PaintXp::FACE
-    p.rect(rect, 0.0, fill)
-    lo, hi = sunken ? {PaintXp::BEVEL_DK, PaintXp::WHITE}
-                    : {PaintXp::WHITE, PaintXp::BEVEL_DK}
-    p.line(rect.min + Egui::Vec2.new(0.0, 0.5),
-      Egui::Pos2.new(rect.max.x - 0.5, rect.min.y + 0.5), 1.0, lo)
-    p.line(rect.min + Egui::Vec2.new(0.5, 0.0),
-      Egui::Pos2.new(rect.min.x + 0.5, rect.max.y - 0.5), 1.0, lo)
-    p.line(Egui::Pos2.new(rect.min.x + 0.5, rect.max.y - 0.5),
-      Egui::Pos2.new(rect.max.x - 0.5, rect.max.y - 0.5), 1.0, hi)
-    p.line(Egui::Pos2.new(rect.max.x - 0.5, rect.min.y + 0.5),
-      Egui::Pos2.new(rect.max.x - 0.5, rect.max.y - 0.5), 1.0, hi)
-  end
 end
 
   # Tool option strips (inside the sunken box below the toolbox grid).
@@ -498,7 +468,8 @@ class PaintApp
                           &glyph : Egui::Rect -> Nil) : Bool
     rect = ui.allocate_at_least(Egui::Vec2.new(w, h))
     resp = ui.interact(rect, ui.named_id(id), Egui::Sense::Click)
-    paint_bevel_cell(p, rect, selected, resp.hovered? || selected)
+    Egui::WinXpTheme.bevel(p, rect, selected,
+      selected ? PaintXp::SEL_BG : PaintXp::FACE)
     glyph.call(rect)
     resp.clicked?
   end

@@ -6318,7 +6318,13 @@ static uint32_t sh_f2u(float f) { union { float f; uint32_t u; } c; c.f = f; ret
 static float sh_u2f(uint32_t u) { union { float f; uint32_t u; } c; c.u = u; return c.f; }
 
 // Queue a texture delta into the current build (allocating it if no
-// frame is open — ops ride the next publish).
+// frame is open — ops ride the next publish). Pre-ops coalesce per id:
+// sokol allows ONE sg_update_image per image per frame, and two updates
+// of the same texture can land in ONE build (a stream feed blitted
+// between produce frames — a dialog-callback open — and again inside
+// the next produce frame). Latest data wins, exactly like the
+// superseded-packet dedupe in sh_texops_splice; rendering both would
+// trip sokol's VALIDATE_UPDIMG_ONCE panic and abort the process.
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
                            int stream, const void* data, size_t size,
                            int r8) {
@@ -6336,6 +6342,20 @@ static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
                 sizeof(sh_texop_t));
         g_build->post[g_build->post_n++] = op;
     } else {
+        for (int i = 0; i < g_build->pre_n; i++) {
+            if (g_build->pre[i].id == id) {
+                // keep the older op's CREATE identity (kind/stream), the
+                // newer payload — a CREATE followed by its first UPDATE
+                // still creates the image, with the newest pixels in it
+                if (g_build->pre[i].kind == SH_TEX_CREATE) {
+                    op.kind = SH_TEX_CREATE;
+                    op.stream = g_build->pre[i].stream;
+                }
+                free(g_build->pre[i].data);
+                g_build->pre[i] = op;
+                return;
+            }
+        }
         sh_grow((void**)&g_build->pre, &g_build->pre_cap, g_build->pre_n + 1,
                 sizeof(sh_texop_t));
         g_build->pre[g_build->pre_n++] = op;

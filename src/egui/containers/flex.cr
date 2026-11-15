@@ -235,6 +235,9 @@ module Egui
             Rect.from_min_size(ui.max_rect.min,
               Vec2.new(ui.max_rect.width, 1e6)),
             id: cid)
+          # Items measure shrink-to-fit (CSS): a block box child must
+          # not stretch to the full measure width (see Ui#flex_item_measure).
+          cell.flex_item_measure = true
           if measuring
             # Already inside the ancestor's measure bracket: the paint
             # is truncated by it and interact is dead — run directly.

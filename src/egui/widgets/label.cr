@@ -148,6 +148,14 @@ module Egui
       state = ctx.memory.interaction_state(id)
       base = style_vars(ui, id)
       stated = state.nil? ? base : style_vars(ui, id, state)
+      # The font family rides the resolved style: a bag's
+      # "font_family" key beats the base Style's field (the same
+      # merge order as #ui's `style`). Fold it BY VALUE — a family
+      # swap (`ctx.style.font_family = …`) mutates the SHARED Style
+      # in place, so object identity alone would replay the old
+      # face's baked glyphs after the cut switch.
+      family = stated.str?("font_family") || base.str?("font_family") ||
+               ui.style.font_family
       # Width terms only when the output depends on the width:
       # wrapping labels and responsive-sized ones.
       width_terms = @wrap != false ||
@@ -161,14 +169,14 @@ module Egui
          ui.layout.vertical?, ui.wrap_x, ui.max_rect.width,
          ui.available_width, base.object_id, stated.object_id,
          ui.style.object_id, @style_override.try(&.hash),
-         cursor, anchor}).hash
+         family, cursor, anchor}).hash
       else
         ({"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
          @rich.italic?, @rich.underline?, @rich.strikethrough?,
          @wrap, @align, @userselect, @line_height,
          ui.layout.vertical?, ui.wrap_x, base.object_id,
          stated.object_id, ui.style.object_id,
-         @style_override.try(&.hash), cursor, anchor}).hash
+         @style_override.try(&.hash), family, cursor, anchor}).hash
       end
     end
 
