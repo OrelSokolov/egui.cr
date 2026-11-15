@@ -2581,11 +2581,29 @@ module Egui
       end
 
       # A slot under the batch's current texture: glyph instances bind
-      # the atlas, so the batch flushes when the texture changes.
+      # the atlas, so the batch flushes when the texture changes. The
+      # view is (re)established AFTER #sdf_slot returns — a flush
+      # inside it clears the field, and the glyph about to take this
+      # slot must not lose it: the batch would later flush viewless
+      # (view 0 = the white 1×1 fallback texture, t.a == 1) and the
+      # LAST glyph of every text run drew as a solid rectangle.
+      # A viewless OPEN batch holds fills — close it too: fills and
+      # glyphs want DIFFERENT fragment execution under MSAA (per-sample
+      # vs per-pixel — see sh_draw_sdf), so a batch stays homogeneous.
       private def self.sdf_slot_tex(
           clip : Tuple(Float64, Float64, Float64, Float64), view : UInt32)
-        sdf_flush if @@sdf_view && @@sdf_view != view
+        sdf_flush if @@sdf_n > 0 && @@sdf_view != view
+        d = sdf_slot(clip)
         @@sdf_view = view
+        d
+      end
+
+      # A plain-fill slot (rect/shadow/circle): closes an open GLYPH
+      # batch first — same homogeneity rule as above, from the other
+      # side of the transition.
+      private def self.sdf_fill_slot(
+          clip : Tuple(Float64, Float64, Float64, Float64))
+        sdf_flush if @@sdf_view
         sdf_slot(clip)
       end
 
@@ -2634,7 +2652,7 @@ module Egui
         r = cmd.rect
         return false if r.width <= 0.0 || r.height <= 0.0
 
-        d = sdf_slot(scissor_rect(cmd.clip))
+        d = sdf_fill_slot(scissor_rect(cmd.clip))
         hw = r.width / 2.0
         hh = r.height / 2.0
         d[0] = ((r.min.x + r.max.x) / 2.0).to_f32
@@ -2686,7 +2704,7 @@ module Egui
         base = cmd.rect.translate(cmd.offset).expand(cmd.spread)
         return false if base.width <= 0.0 || base.height <= 0.0
 
-        d = sdf_slot(scissor_rect(cmd.clip))
+        d = sdf_fill_slot(scissor_rect(cmd.clip))
         blur = {cmd.blur, 0.0}.max
         hw = base.width / 2.0
         hh = base.height / 2.0
@@ -2728,7 +2746,7 @@ module Egui
         stroke = cmd.stroke if cmd.stroke_width > 0
         return false unless fill || stroke
 
-        d = sdf_slot(scissor_rect(cmd.clip))
+        d = sdf_fill_slot(scissor_rect(cmd.clip))
         d[0] = cmd.center.x.to_f32
         d[1] = cmd.center.y.to_f32
         # The quad covers the disc plus the stroke overhang and one AA
