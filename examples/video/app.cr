@@ -21,6 +21,9 @@ class VideoApp < Egui::App
   MUTED    = Egui::Color32.rgb(0xa3, 0xa3, 0xb4)
   ICON_FG  = Egui::Color32.rgb(0xc4, 0xc4, 0xd2)
   ACCENT   = Egui::Color32.rgb(0xb7, 0x9c, 0xff) # Raven violet
+  # playback below native resolution (adaptive downscale): a muted
+  # amber, not a loud yellow — an unobtrusive "degraded" marker
+  WARN     = Egui::Color32.rgb(0xd9, 0xa0, 0x3c)
   WHITE    = Egui::Color32.rgb(0xff, 0xff, 0xff)
 
   @seek_drag = false
@@ -130,9 +133,12 @@ class VideoApp < Egui::App
     end
     p = ui.painter
     if @player.open? && !@player.texture_id.zero?
+      # Always FIT the area (aspect kept): the decode pipeline adapts
+      # the texture size down (adaptive scale_vaapi), and a 1.0 cap on
+      # the fit factor would show the shrunken texture at native pixels
+      # instead of filling the window — sampling cost is nil.
       scale = {@player.width > 0 ? avail.x / @player.width : 0.0,
-               @player.height > 0 ? avail.y / @player.height : 0.0,
-               1.0}.min
+               @player.height > 0 ? avail.y / @player.height : 0.0}.min
       size = Egui::Vec2.new(@player.width * scale, @player.height * scale)
       ui.painter.clip = ui.clip
       ui.painter.image(Egui::Rect.from_min_size(
@@ -479,7 +485,7 @@ class VideoApp < Egui::App
     p.rect(Egui::Rect.from_min_size(
       Egui::Pos2.new(strip.left, cy - track_h / 2.0),
       Egui::Vec2.new(strip.width * frac, track_h)), track_h / 2.0,
-      fill: ACCENT)
+      fill: @player.downscaled? ? WARN : ACCENT)
     p.circle_filled(Egui::Pos2.new(strip.left + strip.width * frac, cy),
       knob_r, WHITE)
   end

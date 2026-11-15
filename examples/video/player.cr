@@ -64,8 +64,11 @@ class VideoPlayer
   # wall-clock fallback master: video seconds at @clock_origin monotonic s
   @clock_origin : Float64 = 0.0
   @frame_count : Int32 = 0
-  @fps_accum : Float64 = 0.0
+  # real decode rate: frames per WALL second (the old media-time
+  # accumulator always printed the nominal fps — useless as a
+  # "keeping up" signal)
   @fps_frames : Int32 = 0
+  @fps_wall : Float64 = 0.0
   @pending_blit : Bool = false
   getter decode_fps : Float64 = 0.0
 
@@ -125,6 +128,14 @@ class VideoPlayer
 
   def open? : Bool
     @state != State::Closed
+  end
+
+  # True while the adaptive pipeline DOWNSCALES below the native source
+  # resolution (quality traded for frame rate) — the UI marks it.
+  def downscaled? : Bool
+    return false if @lad.empty?
+    native = @lad[0]
+    (@lad[@li]? || native) < native
   end
 
   def audio? : Bool
@@ -191,8 +202,7 @@ class VideoPlayer
       return false
     end
     cctx = LibFF.avcodec_alloc_context3(codec)
-    if LibFF.avcodec_parameters_to_context(cctx, st.value.codecpar) < 0 ||
-       LibFF.avcodec_open2(cctx, codec, nil) < 0
+    if LibFF.avcodec_parameters_to_context(cctx, st.value.codecpar) < 0
       @error = "decoder init failed"
       LibFF.avcodec_free_context(pointerof(cctx))
       close
@@ -204,12 +214,32 @@ class VideoPlayer
       cctx.value.thread_type = 0
     else
       cctx.value.thread_count = 0
-      cctx.value.thread_type = 2 # FF_THREAD_SLICE
+      # FF_THREAD_FRAME (1): what mpv/ffplay use — H264/HEVC decode
+      # scales near-linearly with cores. Slice threading (2) splits ONE
+      # frame and stalls at 2-3× on big resolutions; frame threading
+      # decodes several frames at once, which is what heavy 4K/6K files
+      # need to keep up with realtime.
+      cctx.value.thread_type = 1
     end
     if (t = ENV["EGUI_VIDEO_THREADS"]?)
       count, _, ttype = t.partition(':')
       cctx.value.thread_count = count.to_i? || 0
       cctx.value.thread_type = ttype.to_i? || 0
+    end
+    # hw decode BEFORE open2: hw_device_ctx must be attached when the
+    # decoder initializes (get_format then offers the VAAPI pix fmt)
+    hw = setup_hw(cctx)
+    if LibFF.avcodec_open2(cctx, codec, nil) < 0
+      detach_hw(cctx) if hw # hw may be why open failed — retry software
+      if hw && LibFF.avcodec_open2(cctx, codec, nil) < 0
+        hw = false
+      end
+      unless hw
+        @error = "decoder init failed"
+        LibFF.avcodec_free_context(pointerof(cctx))
+        close
+        return false
+      end
     end
     @codec_ctx = cctx
 
@@ -369,9 +399,15 @@ class VideoPlayer
   # Release everything and go back to the placeholder state.
   def close : Nil
     close_audio
+    hw_graph_reset
     if (sws = @sws)
       LibFF.sws_free_context(sws)
       @sws = nil
+    end
+    if @sw_frame
+      swf = @sw_frame.not_nil!
+      LibFF.av_frame_free(pointerof(swf))
+      @sw_frame = nil
     end
     if @packet
       pkt = @packet.not_nil!
@@ -385,6 +421,7 @@ class VideoPlayer
     end
     if @codec_ctx
       cctx = @codec_ctx.not_nil!
+      detach_hw(cctx)
       LibFF.avcodec_free_context(pointerof(cctx))
       @codec_ctx = nil
     end
@@ -402,6 +439,12 @@ class VideoPlayer
     @shown_pts = @display_pts = @next_pts = 0.0
     @frame_count = 0
     @video_eof = false
+    # adaptation state: a fresh open re-runs the size search
+    @lad.clear
+    @li = @search_lo = @search_hi = 0
+    @adapt_on = @adapt_locked = false
+    @pipe_ms = 0.0
+    @probe_n = 0
   end
 
   private def close_audio : Nil
@@ -502,10 +545,18 @@ class VideoPlayer
               else
                 "no-audio(#{@audio_note || "none"})"
               end
-      STDERR.printf("video: %-7s pts=%6.2f frames=%-5d fps=%.1f px0=%d,%d,%d,%d avg=%d,%d,%d adv=%d dec=%d blit=%.0fms upd=%.0fms/%d a[%s]\n",
+      hwstat = if @hw_transfer
+                 size = @lad[@li]? || 0
+                 locked = @adapt_locked ? "=" : "~"
+                 " hw=#{locked}#{size}/#{width}x#{height}" \
+                 "#{@pipe_ms > 0 ? " pipe=#{@pipe_ms.round(1)}/#{@budget_ms.round(1)}ms" : ""}"
+               else
+                 ""
+               end
+      STDERR.printf("video: %-7s pts=%6.2f frames=%-5d fps=%.1f px0=%d,%d,%d,%d avg=%d,%d,%d adv=%d dec=%d blit=%.0fms upd=%.0fms/%d%s a[%s]\n",
         @state.to_s.downcase, @display_pts, @frame_count, @decode_fps,
         r || -1, g || -1, b || -1, a || -1, ar, ag, ab,
-        @@advance_calls, @@decode_calls, @@blit_ms, upd_ms, upd_n, astat)
+        @@advance_calls, @@decode_calls, @@blit_ms, upd_ms, upd_n, hwstat, astat)
       @@advance_calls = 0
       @@decode_calls = 0
       @@blit_ms = 0.0
@@ -547,6 +598,7 @@ class VideoPlayer
     if (cctx = @codec_ctx)
       LibFF.avcodec_flush_buffers(cctx)
     end
+    hw_graph_reset # the decoder restarts on a fresh hw frame pool
     @video_eof = false
     seek_audio(target)
     # decode up to the target (or the nearest earlier frame)
@@ -593,6 +645,301 @@ class VideoPlayer
     feed_audio(target)
   end
 
+  # --- hardware decode (VAAPI copy-back, the mpv `--hwdec=vaapi-copy`
+  # model): the fixed-function decoder offloads H264/HEVC (a 6K camera
+  # file decodes at ~4× realtime where software crawls at 0.5×); the
+  # decoded surface is copied back to a CPU frame (NV12) and sws_scale
+  # converts it as before. Everything degrades to software when VAAPI
+  # is missing (no render node / headless / EGUI_VIDEO_HW=0).
+
+  # AVBufferRef* of the VAAPI device (nil = software decode)
+  @hw_device : UInt8*? = nil
+  # transfer target for copy-back frames (freed in #close)
+  @sw_frame : LibFF::AVFrame*? = nil
+  # GPU scale pipeline (scale_vaapi → hwdownload): decoding stays at
+  # native res on the fixed-function unit, the frame DOWNSCALES on the
+  # GPU too, and only the small NV12 copy crosses back to the CPU — a
+  # full-res 6K download crawls (~0.2× realtime), a 1080p one is free.
+  @hw_transfer : Bool = false
+  @filter_graph : Void*? = nil
+  @buffersrc : Void*? = nil
+  @buffersink : Void*? = nil
+
+  # --- adaptive output scale ----------------------------------------------
+  # Budget: the hw pipeline (VPP scale + hwdownload + sws) must sustain
+  # the video's native fps ×1.5, measured per decoded frame (EMA over a
+  # 6-frame window per candidate). Binary search over the ladder of
+  # long-side sizes — index 0 is NATIVE (no scaling): small files never
+  # scale at all. After the search locks, runtime drift (compositor
+  # load, thermal) steps DOWN one size at a time — quality degrades,
+  # playback never stalls. EGUI_VIDEO_HW_SCALE=<n> pins a size and
+  # disables adaptation.
+  @lad : Array(Int32) = [] of Int32
+  @li : Int32 = 0
+  @search_lo : Int32 = 0
+  @search_hi : Int32 = 0
+  @graph_target : {Int32, Int32}? = nil
+  @adapt_on : Bool = false
+  @adapt_locked : Bool = false
+  @budget_ms : Float64 = 0.0
+  @pipe_ms : Float64 = 0.0
+  @probe_n : Int32 = 0
+  @skip_sample : Bool = false
+
+  # get_format callback: pick the VAAPI pix fmt when the decoder offers
+  # it, else the first software format (a decoder without a VAAPI hw
+  # config simply never offers it). Class-level: a C callback cannot
+  # capture, and the pix fmt value is runtime (av_get_pix_fmt).
+  @@hw_pix_fmt : Int32 = -1
+
+  HW_GET_FORMAT = ->(ctx : LibFF::AVCodecContext*, fmts : Int32*) : Int32 do
+    i = 0
+    while (f = fmts[i]) != -1 # AV_PIX_FMT_NONE-terminated list
+      return f if f == @@hw_pix_fmt
+      i += 1
+    end
+    fmts[0]
+  end
+
+  # Attach the VAAPI device + get_format to a fresh codec context.
+  # True = attached (copy-back transfer engages), false = software.
+  private def setup_hw(cctx : LibFF::AVCodecContext*) : Bool
+    return false if ENV["EGUI_VIDEO_HW"]? == "0"
+    dev_path = ENV["EGUI_VIDEO_HW_DEVICE"]? || "/dev/dri/renderD128"
+    return false unless File.exists?(dev_path)
+    hwfmt = LibFF.av_get_pix_fmt("vaapi".to_unsafe)
+    return false if hwfmt < 0
+    dev = Pointer(UInt8).null
+    code = LibFF.av_hwdevice_ctx_create(pointerof(dev),
+      LibFF::AV_HWDEVICE_TYPE_VAAPI, dev_path.to_unsafe, nil, 0)
+    return false if code < 0 || dev.null?
+    @@hw_pix_fmt = hwfmt
+    @hw_device = dev
+    @hw_transfer = true
+    cctx.value.hw_device_ctx = dev
+    cctx.value.get_format = HW_GET_FORMAT
+    STDERR.puts("video: hw decode via VAAPI") if ENV["EGUI_VIDEO_DEBUG"]?
+    true
+  end
+
+  # Drop the hw attachment (open2-with-hw failed fallback, close).
+  private def detach_hw(cctx : LibFF::AVCodecContext*) : Nil
+    @hw_transfer = false
+    cctx.value.hw_device_ctx = Pointer(UInt8).null
+    if (dev = @hw_device)
+      dev_ptr = dev
+      LibFF.av_buffer_unref(pointerof(dev_ptr))
+      @hw_device = nil
+    end
+  end
+
+  # Build the scale_vaapi graph around the FIRST decoded hw frame (its
+  # hw_frames_ctx is what scale_vaapi needs). True = graph is live.
+  # Only DOWNSCALING engages: small frames transfer full-res directly.
+  private def hw_graph_ensure(first : LibFF::AVFrame*) : Bool
+    return true if @buffersrc
+    src_w = first.value.width
+    src_h = first.value.height
+    # Adaptive output scale: candidate long-side sizes, largest first
+    # (index 0 = native — no scaling at all). The first hw frame seeds
+    # the ladder; EGUI_VIDEO_HW_SCALE pins one size and disables
+    # adaptation.
+    native = {src_w, src_h}.max
+    if @lad.empty?
+      @lad = [native, 3840, 2560, 1920, 1600, 1280, 1024, 854, 640]
+        .select { |s| s < native }.uniq.sort.reverse.unshift(native)
+      @budget_ms = 1000.0 * @frame_dur / 1.5
+      @search_lo = 0
+      @search_hi = @lad.size - 1
+      @li = 0
+      @adapt_on = true
+      if (pin = ENV["EGUI_VIDEO_HW_SCALE"]?)
+        pin_i = pin.to_i? || 1920
+        best = @lad.index { |s| s <= pin_i } || @lad.size - 1
+        @li = best
+        @adapt_on = false
+        @adapt_locked = true
+      end
+    end
+    scale = @lad[@li]? || native
+    return false if scale >= native
+    if src_w >= src_h
+      tw = scale
+      th = {src_h * scale // src_w, 2}.max & ~1
+    else
+      th = scale
+      tw = {src_w * scale // src_h, 2}.max & ~1
+    end
+    return true if @graph_target == {tw, th} && @buffersrc
+    hw_graph_reset
+    @graph_target = {tw, th}
+
+    graph = LibFF.avfilter_graph_alloc
+    src = LibFF.avfilter_graph_alloc_filter(graph,
+      LibFF.avfilter_get_by_name("buffer"), "src")
+    sink = LibFF.avfilter_graph_alloc_filter(graph,
+      LibFF.avfilter_get_by_name("buffersink"), "sink")
+    if graph.null? || src.null? || sink.null?
+      STDERR.puts("video: hw graph: alloc failed graph=#{graph.null?} src=#{src.null?} sink=#{sink.null?}") if ENV["EGUI_VIDEO_DEBUG"]?
+      LibFF.avfilter_graph_free(pointerof(graph)) unless graph.null?
+      return false
+    end
+    par = LibFF.av_buffersrc_parameters_alloc
+    par.value.format = first.value.format
+    par.value.width = src_w
+    par.value.height = src_h
+    par.value.time_base = @time_base
+    par.value.hw_frames_ctx = first.value.hw_frames_ctx
+    LibFF.av_buffersrc_parameters_set(src, par)
+    LibFF.av_free(par)
+    # init with NULL args: the parameters above ARE the config
+    if LibFF.avfilter_init_str(src, nil_wire) < 0 ||
+       LibFF.avfilter_init_str(sink, nil_wire) < 0
+      STDERR.puts("video: hw graph: init_str failed") if ENV["EGUI_VIDEO_DEBUG"]?
+      LibFF.avfilter_graph_free(pointerof(graph))
+      return false
+    end
+
+    outputs = LibFF.avfilter_inout_alloc
+    inputs = LibFF.avfilter_inout_alloc
+    outputs.value.name = LibFF.av_strdup("in")
+    outputs.value.filter_ctx = src
+    inputs.value.name = LibFF.av_strdup("out")
+    inputs.value.filter_ctx = sink
+    code = LibFF.avfilter_graph_parse_ptr(graph,
+      # NO format=nv12: this stream is 10-bit full-range, and the
+      # P010→NV12 step quantizes it on a LIMITED 64..940 ladder — the
+      # picture comes out washed/бита (twinshot vs software: mean 93).
+      # Keeping P010 the whole way and letting sws_scale do 10-bit →
+      # RGBA matches the software path pixel-perfectly (mean 0.7).
+      "scale_vaapi=#{tw}:#{th},hwdownload,format=p010le",
+      pointerof(inputs), pointerof(outputs), nil)
+    LibFF.avfilter_inout_free(pointerof(inputs))
+    LibFF.avfilter_inout_free(pointerof(outputs))
+    if code < 0
+      STDERR.puts("video: hw graph: parse failed: #{FF.error_string(code)}") if ENV["EGUI_VIDEO_DEBUG"]?
+      LibFF.avfilter_graph_free(pointerof(graph))
+      return false
+    end
+    code = LibFF.avfilter_graph_config(graph, nil)
+    if code < 0
+      STDERR.puts("video: hw graph: config failed: #{FF.error_string(code)}") if ENV["EGUI_VIDEO_DEBUG"]?
+      LibFF.avfilter_graph_free(pointerof(graph))
+      return false
+    end
+    @filter_graph = graph
+    @buffersrc = src
+    @buffersink = sink
+    STDERR.puts("video: hw scale_vaapi #{src_w}x#{src_h}→#{tw}x#{th}") if ENV["EGUI_VIDEO_DEBUG"]?
+    true
+  end
+
+  private def nil_wire : UInt8*
+    Pointer(UInt8).null
+  end
+
+  # One decoded hw frame's pipeline cost feeds the adaptation. Windows
+  # of 6 frames per candidate; binary search between @search_lo/hi
+  # finds the LARGEST size whose EMA fits @budget_ms.
+  private def adapt_tick(ms : Float64) : Nil
+    return unless @adapt_on
+    # first sample after a (re)build carries the graph-config cost —
+    # it says nothing about steady-state pipeline speed
+    if @skip_sample
+      @skip_sample = false
+      return
+    end
+    @pipe_ms = @pipe_ms.zero? ? ms : 0.7 * @pipe_ms + 0.3 * ms
+    @probe_n += 1
+    # window: 6 frames, or an instant fail when a candidate blows 3×
+    # the budget (native 6K transfer is ~150 ms/frame)
+    blown = !@adapt_locked && @pipe_ms > @budget_ms * 3.0
+    return if @probe_n < 6 && !blown
+    @probe_n = 0
+    pass = !blown && @pipe_ms <= @budget_ms
+    if @adapt_locked
+      # runtime drift — only ever DOWN (quality degrades, never stalls)
+      if !pass && @li < @lad.size - 1
+        old = @pipe_ms
+        @li += 1
+        hw_graph_reset
+        @pipe_ms = 0.0
+        STDERR.puts("video: hw scale → #{@lad[@li]} " \
+                    "(drift #{old.round(1)}ms > budget #{@budget_ms.round(1)}ms)") if ENV["EGUI_VIDEO_DEBUG"]?
+      end
+      return
+    end
+    if pass
+      @search_hi = @li
+    else
+      @search_lo = @li + 1
+    end
+    if @search_lo >= @search_hi
+      idx = {@search_hi, @lad.size - 1}.min
+      @adapt_locked = true
+      @li = idx
+      @pipe_ms = 0.0
+      @probe_n = 0
+      STDERR.puts("video: hw scale locked at #{@lad[idx]} " \
+                  "(budget #{@budget_ms.round(1)}ms)") if ENV["EGUI_VIDEO_DEBUG"]?
+    else
+      @li = (@search_lo + @search_hi) // 2
+      hw_graph_reset
+      @pipe_ms = 0.0
+      STDERR.puts("video: hw scale probing #{@lad[@li]}") if ENV["EGUI_VIDEO_DEBUG"]?
+    end
+  end
+
+  # Drop the scale graph (seek flush / adaptation step / close): the
+  # decoder restarts on a fresh hw frame pool, the graph must be rebuilt
+  # from the next one — at the CURRENT ladder size (@graph_target
+  # cleared so hw_graph_ensure rebuilds).
+  private def hw_graph_reset : Nil
+    @graph_target = nil
+    @probe_n = 0
+    @skip_sample = true
+    if (g = @filter_graph)
+      gp = g
+      LibFF.avfilter_graph_free(pointerof(gp))
+      @filter_graph = nil
+      @buffersrc = nil
+      @buffersink = nil
+    end
+  end
+
+  # VAAPI copy-back: push the hw surface through the scale graph and
+  # take the downscaled NV12 frame back to the CPU. Without the graph
+  # (small frames / graph failure) a full-res transfer runs instead.
+  # Software decode passes the frame through untouched. Nil on failure.
+  private def maybe_transfer(frame : LibFF::AVFrame*) : LibFF::AVFrame*?
+    return frame unless @hw_transfer
+    if frame.value.format == @@hw_pix_fmt && hw_graph_ensure(frame) &&
+       (src = @buffersrc) && (sink = @buffersink)
+      code = LibFF.av_buffersrc_add_frame_flags(src, frame, 0)
+      LibFF.av_frame_unref(frame) # surface back to the decoder's pool
+      return nil if code < 0
+      dst = (@sw_frame ||= LibFF.av_frame_alloc)
+      LibFF.av_frame_unref(dst)
+      code = LibFF.av_buffersink_get_frame(sink, dst)
+      @error = "hw frame pipeline failed: #{FF.error_string(code)}" if code < 0
+      return nil if code < 0
+      return dst
+    end
+    if frame.value.format == @@hw_pix_fmt
+      dst = (@sw_frame ||= LibFF.av_frame_alloc)
+      LibFF.av_frame_unref(dst)
+      code = LibFF.av_hwframe_transfer_data(dst, frame, 0)
+      if code < 0
+        @error = "hw frame transfer failed: #{FF.error_string(code)}"
+        LibFF.av_frame_unref(frame)
+        return nil
+      end
+      LibFF.av_frame_unref(frame) # surface back to the decoder's pool
+      return dst
+    end
+    frame
+  end
+
   # --- internals ----------------------------------------------------------
 
   # Land in the Eof state: freeze at the end position (Play restarts
@@ -626,8 +973,16 @@ class VideoPlayer
     loop do
       code = LibFF.avcodec_receive_frame(cctx, frame)
       if code == 0
-        convert_frame(frame, clock)
-        return true
+        t0 = Time.instant
+        ok = false
+        if (cpu = maybe_transfer(frame))
+          convert_frame(cpu, clock)
+          ok = true
+        end
+        if @hw_transfer
+          adapt_tick((Time.instant - t0).total_milliseconds)
+        end
+        return ok
       end
       if code == LibFF::AVERROR_EOF
         @video_eof = true
@@ -647,8 +1002,11 @@ class VideoPlayer
           LibFF.avcodec_send_packet(cctx, nil)
           drain = LibFF.avcodec_receive_frame(cctx, frame)
           if drain == 0
-            convert_frame(frame, clock)
-            return true
+            if (cpu = maybe_transfer(frame))
+              convert_frame(cpu, clock)
+              return true
+            end
+            return false
           end
           @video_eof = true
           return false
@@ -939,11 +1297,11 @@ class VideoPlayer
     @next_pts = @shown_pts + @frame_dur
     @frame_count += 1
 
-    @fps_accum += @frame_dur
     @fps_frames += 1
-    if @fps_accum >= 1.0
-      @decode_fps = @fps_frames / @fps_accum
-      @fps_accum = 0.0
+    if @fps_frames == 1
+      @fps_wall = now_sec
+    elsif (dt = now_sec - @fps_wall) >= 1.0
+      @decode_fps = @fps_frames / dt
       @fps_frames = 0
     end
   end

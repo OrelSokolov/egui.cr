@@ -13,6 +13,7 @@
 @[Link("avformat")]
 @[Link("avcodec")]
 @[Link("swscale")]
+@[Link("avfilter")]
 @[Link("avutil")]
 lib LibFF
   AVRATIONAL_SIZE = 8
@@ -77,7 +78,8 @@ lib LibFF
   end
 
   # AVCodecContext (offsets: pkt_timebase=92, width=116, height=120,
-  # pix_fmt=140, thread_count=656, thread_type=660)
+  # pix_fmt=140, get_format=192, hw_device_ctx=560, thread_count=656,
+  # thread_type=660 — probed against the installed libavcodec 61)
   struct AVCodecContext
     av_class : UInt8*      # 0
     pad0 : UInt8[84]       # 8..91
@@ -87,13 +89,17 @@ lib LibFF
     height : Int32         # 120
     pad2 : UInt8[16]       # 124..139
     pix_fmt : Int32        # 140
-    pad3 : UInt8[512]      # 144..655
+    pad3 : UInt8[48]       # 144..191
+    get_format : (AVCodecContext*, Int32*) -> Int32 # 192
+    pad4 : UInt8[360]      # 200..559
+    hw_device_ctx : UInt8* # 560 (AVBufferRef*)
+    pad5 : UInt8[88]       # 568..655
     thread_count : Int32   # 656
     thread_type : Int32    # 660
   end
 
   # AVFrame (offsets: data=0, linesize=64, width=104, height=108,
-  # format=116, pts=136, best_effort_timestamp=320)
+  # format=116, pts=136, best_effort_timestamp=320, hw_frames_ctx=352)
   struct AVFrame
     data : UInt8*[8]   # 0
     linesize : Int32[8] # 64
@@ -106,6 +112,8 @@ lib LibFF
     pts : Int64        # 136 (pkt_timebase units)
     pad1 : UInt8[176]  # 144..319
     best_effort_timestamp : Int64 # 320
+    pad2 : UInt8[24]   # 328..351
+    hw_frames_ctx : UInt8* # 352 (AVBufferRef* on hw-decoded frames)
   end
 
   # AVPacket (offsets: pts=8, dts=16, data=24, size=32,
@@ -169,6 +177,62 @@ lib LibFF
                                 errbuf_size : UInt64) : Int32
   fun av_get_pix_fmt = av_get_pix_fmt(name : UInt8*) : Int32
   fun av_log_set_level = av_log_set_level(level : Int32)
+  # --- libavutil/hwcontext (VAAPI copy-back decode) ---
+  fun av_hwdevice_ctx_create = av_hwdevice_ctx_create(device : UInt8**,
+                                                      type : Int32,
+                                                      device_path : UInt8*,
+                                                      opts : Void*,
+                                                      flags : Int32) : Int32
+  fun av_hwframe_transfer_data = av_hwframe_transfer_data(dst : AVFrame*,
+                                                          src : AVFrame*,
+                                                          flags : Int32) : Int32
+  fun av_buffer_unref = av_buffer_unref(buf : UInt8**) : Nil
+  fun av_strdup = av_strdup(s : UInt8*) : UInt8*
+  fun av_free = av_free(ptr : Void*) : Nil
+
+  # --- libavfilter (GPU scale_vaapi → hwdownload pipeline) ---
+  # AVFilterInOut (offsets: name=0, filter_ctx=8, pad_idx=16, next=24)
+  struct AVFilterInOut
+    name : UInt8*
+    filter_ctx : Void*
+    pad_idx : Void*
+    next : Void*
+  end
+
+  # AVBufferSrcParams (offsets: format=0, time_base=4, width=12,
+  # height=16, hw_frames_ctx=40, sizeof=88)
+  struct AVBufferSrcParams
+    format : Int32         # 0
+    time_base : AVRational # 4
+    width : Int32          # 12
+    height : Int32         # 16
+    pad0 : UInt8[20]       # 20..39 (sample_aspect_ratio, frame_rate, pad)
+    hw_frames_ctx : UInt8* # 40
+    pad1 : UInt8[32]       # 48..87 (sws_param …)
+  end
+
+  fun avfilter_get_by_name = avfilter_get_by_name(name : UInt8*) : Void*
+  fun avfilter_graph_alloc = avfilter_graph_alloc : Void*
+  fun avfilter_graph_alloc_filter = avfilter_graph_alloc_filter(
+    graph : Void*, filter : Void*, name : UInt8*) : Void*
+  fun avfilter_init_str = avfilter_init_str(ctx : Void*, args : UInt8*) : Int32
+  fun avfilter_inout_alloc = avfilter_inout_alloc : AVFilterInOut*
+  fun avfilter_inout_free = avfilter_inout_free(io : AVFilterInOut**)
+  fun avfilter_graph_parse_ptr = avfilter_graph_parse_ptr(graph : Void*,
+                                                          filters : UInt8*,
+                                                          inputs : AVFilterInOut**,
+                                                          outputs : AVFilterInOut**,
+                                                          opaque : Void*) : Int32
+  fun avfilter_graph_config = avfilter_graph_config(graph : Void*,
+                                                    log_ctx : Void*) : Int32
+  fun avfilter_graph_free = avfilter_graph_free(graph : Void**)
+  fun av_buffersrc_parameters_alloc = av_buffersrc_parameters_alloc : AVBufferSrcParams*
+  fun av_buffersrc_parameters_set = av_buffersrc_parameters_set(
+    ctx : Void*, param : AVBufferSrcParams*) : Int32
+  fun av_buffersrc_add_frame_flags = av_buffersrc_add_frame_flags(
+    src : Void*, frame : AVFrame*, flags : Int32) : Int32
+  fun av_buffersink_get_frame = av_buffersink_get_frame(ctx : Void*,
+                                                        frame : AVFrame*) : Int32
 
   # --- libswscale ---
   fun sws_get_context = sws_getContext(src_w : Int32, src_h : Int32,
@@ -189,6 +253,7 @@ lib LibFF
   AVERROR_EAGAIN = -11        # -EAGAIN on Linux
   AVMEDIA_TYPE_VIDEO = 0
   AVMEDIA_TYPE_AUDIO = 1
+  AV_HWDEVICE_TYPE_VAAPI = 3
   AVSEEK_FLAG_BACKWARD = 1
   SWS_BILINEAR = 2
   AV_LOG_ERROR = 16
