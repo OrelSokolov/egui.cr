@@ -27,6 +27,29 @@ module Egui
                    @italic : Bool = false, @strikethrough : Bool = false,
                    @background : Color32? = nil)
     end
+
+    # Value identity: two runs spelling the same text in the same style
+    # ARE the same run. The paint cache keys on preset arrays that are
+    # REBUILT every frame (markdown's HTML path) — identity hashing
+    # would never hit, value hashing does.
+    def hash : UInt64
+      h = @text.hash &* 1_000_003_u64 &+ @size.hash
+      h = h &* 1_000_003_u64 &+ @color.hash
+      h = h &* 1_000_003_u64 &+ @underline.hash
+      h = h &* 1_000_003_u64 &+ @family.hash
+      h = h &* 1_000_003_u64 &+ @bold.hash
+      h = h &* 1_000_003_u64 &+ @italic.hash
+      h = h &* 1_000_003_u64 &+ @strikethrough.hash
+      h &* 1_000_003_u64 &+ @background.hash
+    end
+
+    def ==(other : TextRun) : Bool
+      text == other.text && size == other.size && color == other.color &&
+        underline? == other.underline? && family == other.family &&
+        bold? == other.bold? && italic? == other.italic? &&
+        strikethrough? == other.strikethrough? &&
+        background == other.background
+    end
   end
 
   class Galley

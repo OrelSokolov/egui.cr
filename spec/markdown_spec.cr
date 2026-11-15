@@ -473,3 +473,64 @@ describe "Markdown widget" do
     clicked.should eq(["DEMO.md"])
   end
 end
+
+describe "Markdown.to_html" do
+  it "emits heading/paragraph/hr tags" do
+    Egui::Markdown.to_html("# Title\n\ntext\n\n---").should eq(
+      "<h1>Title</h1>\n<p>text</p>\n<hr/>\n")
+  end
+
+  it "emits fenced code with the lang attr, content escaped" do
+    Egui::Markdown.to_html("```crystal\na < b & c\n```").should eq(
+      "<pre lang=\"crystal\">a &lt; b &amp; c</pre>\n")
+    Egui::Markdown.to_html("```\nplain\n```").should eq(
+      "<pre>plain</pre>\n")
+  end
+
+  it "emits blockquotes and standalone images" do
+    Egui::Markdown.to_html("> quoted")
+      .should eq("<blockquote>quoted</blockquote>\n")
+    Egui::Markdown.to_html("![alt](img.png)")
+      .should eq("<img src=\"img.png\" alt=\"alt\"/>\n")
+  end
+
+  it "carries img width/align from the README <p align> HTML" do
+    Egui::Markdown.to_html(%(<p align="center"><img src="a.png" width="160" alt="x"></p>))
+      .should eq("<img src=\"a.png\" alt=\"x\" width=\"160\" align=\"center\"/>\n")
+  end
+
+  it "converts inline markup to tags (RichText's grammar)" do
+    Egui::Markdown.to_html("p")
+      .should eq("<p>p</p>\n")
+    Egui::Markdown.to_html("a **b** *c* ***d*** `e` ~~f~~ [g](u.html)")
+      .should eq(
+        "<p>a <strong>b</strong> <em>c</em> " \
+        "<strong><em>d</em></strong> <code>e</code> <del>f</del> " \
+        "<a href=\"u.html\">g</a></p>\n")
+  end
+
+  it "renders unclosed markers literally and escapes text" do
+    Egui::Markdown.to_html("a * b & <c>")
+      .should eq("<p>a * b &amp; &lt;c&gt;</p>\n")
+  end
+
+  it "groups list items into nested ul/ol with the number attr" do
+    Egui::Markdown.to_html("- a\n- b\n  - b1\n1. one\n2. two").should eq(
+      "<ul><li n=\"0\">a</li><li n=\"0\">b<ul><li n=\"0\">b1</li></ul></li></ul>" \
+      "<ol><li n=\"1\">one</li><li n=\"2\">two</li></ol>\n")
+  end
+
+  it "emits GFM tables with a th header row" do
+    Egui::Markdown.to_html("| a | b |\n| --- | --- |\n| 1 | 2 |").should eq(
+      "<table>\n<tr><th>a</th><th>b</th></tr>\n" \
+      "<tr><td>1</td><td>2</td></tr>\n</table>\n")
+  end
+
+  it "round-trips through Exml.parse_fragment as inline nodes" do
+    nodes = Egui::Exml.parse_fragment(
+      Egui::Markdown.to_html("hi **bold** and [l](u)"))
+    p = nodes.first
+    p.name.should eq("p")
+    p.children.map(&.name).should eq(["#text", "strong", "#text", "a"])
+  end
+end

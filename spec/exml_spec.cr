@@ -997,3 +997,27 @@ describe "exml numeric input (v-model.number)" do
     texts.should contain("21.5")
   end
 end
+
+describe "exml #text nodes (bare text between tags)" do
+  it "keeps non-whitespace text as a Label-kind child" do
+    nodes = Egui::Exml.parse_fragment(
+      "<p>hello <strong>bold</strong> world</p>")
+    p = nodes.first
+    p.name.should eq("p")
+    p.children.map(&.name).should eq(["#text", "strong", "#text"])
+    p.children[0].attrs["text"].should eq("hello ")
+    p.children[2].attrs["text"].should eq(" world")
+    p.children[0].kind.label?.should be_true
+  end
+
+  it "drops whitespace-only segments (pretty-printed markup)" do
+    nodes = Egui::Exml.parse_fragment(
+      "<column>\n  <label text=\"a\"/>\n  <label text=\"b\"/>\n</column>")
+    nodes.first.children.map(&.name).should eq(["label", "label"])
+  end
+
+  it "unescapes entities in text content" do
+    nodes = Egui::Exml.parse_fragment("<p>a &amp; b &lt;c&gt;</p>")
+    nodes.first.children.first.attrs["text"].should eq("a & b <c>")
+  end
+end

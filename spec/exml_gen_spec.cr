@@ -56,8 +56,13 @@ describe "exml codegen" do
     btn = Egui::Exml::Node.new(Egui::Exml::Kind::Button, "button",
       {"label" => "Save", "on_click" => "save"}, [] of Egui::Exml::Node,
       "/exml[0]/page[1]:home/column[0]/button[1]")
+    # The heading's text content parses to a #text node (bare text
+    # between tags became first-class — see Exml.attach_text_segment).
+    hi = Egui::Exml::Node.new(Egui::Exml::Kind::Label, "#text",
+      {"text" => "Hi"}, [] of Egui::Exml::Node,
+      "/exml[0]/page[1]:home/column[0]/heading[0]/#text[0]")
     heading = Egui::Exml::Node.new(Egui::Exml::Kind::Heading, "heading",
-      {} of String => String, [] of Egui::Exml::Node,
+      {} of String => String, [hi],
       "/exml[0]/page[1]:home/column[0]/heading[0]")
     input = Egui::Exml::Node.new(Egui::Exml::Kind::Input, "input",
       {"bind" => "name", "hint" => "your name"}, [] of Egui::Exml::Node,

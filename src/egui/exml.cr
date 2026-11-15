@@ -894,6 +894,7 @@ module Egui
           STDERR.puts "exml: unterminated tag at byte #{lt} — rest skipped"
           break
         end
+        attach_text_segment(stack, text, pos, lt)
         inner = text.byte_slice(lt + 1, gt - lt - 1)
         pos = gt + 1
         next if inner.empty?
@@ -930,11 +931,28 @@ module Egui
         end
       end
 
+      attach_text_segment(stack, text, pos, bytesize)
       unless stack.size == 1
         STDERR.puts "exml: unclosed <#{stack.last[0]}> at EOF — dropped"
       end
       desugar_vue_tree(root_children)
       root_children
+    end
+
+    # Bare text between tags becomes a `#text` node (Kind::Label, the
+    # text in the "text" attr) attached to the innermost open element —
+    # HTML fragments (`<p>hello <strong>bold</strong></p>`) carry their
+    # prose this way, and a custom handler reads it as inline content.
+    # Whitespace-only segments are dropped: markup files keep their
+    # pretty-printing without junk label nodes.
+    private def self.attach_text_segment(stack, text : String,
+                                         from : Int32, to : Int32) : Nil
+      seg = text.byte_slice(from, to - from)
+      return if seg.each_byte.all? { |b| b.in?(0x20_u8, 0x09_u8, 0x0A_u8, 0x0D_u8) }
+      parent = stack.last
+      parent[2] << Node.new(Kind::Label, "#text",
+        {"text" => unescape(seg)}, [] of Node,
+        "#{parent[3]}/#text[#{parent[2].size}]")
     end
 
     # First occurrence of `needle` at or after `from` (nil = absent) —

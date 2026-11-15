@@ -54,6 +54,13 @@ module Egui
     # chip fits inside the line box.
     property line_height : Float64?
 
+    # Prebuilt inline content — runs + link spans in place of the
+    # marker parse: callers that converted their markup to styled
+    # nodes themselves (markdown's HTML path) hand the result over and
+    # #ui lays it out verbatim. Everything downstream (code chips,
+    # selection, link hit-testing, #link_handler) is unchanged.
+    property preset : Tuple(Array(TextRun), Array(RichText::LinkSpan))?
+
     def initialize(text : String, size : Float64? = nil,
                    wrap : Bool? = nil, userselect : Bool = true,
                    id : String? = nil, line_height : Float64? = nil)
@@ -115,15 +122,19 @@ module Egui
       # Pointer cursor and link_at geometry need the live galley. The
       # link spans are parsed lazily by styled_runs (empty on a fresh
       # instance), so the gate scans the markup marker instead — a
-      # false positive only costs the cache miss.
-      return nil if state == "hover" && @rich.text.includes?("](")
+      # false positive only costs the cache miss. A preset carries its
+      # spans explicitly.
+      preset_linked = @preset.try { |p| !p[1].empty? }
+      return nil if state == "hover" &&
+                    (preset_linked || @rich.text.includes?("]("))
       style = effective_style(ui, id)
       {"richlabel", @rich.text, @rich.size, @rich.color, @rich.bold?,
        @rich.italic?, @rich.underline?, @rich.strikethrough?,
        @wrap, @userselect, @line_height, @link_handler.nil?,
        ui.layout.vertical?, ui.available_width,
        ctx.mono_fonts.nil?, style.object_id,
-       @style_override.try(&.hash), cursor, anchor}.hash
+       @style_override.try(&.hash), cursor, anchor,
+       @preset.try { |p| p[0].hash }, @preset.try { |p| p[1].hash }}.hash
     end
 
     # #ui's non-paint side effects: the text cursor over hovered labels
@@ -156,14 +167,30 @@ module Egui
       fonts, face_family, face_bold = ui.ctx.fonts_for_weight(
         style.font_family, weight, @rich.bold?)
       ov_bold = weight.nil? ? nil : face_bold
-      runs = @rich.styled_runs(style.font_size, visuals.text_color,
-        visuals.hyperlink_color, ov_size, ov_bold)
+      if (preset = @preset)
+        runs = preset[0]
+        # A per-element font_size/weight override beats the preset's
+        # own sizes/weights (the inspector's Element tab must visibly
+        # work on markdown's preset labels, not be a silent no-op):
+        # rebuild the affected runs, same rule as styled_runs'.
+        if ov_size || !ov_bold.nil?
+          runs = runs.map do |r|
+            TextRun.new(r.text, ov_size || r.size, r.color, r.underline?,
+              r.family, ov_bold.nil? ? r.bold? : ov_bold, r.italic?,
+              r.strikethrough?, r.background)
+          end
+        end
+        links = preset[1]
+      else
+        runs = @rich.styled_runs(style.font_size, visuals.text_color,
+          visuals.hyperlink_color, ov_size, ov_bold)
+        links = @rich.link_spans
+      end
       # Inline code = monospace runs in a rounded chip; without a
       # mono stack they also retint weaker (the font alone can't
       # distinguish them).
       runs = RichLabel.apply_code_chips(runs, visuals.dark)
       runs = RichText.fade_code_runs(runs, visuals) if ui.ctx.mono_fonts.nil?
-      links = @rich.link_spans
 
       wrap = @wrap.nil? ? ui.layout.vertical? : @wrap
       available = ui.available_width

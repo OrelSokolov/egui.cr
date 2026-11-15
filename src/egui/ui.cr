@@ -827,9 +827,13 @@ module Egui
       add(Separator.new)
     end
 
-    # Rendered markdown (headings, lists, quotes, code blocks, rules,
-    # images — inline `**bold**`/`*italic*`/`` `code` ``/links through
-    # RichLabel). `base_dir` roots relative image paths. See
+    # Rendered markdown — a three-stage pipeline: blocks → explicit
+    # HTML (`Markdown.to_html`) → an EXML fragment rendered by the
+    # engine (`Exml::Renderer`), every emitted tag drawn through the
+    # standard widgets (headings, lists, quotes, code fences with
+    # syntax highlighting, rules, images, tables; inline
+    # `**bold**`/`*italic*`/`` `code` ``/links as preset RichLabel
+    # runs). `base_dir` roots relative image paths. See
     # `Egui::Markdown`.
     def markdown(source : String, base_dir : String? = nil,
                  id : String? = nil) : Response
