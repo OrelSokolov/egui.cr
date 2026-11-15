@@ -33,14 +33,44 @@ module Egui
     end
 
     # Decode a full frame; nil = undecodable (unknown format, corrupt
-    # data or no provider installed — the headless default).
+    # data or no provider installed — the headless default). Bitmap
+    # providers (stb) never answer SVG — the pure-Crystal NanoSvgCr
+    # fallback below does, at the SVG's intrinsic size.
     def self.decode(bytes : Bytes) : Frame?
-      implementation.decode(bytes)
+      implementation.decode(bytes) || svg_decode(bytes)
     end
 
     # Pixel dimensions without decoding the pixels — nil = unknown.
     def self.image_size(bytes : Bytes) : Vec2?
-      implementation.image_size(bytes)
+      implementation.image_size(bytes) || svg_image_size(bytes)
+    end
+
+    # An SVG payload: `<svg` within the head (an optional <?xml?/doctype/
+    # comment prolog may precede it; bitmaps never match).
+    private def self.svg?(bytes : Bytes) : Bool
+      head = String.new(bytes[0, {bytes.size, 1024}.min])
+      head.includes?("<svg") || head.includes?("<SVG")
+    end
+
+    # SVG → RGBA at the viewBox's intrinsic size (the caller scales);
+    # `currentColor` resolves to black, like an <img> with no CSS color.
+    # nil for sources NanoSVG cannot size.
+    private def self.svg_decode(bytes : Bytes) : Frame?
+      return nil unless svg?(bytes)
+      source = String.new(bytes)
+      img = NanoSvgCr.image(source, Color32.new(0, 0, 0))
+      return nil unless img
+      w = {img.width.ceil.to_i, 1}.max
+      h = {img.height.ceil.to_i, 1}.max
+      rgba = NanoSvgCr.rasterize(source, Color32.new(0, 0, 0), w, h)
+      rgba ? Frame.new(width: w, height: h, rgba: rgba) : nil
+    end
+
+    private def self.svg_image_size(bytes : Bytes) : Vec2?
+      return nil unless svg?(bytes)
+      img = NanoSvgCr.image(String.new(bytes), Color32.new(0, 0, 0))
+      return nil unless img
+      Vec2.new(img.width.to_f, img.height.to_f)
     end
 
     # Magic-byte sniffer: which image format these bytes are, or nil

@@ -850,9 +850,10 @@ static void egui_cr_pkt_pipe_pop(void);
 static void egui_cr_pkt_xform(const float* m);
 static void egui_cr_pkt_xform_pop(void);
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
-                           int stream, const void* data, size_t size);
+                           int stream, const void* data, size_t size,
+                           int r8);
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
-                                     int stream);
+                                     int stream, int r8);
 // packet builder API (see the detached section)
 static void egui_cr_pkt_begin(int fb_w, int fb_h);
 static void egui_cr_pkt_publish(void);
@@ -2279,6 +2280,131 @@ static sg_stencil_state sh_clip_stencil(void) {
     };
 }
 
+// True when the glyph atlas uploads as a single-channel (R8) coverage
+// texture: the text pipelines need a fragment shader that samples the
+// RED channel, which is only possible where sokol can compile GLSL at
+// runtime (GLCORE/GLES3 — everything but the optional Vulkan backend,
+// whose sgl shader is embedded SPIR-V). The SDF batch shader (GL-only)
+// follows the same flag. Memoized; only queried after sg_setup.
+static int g_atlas_r8 = -1;
+static bool sh_atlas_r8(void) {
+    if (g_atlas_r8 < 0) {
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+        sg_pixelformat_info info = sg_query_pixelformat(SG_PIXELFORMAT_R8);
+        g_atlas_r8 = (info.sample && info.filter) ? 1 : 0;
+#else
+        g_atlas_r8 = 0;
+#endif
+    }
+    return g_atlas_r8 != 0;
+}
+
+// The upload payload for a glyph atlas: the coverage bytes as-is on R8
+// backends, or expanded into a reusable white-RGBA scratch otherwise
+// (the RGBA path's pipelines sample texel.a). *size receives the byte
+// count; NULL return = out of memory (upload skipped).
+static void* sh_atlas_pixels(int w, int h, const void* cov, size_t* size) {
+    size_t n = (size_t)w * h;
+    if (sh_atlas_r8()) {
+        *size = n;
+        return (void*)cov;
+    }
+    static uint8_t* buf;
+    static size_t cap;
+    if (cap < n * 4) {
+        uint8_t* grown = (uint8_t*)realloc(buf, n * 4);
+        if (!grown) { *size = 0; return NULL; }
+        buf = grown;
+        cap = n * 4;
+    }
+    const uint8_t* src = (const uint8_t*)cov;
+    for (size_t i = 0; i < n; i++) {
+        buf[i * 4 + 0] = 255;
+        buf[i * 4 + 1] = 255;
+        buf[i * 4 + 2] = 255;
+        buf[i * 4 + 3] = src[i];
+    }
+    *size = n * 4;
+    return buf;
+}
+
+// The R8 twin of sgl's embedded text shader: sgl's own vertex source
+// (verbatim — the vertex layout is sgl's fixed one) with a fragment
+// stage that reads the coverage RED channel instead of a white-RGBA
+// texel. Returns a zero id on backends that ship bytecode-only
+// shaders (callers then keep sgl's embedded shader + RGBA atlases).
+static sg_shader sh_text_r8_shader(void) {
+#if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+    sg_shader_desc sd;
+    memset(&sd, 0, sizeof sd);
+    // Attribute/uniform/pair layout mirrors sgl's own shader desc
+    // (sokol_gl.h _sgl_setup_common).
+    sd.attrs[0].glsl_name = "position";
+    sd.attrs[1].glsl_name = "texcoord0";
+    sd.attrs[2].glsl_name = "color0";
+    sd.attrs[3].glsl_name = "psize";
+    sd.attrs[0].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    sd.attrs[1].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    sd.attrs[2].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    sd.attrs[3].base_type = SG_SHADERATTRBASETYPE_FLOAT;
+    sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[0].size = sizeof(_sgl_uniform_t);
+    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "vs_params";
+    sd.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[0].glsl_uniforms[0].array_count = 8;
+    sd.views[0].texture.stage = SG_SHADERSTAGE_FRAGMENT;
+    sd.views[0].texture.image_type = SG_IMAGETYPE_2D;
+    sd.views[0].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+    sd.samplers[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    sd.samplers[0].sampler_type = SG_SAMPLERTYPE_FILTERING;
+    sd.texture_sampler_pairs[0].stage = SG_SHADERSTAGE_FRAGMENT;
+    sd.texture_sampler_pairs[0].view_slot = 0;
+    sd.texture_sampler_pairs[0].sampler_slot = 0;
+    sd.texture_sampler_pairs[0].glsl_name = "tex_smp";
+    #if defined(SOKOL_GLCORE)
+    sd.vertex_func.source = (const char*)_sgl_shd_vs_source_glsl410;
+    sd.fragment_func.source =
+        "#version 410\n"
+        "uniform sampler2D tex_smp;\n"
+        "layout(location = 0) out vec4 frag_color;\n"
+        "layout(location = 0) in vec4 uv;\n"
+        "layout(location = 1) in vec4 color;\n"
+        "void main() {\n"
+        "    frag_color = vec4(color.rgb, color.a * texture(tex_smp, uv.xy).r);\n"
+        "}\n";
+    #else // SOKOL_GLES3
+    sd.vertex_func.source = (const char*)_sgl_shd_vs_source_glsl300es;
+    sd.fragment_func.source =
+        "#version 300 es\n"
+        "precision mediump float;\n"
+        "precision highp int;\n"
+        "uniform highp sampler2D tex_smp;\n"
+        "layout(location = 0) out highp vec4 frag_color;\n"
+        "in highp vec4 uv;\n"
+        "in highp vec4 color;\n"
+        "void main() {\n"
+        "    frag_color = vec4(color.rgb, color.a * texture(tex_smp, uv.xy).r);\n"
+        "}\n";
+    #endif
+    sd.label = "egui-cr-text-r8-shader";
+    return sg_make_shader(&sd);
+#else
+    return (sg_shader){0};
+#endif
+}
+
+// The text pipelines' shader: the R8 twin when the atlas is R8, sgl's
+// embedded default otherwise (id 0 = "not set", sgl patches its own).
+static sg_shader sh_text_pipeline_shader(void) {
+    static sg_shader cached;
+    static int resolved;
+    if (!resolved) {
+        resolved = 1;
+        if (sh_atlas_r8()) cached = sh_text_r8_shader();
+    }
+    return cached;
+}
+
 static sgl_pipeline sh_make_blend_pip(const char* label) {
     return sgl_make_pipeline(&(sg_pipeline_desc){
         .colors[0] = {
@@ -2319,7 +2445,26 @@ static void sh_ensure_pipelines(void) {
     }
     if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; }
     if (!g_alpha_pip.id)   g_alpha_pip = sh_make_blend_pip("egui-cr-alpha-pip");
-    if (!g_text_pip.id)    g_text_pip = sh_make_blend_pip("egui-cr-text-pip");
+    if (!g_text_pip.id) {
+        // The text pipelines sample the R8 atlas through the custom
+        // shader when it's in play (see sh_text_pipeline_shader); on
+        // RGBA fallbacks the id stays 0 and sgl patches its own.
+        sg_pipeline_desc d = {
+            .colors[0] = {
+                .write_mask = SG_COLORMASK_RGBA,
+                .blend = {
+                    .enabled = true,
+                    .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                    .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                    .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                },
+            },
+            .shader = sh_text_pipeline_shader(),
+            .label = "egui-cr-text-pip",
+        };
+        g_text_pip = sgl_make_pipeline(&d);
+    }
     if (!g_alpha_pip_st.id) {
         sg_pipeline_desc d = {
             .colors[0] = {
@@ -2336,6 +2481,7 @@ static void sh_ensure_pipelines(void) {
             .label = "egui-cr-alpha-pip-st",
         };
         g_alpha_pip_st = sgl_make_pipeline(&d);
+        d.shader = sh_text_pipeline_shader();
         d.label = "egui-cr-text-pip-st";
         g_text_pip_st = sgl_make_pipeline(&d);
         d.colors[0].blend.enabled = false; // replace twin: overwrite dst
@@ -2693,7 +2839,7 @@ static const char SH_SDF_FS[] =
     "#endif\n"
     "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, uv01));\n"
     "#ifdef SDF_TEX_TEST\n"
-    "        frag_color = vec4(t.a, t.a, t.a, 1.0);\n"
+    "        frag_color = vec4(t.a * t.r, t.a * t.r, t.a * t.r, 1.0);\n"
     "        return;\n"
     "#endif\n"
     "#ifdef SDF_UV_TEST\n"
@@ -2702,7 +2848,9 @@ static const char SH_SDF_FS[] =
     "        frag_color = vec4(mix(v_uv.x, v_uv.z, uv01.x), mix(v_uv.y, v_uv.w, uv01.y), 0.0, 1.0);\n"
     "        return;\n"
     "#endif\n"
-    "        float a = t.a * v_fill.a * cmc;\n"
+    // coverage = a*r: the R8 atlas samples as (cov,0,0,1), the RGBA
+    // fallback as (1,1,1,cov) — the product is cov either way.
+    "        float a = t.a * t.r * v_fill.a * cmc;\n"
     "        if (a <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, a);\n"
     "        return;\n"
@@ -2895,7 +3043,7 @@ static const char SH_SDF_FS[] =
     "#endif\n"
     "        vec4 t = texture(atlas_smp, mix(v_uv.xy, v_uv.zw, uv01));\n"
     "#ifdef SDF_TEX_TEST\n"
-    "        frag_color = vec4(t.a, t.a, t.a, 1.0);\n"
+    "        frag_color = vec4(t.a * t.r, t.a * t.r, t.a * t.r, 1.0);\n"
     "        return;\n"
     "#endif\n"
     "#ifdef SDF_UV_TEST\n"
@@ -2904,7 +3052,9 @@ static const char SH_SDF_FS[] =
     "        frag_color = vec4(mix(v_uv.x, v_uv.z, uv01.x), mix(v_uv.y, v_uv.w, uv01.y), 0.0, 1.0);\n"
     "        return;\n"
     "#endif\n"
-    "        float a = t.a * v_fill.a * cmc;\n"
+    // coverage = a*r: the R8 atlas samples as (cov,0,0,1), the RGBA
+    // fallback as (1,1,1,cov) — the product is cov either way.
+    "        float a = t.a * t.r * v_fill.a * cmc;\n"
     "        if (a <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, a);\n"
     "        return;\n"
@@ -3626,7 +3776,7 @@ static int sh_texture_slot(uint32_t view_id) {
 // detached path (resolved through the render thread's texture table).
 // The sampler is created once and shared.
 uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
-    if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0, 0);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (!g_linear_sampler.id) {
         g_linear_sampler = sg_make_sampler(&(sg_sampler_desc){
@@ -3661,7 +3811,7 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
 // WRITABLE_NO_DATA), so create empty and upload via update_texture.
 uint32_t egui_cr_make_stream_texture(int w, int h) {
     if (w <= 0 || h <= 0) return 0;
-    if (!sh_run_direct()) return sh_tex_make_detached(w, h, NULL, 1);
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, NULL, 1, 0);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (g_texture_count >= EGUI_CR_MAX_TEXTURES) return 0;
     sg_image img = sg_make_image(&(sg_image_desc){
@@ -3689,7 +3839,7 @@ uint32_t egui_cr_make_stream_texture(int w, int h) {
 void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
     if (!sh_run_direct()) {
         if (view_id) sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, rgba8,
-                                    (size_t)w * h * 4);
+                                    (size_t)w * h * 4, 0);
         return;
     }
     if (!sh_gl_ok()) return; // nil-context mid-frame — see sh_gl_ok
@@ -3712,7 +3862,7 @@ void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
 // Destroy a texture created by make_texture or make_stream_texture.
 void egui_cr_destroy_texture(uint32_t view_id) {
     if (!sh_run_direct()) {
-        if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0);
+        if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0, 0);
         return;
     }
     int slot = sh_texture_slot(view_id);
@@ -3974,8 +4124,8 @@ void egui_cr_text_pipeline_pop(void) {
 // Multiple font backends coexist (fontpreview switches the FreeType C /
 // Crystal backends live): each atlas_create returns its OWN image+view pair,
 // and atlas_update addresses them by view id through a small registry.
-// Atlases live for the process lifetime (a handful at most), so no
-// destroy path is needed.
+// Atlases are destroyed through egui_cr_atlas_destroy (the growing
+// atlas re-creates its texture on growth).
 
 #define EGUI_CR_MAX_ATLASES 16
 static struct {
@@ -3984,15 +4134,19 @@ static struct {
 } g_atlases[EGUI_CR_MAX_ATLASES];
 static int g_atlas_count = 0;
 
-uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
+uint32_t egui_cr_atlas_create(int w, int h, const void* cov) {
+    if (!sh_run_direct()) return sh_tex_make_detached(w, h, cov, 0, 1);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
-    if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0);
     if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
     // stream images cannot be created with initial data (sokol validation:
     // WRITABLE_NO_DATA) — create empty, then upload via sg_update_image.
+    // Single-channel coverage on R8 backends, white-RGBA elsewhere (see
+    // sh_atlas_r8).
     sg_image img = sg_make_image(&(sg_image_desc){
         .width = w,
         .height = h,
+        .pixel_format = sh_atlas_r8() ? SG_PIXELFORMAT_R8
+                                      : SG_PIXELFORMAT_RGBA8,
         .usage = {.dynamic_update = true},
         .label = "egui-cr-glyph-atlas",
     });
@@ -4005,25 +4159,30 @@ uint32_t egui_cr_atlas_create(int w, int h, const void* rgba8) {
     g_atlases[g_atlas_count].view_id = (uint32_t)view.id;
     g_atlases[g_atlas_count].img = img;
     g_atlas_count++;
-    egui_cr_atlas_update((uint32_t)view.id, w, h, rgba8);
+    egui_cr_atlas_update((uint32_t)view.id, w, h, cov);
     return (uint32_t)view.id;
 }
 
-void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
+void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* cov) {
     if (!sh_run_direct()) {
         if (getenv("EGUI_FRAME_DEBUG"))
             fprintf(stderr, "[tex] A queues atlas update id=%u\n", view_id);
-        sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, rgba8,
-                       (size_t)w * h * 4);
+        // the op carries the R8 coverage; the R side expands if this
+        // backend runs the RGBA fallback
+        sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, cov, (size_t)w * h,
+                       1);
         return;
     }
+    size_t size;
+    void* px = sh_atlas_pixels(w, h, cov, &size);
+    if (!px) return;
     if (!sh_gl_ok()) return; // nil-context mid-frame — see sh_gl_ok
     for (int i = 0; i < g_atlas_count; i++) {
         if (g_atlases[i].view_id == view_id) {
             sg_image_data data;
             memset(&data, 0, sizeof(data));
-            data.mip_levels[0].ptr = rgba8;
-            data.mip_levels[0].size = (size_t)w * h * 4;
+            data.mip_levels[0].ptr = px;
+            data.mip_levels[0].size = size;
             sg_update_image(g_atlases[i].img, &data);
             // _sg_gl_update_image rebinds textures on GL unit 0 behind
             // the state cache's back (bind-new → upload → restore-old),
@@ -4037,6 +4196,24 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* rgba8) {
             sg_reset_state_cache();
             return;
         }
+    }
+}
+
+// Free a glyph atlas (the growing atlas re-creates its texture at the
+// new size — without this the 16-slot registry would fill up). Mirrors
+// egui_cr_destroy_texture: queued on the render thread unless direct.
+void egui_cr_atlas_destroy(uint32_t view_id) {
+    if (!sh_run_direct()) {
+        if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0, 0);
+        return;
+    }
+    for (int i = 0; i < g_atlas_count; i++) {
+        if (g_atlases[i].view_id != view_id) continue;
+        sg_destroy_view((sg_view){.id = view_id});
+        sg_destroy_image(g_atlases[i].img);
+        g_atlases[i] = g_atlases[g_atlas_count - 1];
+        g_atlas_count--;
+        return;
     }
 }
 
@@ -6006,8 +6183,9 @@ typedef struct {
     uint32_t id;
     int w, h;
     int stream;  // CREATE: SG_USAGE stream (video surfaces)
-    void* data;  // CREATE/UPDATE: malloc'd RGBA8 copy (CREATE may be NULL)
+    void* data;  // CREATE/UPDATE: malloc'd copy (CREATE may be NULL)
     size_t size;
+    int r8;      // glyph-atlas coverage (R8); RGBA user textures leave 0
 } sh_texop_t;
 
 enum {
@@ -6069,12 +6247,13 @@ static float sh_u2f(uint32_t u) { union { float f; uint32_t u; } c; c.u = u; ret
 // Queue a texture delta into the current build (allocating it if no
 // frame is open — ops ride the next publish).
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
-                           int stream, const void* data, size_t size) {
+                           int stream, const void* data, size_t size,
+                           int r8) {
     sh_build_ensure();
     sh_texop_t op;
     memset(&op, 0, sizeof op);
     op.kind = kind; op.id = id; op.w = w; op.h = h; op.stream = stream;
-    op.size = size;
+    op.size = size; op.r8 = r8;
     if (data && size) {
         op.data = malloc(size);
         if (op.data) memcpy(op.data, data, size);
@@ -6091,15 +6270,16 @@ static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
 }
 
 // Detached make_texture: allocate a shim-side id and queue the upload.
+// r8 payload sizes are w*h (glyph-atlas coverage), RGBA ones w*h*4.
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
-                                     int stream) {
+                                     int stream, int r8) {
     if (w <= 0 || h <= 0) return 0;
     static sh_atom_i next_id;
     static int next_init;
     if (!next_init) { sh_ai_store(&next_id, 1); next_init = 1; }
     uint32_t id = (uint32_t)sh_ai_xadd(&next_id, 1);
     sh_texop_queue(SH_TEX_CREATE, id, w, h, stream, rgba8,
-                   rgba8 ? (size_t)w * h * 4 : 0);
+                   rgba8 ? (size_t)w * h * (r8 ? 1 : 4) : 0, r8);
     return id;
 }
 
@@ -6123,7 +6303,7 @@ static void egui_cr_pkt_begin(int fb_w, int fb_h) {
 // packet being published (`dst`, NEWER), keeping only one op per
 // texture id: a create/update must survive the drop (no later UPDATE
 // may come — the atlas can stay clean), but stale pixel copies must
-// not pile up while R is stalled (each atlas upload is a full 16 MB
+// not pile up while R is stalled (each atlas upload is a full coverage
 // buffer). On an id collision the NEWER dst op wins — the src one is
 // superseded data.
 static void sh_texops_splice(sh_texop_t** dst, int* dst_n, int* dst_cap,
@@ -6330,6 +6510,7 @@ typedef struct {
     sg_image img;
     sg_view view;
     int w, h;
+    int r8; // created as a coverage (R8) atlas texture
 } sh_tex_t;
 static sh_tex_t g_tex_tab[SH_MAX_TEX];
 static int g_tex_tab_n = 0;
@@ -6410,7 +6591,8 @@ static void sh_tex_upload(sh_tex_t* t, const void* data, size_t size) {
 }
 
 // Returns 0 on failure (pool exhausted / GL object creation failed).
-static int sh_tex_create(uint32_t id, int w, int h, void* data, size_t size) {
+static int sh_tex_create(uint32_t id, int w, int h, void* data, size_t size,
+                         int r8) {
     sh_tex_t* t = sh_tex_find(id);
     if (t) { // already created — treat as an update
         if (data) sh_tex_upload(t, data, size);
@@ -6421,6 +6603,8 @@ static int sh_tex_create(uint32_t id, int w, int h, void* data, size_t size) {
     // immutable make_texture uploads are folded into the first update.
     sg_image img = sg_make_image(&(sg_image_desc){
         .width = w, .height = h,
+        .pixel_format = (r8 && sh_atlas_r8()) ? SG_PIXELFORMAT_R8
+                                              : SG_PIXELFORMAT_RGBA8,
         .usage = {.dynamic_update = true},
         .label = "egui-cr-packet-texture",
     });
@@ -6430,6 +6614,7 @@ static int sh_tex_create(uint32_t id, int w, int h, void* data, size_t size) {
     if (view.id == 0) { sg_destroy_image(img); return 0; }
     t = &g_tex_tab[g_tex_tab_n++];
     t->id = id; t->img = img; t->view = view; t->w = w; t->h = h;
+    t->r8 = r8 ? 1 : 0;
     if (data) sh_tex_upload(t, data, size);
     return 1;
 }
@@ -6440,14 +6625,22 @@ static void sh_tex_run(const sh_texop_t* op) {
         fprintf(stderr, "[tex] run kind=%d id=%u %dx%d%s%s\n", op->kind, op->id,
                 op->w, op->h, op->data ? " data" : "",
                 t ? " (exists)" : " (new)");
+    // An R8 atlas on an RGBA-fallback backend: expand the coverage into
+    // the white-RGBA scratch for the upload (the image itself is RGBA).
+    void* data = op->data;
+    size_t size = op->size;
+    if (op->r8 && data && !sh_atlas_r8()) {
+        data = sh_atlas_pixels(op->w, op->h, data, &size);
+        if (!data) return;
+    }
     switch (op->kind) {
     case SH_TEX_CREATE:
-        if (t && op->data) sh_tex_upload(t, op->data, op->size);
-        else sh_tex_create(op->id, op->w, op->h, op->data, op->size);
+        if (t && data) sh_tex_upload(t, data, size);
+        else sh_tex_create(op->id, op->w, op->h, data, size, op->r8);
         break;
     case SH_TEX_UPDATE:
-        if (!t) sh_tex_create(op->id, op->w, op->h, op->data, op->size);
-        else if (op->data) sh_tex_upload(t, op->data, op->size);
+        if (!t) sh_tex_create(op->id, op->w, op->h, data, size, op->r8);
+        else if (data) sh_tex_upload(t, data, size);
         break;
     case SH_TEX_DESTROY:
         if (t) {

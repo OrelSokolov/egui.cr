@@ -1,8 +1,9 @@
 # Crystal text stack. This file holds the glyph-atlas infrastructure
 # shared by the font backends:
 #
-#   * AtlasFonts — the `Egui::Fonts` base: a shared 2048² RGBA atlas
-#     (white RGB, coverage alpha), a {glyph id, size} glyph cache and one
+#   * AtlasFonts — the `Egui::Fonts` base: a shared coverage (R8)
+#     atlas that starts at 1024² and grows on demand (see GlyphAtlas),
+#     a {glyph id, size} glyph cache and one
 #     walk (fractional advances + kerning) used by both measure and draw.
 #     Draw-side, glyph quads snap to whole screen pixels.
 #   * CrystalFonts (backend/crystalfonts.cr) — the primary backend: the
@@ -39,6 +40,10 @@ module Egui
       C_EXTENSIONS = {{ cext }}
     {% end %}
     # A rasterized glyph: atlas rect + placement relative to the pen.
+    # u0..v1 are normalized against the atlas size AT BAKE TIME — an
+    # atlas GROWTH changes the normalization, so the draw paths emit
+    # UVs from the pixel rect against the CURRENT size (sokol.cr); the
+    # fields stay for specs/debug tooling.
     struct Glyph
       getter u0, v0, u1, v1 : Float32 # atlas UVs
       getter ax, ay : Int32           # atlas slot (px; 0,0 for blanks)
@@ -55,20 +60,24 @@ module Egui
 
     # The `Egui::Fonts` implementation shared by the font backends:
     # CrystalFonts (crystalfonts.cr, primary) and FreetypeFonts
-    # (freetype.cr, C-FFI dev accelerator). One RGBA atlas + glyph
+    # (freetype.cr, C-FFI dev accelerator). One coverage atlas + glyph
     # cache, one walk (fractional advances + kerning) for both measure
     # and draw; a backend implements glyph production and metrics.
     abstract class AtlasFonts < Egui::Fonts
-      # The atlas this stack bakes into: its OWN (default — specs,
-      # standalone tools) or a SHARED one owned by the backend registry
-      # (sokol.cr: one GPU texture for every stack the registry creates,
-      # so a font picker flipping through hundreds of families cannot
-      # exhaust the shim's atlas cap or VRAM).
+      # The atlas this stack bakes into: its OWN (constructor default —
+      # specs, standalone tools) or a SHARED one (the Sokol registry
+      # hands every stack it creates — `fonts_from_system` included —
+      # one atlas, so five faces cost one texture, not five).
       getter atlas : GlyphAtlas
       @atlas_epoch : UInt32
 
+      # See `Fonts#atlas_size` — the live size of the backing atlas.
+      def atlas_size : Int32
+        @atlas.size
+      end
+
       def initialize(atlas : GlyphAtlas? = nil)
-        @atlas = atlas || GlyphAtlas.new(ATLAS_SIZE)
+        @atlas = atlas || GlyphAtlas.new(ATLAS_START)
         @atlas_epoch = @atlas.epoch
         @glyphs = {} of {Int32, Int32} => Glyph # {glyph id, size*10} -> glyph
         @needs_reset = false
@@ -300,38 +309,60 @@ module Egui
 
     # --- atlas (shared by the font backends) -----------------------------------
 
-    # 2048² so retina (2x) rasterizations — 4x the area — still fit
-    # alongside the point-size copies the measure path bakes.
-    ATLAS_SIZE = 2048
+    # The atlas starts small and DOUBLES when the shelves run out (up to
+    # ATLAS_MAX): a text-light app never pays for the 4096² a retina CJK
+    # document needs, and growth keeps every baked slot in place (only
+    # the buffer grows), so nothing re-bakes. UV normalization happens
+    # at EMIT time from the pixel rect, so live Glyph structs survive a
+    # growth (see the Glyph#u0 note). Only at ATLAS_MAX does the packer
+    # give up and the reset-and-rebake path takes over.
+    ATLAS_START = 1024
+    ATLAS_MAX   = 4096
 
-    # RGBA8 glyph atlas with shelf packing. RGB is white; alpha is the
-    # glyph coverage — the draw path multiplies by the text color.
+    # Single-channel (coverage) glyph atlas with shelf packing. The
+    # draw path uploads it as an R8 texture on backends that can
+    # compile the coverage-sampling text shader (GL), expanding to RGBA
+    # in the shim elsewhere (Vulkan's sgl shader is SPIR-V-only) — the
+    # CPU side is always 1 byte per pixel either way.
     # Baked glyphs are never freed individually; when the shelves run
-    # out (font-size drags bake a set per fractional size), `reset`
-    # empties everything for a full re-bake. The registry may share ONE
-    # atlas between many stacks (see AtlasFonts#initialize); `epoch`
-    # lets each stack detect a foreign reset and drop its stale UVs.
+    # out (font-size drags bake a set per fractional size) the atlas
+    # grows, and past ATLAS_MAX `reset` empties everything for a full
+    # re-bake. The registry may share ONE atlas between many stacks
+    # (see AtlasFonts#initialize); `epoch` lets each stack detect a
+    # foreign reset and drop its stale UVs.
     class GlyphAtlas
       getter size : Int32
+      getter max_size : Int32
       getter view_id = 0_u32
       # Bumped by every #reset: stacks sharing this atlas compare their
       # remembered epoch in AtlasFonts#glyph and invalidate on a drift.
       getter epoch = 0_u32
-      @rgba : Bytes
+      @cov : Bytes
       @dirty = false
+      @gpu_size = 0
       @shelf_x = 0
       @shelf_y = 0
       @shelf_h = 0
 
-      def initialize(@size : Int32)
-        @rgba = Bytes.new(@size * @size * 4)
+      def initialize(@size : Int32, @max_size : Int32 = ATLAS_MAX)
+        @cov = Bytes.new(@size * @size)
       end
 
       # Shelf packer with a 1px border around every glyph so LINEAR
-      # sampling never bleeds between neighbours.
+      # sampling never bleeds between neighbours. When the shelves run
+      # out (or a glyph doesn't fit the current size) the atlas GROWS
+      # first; nil only at max_size (the caller flags an overflow).
       def alloc(w : Int32, h : Int32) : {Int32, Int32}?
         return nil if w <= 0 || h <= 0
-        return nil if w + 2 > @size || h + 2 > @size
+        loop do
+          if w + 2 <= @size && h + 2 <= @size && (slot = shelf_alloc(w, h))
+            return slot
+          end
+          return nil unless grow
+        end
+      end
+
+      private def shelf_alloc(w : Int32, h : Int32) : {Int32, Int32}?
         if @shelf_x + w + 2 > @size
           @shelf_x = 0
           @shelf_y += @shelf_h
@@ -345,16 +376,30 @@ module Egui
         {x, y}
       end
 
+      # Double the atlas (up to max_size), keeping every baked slot at
+      # its pixel position — the copy is row-by-row, the shelf state
+      # stays as is. False at max_size.
+      private def grow : Bool
+        return false if @size >= @max_size
+        new_size = {@size * 2, @max_size}.min
+        grown = Bytes.new(new_size * new_size)
+        @size.times do |row|
+          (grown.to_unsafe + row * new_size)
+            .copy_from(@cov.to_unsafe + row * @size, @size)
+        end
+        @size = new_size
+        @cov = grown
+        @dirty = true
+        STDERR.puts "[atlas] grow -> #{@size} (epoch=#{@epoch})" if ENV["EGUI_ATLAS_DEBUG"]?
+        true
+      end
+
       def blit(x : Int32, y : Int32, w : Int32, h : Int32, cov : Bytes) : Nil
         h.times do |row|
-          di = ((y + row) * @size + x) * 4
+          di = (y + row) * @size + x
           si = row * w
           w.times do |col|
-            @rgba[di] = 255_u8
-            @rgba[di + 1] = 255_u8
-            @rgba[di + 2] = 255_u8
-            @rgba[di + 3] = cov[si + col]
-            di += 4
+            @cov[di + col] = cov[si + col]
           end
         end
         @dirty = true
@@ -369,31 +414,39 @@ module Egui
         @shelf_x = 0
         @shelf_y = 0
         @shelf_h = 0
-        @rgba.fill(0_u8)
+        @cov.fill(0_u8)
         @dirty = true
         @epoch += 1_u32
+        STDERR.puts "[atlas] RESET at #{@size}" if ENV["EGUI_ATLAS_DEBUG"]?
       end
 
       # Create/update this atlas's GPU texture. Outside of a render
       # pass only. The shim keeps a per-instance registry keyed by the
-      # view id, so several backends' atlases can coexist.
+      # view id, so several backends' atlases can coexist. A GROWN
+      # atlas cannot update its fixed-size GPU image in place — the old
+      # texture is destroyed and a bigger one takes its place.
       def flush : Nil
+        if @view_id != 0 && @size != @gpu_size
+          LibEguiCr.atlas_destroy(@view_id)
+          @view_id = 0_u32
+        end
         return if @view_id != 0 && !@dirty
         if @view_id == 0
-          @view_id = LibEguiCr.atlas_create(@size, @size, @rgba)
+          @view_id = LibEguiCr.atlas_create(@size, @size, @cov)
+          @gpu_size = @size
         else
-          LibEguiCr.atlas_update(@view_id, @size, @size, @rgba)
+          LibEguiCr.atlas_update(@view_id, @size, @size, @cov)
         end
         @dirty = false
       end
 
-      # The alpha bytes of a glyph's atlas slot (debug/tests).
+      # The coverage bytes of a glyph's atlas slot (debug/tests).
       def debug_region(g : Glyph) : Bytes
         out = Bytes.new(g.w * g.h)
         g.h.times do |row|
           g.w.times do |col|
-            out[row * g.w + col] = @rgba[((g.ay + row) * @size +
-              g.ax + col) * 4 + 3]
+            out[row * g.w + col] = @cov[(g.ay + row) * @size +
+              g.ax + col]
           end
         end
         out

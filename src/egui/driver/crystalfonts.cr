@@ -174,7 +174,7 @@ module Egui
         outline = Ftgrays::Outline.new(g.xs, g.ys, g.tags, g.contours)
         bmp = Ftrender.render_glyph(outline)
         w, h = bmp.width, bmp.height
-        if w > 0 && h > 0 && w <= atlas.size && h <= atlas.size
+        if w > 0 && h > 0 && w <= atlas.max_size && h <= atlas.max_size
           if slot_xy = alloc_glyph(w, h)
             ax, ay = slot_xy
             atlas.blit(ax, ay, w, h, contrast_curve(bmp.buffer))

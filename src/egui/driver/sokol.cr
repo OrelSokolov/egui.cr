@@ -318,7 +318,10 @@ lib LibEguiCr
 
   # text pipeline + glyph atlas (Crystal text stack). Atlases are
   # per-instance: atlas_create returns its own view, atlas_update
-  # addresses it by view id — multiple font backends can coexist.
+  # addresses it by view id, atlas_destroy releases one (atlas
+  # growth) — multiple font backends can coexist. The atlas DATA is
+  # single-channel coverage (R8); the shim expands to RGBA only on
+  # backends without a coverage-sampling text shader (Vulkan).
   fun text_pipeline_init = egui_cr_text_pipeline_init
   fun text_pipeline_push = egui_cr_text_pipeline_push
   fun text_pipeline_pop = egui_cr_text_pipeline_pop
@@ -329,6 +332,7 @@ lib LibEguiCr
   fun atlas_create = egui_cr_atlas_create(w : Int32, h : Int32, data : UInt8*) : UInt32
   fun atlas_update = egui_cr_atlas_update(view_id : UInt32, w : Int32, h : Int32,
                                           data : UInt8*)
+  fun atlas_destroy = egui_cr_atlas_destroy(view_id : UInt32)
 
   # cursor (shim): `name` is a CSS cursor keyword
   fun set_cursor = egui_cr_set_cursor(name : UInt8*)
@@ -426,11 +430,12 @@ module Egui
       @@italic_fonts : Egui::Driver::AtlasFonts? = nil
       @@bold_italic_fonts : Egui::Driver::AtlasFonts? = nil
       # THE glyph atlas every stack the backend itself creates bakes
-      # into (primary/mono chains + materialized deferred families): one
-      # GPU texture, one CPU buffer, regardless of how many font
-      # families a font picker flips through. Stacks created by the app
-      # (`select_fonts` / `register_font` before #run) keep their own
-      # atlas — mixed ownership is fine, each side resets its own.
+      # into — and, since the shared-atlas default, every stack an APP
+      # creates through `fonts_from_system` too: one GPU texture, one
+      # CPU buffer, however many faces/families the app registers (five
+      # faces used to cost five separate atlases). An explicit `atlas:`
+      # argument still bakes privately (specs, standalone tools) —
+      # mixed ownership is fine, each side resets its own.
       @@shared_atlas : GlyphAtlas? = nil
       # Extra named stacks (`Sokol.register_font`) — what a widget group
       # draws through when its style sets `font_family` (see
@@ -1625,10 +1630,13 @@ module Egui
       # benches: the freetype-cr port (pure Crystal, what release
       # ships). Dev builds with C_EXTENSIONS enabled accelerate through
       # the C-FFI FreeType first — same glyphs, faster bake under debug
-      # codegen. `atlas` = the registry's shared glyph atlas (nil —
-      # default — bakes into a private atlas: specs, standalone tools).
+      # codegen. `atlas` nil — the default — bakes into the registry's
+      # SHARED glyph atlas: one GPU texture for every stack the process
+      # creates (five app faces used to cost five separate atlases).
+      # An explicit atlas bakes privately (specs, standalone tools).
       def self.fonts_from_system(paths : Array(String),
                                  atlas : GlyphAtlas? = nil) : AtlasFonts?
+        atlas = shared_atlas unless atlas
         {% if Egui::Driver::C_EXTENSIONS %}
           FreetypeFonts.from_system(paths, atlas) ||
             CrystalFonts.from_system(paths, atlas)
@@ -1638,20 +1646,22 @@ module Egui
       end
 
       # The EGUI_BENCH HUD's backend stack (see #fonts_for_cmd): the
-      # bundled Noto face on a PRIVATE atlas — independent of the
-      # app's stacks, so the HUD survives EGUI_NOFONTS and app font
-      # swaps. Built lazily on the first HUD text command.
+      # bundled Noto face, riding the registry's shared atlas like any
+      # other stack — the atlas is registry-owned, so the HUD survives
+      # EGUI_NOFONTS and app font swaps regardless. Built lazily on the
+      # first HUD text command.
       @@bench_hud_stack : AtlasFonts? = nil
 
       private def self.bench_hud_stack : AtlasFonts?
         @@bench_hud_stack ||= fonts_from_system([FrameBench::FONT_PATH])
       end
 
-      # The one glyph atlas the backend's own stacks bake into (see
+      # The one glyph atlas the backend's stacks bake into (see
       # @@shared_atlas) — created lazily so a headless use of this
-      # module (specs) never allocates the 16 MiB buffer.
+      # module (specs) never allocates even the 1 MiB starting buffer;
+      # it grows on demand (see GlyphAtlas).
       private def self.shared_atlas : GlyphAtlas
-        @@shared_atlas ||= GlyphAtlas.new(ATLAS_SIZE)
+        @@shared_atlas ||= GlyphAtlas.new(ATLAS_START)
       end
 
       # Every stack the registry knows: the primary/mono/variant slots,
@@ -2947,14 +2957,18 @@ module Egui
         # untextured geometry would sample this texture instead of the
         # internal white fallback.
         #
-        # The text (straight-alpha) pipeline: the sokol_gl DEFAULT
+        # The straight-alpha (text) BLEND pipeline: the sokol_gl DEFAULT
         # pipeline has no blending, so an RGBA texture's transparent
         # texels would overwrite the destination with black — an icon
         # with soft/rounded edges would come out as a hard black box.
+        # The ALPHA pipeline (not the text one): its blend state is
+        # identical, but its shader stayed sgl's default — the TEXT
+        # pipeline's shader samples the R8 glyph atlas' red channel and
+        # would paint a texture's red as the alpha of the tint color.
         LibEguiCr.sgl_bind_texture_nearest(cmd.texture_id.to_u32!) if cmd.nearest?
         LibEguiCr.sgl_bind_texture(cmd.texture_id.to_u32!) unless cmd.nearest?
         LibEguiCr.sgl_enable_texture
-        LibEguiCr.text_pipeline_push
+        LibEguiCr.alpha_pipeline_push
         LibEguiCr.sgl_begin_quads
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.min.y.to_f32,
           uv.min.x.to_f32, uv.min.y.to_f32, t.r, t.g, t.b, t.a)
@@ -2965,7 +2979,7 @@ module Egui
         LibEguiCr.sgl_v2f_t2f_c4b(r.min.x.to_f32, r.max.y.to_f32,
           uv.min.x.to_f32, uv.max.y.to_f32, t.r, t.g, t.b, t.a)
         LibEguiCr.sgl_end
-        LibEguiCr.text_pipeline_pop
+        LibEguiCr.alpha_pipeline_pop
         LibEguiCr.sgl_disable_texture
       end
 
@@ -3522,6 +3536,10 @@ module Egui
           view = fonts.atlas_view_id
           return if view.zero?
           ppp = @@pixels_per_point
+          # UVs normalize against the atlas's CURRENT size — it grows on
+          # demand, and a Glyph baked before a growth carries bake-time
+          # UVs (see Glyph#u0).
+          inv_uv = 1.0f32 / fonts.atlas_size.to_f32
           draw_size = cmd.size * ppp
           asc, desc = fonts.metrics_at(draw_size)
           baseline = ((cmd.pos.y + (asc + desc) / 2.0 / ppp) * ppp).round
@@ -3553,10 +3571,10 @@ module Egui
             d[25] = ppp.to_f32
             d[26] = 0.0f32
             d[27] = 0.0f32
-            d[32] = g.u0
-            d[33] = g.v0
-            d[34] = g.u1
-            d[35] = g.v1
+            d[32] = g.ax * inv_uv
+            d[33] = g.ay * inv_uv
+            d[34] = (g.ax + g.w) * inv_uv
+            d[35] = (g.ay + g.h) * inv_uv
             @@sdf_n += 1
           end
           fonts.letter_spacing = saved_spacing
@@ -3585,6 +3603,10 @@ module Egui
         color = cmd.color
         x_origin = cmd.pos.x * ppp
         inv = (1.0 / ppp).to_f32 # emit in points; the viewport scales back
+        # UVs normalize against the atlas's CURRENT size — it grows on
+        # demand, and a Glyph baked before a growth carries bake-time
+        # UVs (see Glyph#u0).
+        inv_uv = 1.0f32 / fonts.atlas_size.to_f32
         # Bold/italic cmds already draw through a REAL variant face
         # resolved in #fonts_for_cmd (a missing variant degrades to the
         # base face — never an emulated one), so the quads below are
@@ -3611,10 +3633,10 @@ module Egui
           d[1] = y0 * inv
           d[2] = x1 * inv
           d[3] = y1 * inv
-          d[4] = g.u0
-          d[5] = g.v0
-          d[6] = g.u1
-          d[7] = g.v1
+          d[4] = g.ax * inv_uv
+          d[5] = g.ay * inv_uv
+          d[6] = (g.ax + g.w) * inv_uv
+          d[7] = (g.ay + g.h) * inv_uv
           d[8] = color.r.to_f32
           d[9] = color.g.to_f32
           d[10] = color.b.to_f32

@@ -33,6 +33,14 @@ module Egui
     # family through it. Set by the backends' from_system builders.
     property source_path : String? = nil
 
+    # The backing atlas's current edge in px (1 for atlas-less stacks —
+    # NoopFonts/synthetic). Draw paths normalize glyph pixel rects
+    # against THIS (the atlas grows at runtime; baked Glyph UVs are a
+    # bake-time snapshot).
+    def atlas_size : Int32
+      1
+    end
+
     abstract def measure(text : String, size : Float64) : Vec2
 
     # Extra tracking between glyphs (px) — CSS `letter-spacing`. The

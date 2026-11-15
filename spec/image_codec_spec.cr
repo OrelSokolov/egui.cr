@@ -152,4 +152,40 @@ describe Egui::ImageCodec do
       File.delete(path)
     end
   end
+
+  it "decodes SVG through the NanoSvgCr fallback at intrinsic size" do
+    svg = File.read(File.join(__DIR__, "..", "icons", "lucide", "check.svg"))
+    bytes = svg.to_slice
+
+    sz = Egui::ImageCodec.image_size(bytes)
+    sz.should_not be_nil
+    sz.not_nil!.x.should eq(24.0) # lucide viewBox 0 0 24 24
+    sz.not_nil!.y.should eq(24.0)
+
+    frame = Egui::ImageCodec.decode(bytes)
+    frame.should_not be_nil
+    frame = frame.not_nil!
+    frame.width.should eq(24)
+    frame.height.should eq(24)
+    frame.rgba.size.should eq(24 * 24 * 4)
+    # black strokes on transparency: some opaque, some transparent px
+    opaque = frame.rgba.each_slice(4).any? { |px| px[3] == 255 }
+    blank = frame.rgba.each_slice(4).any? { |px| px[3] == 0 }
+    opaque.should be_true
+    blank.should be_true
+
+    # Context#load_image uploads it (markdown's <img src=…svg> path)
+    ctx = Egui::Context.new
+    registry = UploadingRegistry.new
+    ctx.textures = registry
+    path = File.tempname("codec", ".svg")
+    File.write(path, svg)
+    begin
+      ctx.load_image(path).should eq(1_u64)
+      registry.uploads.size.should eq(1)
+      registry.uploads.first[0].should eq(24)
+    ensure
+      File.delete(path)
+    end
+  end
 end

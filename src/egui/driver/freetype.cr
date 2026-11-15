@@ -247,7 +247,7 @@ module Egui
         bmp = slot.value.bitmap
         w, h = bmp.width, bmp.rows
         if w > 0 && h > 0 && bmp.pixel_mode == LibFreetype::FT_PIXEL_MODE_GRAY &&
-           w <= atlas.size && h <= atlas.size
+           w <= atlas.max_size && h <= atlas.max_size
           cov = bitmap_coverage(bmp)
           if slot_xy = alloc_glyph(w, h)
             ax, ay = slot_xy

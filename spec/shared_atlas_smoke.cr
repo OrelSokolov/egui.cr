@@ -23,13 +23,36 @@ unless File.exists?(SANS) && File.exists?(MONO)
   exit 0
 end
 
-atlas = Egui::Driver::GlyphAtlas.new(Egui::Driver::ATLAS_SIZE)
+atlas = Egui::Driver::GlyphAtlas.new(Egui::Driver::ATLAS_START,
+  max_size: Egui::Driver::ATLAS_START)
 a = Egui::Driver::CrystalFonts.from_system([SANS], atlas).not_nil!
 b = Egui::Driver::CrystalFonts.from_system([MONO], atlas).not_nil!
 own = Egui::Driver::CrystalFonts.from_system([MONO]).not_nil!
 
 check(a.atlas.same?(atlas) && b.atlas.same?(atlas), "stacks share the given atlas")
 check(!own.atlas.same?(atlas), "a nil atlas means a private one")
+
+# Growth: an atlas below max_size DOUBLES when the shelves run out,
+# keeping every baked slot's pixels in place (only the buffer grows;
+# UV normalization is recomputed at emit time, live Glyph structs stay
+# valid — see sokol.cr's text emitters).
+small = Egui::Driver::GlyphAtlas.new(64, max_size: 256)
+s = Egui::Driver::CrystalFonts.from_system([SANS], small).not_nil!
+gid = s.glyph_index('A'.ord)
+gs = s.glyph(gid, 16.0)
+cov_before = s.glyph_coverage(gs).not_nil!.dup
+size = 9.0
+while small.size == 64 && size <= 40.0
+  s.walk("Inspect", size) { |_p, _g| }
+  size += 0.5
+end
+check(small.size == 128, "an exhausted atlas doubles, not resets")
+check(small.max_size == 256, "max_size caps the growth chain")
+cov_after = s.glyph_coverage(s.glyph(gid, 16.0)).not_nil!
+check(cov_before == cov_after,
+  "growth keeps baked pixels at their slots (no re-bake, no epoch bump)")
+check(s.glyph(s.glyph_index('B'.ord), 16.0).w > 0,
+  "baking continues on the grown shelves")
 
 # Bake the same text through both shared stacks: distinct slots, real
 # coverage in both.
