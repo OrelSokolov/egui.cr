@@ -53,25 +53,38 @@ module Egui
       end
     end
 
-    # The report UI — a full-window central panel: heading, the
-    # exception class, action buttons, then the whole report (message,
-    # backtrace, cause chain) in ONE readonly textarea filling the
-    # remainder — a real text view you can scroll, select and copy
-    # from, not a wall of labels. Drawn in place of the crashed
-    # `App#update` (mid-frame) or as the whole app of the standalone
-    # report window (startup path).
+    # The report UI — a full-window central panel. Up top a flex row:
+    # the crash bug icon large in the first (content-sized) cell, the
+    # heading, the exception class and the action buttons stacked in
+    # the second cell RIGHT AFTER it (icons/crash/crash-bug.svg,
+    # compile-time embedded — every app ships it, ~1.3 KiB). Below,
+    # the whole report (message, backtrace, cause chain) in ONE
+    # readonly textarea filling the remainder — a real text view you
+    # can scroll, select and copy from, not a wall of labels. Drawn in
+    # place of the crashed `App#update` (mid-frame) or as the whole
+    # app of the standalone report window (startup path).
+    ICON_SIZE = 96.0
+
     def self.draw(ctx : Context, ex : Exception) : Nil
       ctx.central_panel do |ui|
-        ui.heading("Application crashed")
-        ui.rich(RichText.new(ex.class.name)
-          .code
-          .color(Color32.rgba(220, 60, 60)))
-        ui.horizontal do |h|
-          if h.button("Copy report").clicked?
-            SystemPorts::Clipboard.text = report_text(ex)
+        ui.flex(direction: :row, align: :start, gap: 16.0) do |f|
+          f.child do |cell|
+            icon_rect = cell.allocate_at_least(Vec2.new(ICON_SIZE, ICON_SIZE))
+            Icon.from_file(:crash, :crash_bug).paint(cell, icon_rect)
           end
-          if h.button("Quit").clicked?
-            Process.exit(1)
+          f.child do |col|
+            col.heading("Application crashed")
+            col.rich(RichText.new(ex.class.name)
+              .code
+              .color(Color32.rgba(220, 60, 60)))
+            col.horizontal do |h|
+              if h.button("Copy report").clicked?
+                SystemPorts::Clipboard.text = report_text(ex)
+              end
+              if h.button("Quit").clicked?
+                Process.exit(1)
+              end
+            end
           end
         end
         ui.separator
