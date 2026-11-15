@@ -1,22 +1,22 @@
-# The video player egui app: a dark cinema area on top and a Raven
-# Music-style player bar at the bottom — a direct-code port of
-# examples/music_components/music_widgets_manual_app.cr's player_bar (three
-# zones over one painted 88px bar):
+# The video player egui app: a dark cinema area on top and a control bar
+# at the bottom — YouTube-style layout:
 #
-#   left    thumbnail · file name · media info · Open…
-#   center  ⏪10 · play/pause round · ⏩10 · stop   +   elapsed —— seek —— total
-#   right   mute · volume
+#   ──────────────── full-window-width seek strip ────────────────
+#   thumb · file name/info (elides) · Open…   ⇄   ⏪10 ⏯ ⏩10 ⏹   ⇄   time · volume
 #
-# Space toggles playback; files can be dropped onto the window. The seek
-# line previews the drag position and commits on release (continuous
-# seeking would decode-forward on every mouse move).
+# The seek strip is a thin line along the top edge of the bar that
+# doubles its height and knob on hover; drag previews the position and
+# commits on release (continuous seeking would decode-forward on every
+# mouse move). The controls row shrinks only its flexible parts — the
+# text first, then the volume slider — so the buttons never fall off
+# the window edge. Space toggles playback; files can be dropped onto
+# the window.
 
 class VideoApp < Egui::App
   # ── theme (Raven Music tags: examples/music_components/music_tags.cr) ──
   BAR_BG   = Egui::Color32.rgb(0x05, 0x05, 0x08)
   VIDEO_BG = Egui::Color32.rgb(0x0a, 0x0a, 0x0f)
   THUMB_BG = Egui::Color32.rgb(0x17, 0x17, 0x21)
-  SEPARATOR = Egui::Color32.rgb(0x1c, 0x1c, 0x26)
   TEXT     = Egui::Color32.rgb(0xec, 0xec, 0xf2)
   MUTED    = Egui::Color32.rgb(0xa3, 0xa3, 0xb4)
   ICON_FG  = Egui::Color32.rgb(0xc4, 0xc4, 0xd2)
@@ -28,6 +28,14 @@ class VideoApp < Egui::App
   @volume = 0.8
   @muted = false
 
+  # YouTube-style center overlay: a click (or Space) toggles playback
+  # and flashes the NEW state's big icon in the middle of the video —
+  # pause icon when just paused, play icon when just started — which
+  # scales up and fades out; while paused, a big play badge stays.
+  FLASH_DUR = 0.55
+  @flash_at : Time::Instant? = nil
+  @flash_icon : Symbol = :play
+
   # CLI arg: opened on the FIRST update, not before run() — GPU
   # textures can only exist after the sokol gfx setup (the sg view
   # would be dead otherwise).
@@ -36,6 +44,9 @@ class VideoApp < Egui::App
     @player = VideoPlayer.new(@ctx)
     @player.volume = @volume.to_f32!
     @status = "Open a video file — or drop one onto the window."
+    # панели по умолчанию обводятся 1px window_stroke — серая рамка по
+    # контуру кино-экрана не нужна
+    @ctx.style.visuals.window_stroke = Egui::Color32.transparent
   end
 
   def open_video(path : String) : Nil
@@ -62,6 +73,19 @@ class VideoApp < Egui::App
     if @player.open? && ctx.input.key_pressed?(Egui::KeyCode::Space)
       ctx.input.consume_key(Egui::KeyCode::Space)
       @player.toggle
+      start_flash(@player.playing? ? :play : :pause)
+    end
+
+    # center flash lifetime: keep frames coming while it fades, then
+    # one final flash-free frame (the clear happens before this
+    # frame's paint, so nothing stale stays on screen)
+    if (f = @flash_at)
+      if (Time.instant - f).total_seconds < FLASH_DUR
+        ctx.request_repaint
+      else
+        @flash_at = nil
+        ctx.request_repaint
+      end
     end
 
     # Drag & drop: first path wins
@@ -94,6 +118,16 @@ class VideoApp < Egui::App
   private def video_area(ui : Egui::Ui) : Nil
     avail = Egui::Vec2.new(ui.available_width, ui.available_height)
     rect = ui.allocate_space(avail)
+    # YouTube-style click-to-toggle on the video surface (when a file
+    # is open): play/pause + the center flash.
+    if @player.open?
+      resp = ui.interact(rect, Egui::Id.from("video/area"),
+        Egui::Sense::Click)
+      if resp.clicked?
+        @player.toggle
+        start_flash(@player.playing? ? :play : :pause)
+      end
+    end
     p = ui.painter
     if @player.open? && !@player.texture_id.zero?
       scale = {@player.width > 0 ? avail.x / @player.width : 0.0,
@@ -120,9 +154,61 @@ class VideoApp < Egui::App
           Egui::Color32.rgb(0xe2, 0x8a, 0x8a))
       end
     end
+    paint_center_overlay(ui, rect)
   end
 
-  # ── нижняя панель: 3 колонки 1fr/1.3fr/1fr на одном прямоугольнике ────
+  # ── центральный оверлей play/pause (YouTube-style) ─────────────────────
+
+  private def start_flash(icon : Symbol) : Nil
+    @flash_icon = icon
+    @flash_at = Time.instant
+  end
+
+  # Flash поверх видео: полупрозрачный круг + большая иконка НОВОГО
+  # состояния, растёт и гаснет за FLASH_DUR. На паузе ничего
+  # постоянного не рисуем — только флэш по клику.
+  private def paint_center_overlay(ui : Egui::Ui, rect : Egui::Rect) : Nil
+    return unless @player.open? && !@player.texture_id.zero?
+    if (f = @flash_at)
+      t = ((Time.instant - f).total_seconds / FLASH_DUR).clamp(0.0, 1.0)
+      paint_badge(ui, rect, @flash_icon, 0.85 * (1.0 - t),
+        0.8 + 0.35 * t)
+    end
+  end
+
+  private def paint_badge(ui : Egui::Ui, rect : Egui::Rect, icon : Symbol,
+                          alpha : Float64, scale : Float64) : Nil
+    return if alpha <= 0.02
+    p = ui.painter
+    p.clip = ui.clip
+    a = alpha.clamp(0.0, 1.0)
+    r = 46.0 * scale
+    p.circle_filled(rect.center, r,
+      Egui::Color32.rgba(0, 0, 0, (140 * a).round.to_u8))
+    size = 40.0 * scale
+    # иконку гасим tint-альфой самого квада (tint растра не умеет
+    # альфу — только RGB), поэтому рисуем текстуру напрямую
+    svg = case icon
+          when :play  then Egui::Icon.from_file(:bootstrap, :play_fill,
+            tint: Egui::Color32.rgb(255, 255, 255))
+          when :pause then Egui::Icon.from_file(:bootstrap, :pause_fill,
+            tint: Egui::Color32.rgb(255, 255, 255))
+          else return
+          end
+    px = {(size * ui.ctx.pixels_per_point).round.to_i, 1}.max
+    tex = svg.raster_texture_id(ui.ctx.textures, px, px)
+    return if tex.zero?
+    x = rect.center.x - size / 2.0 + (icon == :play ? 2.0 : 0.0)
+    y = rect.center.y - size / 2.0
+    p.image(Egui::Rect.from_min_size(Egui::Pos2.new(x, y),
+      Egui::Vec2.new(size, size)), tex,
+      tint: Egui::Color32.rgba(255, 255, 255, (255 * a).round.to_u8))
+  end
+
+  # ── нижняя панель: полноростовий seek сверху + одна строка контролов ──
+
+  # высота интерактивной зоны seek-полосы (визуально тоньше)
+  SEEK_STRIP_H = 18.0
 
   private def player_bar(ui : Egui::Ui, ctx : Egui::Context) : Nil
     p = @player
@@ -135,103 +221,150 @@ class VideoApp < Egui::App
       Egui::Vec2.new(allocated.width + 2 * pad.x, 88.0))
     pa = ui.painter
     pa.rect(rect, 0.0, fill: BAR_BG)
-    pa.line(Egui::Pos2.new(rect.left, rect.top + 0.5),
-      Egui::Pos2.new(rect.right, rect.top + 0.5), 1.0, SEPARATOR)
 
-    total = rect.width - 32.0
-    c13 = total / 3.3
-    c2w = total - 2 * c13
-    xs = {rect.left + 16.0, rect.left + 16.0 + c13, rect.left + 16.0 + c13 + c2w}
+    # seek-полоса на всю ширину окна вдоль верхней кромки бара
+    seek_strip(ui, ctx, rect)
 
-    # колонка 0: миниатюра · имя файла · медиа-инфо · Open…
-    zone(ui, ctx, "vbar/c0", xs[0], rect.top, c13, 88.0) do |c|
-      hbar(c, "vbar/c0/row", 88.0) do |r|
-        thumb(r)
-        gap(r, 14.0)
-        col(r, "vbar/c0/t", 220.0, 15.0 * 1.35 + 3.0 + 13.0 * 1.35) do |cc|
-          t(cc, p.open? ? File.basename(p.path.to_s) : "No file", size: 15.0)
-          gap(cc, 3.0)
-          t(cc, media_info, size: 13.0, color: MUTED, w: 220.0)
-        end
-        gap(r, 14.0)
-        ibtn(r, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
-      end
-    end
-
-    # колонка 1: транспорт + строка seek
-    zone(ui, ctx, "vbar/c1", xs[1], rect.top, c2w, 60.0) do |c|
-      hbar(c, "vbar/c1/transport", 40.0) do |r|
-        # кластер 202px (34+12+40+12+34+12+34+12+12… см. ниже) между пружинами
-        cluster = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0
-        sw = (r.available_width - cluster) / 2.0
-        r.allocate_space(Egui::Vec2.new({sw, 0.0}.max, 0.0))
-        ibtn(r, ctx, "vbar/back", "rewind") do
-          p.seek({p.position - 10.0, 0.0}.max) if p.open?
-        end
-        gap(r, 12.0)
-        playround(r, ctx, "vbar/play", p.playing? ? "pause" : "play") { p.toggle }
-        gap(r, 12.0)
-        ibtn(r, ctx, "vbar/fwd", "forward") do
-          p.seek({p.position + 10.0, p.duration}.min) if p.open? && p.duration > 0
-        end
-        gap(r, 12.0)
-        ibtn(r, ctx, "vbar/stop", "stop") do
-          p.stop
-          @status = "Stopped."
-        end
-        r.allocate_space(Egui::Vec2.new({sw, 0.0}.max, 0.0))
-      end
-      gap(c, 4.0)
-      hbar(c, "vbar/c1/seek", 16.0) do |r|
-        t(r, fmt_time(p.position), size: 12.0, color: MUTED, w: 44.0, align: "r")
-        gap(r, 10.0)
-        seek_slider(r, ctx)
-        gap(r, 10.0)
-        t(r, fmt_time(p.duration), size: 12.0, color: MUTED, w: 44.0)
-      end
-    end
-
-    # колонка 2: громкость
-    zone(ui, ctx, "vbar/c2", xs[2], rect.top, c13, 88.0) do |c|
-      hbar(c, "vbar/c2/row", 88.0) do |r|
-        # хвост: 34 + 4 + 120 = 158
-        rspring(r, 158.0)
-        vol_icon = if !p.audio?
-                     {"volume_off", MUTED}
-                   elsif @muted || @volume < 0.02
-                     {"volume_x", ACCENT}
-                   else
-                     {"volume_2", ICON_FG}
-                   end
-        ibtn(r, ctx, "vbar/vol", vol_icon[0], btn: 34.0, tint: vol_icon[1]) do
-          if p.audio?
-            @muted = !@muted
-            apply_volume
-          end
-        end
-        gap(r, 4.0)
-        volume_slider(r, ctx)
-      end
+    # строка контролов на оставшейся высоте; все позиции считаются в
+    # явных px (gap()/пружины) — глушим неявный item_spacing, который
+    # иначе сдвигает каждый элемент строки
+    spacing = ui.style.spacing
+    saved_spacing = spacing.item_spacing
+    spacing.item_spacing = Egui::Vec2.new(0.0, saved_spacing.y)
+    begin
+      row_rect = Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.left + 16.0, rect.top + SEEK_STRIP_H),
+        Egui::Vec2.new({rect.width - 32.0, 0.0}.max, 88.0 - SEEK_STRIP_H))
+      row = ui.child_ui(row_rect, Egui::Id.from("vbar/row"),
+        layout: Egui::Layout.left_to_right)
+      row.wrap_x = false
+      row.clip = row_rect.intersect(ui.clip)
+      row.seed_row_height(row_rect.height)
+      controls_row(row, ctx)
+    ensure
+      spacing.item_spacing = saved_spacing
     end
   end
 
-  # Миниатюра слева: живой кадр видео (с сохранением пропорций) или
-  # плейсхолдер с иконкой плёнки.
-  private def thumb(ui : Egui::Ui) : Nil
+  # Одна строка: слева миниатюра + имя/инфо + Open…, транспорт СТРОГО по
+  # центру окна, справа время + громкость. При сужении окна уступают
+  # только гибкие части (текст → миниатюра → громкость → время) — кнопки
+  # и центровка транспорта не меняются.
+  private def controls_row(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    p = @player
+    ui.painter.clip = ui.clip
+
+    time_txt = "#{fmt_time(p.position)} / #{fmt_time(p.duration)}"
+    time_w = ui.fonts.measure(time_txt, 12.0).x
+    transport_w = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0
+    avail = ui.available_width
+    # центр playround-кнопки = центр окна (кластер несимметричен:
+    # слева от play 46px, справа 92px из-за stop)
+    t_start = avail / 2.0 - 66.0
+
+    # левая группа не заходит за транспорт (запас 8px); слишком узкий
+    # текст прячем целиком
+    budget = {t_start - 8.0 - 12.0 - 12.0 - 34.0, 24.0}.max
+    thumb_w = {thumb_width, budget}.min
+    text_w = {budget - thumb_w, 0.0}.max
+    text_w = 0.0 if text_w < 40.0
+
+    # правый кластер: если не влезает — сжимаем громкость, потом прячем время
+    vol_w = 120.0
+    show_time = true
+    max_right = avail - (t_start + transport_w + 8.0)
+    if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+      vol_w = {max_right - 10.0 - time_w - 8.0 - 34.0 - 4.0, 40.0}.max
+      if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+        show_time = false
+        vol_w = {max_right - 8.0 - 34.0 - 4.0, 40.0}.max
+        vol_w = {vol_w, 120.0}.min
+      end
+    end
+    right_w = (show_time ? 10.0 + time_w + 8.0 : 8.0) + 34.0 + 4.0 + vol_w
+
+    thumb(ui, thumb_w)
+    gap(ui, 12.0)
+    if text_w >= 1.0
+      col(ui, "vbar/info", text_w, 15.0 * 1.35 + 3.0 + 13.0 * 1.35) do |cc|
+        t(cc, p.open? ? File.basename(p.path.to_s) : "No file",
+          size: 15.0, w: text_w)
+        gap(cc, 3.0)
+        t(cc, media_info, size: 13.0, color: MUTED, w: text_w)
+      end
+    end
+    gap(ui, 12.0)
+    ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
+
+    # пружина до строго центрального транспорта
+    ui.allocate_space(Egui::Vec2.new(
+      {t_start - (thumb_w + 12.0 + text_w + 12.0 + 34.0), 0.0}.max, 0.0))
+    ibtn(ui, ctx, "vbar/back", "rewind") do
+      p.seek({p.position - 10.0, 0.0}.max) if p.open?
+    end
+    gap(ui, 12.0)
+    playround(ui, ctx, "vbar/play", p.playing? ? "pause" : "play") { p.toggle }
+    gap(ui, 12.0)
+    ibtn(ui, ctx, "vbar/fwd", "forward") do
+      p.seek({p.position + 10.0, p.duration}.min) if p.open? && p.duration > 0
+    end
+    gap(ui, 12.0)
+    ibtn(ui, ctx, "vbar/stop", "stop") do
+      p.stop
+      @status = "Stopped."
+    end
+
+    # правый кластер прижат к правому краю
+    ui.allocate_space(Egui::Vec2.new(
+      {avail - right_w - (t_start + transport_w), 0.0}.max, 0.0))
+    if show_time
+      t(ui, time_txt, size: 12.0, color: MUTED, w: time_w + 1.0, align: "r")
+    end
+    gap(ui, 8.0)
+    vol_icon = if !p.audio?
+                 {"volume_off", MUTED}
+               elsif @muted || @volume < 0.02
+                 {"volume_x", ACCENT}
+               else
+                 {"volume_2", ICON_FG}
+               end
+    ibtn(ui, ctx, "vbar/vol", vol_icon[0], btn: 34.0, tint: vol_icon[1]) do
+      if p.audio?
+        @muted = !@muted
+        apply_volume
+      end
+    end
+    gap(ui, 4.0)
+    volume_slider(ui, ctx, vol_w)
+  end
+
+  # Миниатюра слева: живой кадр видео (с сохранением пропорций, ширина
+  # ограничена max_w при узком окне) или плейсхолдер с иконкой плёнки.
+  private def thumb(ui : Egui::Ui, max_w : Float64 = 160.0) : Nil
     p = @player
     if p.open? && !p.texture_id.zero? && p.height > 0
-      w = {58.0 * p.width / p.height, 160.0}.min
-      rect = ui.allocate_space(Egui::Vec2.new(w, 58.0))
+      w = {58.0 * p.width / p.height, max_w}.min
+      w = {w, 0.5}.max
+      h = {w * p.height / p.width, 58.0}.min
+      rect = ui.allocate_space(Egui::Vec2.new(w, h))
       ui.painter.clip = ui.clip
       ui.painter.image(rect, p.texture_id)
     else
-      rect = ui.allocate_space(Egui::Vec2.new(58.0, 58.0))
+      s = {58.0, max_w}.min
+      rect = ui.allocate_space(Egui::Vec2.new(s, s))
       ui.painter.clip = ui.clip
       ui.painter.rect(rect, 6.0, fill: THUMB_BG)
       paint_icon(ui, :lucide, :film, MUTED, Egui::Rect.from_min_size(
-        Egui::Pos2.new(rect.center.x - 14.0, rect.center.y - 14.0),
-        Egui::Vec2.new(28.0, 28.0)))
+        Egui::Pos2.new(rect.center.x - s * 0.24, rect.center.y - s * 0.24),
+        Egui::Vec2.new(s * 0.48, s * 0.48)))
     end
+  end
+
+  # полная (нежатая) ширина миниатюры — для расчёта строка контролов
+  private def thumb_width : Float64
+    p = @player
+    return 58.0 unless p.open? && p.height > 0
+    {58.0 * p.width / p.height, 160.0}.min
   end
 
   # одна строка инфо о носителе под именем файла
@@ -267,20 +400,20 @@ class VideoApp < Egui::App
 
   # ── слайдеры панели ────────────────────────────────────────────────────
 
-  # Seek: превью во время перетаскивания, коммит на отпускании (или на
-  # клике без перетаскивания). Тонкая линия + акцентная заливка + ручка,
-  # как oslider Raven.
-  private def seek_slider(ui : Egui::Ui, ctx : Egui::Context) : Nil
+  # Seek (YouTube-style): полоса на всю ширину окна вдоль верхней кромки
+  # бара. Тонкая линия + синяя заливка + белая ручка; на hover высота
+  # линии и ручка плавно растут в 2 раза. Превью во время перетаскивания,
+  # коммит на отпускании (или клике без перетаскивания).
+  private def seek_strip(ui : Egui::Ui, ctx : Egui::Context,
+                         bar : Egui::Rect) : Nil
     p = @player
-    ui.painter.clip = ui.clip
-    w = ui.available_width
-    rect = ui.allocate_space(Egui::Vec2.new(w, 16.0))
+    strip = Egui::Rect.from_min_size(bar.min,
+      Egui::Vec2.new(bar.width, SEEK_STRIP_H))
     wid = Egui::Id.from("vbar/seek")
-    resp = ui.interact(Egui::Rect.from_min_size(rect.min,
-      Egui::Vec2.new(w, 14.0)), wid, Egui::Sense::Click | Egui::Sense::Drag)
+    resp = ui.interact(strip, wid, Egui::Sense::Click | Egui::Sense::Drag)
     if resp.drag_started? || (resp.clicked? && !resp.dragged?)
       ctx.input.pointer_pos.try do |ptr|
-        @seek_scratch = ((ptr.x - rect.left) / w).clamp(0.0, 1.0)
+        @seek_scratch = ((ptr.x - strip.left) / strip.width).clamp(0.0, 1.0)
         @seek_drag = resp.drag_started?
         unless @seek_drag # одиночный клик — сразу коммит
           commit_seek
@@ -289,7 +422,7 @@ class VideoApp < Egui::App
       end
     elsif resp.dragged?
       ctx.input.pointer_pos.try do |ptr|
-        @seek_scratch = ((ptr.x - rect.left) / w).clamp(0.0, 1.0)
+        @seek_scratch = ((ptr.x - strip.left) / strip.width).clamp(0.0, 1.0)
         ctx.request_repaint
       end
     elsif resp.drag_stopped?
@@ -302,7 +435,7 @@ class VideoApp < Egui::App
            else
              0.0
            end
-    paint_slider(ui, ctx, wid, rect, frac, resp)
+    paint_seek(ui, ctx, wid, strip, frac, resp.hovered? || resp.dragged?)
   end
 
   private def commit_seek : Nil
@@ -312,9 +445,9 @@ class VideoApp < Egui::App
     @seek_drag = false
   end
 
-  private def volume_slider(ui : Egui::Ui, ctx : Egui::Context) : Nil
+  private def volume_slider(ui : Egui::Ui, ctx : Egui::Context,
+                            w : Float64 = 120.0) : Nil
     ui.painter.clip = ui.clip
-    w = 120.0
     rect = ui.allocate_space(Egui::Vec2.new(w, 16.0))
     wid = Egui::Id.from("vbar/vol")
     resp = ui.interact(Egui::Rect.from_min_size(rect.min,
@@ -326,6 +459,29 @@ class VideoApp < Egui::App
       ctx.request_repaint
     end
     paint_slider(ui, ctx, wid, rect, @muted ? 0.0 : @volume, resp)
+  end
+
+  # Отрисовка seek-полосы: линия и ручка КОНЦЕНТРИЧНЫ — центр фиксирован
+  # (strip.top + 10), при hover высота линии и радиус ручки плавно
+  # удваиваются (3→6px, 5→10px), ничего не смещается. Заливка синяя.
+  private def paint_seek(ui : Egui::Ui, ctx : Egui::Context,
+                         wid : Egui::Id, strip : Egui::Rect,
+                         frac : Float64, hot : Bool) : Nil
+    p = ui.painter
+    frac = frac.clamp(0.0, 1.0)
+    track_h = ctx.animate_style_scalar(wid, "th", hot ? 6.0 : 3.0, 100.0)
+    knob_r = ctx.animate_style_scalar(wid, "kr", hot ? 10.0 : 5.0, 100.0)
+    cy = strip.top + 10.0
+    p.rect(Egui::Rect.from_min_size(
+      Egui::Pos2.new(strip.left, cy - track_h / 2.0),
+      Egui::Vec2.new(strip.width, track_h)), track_h / 2.0,
+      fill: Egui::Color32.rgba(255, 255, 255, 0x33))
+    p.rect(Egui::Rect.from_min_size(
+      Egui::Pos2.new(strip.left, cy - track_h / 2.0),
+      Egui::Vec2.new(strip.width * frac, track_h)), track_h / 2.0,
+      fill: ACCENT)
+    p.circle_filled(Egui::Pos2.new(strip.left + strip.width * frac, cy),
+      knob_r, WHITE)
   end
 
   # Общая отрисовка слайдера: трек, заливка до frac, круглая ручка (с
@@ -348,37 +504,10 @@ class VideoApp < Egui::App
 
   # ── примитивы (порты music_widgets_manual_app.cr, без зависимостей от Music) ──
 
-  # Зона панели: child-ui на своём прямоугольнике (клип — вся зона).
-  private def zone(ui : Egui::Ui, ctx : Egui::Context, id : String,
-                   x : Float64, y : Float64, w : Float64, h : Float64,
-                   &children : Egui::Ui ->) : Nil
-    inner = Egui::Rect.from_min_size(
-      Egui::Pos2.new(x, y + (88.0 - h) / 2.0), Egui::Vec2.new(w, h))
-    child = ui.child_ui(inner, Egui::Id.from(id), layout: Egui::Layout.top_down)
-    child.clip = clip_zone(ui, x, y, w)
-    yield child
-  end
-
-  private def clip_zone(ui : Egui::Ui, x : Float64, y : Float64,
-                        w : Float64) : Egui::Rect
-    Egui::Rect.from_min_size(Egui::Pos2.new(x, y), Egui::Vec2.new(w, 88.0))
-      .intersect(ui.clip)
-  end
-
   # <gap w= h=/>
   private def gap(ui : Egui::Ui, w : Float64 = 0.0, h : Float64 = 0.0) : Nil
     ui.painter.clip = ui.clip
     ui.allocate_space(Egui::Vec2.new(w, h)) if w > 0 || h > 0
-  end
-
-  # <spring/>: весь остаток минус ширина хвостовых детей (reserve)
-  private def rspring(ui : Egui::Ui, reserve : Float64 = 0.0) : Nil
-    ui.painter.clip = ui.clip
-    if ui.layout.horizontal?
-      ui.allocate_space(Egui::Vec2.new({ui.available_width - reserve, 0.0}.max, 0.0))
-    else
-      ui.allocate_space(Egui::Vec2.new(0.0, ui.available_height))
-    end
   end
 
   # <t text= size= color= bold= w= align=/>
@@ -471,19 +600,6 @@ class VideoApp < Egui::App
       on_click.call
       ctx.request_repaint
     end
-  end
-
-  # <hbar h=> — строка-контейнер, дети центрированы по вертикали
-  private def hbar(ui : Egui::Ui, id : String, h : Float64,
-                   &children : Egui::Ui ->) : Nil
-    ui.painter.clip = ui.clip
-    rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
-    child = ui.child_ui(rect, Egui::Id.from(id),
-      layout: Egui::Layout.left_to_right)
-    child.wrap_x = false
-    child.clip = rect.intersect(ui.clip)
-    child.seed_row_height(h)
-    yield child
   end
 
   # <col w=> — вертикальный стек фиксированной ширины
