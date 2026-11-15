@@ -2323,9 +2323,10 @@ module Egui
 
         if editor_attr = node.editor_id
           editor_id = rt.interpolate(editor_attr)
-          rect = ui.allocate_at_least(
-            Egui::Vec2.new(ui.available_width, ui.available_height))
-          editor = ui.child_ui(rect, Egui::Id.from(editor_id))
+          # fill_child: the editor fills the container remainder (the
+          # fill-editor pattern, clamped to the visible fold — see
+          # Ui#fill_child).
+          editor = ui.fill_child(Egui::Id.from(editor_id))
           resp = editor.textarea(rt.string(key), hint: hint, rows: rows,
             frame: frame) do |t|
             rt.strings[key] = t

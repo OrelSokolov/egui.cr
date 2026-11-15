@@ -295,10 +295,11 @@ class NotepadApp < Egui::App
           else
             # The editor runs in a child Ui id'd PER DOCUMENT — every
             # tab keeps its own caret and selection across switches.
+            # fill_child: the editor fills the panel remainder (the
+            # fill-editor pattern, sized to the visible fold so its
+            # own scrolling engages — see Ui#fill_child).
             doc = @docs[selected]
-            rect = ui.allocate_at_least(
-              Egui::Vec2.new(ui.available_width, ui.available_height))
-            editor = ui.child_ui(rect,
+            editor = ui.fill_child(
               Egui::Id.from("notepad/doc/#{doc.id}"))
             editor_resp = editor.textarea(doc.text, rows: 100,
               frame: false) { |t| note_edit(doc, t) }
