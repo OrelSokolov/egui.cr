@@ -123,6 +123,11 @@ module Egui
         Vec2.new(nums[0], nums[1]), inset)
     end
 
+    # CSS border side name → the engine's side symbol (StrokeSides
+    # order: top right bottom left).
+    SIDES = {"top" => :top, "right" => :right,
+             "bottom" => :bottom, "left" => :left}
+
     # The widget-level `style:` vocabulary — exactly the WidgetStyle
     # fields (CSS spellings accepted alongside the engine keys).
     def self.widget_style(style : String) : WidgetStyle
@@ -164,6 +169,12 @@ module Egui
       # The `border: <width> …` shorthand's width (nil = the call-site
       # default 1.0).
       property stroke_width : Float64?
+      # CSS per-side borders (`border-left: 3px solid #f00`,
+      # `border-top-width: 0`): width/color per side. A side absent
+      # from both reads the uniform `stroke_width`/`stroke` when
+      # #stroke_sides? resolves them.
+      property side_widths : Hash(Symbol, Float64) = {} of Symbol => Float64
+      property side_colors : Hash(Symbol, Color32) = {} of Symbol => Color32
       property rounding : Float64?
       property corners : CornerRadii?
       property margin : Vec2?
@@ -201,6 +212,23 @@ module Egui
                      @corners = nil, @margin = nil,
                      @position = nil, @top = nil, @right = nil,
                      @bottom = nil, @left = nil)
+      end
+
+      # The per-side declarations resolved into the
+      # `Ui#box(stroke_sides:)` form; nil when no `border-<side>` key
+      # touched the params (the uniform stroke path). Untouched sides
+      # keep the uniform width/color defaults — width 0 (CSS
+      # `border-style: none`) when no uniform border was declared, the
+      # `stroke`/`stroke_width` uniform otherwise.
+      def stroke_sides?(default_width : Float64,
+                        default_color : Color32) : StrokeSides?
+        return nil if side_widths.empty? && side_colors.empty?
+        side = ->(s : Symbol) do
+          SideStroke.new(side_widths[s]? || default_width,
+            side_colors[s]? || default_color)
+        end
+        StrokeSides.new(side.call(:top), side.call(:right),
+          side.call(:bottom), side.call(:left))
       end
     end
 
@@ -253,6 +281,40 @@ module Egui
             elsif (n = tok.delete("px").to_f64?)
               base.stroke_width = n
             end
+          end
+        when "border-top", "border-right", "border-bottom", "border-left"
+          # The per-side shorthand `border-<side>: <width> <style>
+          # <color>` (any order, like CSS): the tokens take that side's
+          # slots, `none` turns the side off (width 0). `dashed` is
+          # ignored — the engine's dash path is uniform-only.
+          side = SIDES[key[7..]]?
+          next unless side
+          val.split.each do |tok|
+            if tok == "none"
+              base.side_widths[side] = 0.0
+            elsif (c = tok.starts_with?('#') ? color(tok) : rgba_color?(tok))
+              base.side_colors[side] = c
+            elsif (n = tok.delete("px").to_f64?)
+              base.side_widths[side] = n
+            end
+          end
+        when /^border-(top|right|bottom|left)-(width|color|style)$/
+          # The per-side longhands: `-width` a length, `-color` a
+          # color, `-style` `none`/`hidden` turns the side off
+          # (`solid`/`dashed` are the same solid line per-side).
+          side = SIDES[$1]?
+          next unless side
+          case $2
+          when "width"
+            if (n = val.delete("px").to_f64?)
+              base.side_widths[side] = n
+            end
+          when "color"
+            if (c = val.starts_with?('#') ? color(val) : rgba_color?(val))
+              base.side_colors[side] = c
+            end
+          when "style"
+            base.side_widths[side] = 0.0 if {"none", "hidden"}.includes?(val)
           end
         when "border-radius", "rounding"
           # The CSS shorthand (1-4 radii, `px` optional): multi-value
@@ -511,6 +573,14 @@ module Egui
       end
       rect = nil
       html_block(attrs, scoped: false) do |ui|
+        # CSS per-side borders (`border-left: 3px solid #f00`): a sides
+        # build switches #box/#flex onto the StrokeSides path. Untouched
+        # sides fall back to the uniform stroke — or to nothing (width
+        # 0, CSS `border-style: none`) when no uniform border was
+        # declared, like a browser's `border-left:`-only element.
+        sides = params.stroke_sides?(
+          params.stroke_width || (params.stroke ? 1.0 : 0.0),
+          params.stroke || ui.style.visuals.window_stroke)
         rect = if params.flex
           # `display: flex` — the div lays out by flexbox (Ui#flex):
           # children added through the block's Ui (widgets, nested
@@ -526,6 +596,7 @@ module Egui
             fill: params.fill, stroke: params.stroke,
             rounding: params.rounding || params.corners.try(&.max) || 6.0,
             margin: params.margin, corners: params.corners,
+            stroke_sides: sides,
             style_class: html_class_path(attrs),
             position: Html.position_sym(params.position),
             top: params.top, right: params.right,
@@ -540,6 +611,7 @@ module Egui
             stroke_width: params.stroke_width || 1.0,
             stroke_dash: params.stroke_dash,
             corners: params.corners,
+            stroke_sides: sides,
             shadow: params.shadow,
             transform: params.transform,
             transform_origin: params.transform_origin,

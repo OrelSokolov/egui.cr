@@ -488,6 +488,34 @@ class HtmlGalleryApp < Egui::App
         %(<outlined><label text="Border only"/></outlined>)) do |ui|
         ui.div(style: "stroke: #e01b4c; padding: 10") { |d| d.p("Border only") }
       end,
+      Demo.new("border-style: dashed → outset",
+        %(%w[dashed dotted double groove ridge inset outset]\n  .each do |style|\n    ui.div(style: "border: 2px \#{style} #777;\n          border-radius: 6; padding: 6") do |d|\n      d.small(style.to_s)\n    end\n  end),
+        %(# ECSS borders stay solid — border-style\n# is the html/inline-style vocabulary),
+        %(<!-- border-style is an inline-style keyword -->)) do |ui|
+        ui.span do |s|
+          %w[dashed dotted double groove ridge inset outset].each do |style|
+            s.div(style: "border: 2px #{style} #777; border-radius: 6; padding: 6") do |d|
+              d.small(style)
+            end
+          end
+        end
+      end,
+      Demo.new("per-side borders (border-left: …)",
+        %(ui.div(style: "background: #1e1e24; border-radius: 8;\n        padding: 10;\n        border-left: 4px solid #3584e4;\n        border-bottom: 2px solid #e01b4c") do |d|\n  d.p("left + bottom only")\nend),
+        %(side-box {\n  background: #1e1e24; rounding: 8; padding: 10;\n  stroke_width: 0;\n  stroke_width.left: 4; stroke.left: #3584e4;\n  stroke_width.bottom: 2; stroke.bottom: #e01b4c;\n}),
+        %(<side-box><label text="left + bottom only"/></side-box>)) do |ui|
+        ui.div(style: "background: #1e1e24; border-radius: 8; padding: 10; border-left: 4px solid #3584e4; border-bottom: 2px solid #e01b4c") do |d|
+          d.p("left + bottom only")
+        end
+      end,
+      Demo.new("per-side longhands, side off",
+        %(ui.div(style: "stroke: #9141ac; border-radius: 8; padding: 10;\n        border-top: none; border-left-width: 3;\n        border-left-color: #f5c211") do |d|\n  d.p("top off, left accented")\nend),
+        %(side-off {\n  stroke: #9141ac; rounding: 8; padding: 10;\n  stroke_width.top: 0;\n  stroke_width.left: 3; stroke.left: #f5c211;\n}),
+        %(<side-off><label text="top off, left accented"/></side-off>)) do |ui|
+        ui.div(style: "stroke: #9141ac; border-radius: 8; padding: 10; border-top: none; border-left-width: 3; border-left-color: #f5c211") do |d|
+          d.p("top off, left accented")
+        end
+      end,
       Demo.new("div + border-radius: 16",
         %(ui.div(style: "background: #33d17a;\n            border-radius: 16; padding: 12") do |d|\n  d.p("rounded")\nend),
         %(pill-green { background: #33d17a;\n  rounding: 16; padding: 12 }),

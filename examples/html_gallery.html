@@ -565,6 +565,54 @@ end</textarea>
 </section>
 
 <section class="card">
+  <div class="chead"><span class="title">per-side borders (border-left: …)</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.div(style: "background: #1e1e24; border-radius: 8;
+        padding: 10;
+        border-left: 4px solid #3584e4;
+        border-bottom: 2px solid #e01b4c") do |d|
+  d.p("left + bottom only")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="6" spellcheck="false">side-box {
+  background: #1e1e24; rounding: 8; padding: 10;
+  stroke_width: 0;
+  stroke_width.left: 4; stroke.left: #3584e4;
+  stroke_width.bottom: 2; stroke.bottom: #e01b4c;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><side-box><label text="left + bottom only"/></side-box></textarea>
+    </div>
+    <div class="result"><div style="background:#1e1e24;border-radius:8px;padding:10px;border-left:4px solid #3584e4;border-bottom:2px solid #e01b4c">left + bottom only</div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">per-side longhands, side off</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="5" spellcheck="false">ui.div(style: "stroke: #9141ac; border-radius: 8; padding: 10;
+        border-top: none; border-left-width: 3;
+        border-left-color: #f5c211") do |d|
+  d.p("top off, left accented")
+end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="5" spellcheck="false">side-off {
+  stroke: #9141ac; rounding: 8; padding: 10;
+  stroke_width.top: 0;
+  stroke_width.left: 3; stroke.left: #f5c211;
+}</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false"><side-off><label text="top off, left accented"/></side-off></textarea>
+    </div>
+    <div class="result"><div style="border:1px solid #9141ac;border-top:none;border-left:3px solid #f5c211;border-radius:8px;padding:10px">top off, left accented</div></div>
+  </div>
+</section>
+
+<section class="card">
   <div class="chead"><span class="title">div + border-radius: 16</span></div>
   <div class="split">
     <div class="code">
@@ -637,6 +685,38 @@ pad-demo .inner {
 </inner></pad-demo></textarea>
     </div>
     <div class="result"><div style="border:1px dashed #777;padding:16px;border-radius:6px"><div style="background:#3584e4;padding:8px;border-radius:6px">inner</div></div></div>
+  </div>
+</section>
+
+<section class="card">
+  <div class="chead"><span class="title">border-style: dashed → outset</span></div>
+  <div class="split">
+    <div class="code">
+      <div class="plabel">Crystal</div>
+      <textarea data-mode="cr" readonly rows="4" spellcheck="false">%w[dashed dotted double groove ridge inset outset]
+  .each do |style|
+    ui.div(style: "border: 2px #{style} #777;
+          border-radius: 6; padding: 6") do |d|
+      d.small(style.to_s)
+    end
+  end</textarea>
+      <div class="plabel">ECSS</div>
+      <textarea data-mode="ecss" class="ecss" readonly rows="2" spellcheck="false"># ECSS borders stay solid — border-style
+# is the html/inline-style vocabulary</textarea>
+      <div class="plabel">EXML</div>
+      <textarea data-mode="exml" class="exml" readonly rows="1" spellcheck="false">&lt;!-- border-style is an inline-style keyword --&gt;</textarea>
+    </div>
+    <div class="result">
+      <div class="row">
+        <div style="border:2px dashed #777;border-radius:6px;padding:6px;font-size:12px">dashed</div>
+        <div style="border:2px dotted #777;border-radius:6px;padding:6px;font-size:12px">dotted</div>
+        <div style="border:3px double #777;border-radius:6px;padding:5px;font-size:12px">double</div>
+        <div style="border:3px groove #777;border-radius:6px;padding:5px;font-size:12px">groove</div>
+        <div style="border:3px ridge #777;border-radius:6px;padding:5px;font-size:12px">ridge</div>
+        <div style="border:3px inset #777;border-radius:6px;padding:5px;font-size:12px">inset</div>
+        <div style="border:3px outset #777;border-radius:6px;padding:5px;font-size:12px">outset</div>
+      </div>
+    </div>
   </div>
 </section>
 

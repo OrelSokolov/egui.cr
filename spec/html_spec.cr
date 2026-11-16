@@ -92,6 +92,44 @@ describe "html vocabulary" do
     frame.not_nil!.stroke_dash?.should be_true
   end
 
+  it "border-left/border-top: none — per-side shorthands and longhands" do
+    ctx = Egui::Context.new
+    blue = Egui::Color32.rgb(0x35, 0x84, 0xe4)
+    yellow = Egui::Color32.rgb(0xf5, 0xc2, 0x11)
+    purple = Egui::Color32.rgb(0x91, 0x41, 0xac)
+    html_frame(ctx) do |c|
+      c.central_panel do |ui|
+        ui.div(style: "border-left: 4px solid #3584e4; " \
+                      "border-bottom: 2px solid #e01b4c; padding: 6") do |d|
+          d.p("sides")
+        end
+        # the longhands: `none` turns the top side off, an untouched
+        # side falls back to the uniform stroke (1px purple)
+        ui.div(style: "stroke: #9141ac; border-top: none; " \
+                      "border-left-width: 3; border-left-color: #f5c211; " \
+                      "padding: 6") do |d|
+          d.p("longhands")
+        end
+      end
+    end
+    sided = ctx.painter.commands.select(Egui::RectCmd)
+      .select(&.stroke_sides)
+    sided.size.should eq(2)
+    a = sided[0].stroke_sides.not_nil!
+    a.left.width.should eq(4.0)
+    a.left.color.should eq(blue)
+    a.bottom.width.should eq(2.0)
+    a.top.on?.should be_false
+    a.right.on?.should be_false
+    b = sided[1].stroke_sides.not_nil!
+    b.top.on?.should be_false
+    b.left.width.should eq(3.0)
+    b.left.color.should eq(yellow)
+    b.right.width.should eq(1.0)
+    b.right.color.should eq(purple)
+    b.bottom.color.should eq(purple)
+  end
+
   it "border-style: dashed decomposes the stroke into 3:1 dashes" do
     # A flat 100x20 rect, 1px dashed stroke: the centerline sits 0.5
     # inside, the pattern walks 3 on / 1 off from the top edge.
