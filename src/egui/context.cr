@@ -49,6 +49,9 @@ module Egui
 
   class Context
     getter memory : Memory
+    # Document-wide text selection state (see TextSelection): driven
+    # once per frame in #begin_frame, queried by the text widgets.
+    getter text_selection : TextSelection = TextSelection.new
     getter input : InputState
     getter painter : Painter
     # Per-frame bump allocator, reset in #end_frame (frame_arena.cr —
@@ -549,6 +552,10 @@ module Egui
       end
 
       @memory.begin_frame(@input)
+      # Global text selection gesture + clipboard hotkeys — after Memory
+      # (hover occlusion, focus state) and before widgets paint (they
+      # read the fresh anchor/focus through #range_for).
+      @text_selection.begin_frame(@input, @memory)
       # A touch hold generates no events of its own — keep frames coming
       # while a press sits inside the long-press window, or the timeout
       # could never fire (Memory#long_press_armed?).

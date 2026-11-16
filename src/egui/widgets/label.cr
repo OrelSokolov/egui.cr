@@ -8,15 +8,14 @@
 # is longer than the whole width.
 #
 # Selectable by default (`userselect: true`, upstream
-# `interaction.selectable_labels`): the label senses click+drag, a
-# press places the caret, dragging selects a range, double-click
-# selects a word, Ctrl/Cmd+C copies the selection and Ctrl/Cmd+A
-# selects all through the Clipboard system port while no text editor
-# owns the keyboard (a focused non-text widget does not block them —
-# see Focus#clipboard_shortcuts_free?), and a secondary press (right
-# click) or long-press opens a Copy / Select all context menu.
-# `userselect: false` reverts to the inert paint-only label (upstream
-# `Sense::hover()`).
+# `interaction.selectable_labels`): the label registers its galley as a
+# cell of the DOCUMENT-WIDE text selection (see TextSelection — the
+# browser model). Press places the caret, dragging selects across
+# widgets, double-click selects a word, triple-click the whole label,
+# Shift+click extends, Ctrl/Cmd+C copies the selection, Ctrl/Cmd+A
+# selects all and a secondary press (right click) or long-press opens a
+# Copy / Select all context menu. `userselect: false` reverts to the
+# inert paint-only label (upstream `Sense::hover()`).
 #
 # CSS-wise the label styles under the "label" class and reads the
 # box-model `padding` (per-side `padding.top/…` or the scalar shorthand):
@@ -108,12 +107,12 @@ module Egui
 
     # Retained paint (see paint_cache.cr): content = text + formatting
     # (BY VALUE — immediate-mode apps build a fresh Label every
-    # frame). Selectable labels cache too, but only in the inert
-    # selection state: no highlight (anchor < 0 or empty), menu
-    # closed, and a frame with no pointer press/drag or ⌘-modifier —
-    # the gesture/copy handling in #paint_selectable must run for
-    # real whenever input exists. Cursor/anchor values and the menu
-    # flag are key inputs, so a selection starting lands as a miss.
+    # frame). Selectable labels cache too, but not while their context
+    # menu is open (its popup must render through #paint_selectable) or
+    # while a non-collapsed GLOBAL selection exists — every cell repaints
+    # its slice of the highlight, and the gesture itself lives in
+    # TextSelection (Context#begin_frame), so press/drag frames replay
+    # fine: a collapsed caret paints nothing.
     # A `wrap: false` label without responsive width keys is
     # WIDTH-INDEPENDENT (the galley is natural, `fit` is a no-op in an
     # unclamped cell) — its key drops the width terms, which is what
@@ -123,27 +122,14 @@ module Egui
       return nil if @preset_runs
       id = cache_id(ui)
       ctx = ui.ctx
-      cursor = 0
-      anchor = -1
-      menu_open = false
       if @userselect
-        # press/drag frames place the caret, the RELEASE frame fires
-        # the click/double-click selection — all must run for real.
-        # A SECONDARY press opens the context menu; primary and
+        # SECONDARY presses open the context menu; primary and
         # secondary buttons carry separate press state.
-        return nil if ctx.input.pointer_pressed? ||
-                      ctx.input.pointer_down? ||
-                      ctx.input.pointer_released? ||
-                      ctx.input.secondary_pressed? ||
+        return nil if ctx.input.secondary_pressed? ||
                       ctx.input.secondary_down? ||
-                      ctx.input.secondary_released? ||
-                      ctx.input.modifiers.command?
-        anchor_id = id.child(0x5EED_u64)
-        cursor = ctx.memory.data.get_int(id, 0)
-        anchor = ctx.memory.data.get_int(anchor_id, -1)
-        menu_open = ctx.popup_open?("context_menu_#{id.value}")
-        return nil if menu_open
-        return nil if anchor >= 0 && anchor != cursor
+                      ctx.input.secondary_released?
+        return nil if ctx.popup_open?("context_menu_#{id.value}")
+        return nil if ctx.text_selection.any_selection?
       end
       state = ctx.memory.interaction_state(id)
       base = style_vars(ui, id)
@@ -169,24 +155,29 @@ module Egui
          ui.layout.vertical?, ui.wrap_x, ui.max_rect.width,
          ui.available_width, base.object_id, stated.object_id,
          ui.style.object_id, @style_override.try(&.hash),
-         family, cursor, anchor}).hash
+         family}).hash
       else
         ({"label", @rich.text, @rich.size, @rich.color, @rich.bold?,
          @rich.italic?, @rich.underline?, @rich.strikethrough?,
          @wrap, @align, @userselect, @line_height,
          ui.layout.vertical?, ui.wrap_x, base.object_id,
          stated.object_id, ui.style.object_id,
-         @style_override.try(&.hash), family, cursor, anchor}).hash
+         @style_override.try(&.hash), family}).hash
       end
     end
 
     # #ui's non-paint side effects on the selectable path: the text
-    # cursor over hovered labels, and the selection anchor cell's
-    # keep-alive (end-frame pruning would drop the selection).
+    # cursor over hovered labels and the cell's re-registration — a
+    # paint-cache replay must keep the galley hit-testable for the
+    # global selection gesture (TextSelection#reregister refreshes the
+    # geometry from the replayed Response#rect).
     def cache_replay(ui : Ui, response : Response) : Nil
       return unless @userselect
       ui.ctx.set_cursor_icon(Egui::CursorIcon::Text) if response.hovered?
-      ui.ctx.memory.use_id(cache_id(ui).child(0x5EED_u64))
+      # response.id, NOT cache_id(ui) — the replay minted this widget's
+      # id span already, so peeking the next id would hand back the
+      # SIBLING below.
+      ui.ctx.text_selection.reregister(response.id, response.rect)
     end
 
     def style_properties : Array(StyleProp)
@@ -354,12 +345,12 @@ module Egui
       response
     end
 
-    # Text selection — a single-label slice of upstream
-    # LabelSelectionState: cursor and anchor are system state (Int32
-    # byte indexes under the widget id; anchor -1 = no selection),
-    # exactly like TextEdit. Selection highlights paint per row behind
-    # the galley; the flattened row text ('\n' is dropped by layout)
-    # carries the indexes.
+    # Text selection — the document-wide model (Context#text_selection):
+    # this widget registers its galley as a selectable cell and paints
+    # whatever slice of the global selection covers it. The gesture,
+    # hotkeys and copy text all live in TextSelection; here only the
+    # highlight strips (per row, behind the glyphs — same as TextEdit)
+    # and the context menu remain.
     private def paint_selectable(ui : Ui, response : Response, id : Id,
                                  rect : Rect, galley : Galley,
                                  fonts : Fonts, face_family : String?,
@@ -372,10 +363,6 @@ module Egui
       resolve = ->(family : String?, bold : Bool, italic : Bool) {
         ctx.fonts_for(family, bold, italic)
       }
-      anchor_id = id.child(0x5EED_u64)
-      # The anchor cell has no #interact of its own — mark it used or
-      # end-frame pruning drops the selection every frame.
-      ctx.memory.use_id(anchor_id)
 
       flat = galley.rows.map(&.text).join
       row_starts = [] of Int32
@@ -385,99 +372,16 @@ module Egui
         start += row.text.size
       end
 
-      cursor = ctx.memory.data.get_int(id, 0).clamp(0, flat.size)
-      anchor = ctx.memory.data.get_int(anchor_id, -1).clamp(-1, flat.size)
-
       ctx.set_cursor_icon(CursorIcon::Text) if response.hovered?
 
-      menu_id = "context_menu_#{id.value}"
-      menu_open = ctx.popup_open?(menu_id)
-      # A press anywhere else (or Escape with nothing focused) ends
-      # this label's selection (upstream deselects the same way) —
-      # except while this label's own context menu is open: the press
-      # ON a menu row must not kill the selection Copy acts on.
-      if ctx.input.pointer_pressed? && !response.hovered? && !menu_open
-        anchor = -1
-      elsif anchor >= 0 && anchor != cursor &&
-            ctx.memory.focus.clipboard_shortcuts_free? &&
-            ctx.input.consume_key(KeyCode::Escape)
-        anchor = -1
-      end
+      ctx.text_selection.register(id, response.rect, rect, galley, fonts,
+        resolve, align, flat, @rich.text, @rich.text.includes?('\n'))
 
-      # Press places the caret immediately; double-click selects a
-      # word (real input or a synthetic same-frame press+release).
-      if (response.pressed? || response.clicked?) &&
-         (pos = ctx.input.pointer_pos)
-        if response.double_clicked?
-          cursor, anchor = word_range(flat,
-            cursor_at(galley, row_starts, rect, pos, fonts, resolve, align))
-        else
-          cursor = anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
-        end
-      end
-      # Drag-select: the anchor stays where the press put it, the
-      # caret follows the pointer (a drag with no prior press anchors
-      # here).
-      if response.drag_started? && (pos = ctx.input.pointer_pos) && anchor == -1
-        anchor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
-      end
-      if response.dragged? && (pos = ctx.input.pointer_pos)
-        cursor = cursor_at(galley, row_starts, rect, pos, fonts, resolve, align)
-      end
-
-      # Clipboard shortcuts while no text editor owns the keyboard (a
-      # focused TextEdit/TextArea keeps them — see Focus#
-      # clipboard_shortcuts_free?; a focused combo box does NOT block a
-      # label copy, the browser rule): Ctrl+C copies the selection,
-      # Ctrl+A selects all — both advertised by the context menu, so
-      # the hotkeys must work too. #consume_key picks the first label
-      # with a selection.
-      if ctx.memory.focus.clipboard_shortcuts_free? &&
-         ctx.input.modifiers.command?
-        if anchor >= 0 && anchor != cursor && ctx.input.consume_key(KeyCode::C)
-          sel_min = {cursor, anchor}.min
-          sel_max = {cursor, anchor}.max
-          Egui::SystemPorts::Clipboard.text =
-            original_slice(@rich.text, sel_min, sel_max)
-        elsif ctx.input.consume_key(KeyCode::A)
-          cursor = flat.size
-          anchor = 0
-        end
-      end
-
-      # Mouse copy: a secondary press (right-click) or a touch
-      # long-press over the label opens Copy / Select all — the label
-      # twin of TextEditMenu. The item handlers run during the popup
-      # render, still inside this method and before the state is
-      # stored, so Copy reads the live selection and Select all can
-      # move the cursor/anchor it mutates.
-      has_sel = anchor >= 0 && anchor != cursor
-      sel_text = has_sel ? original_slice(@rich.text,
-        {cursor, anchor}.min, {cursor, anchor}.max) : ""
-      response.context_menu do |menu|
-        menu.enabled(has_sel) do |m|
-          m.menu_item("Copy", nil, :copy, "Ctrl+C") do
-            Egui::SystemPorts::Clipboard.text = sel_text
-          end
-        end
-        menu.enabled(!flat.empty?) do |m|
-          m.menu_item("Select all", nil, nil, "Ctrl+A") do
-            cursor = flat.size
-            anchor = 0
-          end
-        end
-      end
-
-      ctx.memory.data.set_int(id, cursor)
-      ctx.memory.data.set_int(anchor_id, anchor)
-
-      visuals = style.visuals
       # Selection strips (index, x0, x1) — paint_galley lays them
-      # between backgrounds and glyphs (same as RichLabel).
-      sel = nil
-      if anchor >= 0 && anchor != cursor && !flat.empty?
-        sel_min = {cursor, anchor}.min
-        sel_max = {cursor, anchor}.max
+      # between backgrounds and glyphs.
+      segs = nil
+      if (range = ctx.text_selection.range_for(id))
+        sel_min, sel_max = range
         segs = [] of Tuple(Int32, Float64, Float64)
         galley.rows.each_with_index do |row, i|
           row_start = row_starts[i]
@@ -488,84 +392,32 @@ module Egui
                      galley.x_at(i, hi - row_start, fonts, resolve)}
           end
         end
-        sel = segs unless segs.empty?
+        segs = nil if segs.empty?
       end
+
+      # Mouse copy: a secondary press (right-click) or a touch
+      # long-press over the label opens Copy / Select all — acting on
+      # the GLOBAL selection (a drag may span several labels). The
+      # handlers run during the popup render, so Copy reads the text
+      # captured when the menu opened; Select all re-points the global
+      # anchor/focus at this cell.
+      sel_text = ctx.text_selection.selected_text
+      response.context_menu do |menu|
+        menu.enabled(ctx.text_selection.any_selection?) do |m|
+          m.menu_item("Copy", nil, :copy, "Ctrl+C") do
+            Egui::SystemPorts::Clipboard.text = sel_text
+          end
+        end
+        menu.enabled(!flat.empty?) do |m|
+          m.menu_item("Select all", nil, nil, "Ctrl+A") do
+            ctx.text_selection.select_cell(id, flat)
+          end
+        end
+      end
+
+      visuals = style.visuals
       ui.painter.paint_galley(rect.min, galley, fonts, visuals.text_color,
-        face_family, resolve, sel, visuals.text_selection, align)
-    end
-
-    # Byte index of the pointer inside the flattened row text: the row
-    # under the pointer (y), then the nearest x boundary within it.
-    private def cursor_at(galley : Galley, row_starts : Array(Int32),
-                          rect : Rect, pos : Pos2, fonts : Fonts,
-                          resolve : (String?, Bool, Bool) -> Fonts,
-                          align : Symbol? = nil) : Int32
-      return 0 if galley.rows.empty?
-      local_x = pos.x - rect.left
-      local_y = pos.y - rect.top
-      row_index = 0
-      galley.rows.each_with_index do |row, i|
-        row_index = i
-        break if local_y < row.y + row.height
-      end
-      row = galley.rows[row_index]
-      text = row.text
-      # Aligned rows paint shifted by their slack (paint_galley's
-      # row_align) — undo the shift before mapping the pointer onto
-      # the row's galley coordinates.
-      dx = case align
-           when :center then {galley.size.x - row.width, 0.0}.max / 2.0
-           when :right  then {galley.size.x - row.width, 0.0}.max
-           else              0.0
-           end
-      local_x -= dx
-      return row_starts[row_index] + text.size if local_x >= row.width
-      best = text.size
-      text.size.times do |i|
-        best = i
-        break if galley.x_at(row_index, i, fonts, resolve) >= local_x
-      end
-      row_starts[row_index] + best
-    end
-
-    # Selection indexes live in the flattened row text ('\n' is dropped
-    # by layout); map them back onto the source text for copying.
-    private def original_slice(text : String, min : Int32,
-                               max : Int32) : String
-      return text[min...max] unless text.includes?('\n')
-      map = [] of Int32
-      text.each_char_with_index do |ch, i|
-        map << i unless ch == '\n'
-      end
-      map << text.size
-      lo = map[min]? || text.size
-      hi = map[max]? || text.size
-      text[lo, hi - lo]
-    end
-
-    # Word around `pos` for double-click selection: ASCII letters and
-    # digits group together (byte indexes, like the rest of the widget).
-    private def word_range(text : String, pos : Int32) : {Int32, Int32}
-      return {0, text.size} if text.empty?
-      pos = pos.clamp(0, text.size - 1)
-      l = pos
-      while l > 0 && same_word_class?(text[l - 1], text[pos])
-        l -= 1
-      end
-      r = pos
-      while r < text.size - 1 && same_word_class?(text[r], text[r + 1])
-        r += 1
-      end
-      {l, r + 1}
-    end
-
-    private def same_word_class?(a : Char, b : Char) : Bool
-      word_char?(a) && word_char?(b) || !word_char?(a) && !word_char?(b) &&
-        a == b # punctuation splits per character
-    end
-
-    private def word_char?(ch : Char) : Bool
-      ch.ascii_letter? || ch.ascii_number?
+        face_family, resolve, segs, visuals.text_selection, align)
     end
   end
 end
