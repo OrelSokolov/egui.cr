@@ -2308,11 +2308,19 @@ static int g_clip_on;
 // the render-thread init calls this, the push paths only load).
 static void sh_ensure_pipelines(void);
 
-// True when the swapchain carries a stencil attachment (the
-// rounded-clip masks have nowhere to write otherwise — content keeps
-// the plain rect-scissor behavior, which is what it did before).
+// True when the rounded-clip bracket can actually work: the swapchain
+// carries a stencil attachment AND the SDF mask pipelines exist (the
+// mask draw is an SDF rounded rect — runtime-GLSL shaders, so Vulkan
+// never has them; a GL backend whose shader compile failed neither).
+// Without this the bracket would still flip content into the
+// stencil-testing pipelines while the mask never writes stencil=1 —
+// every bracketed draw (popup menu text, …) silently discards, with
+// only the pre-bracket frames (appear animation) flashing through.
+// Callers degrade to the plain rect scissor instead.
+static int g_sdf_state; // defined with the SDF block below
 static bool sh_stencil_ok(void) {
-    return sapp_depth_format() == SAPP_PIXELFORMAT_DEPTH_STENCIL;
+    return sapp_depth_format() == SAPP_PIXELFORMAT_DEPTH_STENCIL &&
+           g_sdf_state == 1;
 }
 
 // The stencil-test block shared by every content pipeline variant.
@@ -4427,6 +4435,12 @@ static void sh_draw_stats(int sdf_draws) {
 // batches. Replaces the frame's final sgl_draw() whenever any batch was
 // recorded (plain sgl_draw() would only draw layer 0).
 static void sh_sdf_frame(float w_pts, float h_pts) {
+    // Resolve the SDF state on EVERY frame, even ones with nothing
+    // stashed: sh_stencil_ok() gates the rounded-clip bracket on it,
+    // and the render thread is the only place the pipelines can be
+    // created — without this a first frame without segments would
+    // leave g_sdf_state at 0 forever and GL would never clip.
+    sh_sdf_ensure();
     // g_sdf_layer > 0 without stashed batches = the bench overlay's
     // layer (sh_bench_overlay) — the layer walk below must still run,
     // plain sgl_draw() would only draw layer 0.
@@ -4467,14 +4481,15 @@ static void sh_sdf_frame(float w_pts, float h_pts) {
 
 // --- rounded content clip (border-radius bracket) ------------------------
 //
-// Engine-level rounded clipping on GL: a subtree under a rounded clip
-// draws with stencil-testing pipelines, bracketed by a mask (the SDF
-// rounded rect writing stencil=1) and an unmask (bbox, stencil=0).
-// Called by the Sokol driver at rounded-clip group boundaries in the
-// command stream. POINTS geometry: x..h in framebuffer px, radii in
-// points, `ppp` px/point. Without a stencil attachment (transparent
-// window / backend without DEPTH_STENCIL) the calls are no-ops and
-// content falls back to the plain rect scissor.
+// Engine-level rounded clipping: a subtree under a rounded clip draws
+// with stencil-testing pipelines, bracketed by a mask (the SDF rounded
+// rect writing stencil=1) and an unmask (bbox, stencil=0). Called by
+// the Sokol driver at rounded-clip group boundaries in the command
+// stream. POINTS geometry: x..h in framebuffer px, radii in points,
+// `ppp` px/point. Without a stencil attachment (transparent window) or
+// SDF mask pipelines (Vulkan: no runtime GLSL for the mask shader) the
+// calls are no-ops and content falls back to the plain rect scissor
+// (sh_stencil_ok gates both sides — A-side emission and replay).
 
 void egui_cr_clip_mask(float x, float y, float w, float h,
                        float rtl, float rtr, float rbr, float rbl,
@@ -8391,6 +8406,19 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             int count = (int)op[1];
             int stencil = (int)op[2];
             op += 3;
+            if (getenv("EGUI_TEXT_DEBUG") && !strip) {
+                const float* g = (const float*)op;
+                fprintf(stderr, "[text] view=%u n=%d st=%d "
+                        "xy=(%.1f,%.1f)-(%.1f,%.1f) uv=(%.3f,%.3f) rgba=%u,%u,%u,%u\n",
+                        view_id, count, stencil,
+                        count > 0 ? g[0] : -1.0f, count > 0 ? g[1] : -1.0f,
+                        count > 0 ? g[2] : -1.0f, count > 0 ? g[3] : -1.0f,
+                        count > 0 ? g[4] : -1.0f, count > 0 ? g[5] : -1.0f,
+                        count > 0 ? (unsigned)g[8] : 0u,
+                        count > 0 ? (unsigned)g[9] : 0u,
+                        count > 0 ? (unsigned)g[10] : 0u,
+                        count > 0 ? (unsigned)g[11] : 0u);
+            }
             if (!strip)
                 sh_text_run(view_id, (const float*)op, count, stencil);
             op += (size_t)count * SH_TEXT_FLOATS;
