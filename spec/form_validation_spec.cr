@@ -18,6 +18,15 @@ require "../src/egui/html"
 
 FORM_SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(800.0, 600.0))
 
+# The validation bubble (Chrome's :invalid tooltip): pops under the
+# field, no hover delay, while the error is live and the field is
+# focused or hovered. The bubble's standard texts appear nowhere
+# else in the app, so scanning the frame's text commands for them
+# is a faithful probe.
+def bubble_texts(ctx : Egui::Context) : Array(String)
+  ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+end
+
 class FormApp
   property email = ""
   property name = ""
@@ -127,5 +136,54 @@ describe "form validation" do
     ctx.end_frame
     ctx.current_form_id.should be_nil
     ctx.form_inputs(Egui::Id.from("f")).should be_empty
+  end
+
+  it "shows the required bubble on a focused invalid empty field" do
+    app = FormApp.new
+    ctx = Egui::Context.new
+    app.update(ctx)
+    app.update(ctx)
+    # Focus the name field (required, empty) — untouched: no bubble.
+    center = app.name_resp.not_nil!.rect.center
+    app.update(ctx, [Egui::Event.pointer_pressed(center),
+                     Egui::Event.pointer_released(center)])
+    bubble_texts(ctx).should_not contain("Please fill out this field") # pristine
+    # Type one char and clear it: touched, empty, focused → bubble.
+    app.update(ctx, [Egui::Event.text_input("a")])
+    app.update(ctx, [Egui::Event.key_pressed(:backspace)])
+    bubble_texts(ctx).should contain("Please fill out this field")
+    # Filled: the bubble disappears.
+    app.update(ctx, [Egui::Event.text_input("Ada")])
+    bubble_texts(ctx).should_not contain("Please fill out this field")
+  end
+
+  it "shows the pattern bubble on a focused mismatched field" do
+    app = FormApp.new
+    ctx = Egui::Context.new
+    app.update(ctx)
+    app.update(ctx)
+    center = app.email_resp.not_nil!.rect.center
+    app.update(ctx, [Egui::Event.pointer_pressed(center),
+                     Egui::Event.pointer_released(center)])
+    app.update(ctx, [Egui::Event.text_input("nope")])
+    bubble_texts(ctx).should contain("Please match the requested format")
+  end
+
+  it "a blocked submit reveals errors; focusing the field pops the bubble" do
+    app = FormApp.new
+    ctx = Egui::Context.new
+    app.update(ctx)
+    app.update(ctx)
+    btn = app.button_rect(ctx)
+    app.update(ctx, [Egui::Event.pointer_pressed(btn.center),
+                     Egui::Event.pointer_released(btn.center)])
+    app.submitted.should eq(0) # blocked: the required name is empty
+    # The click surrendered the field's focus; the attempt revealed
+    # the red borders. Focusing the invalid field pops its bubble.
+    center = app.name_resp.not_nil!.rect.center
+    app.update(ctx, [Egui::Event.pointer_pressed(center),
+                     Egui::Event.pointer_released(center)])
+    app.update(ctx)
+    bubble_texts(ctx).should contain("Please fill out this field")
   end
 end

@@ -28,6 +28,16 @@ module Egui
     # element rules below for touch-sized controls (~44pt hit targets
     # per Apple HIG).
     MOBILE_MAX = "(max-width: 600px)"
+
+    # The danger red of form validation — the `text_edit:invalid`
+    # stroke below AND the validation bubble's border
+    # (`Response#show_validation_tooltip`), blended against the text
+    # color so it reads on light and dark alike. ONE definition: the
+    # field border and its error bubble can never drift apart.
+    def self.invalid_stroke(text_color : Color32) : Color32
+      text_color.lerp(Color32.rgb(0xd5, 0x3f, 0x3f), 0.8)
+    end
+
     def self.dark : Theme
       build("dark", dark: true)
     end
@@ -236,10 +246,10 @@ module Egui
       # form validation — `<input required>`/`<input pattern>` (see
       # form.cr): the `:invalid` state overlay on the text_edit class.
       # A field only wears it once touched or after a blocked form
-      # submit (browser semantics); the danger stroke reads on light
-      # and dark alike.
+      # submit (browser semantics); the stroke is the ONE danger red
+      # (#invalid_stroke — the validation bubble shares it).
       sheet.rule("text_edit:invalid", StyleVars{
-        "stroke" => v.text_color.lerp(Color32.rgb(0xd5, 0x3f, 0x3f), 0.8),
+        "stroke" => invalid_stroke(v.text_color),
       })
     end
   end

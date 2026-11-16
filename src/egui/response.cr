@@ -214,11 +214,32 @@ module Egui
       end
       return if now - start < TOOLTIP_DELAY
 
+      pos = @ctx.input.pointer_pos.not_nil! + Vec2.new(16.0, 16.0)
+      paint_tooltip_bubble(text, pos)
+    end
+
+    # The browser's form-validation bubble (Chrome's :invalid
+    # tooltip): the message anchored UNDER this widget's rect — no
+    # pointer, no hover delay. Shown while the widget is focused or
+    # hovered and its error state is live (the caller decides; see
+    # TextEdit's required/pattern handling). The bubble keeps the
+    # tooltip look but carries the danger stroke, tying it to the
+    # field's `:invalid` border.
+    def show_validation_tooltip(text : String) : Nil
+      paint_tooltip_bubble(text,
+        Pos2.new(@rect.left, @rect.bottom + 6.0), danger: true)
+    end
+
+    # One bubble, two callers: the hover tooltip (at the pointer, idle
+    # stroke) and the validation bubble (widget-anchored, danger
+    # stroke). Painted in the Tooltip layer, clamped on-screen.
+    private def paint_tooltip_bubble(text : String, pos : Pos2,
+                                     danger : Bool = false) : Nil
+      painter = @ctx.painter
       style = @ctx.style
       font_size = style.font_size * 0.9
       text_size = @ctx.fonts.measure(text, font_size)
       margin = Vec2.new(6.0, 4.0)
-      pos = @ctx.input.pointer_pos.not_nil! + Vec2.new(16.0, 16.0)
       size = text_size + margin * 2.0
 
       # Keep inside the screen: flip back left/up at the right/bottom
@@ -240,7 +261,8 @@ module Egui
       painter.layer = Order::Tooltip
       painter.clip = Rect.from_min_size(pos, size)
       painter.rect(Rect.from_min_size(pos, size), 4.0,
-        style.visuals.window_fill, style.visuals.window_stroke, 1.0)
+        style.visuals.window_fill,
+        danger ? danger_stroke : style.visuals.window_stroke, 1.0)
       # Painter#text anchors the LEFT-CENTER of the text box, so pass the
       # center of the inner (margin-padded) area — pos + margin alone
       # would shift the glyphs up by half a line, under the top border.
@@ -248,6 +270,14 @@ module Egui
         text, font_size, style.visuals.text_color)
       painter.layer = saved_layer
       painter.clip = saved_clip
+    end
+
+    # The danger red of the validation bubble's border — the ONE
+    # definition the default theme's `text_edit:invalid` rule uses
+    # (DefaultTheme.invalid_stroke), so the bubble's border and the
+    # field's own stroke can't drift apart.
+    def danger_stroke : Color32
+      DefaultTheme.invalid_stroke(@ctx.style.visuals.text_color)
     end
   end
 end

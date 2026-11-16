@@ -296,6 +296,16 @@ module Egui
       # invalid-and-shown field resolves the `:invalid` state bag
       # instead (the default theme paints a danger stroke there).
       te_vars = invalid ? style_vars(ui, id, "invalid") : vars
+      # The browser's validation bubble (Chrome's :invalid tooltip):
+      # while the error is live and the field is FOCUSED or hovered,
+      # the standard message rides in a bubble under the field —
+      # no hover delay, the way Chrome pops it on an invalid field.
+      if invalid && (response.has_focus? || response.hovered?)
+        response.show_validation_tooltip(
+          @required && new_text.empty? ?
+            "Please fill out this field" :
+            "Please match the requested format")
+      end
       bg = te_vars.color?("fill") ||
            (response.has_focus? ? visuals.button_active : visuals.button_weak)
       # `frame: false` (an embedded field — SelectBox's search entry):
