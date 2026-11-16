@@ -681,6 +681,24 @@ module Egui
     end
   end
 
+  # Zero-copy video quad (Vulkan backend): `texture_id` comes from the
+  # driver's video-texture seam (dmabuf-imported decode planes), drawn by
+  # the YUV→RGB video pipeline with the frame's colorimetry. Rect in
+  # points, aspect already resolved by the caller.
+  struct VideoCmd
+    getter clip : Rect
+    getter rect : Rect
+    getter texture_id : UInt64
+
+    def initialize(@clip : Rect, @rect : Rect, @texture_id : UInt64)
+    end
+
+    def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
+      # rounded clips on video are not wired (scissor only)
+      VideoCmd.new(clip, @rect, @texture_id)
+    end
+  end
+
   # One batched 3D mesh (egui-cr native — the Viewport3D primitive):
   # SoA-packed vertices (`x,y,z` f32 + `r,g,b,a` u8, 16 bytes each)
   # drawn through a depth-tested sgl pipeline under `mvp`
@@ -711,6 +729,18 @@ module Egui
 
     # Owns its own mvp — never stamped by a transform bracket.
     def xform : Affine2?
+      nil
+    end
+  end
+
+  struct VideoCmd
+    # Shader-side placement (mvp from the rect) — no transform brackets.
+    def xform : Affine2?
+      nil
+    end
+
+    # Rounded clips are not wired for video (scissor only).
+    def clip_corners : CornerRadii?
       nil
     end
   end
@@ -802,7 +832,7 @@ module Egui
     end
   end
 
-  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | ShadowCmd | Mesh3DCmd | ScrollBracketCmd | NoopCmd
+  alias PaintCmd = RectCmd | TextCmd | CircleCmd | LineCmd | TriCmd | ArcCmd | ImageCmd | VideoCmd | ShadowCmd | Mesh3DCmd | ScrollBracketCmd | NoopCmd
 
   class Painter
     # A bracketed subtree transform (plans/NATIVE_HTML_DEMO.md §3.2):
@@ -992,6 +1022,8 @@ module Egui
         when ImageCmd
           ImageCmd.new(cmd.clip, cmd.rect, cmd.uv, cmd.texture_id,
             fade(cmd.tint), cmd.nearest?, cmd.clip_corners, merged)
+        when VideoCmd
+          VideoCmd.new(cmd.clip, cmd.rect, cmd.texture_id)
         when ShadowCmd
           ShadowCmd.new(cmd.clip, cmd.rect, cmd.rounding, cmd.blur,
             cmd.spread, cmd.offset, fade(cmd.color), cmd.inset?,
@@ -1048,6 +1080,8 @@ module Egui
           # moves (the same quad, resized).
           ImageCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.uv,
             cmd.texture_id, fade(cmd.tint), cmd.nearest?, cmd.clip_corners)
+        when VideoCmd
+          VideoCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.texture_id)
         when ShadowCmd
           ShadowCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             cmd.blur * k, cmd.spread * k,
@@ -1212,6 +1246,7 @@ module Egui
       when TriCmd      then cmd.clip
       when ArcCmd      then cmd.clip
       when ImageCmd    then cmd.clip
+      when VideoCmd    then cmd.clip
       when ShadowCmd   then cmd.clip
       when Mesh3DCmd   then cmd.clip
       when ScrollBracketCmd then Rect.infinite
@@ -1229,6 +1264,7 @@ module Egui
       when TriCmd      then cmd.clip_corners
       when ArcCmd      then cmd.clip_corners
       when ImageCmd    then cmd.clip_corners
+      when VideoCmd    then nil
       when ShadowCmd   then cmd.clip_corners
       when Mesh3DCmd   then cmd.clip_corners
       else                  nil
@@ -1746,6 +1782,12 @@ module Egui
               nearest : Bool = false) : Nil
       uv ||= Rect.from_min_size(Pos2.new(0.0, 0.0), Vec2.new(1.0, 1.0))
       add(ImageCmd.new(@clip, rect, uv, texture_id, tint, nearest))
+    end
+
+    # Zero-copy video quad (Vulkan video texture id from the driver —
+    # see VideoCmd). Aspect-fit the rect beforehand.
+    def video(rect : Rect, texture_id : UInt64) : Nil
+      add(VideoCmd.new(@clip, rect, texture_id))
     end
 
     # One batched 3D mesh — see `Mesh3DCmd`. `data` is packed SoA

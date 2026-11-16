@@ -3751,6 +3751,11 @@ typedef struct sg_image_desc {
     const void* mtl_textures[SG_NUM_INFLIGHT_FRAMES];
     const void* d3d11_texture;
     const void* wgpu_texture;
+    // egui-cr patch (Vulkan only): inject an externally created VkImage
+    // (memory already bound by the caller — e.g. a dmabuf-imported video
+    // plane). Sokol wraps it (creates views, tracks layouts) but never
+    // destroys it — same ownership semantics as .gl_textures.
+    const void* vk_image;
     uint32_t _end_canary;
 } sg_image_desc;
 
@@ -7492,6 +7497,7 @@ typedef struct _sg_image_s {
         VkImage img;
         VkDeviceMemory mem;
         _sg_vk_access_t cur_access;
+        bool injected; // egui-cr: desc.vk_image — never destroy
     } vk;
 } _sg_vk_image_t;
 typedef _sg_vk_image_t _sg_image_t;
@@ -20442,6 +20448,11 @@ _SOKOL_PRIVATE void _sg_vk_barrier_on_apply_bindings(VkCommandBuffer cmd_buf, co
             } else if (view->cmn.type == SG_VIEWTYPE_TEXTURE) {
                 const _sg_image_t* img = _sg_image_ref_ptr(&view->cmn.img.ref);
                 if (!img->cmn.usage.write_transient) {
+                    if (0 == (img->vk.cur_access & _SG_VK_ACCESS_TEXTURE)) {
+                        fprintf(stderr, "=== egui-cr diag: image id=%u cur_access=%d injected=%d w=%d h=%d fmt=%d\n",
+                            img->slot.id, (int)img->vk.cur_access, (int)img->vk.injected,
+                            img->cmn.width, img->cmn.height, (int)img->cmn.pixel_format);
+                    }
                     SOKOL_ASSERT(0 != (img->vk.cur_access & _SG_VK_ACCESS_TEXTURE));
                 }
             } else {
@@ -22229,8 +22240,17 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_image(_sg_image_t* img, const sg_
     SOKOL_ASSERT(img && desc);
     VkResult res;
     // FIXME: injected images
-
     img->vk.cur_access = _SG_VK_ACCESS_NONE;
+
+    // egui-cr patch: injected VkImage (dmabuf video planes) — memory is
+    // bound by the injector, sokol only wraps and never destroys. The
+    // pixel format/extent in the desc must match the injected image.
+    if (desc->vk_image) {
+        img->vk.img = (VkImage)(uintptr_t)desc->vk_image;
+        img->vk.mem = 0;
+        img->vk.injected = true;
+        return SG_RESOURCESTATE_VALID;
+    }
 
     _SG_STRUCT(VkImageCreateInfo, create_info);
     create_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -22278,7 +22298,7 @@ _SOKOL_PRIVATE sg_resource_state _sg_vk_create_image(_sg_image_t* img, const sg_
 _SOKOL_PRIVATE void _sg_vk_discard_image(_sg_image_t* img) {
     SOKOL_ASSERT(img);
     _sg_track_remove(&_sg.vk.track.images, img->slot.id);
-    if (img->vk.img) {
+    if (img->vk.img && !img->vk.injected) {
         _sg_vk_delete_queue_add(_sg_vk_image_destructor, (void*)img->vk.img);
         img->vk.img = 0;
     }

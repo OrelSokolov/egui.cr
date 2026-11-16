@@ -1,5 +1,27 @@
 require "minaudio"
 
+@[Link("egui_video")]
+lib LibVideoPool
+  # backend/video_pool.c — fixed VAAPI surface pool creation (returns
+  # an AVBufferRef* owned by the caller; 0 = failure)
+  fun pool_create = egui_video_pool_create(device_ref : UInt8*,
+                                           format : Int32,
+                                           sw_format : Int32, w : Int32,
+                                           h : Int32,
+                                           pool_size : Int32) : UInt8*
+  # AVBufferRef* → ->data (the pointed-at context) — pool identity checks
+  fun ref_data = egui_video_ref_data(ref : UInt8*) : UInt8*
+  # Direct per-surface dmabuf export (see backend/video_pool.c for the
+  # out[12] layout). Returns 0 on success; out[0] is an OWNED fd.
+  fun export_surface = egui_video_export_surface(device_ref : UInt8*,
+                                                 surface : UInt32,
+                                                 out : Int64*) : Int32
+  # vaSyncSurface through the VAAPI device context — the per-frame
+  # decode-write barrier (what av_hwframe_map did implicitly)
+  fun sync_surface = egui_video_sync_surface(device_ref : UInt8*,
+                                             surface_id : UInt32) : Int32
+end
+
 class VideoPlayer
   enum State
     Closed
@@ -25,6 +47,32 @@ class VideoPlayer
     def advance(n : Int32, channels : Int32, rate : Int32) : AudioChunk
       AudioChunk.new(@pts + n.to_f64 / rate,
         @pcm + (n * channels * 4), @frames - n)
+    end
+  end
+
+  # export-once-per-surface entry (the gstvaallocator model): the
+  # geometry of one pool surface's dmabuf plus the exported fd WE keep
+  # open for the surface's whole life. No frame refs: the fd pins the
+  # dmabuf, the surface returns to the decode pool, and when the pool
+  # recycles it the SAME dmabuf carries the new frame (the R-side
+  # VkImage reads fresh content by inode identity).
+  struct ZcExport
+    getter fd : Int32
+    getter size : Int32
+    getter w : Int32
+    getter h : Int32
+    getter pitch_y : Int32
+    getter pitch_uv : Int32
+    getter off_y : Int32
+    getter off_uv : Int32
+    getter modifier : UInt64
+    getter fc_y : UInt32
+    getter fc_uv : UInt32
+
+    def initialize(@fd : Int32, @size : Int32, @w : Int32, @h : Int32,
+                   @pitch_y : Int32, @pitch_uv : Int32, @off_y : Int32,
+                   @off_uv : Int32, @modifier : UInt64, @fc_y : UInt32,
+                   @fc_uv : UInt32)
     end
   end
 
@@ -108,7 +156,8 @@ class VideoPlayer
   end
 
   def initialize(@ctx : Egui::Context)
-    LibFF.av_log_set_level(LibFF::AV_LOG_ERROR)
+    LibFF.av_log_set_level(
+      (ENV["EGUI_VIDEO_AVLOG"]?.try &.to_i?) || LibFF::AV_LOG_ERROR)
   end
 
   def playing? : Bool
@@ -229,6 +278,36 @@ class VideoPlayer
     # hw decode BEFORE open2: hw_device_ctx must be attached when the
     # decoder initializes (get_format then offers the VAAPI pix fmt)
     hw = setup_hw(cctx)
+    if hw && !@@zc_dead && LibEguiCr.video_supported != 0 &&
+       ENV["EGUI_VIDEO_ZC"]? != "0" && (dev = @hw_device)
+      # The pool must match what the DECODER will output: probe it by
+      # decoding one frame (see #probe_hw_params) — a wrong sw_format
+      # guess makes ffmpeg drop our fixed pool for a dynamic one.
+      sw_fmt, pw, ph = probe_hw_params(path, codec) ||
+        {par.format == 62 ? 158 : 23, # P010LE / NV12 (container hint)
+         @width > 0 ? @width : par.width,
+         @height > 0 ? @height : par.height}
+      unless (fref = LibVideoPool.pool_create(dev, @@hw_pix_fmt,
+               sw_fmt, pw, ph, 34)).null?
+        # GStreamer-style FIXED surface pool (gstvaallocator): surfaces
+        # pre-allocated once, recycled by the decoder forever — the
+        # dynamic pool allocated a NEW surface per frame (unique dmabuf
+        # inodes → export+import churn → the ~700-frame degradation).
+        # Struct writes live in C (backend/video_pool.c) — Crystal-side
+        # offsets kept drifting. ONLY under zc: the copy-back fallback
+        # needs the decoder's own pool (scale_vaapi refuses ours).
+        cctx.value.hw_frames_ctx = LibFF.av_buffer_ref(fref)
+        cctx.value.extra_hw_frames = 8
+        @zc_frames = fref
+        # the get_format callback re-attaches this ref on the decoding
+        # context (ffmpeg strips the pre-open2 attach — see HW_GET_FORMAT)
+        @@hw_pool_ref = fref
+        @zc = true
+        @video_id = LibEguiCr.video_create
+        @video_texture_id = @video_id.to_u64
+        STDERR.puts("video: zero-copy path (Vulkan), fixed pool") if ENV["EGUI_VIDEO_DEBUG"]?
+      end
+    end
     if LibFF.avcodec_open2(cctx, codec, nil) < 0
       detach_hw(cctx) if hw # hw may be why open failed — retry software
       if hw && LibFF.avcodec_open2(cctx, codec, nil) < 0
@@ -242,6 +321,12 @@ class VideoPlayer
       end
     end
     @codec_ctx = cctx
+    if ENV["EGUI_VIDEO_DEBUG"]? && @zc
+      still = cctx.value.hw_frames_ctx == @zc_frames ||
+              LibVideoPool.ref_data(cctx.value.hw_frames_ctx) ==
+              LibVideoPool.ref_data(@zc_frames.not_nil!)
+      STDERR.puts("video: zc pool on cctx after open2: #{still}")
+    end
 
     @frame = LibFF.av_frame_alloc
     @packet = LibFF.av_packet_alloc
@@ -261,12 +346,15 @@ class VideoPlayer
     avg = st.value.avg_frame_rate
     @frame_dur = avg.den > 0 && avg.num > 0 ? avg.den.to_f64 / avg.num : 1.0 / 30.0
 
-    @rgba = Bytes.new(@width * @height * 4)
-    @texture_id = @ctx.textures.create_stream(@width, @height)
-    if @texture_id.zero?
-      @error = "texture creation failed"
-      close
-      return false
+    unless @zc # zero-copy owns no CPU pixels — the copy-back texture
+                # materializes lazily on fallback (see #convert_frame)
+      @rgba = Bytes.new(@width * @height * 4)
+      @texture_id = @ctx.textures.create_stream(@width, @height)
+      if @texture_id.zero?
+        @error = "texture creation failed"
+        close
+        return false
+      end
     end
 
     open_audio(path)
@@ -274,6 +362,12 @@ class VideoPlayer
     @path = path
     @error = nil
     @frame_count = 0
+    if ENV["EGUI_VIDEO_DEBUG"]? && @zc
+      m2 = LibVideoPool.ref_data(@codec_ctx.not_nil!.value.hw_frames_ctx) ==
+           LibVideoPool.ref_data(@zc_frames.not_nil!)
+      STDERR.puts("video: zc pool before first decode: #{m2} " \
+                  "(raw=#{@codec_ctx.not_nil!.value.hw_frames_ctx.address})")
+    end
     return false unless decode_next_frame
     blit
     prebuffer_audio(@shown_pts)
@@ -399,6 +493,13 @@ class VideoPlayer
   # Release everything and go back to the placeholder state.
   def close : Nil
     close_audio
+    zc_disable
+    if (f = @zc_frames)
+      fp = f
+      LibFF.av_buffer_unref(pointerof(fp))
+      @zc_frames = nil
+      @@hw_pool_ref = nil # never re-attach a dying pool
+    end
     hw_graph_reset
     if (sws = @sws)
       LibFF.sws_free_context(sws)
@@ -487,12 +588,34 @@ class VideoPlayer
   # frames DUE at the audio clock (the device timeline is the truth).
   # Wall-clock mode (no ring): the original pacing, with a resync when
   # decode falls behind.
+  # zc import died mid-play (software Vulkan, driver refusal): a
+  # same-process reopen crashed in the decoder teardown (heap
+  # corruption inside avcodec_free_context — the pool-owning close is
+  # not reentrant mid-advance), so the safe fallback is a CLEAN STOP:
+  # playback pauses with a status line; the user reopens the file,
+  # which now takes the copy-back path (the zc latch is set). On real
+  # GPUs imports succeed and this path never runs.
+  @zc_reopen : String?
+
   def advance : Nil
+    if (rp = @zc_reopen)
+      @zc_reopen = nil
+      @error = "zero-copy import failed — reopen the file (copy-back)"
+      @state = State::Eof
+      @ring.try(&.stop)
+      STDERR.puts("video: zc import died — stopped, reopen for copy-back") if ENV["EGUI_VIDEO_DEBUG"]?
+      return
+    end
     return unless playing?
     if @ring
       feed_audio(audio_clock)
       pump_audio
-      budget = 8
+      # zc: every decode carries a SYNCHRONOUS vaSyncSurface (the map
+      # waits for the VPP job). A catch-up burst of 8 stacks 8 GPU syncs
+      # into one UI tick — the multi-second freezes. Two per tick keeps
+      # the ring fed (60 ticks/s × 2 = 4× realtime headroom) while the
+      # syncs spread out; copy-back keeps its 8 (its syncs are cheap).
+      budget = @zc ? 2 : 8
       while budget > 0 && !@video_eof &&
             @next_pts <= audio_clock + @frame_dur * 0.6
         break unless decode_next_frame(audio_clock)
@@ -501,7 +624,7 @@ class VideoPlayer
       mark_eof if @video_eof && audio_drained?
     else
       now = now_sec
-      budget = 8
+      budget = @zc ? 2 : 8
       while budget > 0 && @next_pts <= now - @clock_origin
         break unless decode_next_frame
         budget -= 1
@@ -545,11 +668,29 @@ class VideoPlayer
               else
                 "no-audio(#{@audio_note || "none"})"
               end
+      fd_n = begin
+        list = Dir.children("/proc/self/fd").map(&.to_i).sort
+        "#{list.size}(max #{list.last})"
+      rescue
+        "-1"
+      end
+      last_dup = LibEguiCr.video_last_fd
+      dup_open = last_dup >= 0 &&
+                 File.symlink?("/proc/self/fd/#{last_dup}") ? 1 : 0
       hwstat = if @hw_transfer
                  size = @lad[@li]? || 0
+                 zc = @zc ? "zc " : ""
                  locked = @adapt_locked ? "=" : "~"
+                 pool = if @zc
+                         pm = @zc_pool_match
+                         " pool=#{pm.nil? ? "?" : pm ? "ours" : "THEIRS"}" \
+                         " exp=#{@zc_exports.size}"
+                       else
+                         ""
+                       end
                  " hw=#{locked}#{size}/#{width}x#{height}" \
-                 "#{@pipe_ms > 0 ? " pipe=#{@pipe_ms.round(1)}/#{@budget_ms.round(1)}ms" : ""}"
+                 "#{zc}#{pool}#{@pipe_ms > 0 ? " pipe=#{@pipe_ms.round(1)}/#{@budget_ms.round(1)}ms" : ""}" \
+                 " sync=#{@@zc_sync_n > 0 ? (@@zc_sync_ms / @@zc_sync_n).round(1) : 0}ms/#{@@zc_sync_n} fds=#{fd_n}"
                else
                  ""
                end
@@ -691,11 +832,24 @@ class VideoPlayer
   # config simply never offers it). Class-level: a C callback cannot
   # capture, and the pix fmt value is runtime (av_get_pix_fmt).
   @@hw_pix_fmt : Int32 = -1
+  # OUR fixed pool, re-attached BY this callback: ffmpeg 7.1's
+  # ff_get_format starts every iteration with ff_hwaccel_uninit, which
+  # unconditionally unrefs avctx->hw_frames_ctx — a pool attached before
+  # open2 is stripped BEFORE the hwaccel init asks for it, and vaapi
+  # falls back to its own DYNAMIC pool (a fresh VA surface per frame).
+  # The callback runs between the uninit and hwaccel_init — the only
+  # window where the re-attach sticks.
+  @@hw_pool_ref : Pointer(UInt8)? = nil
 
   HW_GET_FORMAT = ->(ctx : LibFF::AVCodecContext*, fmts : Int32*) : Int32 do
     i = 0
     while (f = fmts[i]) != -1 # AV_PIX_FMT_NONE-terminated list
-      return f if f == @@hw_pix_fmt
+      if f == @@hw_pix_fmt
+        if (ref = @@hw_pool_ref) && ctx.value.hw_frames_ctx.null?
+          ctx.value.hw_frames_ctx = LibFF.av_buffer_ref(ref)
+        end
+        return f
+      end
       i += 1
     end
     fmts[0]
@@ -722,6 +876,69 @@ class VideoPlayer
     true
   end
 
+  # Ask the decoder itself what hw frames it needs: a throwaway
+  # demuxer+decoder on the same path (sharing our VA device) decodes
+  # ONE frame and we read ITS hw_frames_ctx. codecpar carries no bit
+  # depth (a 10-bit HEVC in MOV probes as format=-1) — a wrong
+  # sw_format guess makes ffmpeg silently discard our fixed pool and
+  # run its own DYNAMIC one (fresh VA surface per frame: the
+  # export/import churn that killed big files). {sw_format, w, h}?
+  private def probe_hw_params(path : String, codec : Void*) : {Int32, Int32, Int32}?
+    pf = Pointer(LibFF::AVFormatContext).null
+    return nil if LibFF.avformat_open_input(pointerof(pf),
+        path.to_unsafe, nil, nil) < 0 || pf.null?
+    pidx = LibFF.av_find_best_stream(pf, LibFF::AVMEDIA_TYPE_VIDEO,
+        -1, -1, nil, 0)
+    result = nil
+    if pidx >= 0 && !(pst = pf.value.streams[pidx]).null? &&
+       !(ppar = pst.value.codecpar).null?
+      pcctx = LibFF.avcodec_alloc_context3(codec)
+      if pcctx && LibFF.avcodec_parameters_to_context(pcctx, ppar) >= 0
+        pcctx.value.hw_device_ctx = LibFF.av_buffer_ref(@hw_device.not_nil!)
+        pcctx.value.get_format = HW_GET_FORMAT
+        if LibFF.avcodec_open2(pcctx, codec, nil) >= 0
+          ppkt = LibFF.av_packet_alloc
+          pfrm = LibFF.av_frame_alloc
+          while ppkt && pfrm
+            code = LibFF.av_read_frame(pf, ppkt)
+            break if code < 0 # EOF included — nothing decodable
+            if ppkt.value.stream_index == pidx
+              LibFF.avcodec_send_packet(pcctx, ppkt)
+              LibFF.av_packet_unref(ppkt)
+              loop do
+                code = LibFF.avcodec_receive_frame(pcctx, pfrm)
+                break if code == LibFF::AVERROR_EAGAIN || code < 0
+                if pfrm.value.format == @@hw_pix_fmt &&
+                   !pfrm.value.hw_frames_ctx.null? &&
+                   (fctx = LibVideoPool.ref_data(pfrm.value.hw_frames_ctx))
+                  fc = fctx.as(LibFF::AVHWFramesContext*)
+                  if fc.value.sw_format > 0 && fc.value.width > 0
+                    result = {fc.value.sw_format, fc.value.width,
+                              fc.value.height}
+                  end
+                end
+                LibFF.av_frame_unref(pfrm)
+                break if result
+              end
+              break if result
+            else
+              LibFF.av_packet_unref(ppkt)
+            end
+          end
+          LibFF.av_packet_free(pointerof(ppkt)) if ppkt
+          LibFF.av_frame_free(pointerof(pfrm)) if pfrm
+        end
+        LibFF.avcodec_free_context(pointerof(pcctx))
+      end
+    end
+    pf2 = pf
+    LibFF.avformat_close_input(pointerof(pf2))
+    if result && ENV["EGUI_VIDEO_DEBUG"]?
+      STDERR.puts("video: zc pool probed sw=#{result[0]} #{result[1]}x#{result[2]}")
+    end
+    result
+  end
+
   # Drop the hw attachment (open2-with-hw failed fallback, close).
   private def detach_hw(cctx : LibFF::AVCodecContext*) : Nil
     @hw_transfer = false
@@ -746,8 +963,18 @@ class VideoPlayer
     # adaptation.
     native = {src_w, src_h}.max
     if @lad.empty?
-      @lad = [native, 3840, 2560, 1920, 1600, 1280, 1024, 854, 640]
-        .select { |s| s < native }.uniq.sort.reverse.unshift(native)
+      if @zc
+        # Zero-copy pays no CPU tax — quality stays. One fixed slot
+        # (native capped at 2560 keeps VPP cost sane on 6K+ sources);
+        # no probing, no drift: the adaptation ladder exists to protect
+        # the copy-back pipeline, not the GPU one.
+        @lad = [{native, 2560}.min]
+        @adapt_on = false
+        @adapt_locked = true
+      else
+        @lad = [native, 3840, 2560, 1920, 1600, 1280, 1024, 854, 640]
+          .select { |s| s < native }.uniq.sort.reverse.unshift(native)
+      end
       @budget_ms = 1000.0 * @frame_dur / 1.5
       @search_lo = 0
       @search_hi = @lad.size - 1
@@ -762,7 +989,7 @@ class VideoPlayer
       end
     end
     scale = @lad[@li]? || native
-    return false if scale >= native
+    return false if scale >= native && !@zc
     if src_w >= src_h
       tw = scale
       th = {src_h * scale // src_w, 2}.max & ~1
@@ -806,13 +1033,12 @@ class VideoPlayer
     outputs.value.filter_ctx = src
     inputs.value.name = LibFF.av_strdup("out")
     inputs.value.filter_ctx = sink
-    code = LibFF.avfilter_graph_parse_ptr(graph,
-      # NO format=nv12: this stream is 10-bit full-range, and the
-      # P010→NV12 step quantizes it on a LIMITED 64..940 ladder — the
-      # picture comes out washed/бита (twinshot vs software: mean 93).
-      # Keeping P010 the whole way and letting sws_scale do 10-bit →
-      # RGBA matches the software path pixel-perfectly (mean 0.7).
-      "scale_vaapi=#{tw}:#{th},hwdownload,format=p010le",
+    chain = @zc ? "scale_vaapi=#{tw}:#{th},format=vaapi" # anchor the sink (hw frames stay on the GPU)
+                # NO format=nv12: 10-bit full-range quantized on a
+                # LIMITED ladder comes out washed (twinshot mean 93 vs
+                # 0.7 through P010 + sws).
+                : "scale_vaapi=#{tw}:#{th},hwdownload,format=p010le"
+    code = LibFF.avfilter_graph_parse_ptr(graph, chain,
       pointerof(inputs), pointerof(outputs), nil)
     LibFF.avfilter_inout_free(pointerof(inputs))
     LibFF.avfilter_inout_free(pointerof(outputs))
@@ -911,6 +1137,269 @@ class VideoPlayer
   # take the downscaled NV12 frame back to the CPU. Without the graph
   # (small frames / graph failure) a full-res transfer runs instead.
   # Software decode passes the frame through untouched. Nil on failure.
+  # --- zero-copy path (Vulkan backend) ----------------------------------
+  # hw decode → scale_vaapi (GPU) → av_hwframe_map → dmabuf descriptor →
+  # egui_cr_video_frame: the render thread imports the planes as VkImages
+  # and draws through the video pipeline. No pixels cross to the CPU —
+  # the copy-back pipeline stays as the fallback (GL backends, import
+  # failures).
+  @zc : Bool = false
+  @video_id : UInt32 = 0_u32
+  getter video_texture_id : UInt64 = 0_u64
+  @zc_frames : UInt8*? = nil      # OUR fixed VA surface pool
+  @zc_holds : Array(LibFF::AVFrame*)? # display hold ring (see #zc_hold_frame)
+  # export-once-per-surface (the gstvaallocator model): the fixed pool
+  # cycles ~20 surfaces, so ~20 exports TOTAL instead of one per frame —
+  # the per-frame map leaked one dmabuf fd per frame inside ffmpeg 7.1's
+  # VA→DRM export, and the R-side dup of a per-frame fd leaked another
+  # from OUR side (both died with this cache).
+  # Key: the AVFrame's pool-buffer identity (buf[0] pointer value). The
+  # cached fd stays valid while WE hold it; the surface returns to the
+  # decode pool, and when the pool recycles it the SAME dmabuf carries
+  # the new frame (the R-side VkImage reads fresh content by inode
+  # identity). The per-frame decode-write barrier is an explicit
+  # vaSyncSurface now — the map ran it only as a side effect.
+  @zc_exports = {} of UInt64 => ZcExport
+  # per-frame check: does the decoded frame come from OUR fixed pool?
+  @zc_pool_match : Bool? = nil
+  # latch: once an import pipeline died in this process, never retry zc
+  # (prevents reopen loops on drivers without dmabuf import)
+  @@zc_dead = false
+  @@dbg_n : Int32 = 0
+  @@zc_sync_ms : Float64 = 0.0 # vaSyncSurface time (diagnostics)
+  @@zc_sync_n : Int32 = 0
+
+  AV_HWDEVICE_TYPE_DRM = 8
+
+  # CPU-side colorimetry (bt709/601 × full/limited): rows of the YUV→RGB
+  # matrix (the limited ladders carry their 255/219 scale in the rows;
+  # `range` carries the offsets only — the shader does raw*scale+bias).
+  private def compute_colorimetry(cctx : LibFF::AVCodecContext*, tenbit : Bool) : Nil
+    full = cctx.value.color_range == 2
+    bt709 = cctx.value.colorspace != 5 # 5 = bt470bg (601); 0/unspec → 709 (HD default)
+    rows = if bt709 && full
+            {1.0, 0.0, 1.5748, 1.0, -0.1873, -0.4681, 1.0, 1.8556, 0.0}
+          elsif bt709
+            {1.1644, 0.0, 1.7927, 1.1644, -0.2132, -0.5329, 1.1644, 2.1124, 0.0}
+          elsif full
+            {1.0, 0.0, 1.402, 1.0, -0.3441, -0.7141, 1.0, 1.772, 0.0}
+          else
+            {1.1644, 0.0, 1.596, 1.1644, -0.3918, -0.813, 1.1644, 2.0172, 0.0}
+          end
+    # normalized-sample offsets: 10-bit planes normalize v10/1023,
+    # 8-bit v/255. Chroma is ALWAYS bipolar around its mid (512/1023,
+    # 128/255) — full vs limited only moves the LUMA ladder (64..940 /
+    # 0..1023); forgetting the chroma center stains everything magenta.
+    y_off = full ? 0.0 : (tenbit ? 64.0 / 1023.0 : 16.0 / 255.0)
+    c_off = tenbit ? 512.0 / 1023.0 : 128.0 / 255.0
+    # std140 mat3: 3 columns × vec4 slots (float c*4+r), zero-padded —
+    # the shader reads a 12-float block, not 9 packed
+    @zc_cmat = StaticArray(Float32, 12).new(0.0f32)
+    3.times do |r|
+      3.times do |c|
+        @zc_cmat.not_nil![c * 4 + r] = rows[r * 3 + c].to_f32
+      end
+    end
+    @zc_range = StaticArray(Float32, 4).new(0.0f32)
+    @zc_range.not_nil![0] = 1.0f32
+    @zc_range.not_nil![1] = y_off.to_f32 * -1.0f32
+    @zc_range.not_nil![2] = 1.0f32
+    @zc_range.not_nil![3] = c_off.to_f32 * -1.0f32
+  end
+
+  @zc_cmat : StaticArray(Float32, 12)?
+  @zc_range : StaticArray(Float32, 4)?
+
+  # Display-hold backpressure (the gstva sink model): keep the last
+  # ZC_HOLD_DEPTH frames' pool checkouts alive, releasing the oldest as
+  # each new frame is queued. Releasing the surface immediately let the
+  # decoder overwrite it (a FUTURE frame) while the render thread had
+  # not sampled the current import yet — on-screen that read as torn
+  # half-frames / a "second video" flickering a few times a second. The
+  # render thread can lag the produce thread by a couple of frames (the
+  # texop mailbox coalesces to the newest op), so one held frame was not
+  # enough; four covers the lag with pool headroom to spare.
+  ZC_HOLD_DEPTH = 4
+  @zc_holds : Array(LibFF::AVFrame*)?
+  @zc_hold_i : Int32 = 0
+
+  private def zc_hold_frame(frame : LibFF::AVFrame*) : Nil
+    holds = (@zc_holds ||=
+             Array.new(ZC_HOLD_DEPTH) { LibFF.av_frame_alloc })
+    slot = holds[@zc_hold_i % ZC_HOLD_DEPTH]
+    @zc_hold_i += 1
+    LibFF.av_frame_unref(slot)      # release the frame DEPTH frames ago
+    LibFF.av_frame_ref(slot, frame) # pin this one
+    LibFF.av_frame_unref(frame)
+  end
+
+  # One hw frame → dmabuf op. False = failure (caller falls back).
+  private def zc_frame(frame : LibFF::AVFrame*) : Bool
+    if LibEguiCr.video_failed != 0 && !@zc_reopen
+      # import pipeline dead — the graph cannot run over OUR pool
+      # (scale_vaapi: invalid VADisplay), so a clean reopen in
+      # copy-back mode is the only working fallback
+      @zc_reopen = @path
+      zc_disable_quiet
+      return false
+    end
+
+    # pts BEFORE any unref — the frame dies on both paths below
+    pts0 = frame.value.pts
+    pts0 = frame.value.best_effort_timestamp if pts0 == LibFF::NOPTS || pts0 < 0
+    # the pool slot identity AND the vaSyncSurface argument: the
+    # VASurfaceID in data[3] (buf[0] is NOT a stable key — the pool
+    # wraps each checkout in a fresh AVBufferRef, probed on ffmpeg 7.1)
+    surface = frame.value.data[3].address
+    # pool identity: a frame's hw_frames_ctx is a per-checkout
+    # AVBufferRef WRAPPER — compare the ->data both refs point at (raw
+    # AVHWFramesContext field reads through the ref are garbage)
+    frame_ctx = LibVideoPool.ref_data(frame.value.hw_frames_ctx)
+    ours_ctx = LibVideoPool.ref_data(@zc_frames.not_nil!)
+    @zc_pool_match = frame_ctx == ours_ctx
+    if ENV["EGUI_VIDEO_DEBUG"]? && (@@dbg_n += 1) <= 4
+      STDERR.printf("[zc] pool=%s frame_ctx=%x ours=%x | sid=%x exports=%d\n",
+        @zc_pool_match ? "OURS" : "THEIRS", frame_ctx.address,
+        ours_ctx.address, surface, @zc_exports.size)
+    end
+
+    # decode-write barrier FIRST: the decoder's job for THIS surface
+    # must finish before the render thread samples the import. The old
+    # path got this implicitly from av_hwframe_map; with export-once
+    # the map runs too rarely to order anything.
+    t_sync = Time.instant
+    if LibVideoPool.sync_surface(@hw_device.not_nil!, surface.to_u32) != 0
+      @error = "zc: vaSyncSurface failed"
+      LibFF.av_frame_unref(frame)
+      return false
+    end
+    @@zc_sync_ms += (Time.instant - t_sync).total_milliseconds
+    @@zc_sync_n += 1
+
+    if exp = @zc_exports[surface]?
+      # known surface: no map, no export — the cached fd pins the same
+      # dmabuf, whose inode the R side already imported. The shim's fd
+      # contract is OWNED (its op closes or consumes it), so the cache's
+      # long-lived fd never crosses the boundary — each frame hands the
+      # shim a fresh dup of it (the gstvaallocator model: the pool keeps
+      # its dmabufs forever, consumers take their own references).
+      zc_hold_frame(frame)
+      fd = LibFF.dup_fd(exp.fd)
+      size_i = exp.size
+      w = exp.w
+      h = exp.h
+      pitch_y = exp.pitch_y
+      pitch_uv = exp.pitch_uv
+      off_y = exp.off_y
+      off_uv = exp.off_uv
+      modifier = exp.modifier
+      fc_y = exp.fc_y
+      fc_uv = exp.fc_uv
+    else
+      # first sight of this pool surface: export ONCE via a direct
+      # vaExportSurfaceHandle (backend/video_pool.c) and keep the fd for
+      # the surface's whole life. This REPLACES ffmpeg's derived-DRM-ctx
+      # + av_hwframe_map path — that one checked out an EXTRA VA surface
+      # from our pool per map (the derived ctx's get_buffer pulls its
+      # own), bloating the decoder's working set from ~3 to ~25 surfaces
+      # and starving the pool (repro: tools/zc_probe.c pin=3 vs pin=1);
+      # it also leaked one fd per map inside ffmpeg 7.1.
+      xfer = StaticArray(Int64, 12).new(0_i64)
+      if LibVideoPool.export_surface(@hw_device.not_nil!, surface.to_u32,
+                                     xfer.to_unsafe) != 0
+        @error = "zc: export sid #{surface}"
+        LibFF.av_frame_unref(frame)
+        return false
+      end
+      zc_hold_frame(frame)
+
+      keep_fd = xfer[0].to_i32     # the cache's fd — lives forever
+      fd = LibFF.dup_fd(keep_fd)  # the op's fd — owned by the shim
+      size_i = xfer[1].to_i32
+      w = xfer[2].to_i32
+      h = xfer[3].to_i32
+      pitch_y = xfer[4].to_i32
+      pitch_uv = xfer[5].to_i32
+      off_y = xfer[6].to_i32
+      off_uv = xfer[7].to_i32
+      modifier = xfer[8].to_u64!
+      fc_y = xfer[10].to_u32!
+      fc_uv = xfer[11].to_u32!
+
+      @zc_exports[surface] = ZcExport.new(keep_fd, size_i, w, h,
+        pitch_y, pitch_uv, off_y, off_uv, modifier, fc_y, fc_uv)
+    end
+
+    compute_colorimetry(@codec_ctx.not_nil!,
+      tenbit: fc_y == 0x20363152u32) # 'R16 '
+    LibEguiCr.video_frame(@video_id, fd, size_i, w, h,
+      pitch_y, pitch_uv, off_y, off_uv, modifier,
+      fc_y, fc_uv,
+      @zc_cmat.not_nil!.to_unsafe, @zc_range.not_nil!.to_unsafe)
+
+    @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
+    @display_pts = @shown_pts
+    @next_pts = @shown_pts + @frame_dur
+    @width = w
+    @height = h
+    @frame_count += 1
+    @fps_frames += 1
+    if @fps_frames == 1
+      @fps_wall = now_sec
+    elsif (dt = now_sec - @fps_wall) >= 1.0
+      @decode_fps = @fps_frames / dt
+      @fps_frames = 0
+    end
+    true
+  end
+
+  # Release zero-copy resources WITHOUT the copy-back ladder surgery —
+  # used by the reopen fallback (close/open rebuilds everything).
+  private def zc_disable_quiet : Nil
+    @zc = false
+    @video_texture_id = 0_u64
+    unless @video_id.zero?
+      LibEguiCr.video_destroy(@video_id)
+      @video_id = 0_u32
+    end
+    if (holds = @zc_holds)
+      holds.each { |h| hp = h; LibFF.av_frame_free(pointerof(hp)) }
+      @zc_holds = nil
+      @zc_hold_i = 0
+    end
+    # the export cache pins one fd per pool surface — release them (the
+    # R side holds its own refs where it still samples the import)
+    @zc_exports.each_value { |e| LibC.close(e.fd) }
+    @zc_exports.clear
+  end
+
+  # Drop the zero-copy path mid-play: back to copy-back (GL / import
+  # failure). The scale graph rebuilds with hwdownload on the next frame.
+  private def zc_disable : Nil
+    return unless @zc
+    @@zc_dead = true
+    zc_disable_quiet
+    @video_texture_id = 0_u64
+    # Back to copy-back: its CPU cost is resolution-sensitive, so the
+    # adaptive ladder wakes up again (staying at the zc fixed size
+    # would stall the produce thread — the copy-back pipeline cannot
+    # sustain it).
+    native = {@width, @height}.max
+    @lad = [native, 3840, 2560, 1920, 1600, 1280, 1024, 854, 640]
+      .select { |s| s <= native }.uniq.sort.reverse
+    @search_lo = 0
+    @search_hi = @lad.size - 1
+    cur = {(@lad[0] == native ? native : native), @lad[@li]? || native}.min
+    @li = @lad.index { |s| s <= (@lad[@li]? || native) } ||
+          {@lad.size // 2, @lad.size - 1}.min
+    @adapt_on = true
+    @adapt_locked = false
+    @pipe_ms = 0.0
+    @probe_n = 0
+    hw_graph_reset
+    @sws = nil
+  end
+
   private def maybe_transfer(frame : LibFF::AVFrame*) : LibFF::AVFrame*?
     return frame unless @hw_transfer
     if frame.value.format == @@hw_pix_fmt && hw_graph_ensure(frame) &&
@@ -923,6 +1412,9 @@ class VideoPlayer
       code = LibFF.av_buffersink_get_frame(sink, dst)
       @error = "hw frame pipeline failed: #{FF.error_string(code)}" if code < 0
       return nil if code < 0
+      # a graph built for zero-copy (vaapi sink) has no CPU pixels —
+      # never hand it to the conversion path
+      return nil if dst.value.format == @@hw_pix_fmt
       return dst
     end
     if frame.value.format == @@hw_pix_fmt
@@ -937,6 +1429,10 @@ class VideoPlayer
       LibFF.av_frame_unref(frame) # surface back to the decoder's pool
       return dst
     end
+    # A hw frame with no working transfer path must die HERE — feeding
+    # it onward makes sws_get_context return NULL and sws_scale(NULL)
+    # segfault (the seek crash: "vaapi is not supported as input")
+    return nil if frame.value.format == @@hw_pix_fmt
     frame
   end
 
@@ -974,6 +1470,15 @@ class VideoPlayer
       code = LibFF.avcodec_receive_frame(cctx, frame)
       if code == 0
         t0 = Time.instant
+        if @zc && @hw_transfer && frame.value.format == @@hw_pix_fmt
+          ok = zc_frame(frame)
+          if !ok && LibEguiCr.video_failed != 0
+            zc_disable
+            return false
+          end
+          adapt_tick((Time.instant - t0).total_milliseconds) if @hw_transfer
+          return ok
+        end
         ok = false
         if (cpu = maybe_transfer(frame))
           convert_frame(cpu, clock)
@@ -1251,13 +1756,15 @@ class VideoPlayer
   # repaints. Only the newest frame's pixels are displayed, so batching is
   # also cheaper.
   private def convert_frame(frame : LibFF::AVFrame*, clock : Float64? = nil) : Nil
+    return if frame.value.format == @@hw_pix_fmt # hw frames have no CPU pixels
     pts = frame.value.pts
     pts = frame.value.best_effort_timestamp if pts == LibFF::NOPTS || pts < 0
     @shown_pts = pts != LibFF::NOPTS && pts >= 0 ? pts_to_seconds(pts) : @shown_pts + @frame_dur
     if clock.nil? || @shown_pts <= clock + @frame_dur * 0.6
       fw = frame.value.width
       fh = frame.value.height
-      if fw != @width || fh != @height || @sws.nil?
+      if fw != @width || fh != @height || @sws.nil? ||
+         (@texture_id.zero? && !@zc)
         @width = fw
         @height = fh
         if (sws = @sws)

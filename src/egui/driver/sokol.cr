@@ -331,6 +331,20 @@ lib LibEguiCr
   fun update_texture = egui_cr_update_texture(view_id : UInt32, w : Int32,
                                               h : Int32, data : UInt8*)
   fun destroy_texture = egui_cr_destroy_texture(view_id : UInt32)
+  # zero-copy video (Vulkan shim section): dmabuf planes → sg images,
+  # drawn via egui_cr_pkt_video with stream colorimetry
+  fun video_supported = egui_cr_video_supported : Int32
+  fun video_create = egui_cr_video_create : UInt32
+  fun video_destroy = egui_cr_video_destroy(id : UInt32)
+  fun video_failed = egui_cr_video_failed : Int32
+  fun video_last_fd = egui_cr_video_last_fd : Int32
+  fun video_frame = egui_cr_video_frame(id : UInt32, fd : Int32, size : Int32,
+    w : Int32, h : Int32, pitch_y : Int32, pitch_uv : Int32, off_y : Int32,
+    off_uv : Int32, modifier : UInt64, fc_y : UInt32, fc_uv : UInt32,
+    cmat : Float32*, range : Float32*)
+  fun pkt_video = egui_cr_pkt_video(x : Float32, y : Float32, w : Float32,
+    h : Float32, cx : Float32, cy : Float32, cw : Float32, ch : Float32,
+    vid : UInt32)
   fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
   fun sgl_bind_texture_nearest = egui_cr_sgl_texture_nearest(view_id : UInt32)
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
@@ -2733,6 +2747,8 @@ module Egui
           paint_shadow(cmd)
         when Egui::ImageCmd
           paint_image(cmd)
+        when Egui::VideoCmd
+          paint_video(cmd)
         when Egui::Mesh3DCmd
           paint_mesh3d(cmd)
         when Egui::ScrollBracketCmd
@@ -3168,6 +3184,23 @@ module Egui
         LibEguiCr.sgl_end
         LibEguiCr.alpha_pipeline_pop
         LibEguiCr.sgl_disable_texture
+      end
+
+      # Zero-copy video quad: the rect/clip ride the opstream as one
+      # SH_OP_VIDEO (points, like every painter op); the render thread
+      # stashes it as an sgl-layer segment and draws it through the
+      # video pipeline with the frame's colorimetry. GL builds record
+      # nothing (the player never emits VideoCmd there — the video seam
+      # answers 0).
+      def self.paint_video(cmd : Egui::VideoCmd) : Nil
+        return if cmd.texture_id.zero?
+        r = cmd.rect
+        c = cmd.clip
+        LibEguiCr.pkt_video(r.min.x.to_f32, r.min.y.to_f32,
+          r.width.to_f32, r.height.to_f32,
+          c.min.x.to_f32, c.min.y.to_f32,
+          c.width.to_f32, c.height.to_f32,
+          cmd.texture_id.to_u32!)
       end
 
       # One batched 3D mesh (Viewport3D): clip to the widget's rect,

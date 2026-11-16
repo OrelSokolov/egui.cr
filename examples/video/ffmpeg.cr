@@ -78,7 +78,8 @@ lib LibFF
   end
 
   # AVCodecContext (offsets: pkt_timebase=92, width=116, height=120,
-  # pix_fmt=140, get_format=192, hw_device_ctx=560, thread_count=656,
+  # pix_fmt=140, get_format=192, hw_frames_ctx=552, hw_device_ctx=560,
+  # extra_hw_frames=572, thread_count=656,
   # thread_type=660 — probed against the installed libavcodec 61)
   struct AVCodecContext
     av_class : UInt8*      # 0
@@ -89,11 +90,18 @@ lib LibFF
     height : Int32         # 120
     pad2 : UInt8[16]       # 124..139
     pix_fmt : Int32        # 140
-    pad3 : UInt8[48]       # 144..191
+    pad3a : UInt8[8]       # 144..151
+    color_trc : Int32      # 152
+    colorspace : Int32     # 156 (1 = bt709, 5 = bt470bg/smp170m-ish 601)
+    color_range : Int32    # 160 (1 = limited, 2 = full/pc)
+    pad3b : UInt8[28]      # 164..191
     get_format : (AVCodecContext*, Int32*) -> Int32 # 192
-    pad4 : UInt8[360]      # 200..559
+    pad4 : UInt8[352]      # 200..551
+    hw_frames_ctx : UInt8* # 552 (AVBufferRef* — OUR fixed pool goes here)
     hw_device_ctx : UInt8* # 560 (AVBufferRef*)
-    pad5 : UInt8[88]       # 568..655
+    pad5 : UInt8[4]        # 568..571
+    extra_hw_frames : Int32 # 572
+    pad6 : UInt8[80]       # 576..655
     thread_count : Int32   # 656
     thread_type : Int32    # 660
   end
@@ -110,9 +118,15 @@ lib LibFF
     format : Int32     # 116 (AVPixelFormat)
     pad0 : UInt8[16]   # 120..135
     pts : Int64        # 136 (pkt_timebase units)
-    pad1 : UInt8[176]  # 144..319
+    pad1 : UInt8[56]   # 144..199
+    # buf[0..3] @200 (probed): the frame's pool-buffer refs — NOTE the
+    # POINTER VALUE is NOT a stable per-surface key (the pool wraps each
+    # checkout in a fresh AVBufferRef on ffmpeg 7.1); the VASurfaceID in
+    # data[3] is (player.cr zc export-once cache keys on that)
+    buf : UInt8*[4]         # 200..231
+    pad2 : UInt8[88]   # 232..319
     best_effort_timestamp : Int64 # 320
-    pad2 : UInt8[24]   # 328..351
+    pad3 : UInt8[24]   # 328..351
     hw_frames_ctx : UInt8* # 352 (AVBufferRef* on hw-decoded frames)
   end
 
@@ -173,6 +187,7 @@ lib LibFF
   fun av_frame_alloc = av_frame_alloc : AVFrame*
   fun av_frame_free = av_frame_free(frame : AVFrame**)
   fun av_frame_unref = av_frame_unref(frame : AVFrame*)
+  fun av_frame_ref = av_frame_ref(dst : AVFrame*, src : AVFrame*) : Int32
   fun av_strerror = av_strerror(errnum : Int32, errbuf : UInt8*,
                                 errbuf_size : UInt64) : Int32
   fun av_get_pix_fmt = av_get_pix_fmt(name : UInt8*) : Int32
@@ -189,6 +204,82 @@ lib LibFF
   fun av_buffer_unref = av_buffer_unref(buf : UInt8**) : Nil
   fun av_strdup = av_strdup(s : UInt8*) : UInt8*
   fun av_free = av_free(ptr : Void*) : Nil
+
+  # AVHWFramesContext (offsets: initial_pool_size=56, format=60,
+  # sw_format=64, width=68, height=72 — probed against libavutil 59)
+  struct AVHWFramesContext
+    av_class : UInt8*       # 0
+    internal : UInt8*       # 8
+    device_ref : UInt8*     # 16
+    device_ctx : UInt8*     # 24
+    hwctx : UInt8*          # 32
+    pool : UInt8*           # 40
+    pad0 : UInt8[8]         # 48..55
+    initial_pool_size : Int32 # 56
+    format : Int32          # 60
+    sw_format : Int32       # 64
+    width : Int32           # 68
+    height : Int32          # 72
+  end
+
+  fun av_hwframe_ctx_alloc = av_hwframe_ctx_alloc(device_ctx : UInt8*) : UInt8*
+  fun av_hwframe_ctx_init = av_hwframe_ctx_init(frames_ctx : UInt8*) : Int32
+  fun av_buffer_ref = av_buffer_ref(buf : UInt8*) : UInt8*
+
+  # --- libavutil/hwcontext (zero-copy: vaapi frame → DRM dmabuf) -------
+  # Public export path: derive a DRM_PRIME frames context from the
+  # decoder's VAAPI one, then per frame av_hwframe_map → the descriptor
+  # below carries the dmabuf fd + plane layout for the GPU import.
+  fun av_hwframe_ctx_create_derived = av_hwframe_ctx_create_derived(
+    derived_frame_ctx : UInt8**, format : Int32,
+    derived_device_ctx : UInt8*, source_frame_ctx : UInt8*,
+    flags : Int32) : Int32
+  fun av_hwframe_map = av_hwframe_map(dst : AVFrame*, src : AVFrame*,
+                                      flags : Int32) : Int32
+  # ffmpeg's VA→DRM export never closes the per-map dmabuf fd (verified:
+  # +1 open fd per frame, userspace dups all accounted) — the player
+  # takes the close over after queueing its own dup of the descriptor.
+  fun close = close(fd : Int32) : Int32
+  fun dup_fd = dup(fd : Int32) : Int32
+  fun av_hwframe_get_buffer = av_hwframe_get_buffer(hw_frames_ctx : UInt8*,
+                                                    frame : AVFrame*,
+                                                    flags : Int32) : Int32
+  AV_PIX_FMT_DRM_PRIME = 178
+  AV_HWFRAME_MAP_READ  = 4 # 1 << 2
+
+  # AVDRMPlaneDescriptor (offsets: object_index=0, offset=8, pitch=16)
+  struct AVDRMPlaneDescriptor
+    object_index : Int32
+    pad0 : UInt8[4]
+    offset : Int64
+    pitch : Int64
+  end
+
+  # AVDRMLayerDescriptor (format=0, nb_planes=4, planes=8; 4 planes)
+  struct AVDRMLayerDescriptor
+    format : UInt32
+    nb_planes : Int32
+    planes : AVDRMPlaneDescriptor[4]
+  end
+
+  # AVDRMObjectDescriptor (fd=0, size=8, format_modifier=16)
+  struct AVDRMObjectDescriptor
+    fd : Int32
+    pad0 : UInt8[4]
+    size : UInt64
+    format_modifier : UInt64
+  end
+
+  # AVDRMFrameDescriptor (nb_objects=0, objects=8, nb_layers=104,
+  # layers=112; sizeof=528 — probed against libavutil 59)
+  struct AVDRMFrameDescriptor
+    nb_objects : Int32
+    pad0 : UInt8[4]
+    objects : AVDRMObjectDescriptor[4]
+    nb_layers : Int32
+    pad1 : UInt8[4]
+    layers : AVDRMLayerDescriptor[4]
+  end
 
   # --- libavfilter (GPU scale_vaapi → hwdownload pipeline) ---
   # AVFilterInOut (offsets: name=0, filter_ctx=8, pad_idx=16, next=24)

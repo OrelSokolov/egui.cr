@@ -783,6 +783,10 @@ Java_com_eguicr_ime_EguiCrActivity_nativeClipboardChanged(JNIEnv* env,
 static cr_init_cb   g_init;
 static cr_frame_cb  g_frame;
 static cr_cleanup_cb g_cleanup;
+// Set when sokol_gfx is shut down (render-thread / legacy cleanup):
+// texture and atlas entry points no-op past this — Crystal-side
+// finalizers may run after (GC at exit) and must not touch dead pools.
+static int g_sg_down;
 static cr_event_cb  g_event;
 
 // from egui_cr_sapp_run: strip the system window chrome in init_cb,
@@ -827,7 +831,9 @@ static int sh_msaa_resolve(int msaa) {
 // routing prologues below call them on every platform, but on non-
 // detached ones (macOS) sh_run_direct() always succeeds so the stubs
 // at the bottom of this block are never reached.
-typedef enum { SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY } sh_texop_kind;
+typedef enum {
+    SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY, SH_TEX_VIDEOFRAME
+} sh_texop_kind;
 static int sh_run_direct(void);
 // SDF deferred-interleave state (defined with the SDF section below;
 // begin/end_pass and the sdf entry points drive it)
@@ -1188,8 +1194,14 @@ static void sh_frame_cb(void) {
     sh_x11_sync_request_confirm(sapp_width(), sapp_height());
 #endif
 }
-static void sh_cleanup_cb(void){ g_cleanup(); }
-
+static void sh_cleanup_cb(void){
+    g_cleanup();
+    // legacy loop: the same Vulkan/GL object teardown as the render
+    // thread's sh_rt_cleanup_cb (see the note there)
+    sgl_shutdown();
+    sg_shutdown();
+    g_sg_down = 1;
+}
 #if defined(__ANDROID__) || defined(__APPLE__)
 // Two-finger pinch → zoom: the distance ratio between the touches is
 // re-emitted as a custom event type (outside sapp_event_type's 0..26
@@ -3334,6 +3346,535 @@ static void sh_sdf_ensure(void) {
     SH_LAZY_UNLOCK();
 }
 
+// ---- zero-copy video quad pipeline -----------------------------------------
+//
+// The totem-style path: decoded VASurface → dmabuf → two plane images
+// (Y: R16/R8, UV: GR32/GR88) → this pipeline draws the quad and does
+// YUV→RGB with uniform-driven colorimetry (matrix + range resolved on
+// the CPU from stream metadata — bt709/bt601 × full/limited × 8/10-bit;
+// see backend/shaders/video_quad.frag for the math). The dmabuf import
+// (sg image creation over external memory) lands next; this section
+// owns the shader + pipeline so it is testable independent of import.
+//
+// Vulkan: SPIR-V blobs from `rake shaders` (backend/shaders/
+// video_quad_spv.h — no runtime GLSL under Vulkan). GL backends: the
+// same shader as runtime-compiled source (uniform NAMES needed there,
+// SPIR-V reflects by binding).
+
+#if defined(SOKOL_VULKAN)
+#include "video_quad_spv.h"
+#endif
+
+static sg_pipeline g_video_pip;
+static sg_shader g_video_shd;
+static int g_video_state; // 0 not tried, 1 ready, -1 failed
+
+#if !defined(SOKOL_VULKAN)
+static const char SH_VIDEO_VS[] =
+#if defined(SOKOL_GLCORE)
+    "#version 410\n"
+#else
+    "#version 300 es\n"
+    "precision highp float;\n"
+#endif
+    "layout(std140) uniform video_vs_t { mat4 mvp; } vs;\n"
+    "layout(location = 0) in vec2 pos;\n"
+    "layout(location = 1) in vec2 uv0;\n"
+    "layout(location = 0) out vec2 v_uv;\n"
+    "void main() { v_uv = uv0; gl_Position = vs.mvp * vec4(pos, 0.0, 1.0); }\n";
+
+static const char SH_VIDEO_FS[] =
+#if defined(SOKOL_GLCORE)
+    "#version 410\n"
+#else
+    "#version 300 es\n"
+    "precision highp float;\n"
+#endif
+    "layout(std140) uniform video_fs_t { mat3 cmat; vec4 range; } fs;\n"
+    "uniform sampler2D y_smp;\n"
+    "uniform sampler2D uv_smp;\n"
+    "layout(location = 0) in vec2 v_uv;\n"
+    "layout(location = 0) out vec4 frag_color;\n"
+    "void main() {\n"
+    "    float y = texture(y_smp, v_uv).r * fs.range.x + fs.range.y;\n"
+    "    vec2 uvr = texture(uv_smp, v_uv).rg * fs.range.zw;\n"
+    "    vec3 rgb = fs.cmat * vec3(y, uvr.x + fs.range.w, uvr.y + fs.range.w);\n"
+    "    frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n"
+    "}\n";
+#endif // !SOKOL_VULKAN
+
+// Create shader + pipeline. Thread-safe via the SDF lazy lock (same
+// render-thread ownership: called from the packet replay path).
+static void sh_video_pipeline_ensure(void) {
+    if (g_video_state) return;
+    SH_LAZY_LOCK();
+    if (g_video_state) { SH_LAZY_UNLOCK(); return; }
+    sg_shader_desc sd;
+    memset(&sd, 0, sizeof sd);
+    // block 0 (VS): mvp; block 1 (FS): cmat (mat3) + range (vec4)
+    sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[0].size = 64;
+    sd.uniform_blocks[0].spirv_set0_binding_n = 0;
+    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "video_vs_t";
+    sd.uniform_blocks[1].stage = SG_SHADERSTAGE_FRAGMENT;
+    sd.uniform_blocks[1].size = 64; // mat3 48 + vec4 16, std140 layout
+    sd.uniform_blocks[1].spirv_set0_binding_n = 1;
+    sd.uniform_blocks[1].glsl_uniforms[0].glsl_name = "video_fs_t";
+    for (int i = 0; i < 2; i++) {
+        sd.views[i].texture.stage = SG_SHADERSTAGE_FRAGMENT;
+        sd.views[i].texture.image_type = SG_IMAGETYPE_2D;
+        sd.views[i].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
+        sd.views[i].texture.spirv_set1_binding_n = (uint8_t)i;
+        sd.samplers[i].stage = SG_SHADERSTAGE_FRAGMENT;
+        sd.samplers[i].sampler_type = SG_SAMPLERTYPE_FILTERING;
+        sd.samplers[i].spirv_set1_binding_n = (uint8_t)(32 + i);
+        sd.texture_sampler_pairs[i].stage = SG_SHADERSTAGE_FRAGMENT;
+        sd.texture_sampler_pairs[i].view_slot = i;
+        sd.texture_sampler_pairs[i].sampler_slot = i;
+        sd.texture_sampler_pairs[i].glsl_name =
+            i == 0 ? "y_smp" : "uv_smp";
+    }
+#if defined(SOKOL_VULKAN)
+    sd.vertex_func.bytecode.ptr = sh_video_vs_spv;
+    sd.vertex_func.bytecode.size = sh_video_vs_spv_len;
+    sd.fragment_func.bytecode.ptr = sh_video_fs_spv;
+    sd.fragment_func.bytecode.size = sh_video_fs_spv_len;
+#else
+    sd.vertex_func.source = SH_VIDEO_VS;
+    sd.fragment_func.source = SH_VIDEO_FS;
+#endif
+    sd.label = "egui-cr-video-shader";
+    g_video_shd = sg_make_shader(&sd);
+    if (g_video_shd.id == 0) {
+        g_video_state = -1;
+        SH_LAZY_UNLOCK();
+        return;
+    }
+    sg_pipeline_desc pd;
+    memset(&pd, 0, sizeof pd);
+    pd.shader = g_video_shd;
+    pd.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT2; // pos
+    pd.layout.attrs[1].format = SG_VERTEXFORMAT_FLOAT2; // uv0
+    pd.colors[0].write_mask = SG_COLORMASK_RGBA;
+    pd.colors[0].blend.enabled = true; // over the UI background
+    pd.colors[0].blend.src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA;
+    pd.colors[0].blend.dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    pd.colors[0].blend.src_factor_alpha = SG_BLENDFACTOR_SRC_ALPHA;
+    pd.colors[0].blend.dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+    pd.label = "egui-cr-video-pip";
+    g_video_pip = sg_make_pipeline(&pd);
+    g_video_state = g_video_pip.id ? 1 : -1;
+    SH_LAZY_UNLOCK();
+}
+
+// ---- zero-copy video textures (dmabuf → VkImage → sg image) ---------------
+//
+// The A thread decodes (VAAPI) and maps the surface to a dmabuf
+// descriptor (ffmpeg av_hwframe map — see examples/video/player.cr); the
+// descriptor rides the packet as an SH_TEX_VIDEOFRAME op; the RENDER
+// thread imports it here: one VkDeviceMemory per dmabuf, two VkImages
+// bound at the plane offsets, each wrapped into an sg image via the
+// vendored-sokol `.vk_image` injection. The draw (SH_OP_VIDEO → an
+// sgl-layer segment, kind 3) samples both planes through the video
+// pipeline with the frame's colorimetry uniforms.
+//
+// GL backends: no path — egui_cr_video_supported() answers 0 and the
+// player keeps the copy-back pipeline.
+
+#if defined(SOKOL_VULKAN)
+
+#define SH_VIDEO_MAX 8
+#define DRM_FORMAT_MOD_LINEAR 0ULL
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+
+static sg_buffer g_video_vbuf;
+static void sh_video_vbuf_ensure(void);
+
+// Extension function: fetched per device (the loader exports only core)
+typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR_t)(
+    VkDevice, VkExternalMemoryHandleTypeFlagBits, int, VkMemoryFdPropertiesKHR*);
+static PFN_vkGetMemoryFdPropertiesKHR_t sh_vk_get_fd_props;
+
+// imported plane-set cache: the VA decode pool cycles a fixed set of
+// surfaces (pool_size 20 + extra_hw_frames 8 on the player side), so
+// the SAME dma-buf object (same inode — export dups get a fresh fd
+// number each time) keeps coming back. Import once per buffer, reuse
+// forever — no per-frame device memory churn.
+// 32 slots: the cache must cover the WHOLE surface working set. A
+// 3-slot round-robin against a 28-surface pool never sees an inode
+// twice — every frame paid vkAllocateMemory + 2 VkImages + the
+// eviction frees (the per-frame GPU churn behind the "plays fine, then
+// lags" mode). Pinning is safe with the fixed pool: the decoder
+// recycles a surface by rewriting the SAME GEM object in place, which
+// is exactly what the cached VkImage then samples.
+#define SH_VIDEO_CACHE 32
+typedef struct {
+    uint64_t ino;             // dmabuf identity (fstat), 0 = empty slot
+    VkImage y, uv;            // ours (created via sh_video_plane)
+    VkDeviceMemory mem;
+    sg_image y_sg, uv_sg;     // sg wrappers (injected)
+} sh_video_import_t;
+
+typedef struct {
+    uint32_t id;
+    int w, h;
+    sh_video_import_t cur;    // what the draw samples right now
+    sh_video_import_t cache[SH_VIDEO_CACHE];
+    int cache_next;           // round-robin eviction
+    float cmat[12];           // std140 mat3 layout (3 padded columns)
+    float range[4];
+} sh_video_t;
+static sh_video_t g_video_tab[SH_VIDEO_MAX];
+static _Atomic int g_video_fail; // 1 after any import failure → fallback
+// fd bookkeeping (diagnostics): dups by the A side vs closes/eats
+static int g_zc_fd_dup, g_zc_fd_close, g_zc_fd_eaten;
+static int g_zc_last_dup, g_zc_last_eaten;
+// live dups (ops in flight) — the janitor must never close these
+#define SH_ZC_LIVE 64
+static int g_zc_live[SH_ZC_LIVE];
+static int g_zc_live_n;
+static void sh_zc_live_add(int fd) {
+    if (g_zc_live_n < SH_ZC_LIVE) g_zc_live[g_zc_live_n++] = fd;
+}
+static void sh_zc_live_del(int fd) {
+    for (int i = 0; i < g_zc_live_n; i++)
+        if (g_zc_live[i] == fd) {
+            g_zc_live[i] = g_zc_live[--g_zc_live_n];
+            return;
+        }
+}
+
+// ffmpeg 7.1's VA→DRM export path leaks one dmabuf fd per map (two
+// PRIME_HANDLE_TO_FD per frame, one never closed — userspace dups are
+// fully accounted). Collect the orphans: close every dmabuf fd that is
+// not a live dup of ours. The kernel dmabuf refcount drops with the fd,
+// so pinned decode buffers actually recycle.
+static void sh_zc_janitor(void) {
+    DIR* d = opendir("/proc/self/fd");
+    if (!d) return;
+    struct dirent* e;
+    int closed_n = 0;
+    while ((e = readdir(d))) {
+        int fd = atoi(e->d_name);
+        if (fd <= 2) continue;
+        char path[64], target[256];
+        snprintf(path, sizeof path, "/proc/self/fd/%d", fd);
+        ssize_t n = readlink(path, target, sizeof target - 1);
+        if (n <= 0) continue;
+        target[n] = 0;
+        if (!strstr(target, "dmabuf")) continue;
+        int live = 0;
+        for (int i = 0; i < g_zc_live_n; i++)
+            if (g_zc_live[i] == fd) { live = 1; break; }
+        if (live) continue;
+        close(fd);
+        closed_n++;
+    }
+    closedir(d);
+    if (getenv("EGUI_VIDEO_DEBUG") && closed_n)
+        fprintf(stderr, "[zc] janitor closed %d orphan dmabuf fds\n",
+                closed_n);
+}
+
+// The SH_TEX_VIDEOFRAME payload (op data, malloc'd; fd OWNED — the
+// importer closes it, splice-drops close it too via sh_texop_free).
+typedef struct {
+    int fd;
+    int size, w, h;
+    int pitch_y, pitch_uv, off_y, off_uv;
+    uint64_t modifier;
+    uint32_t fc_y, fc_uv;     // drm fourcc per plane (R16/GR32/R8/GR88)
+    float cmat[12]; // std140 mat3: 3 vec4-padded columns (see the shader)
+    float range[4];
+} sh_video_frame_t;
+
+static sh_video_t* sh_video_find(uint32_t id) {
+    for (int i = 0; i < SH_VIDEO_MAX; i++)
+        if (g_video_tab[i].id == id) return &g_video_tab[i];
+    return NULL;
+}
+
+static VkFormat sh_video_vk_format(uint32_t fourcc) {
+    switch (fourcc) {
+    case 0x20363152u: return VK_FORMAT_R16_UNORM;      // 'R16 '
+    case 0x32335247u: return VK_FORMAT_R16G16_UNORM;   // 'GR32'
+    case 0x20203852u: return VK_FORMAT_R8_UNORM;       // 'R8  '
+    case 0x38385247u: return VK_FORMAT_R8G8_UNORM;     // 'GR88'
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
+static sg_pixel_format sh_video_sg_format(uint32_t fourcc) {
+    switch (fourcc) {
+    case 0x20363152u: return SG_PIXELFORMAT_R16;
+    case 0x32335247u: return SG_PIXELFORMAT_RG16;
+    case 0x20203852u: return SG_PIXELFORMAT_R8;
+    case 0x38385247u: return SG_PIXELFORMAT_RG8;
+    default: return SG_PIXELFORMAT_RGBA8;
+    }
+}
+
+// One plane → VkImage over the imported memory at `offset`, wrapped in
+// an sg image (desc.vk_image injection — sokol owns the view, not the
+// image). Returns 0 on failure.
+static sg_image sh_video_plane(VkDeviceMemory mem, VkDeviceSize offset,
+                               uint32_t fourcc, int w, int h,
+                               uint64_t modifier, VkImage* raw) {
+    VkFormat fmt = sh_video_vk_format(fourcc);
+    if (fmt == VK_FORMAT_UNDEFINED || w <= 0 || h <= 0) return (sg_image){0};
+    _SG_STRUCT(VkExternalMemoryImageCreateInfo, ext);
+    ext.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO;
+    ext.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+    _SG_STRUCT(VkImageDrmFormatModifierListCreateInfoEXT, mods);
+    mods.sType =
+        VK_STRUCTURE_TYPE_IMAGE_DRM_FORMAT_MODIFIER_LIST_CREATE_INFO_EXT;
+    mods.drmFormatModifierCount = 1;
+    mods.pDrmFormatModifiers = &modifier;
+
+    _SG_STRUCT(VkImageCreateInfo, ci);
+    ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    ci.imageType = VK_IMAGE_TYPE_2D;
+    ci.format = fmt;
+    ci.extent.width = (uint32_t)w;
+    ci.extent.height = (uint32_t)h;
+    ci.extent.depth = 1;
+    ci.mipLevels = 1;
+    ci.arrayLayers = 1;
+    ci.samples = VK_SAMPLE_COUNT_1_BIT;
+    ci.tiling = modifier == DRM_FORMAT_MOD_LINEAR
+        ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
+    ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+    ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    ci.pNext = &ext;
+    if (ci.tiling == VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT)
+        ext.pNext = &mods; // modifier list rides the externals chain
+
+    VkImage img;
+    if (vkCreateImage(_sg.vk.dev, &ci, 0, &img) != VK_SUCCESS)
+        return (sg_image){0};
+    _SG_STRUCT(VkMemoryRequirements, req);
+    vkGetImageMemoryRequirements(_sg.vk.dev, img, &req);
+    if (req.memoryTypeBits == 0 || // dma-buf memory type mismatch
+        offset + req.size > req.alignment * (1 + req.size / req.alignment)) {
+        // (rough containment check; the bind below is the real one)
+    }
+    _SG_STRUCT(VkBindImageMemoryInfo, bi);
+    bi.sType = VK_STRUCTURE_TYPE_BIND_IMAGE_MEMORY_INFO;
+    bi.image = img;
+    bi.memory = mem;
+    bi.memoryOffset = offset;
+    // Plain bind: the modifier is baked into the image at CREATION
+    // (VkImageDrmFormatModifierListCreateInfoEXT above); there is no
+    // bind-side modifier struct (the earlier one here was invented —
+    // the validation layer called the bluff with an unknown-sType).
+    if (vkBindImageMemory2(_sg.vk.dev, 1, &bi) != VK_SUCCESS) {
+        vkDestroyImage(_sg.vk.dev, img, 0);
+        return (sg_image){0};
+    }
+    sg_image_desc d;
+    memset(&d, 0, sizeof d);
+    d.width = w;
+    d.height = h;
+    d.pixel_format = sh_video_sg_format(fourcc);
+    // not immutable: injected images carry no init data (the immutable
+    // path would validate a data-size match we cannot provide)
+    d.usage.dynamic_update = true;
+    d.label = "egui-cr-video-plane";
+    d.vk_image = img;
+    sg_image sgimg = sg_make_image(&d);
+    if (sgimg.id == 0) {
+        vkDestroyImage(_sg.vk.dev, img, 0);
+        return (sg_image){0};
+    }
+    // The injected image starts in UNDEFINED layout; sokol cannot
+    // transition it inside a pass (its bind path asserts TEXTURE
+    // access). Transition here — sh_video_import runs in the packet
+    // pre-pass, OUTSIDE any render pass — then mark the access state.
+    if (_sg.vk.frame.cmd_buf) {
+        _SG_STRUCT(VkImageMemoryBarrier, bar);
+        bar.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+        bar.srcAccessMask = 0;
+        bar.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        bar.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        bar.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        bar.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        bar.image = img;
+        bar.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        bar.subresourceRange.levelCount = 1;
+        bar.subresourceRange.layerCount = 1;
+        vkCmdPipelineBarrier(_sg.vk.frame.cmd_buf,
+            VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0,
+            0, 0, 0, 0, 1, &bar);
+    }
+    _sg_image_t* si = _sg_lookup_image(sgimg.id);
+    if (si)
+        si->vk.cur_access = _SG_VK_ACCESS_TEXTURE;
+    *raw = img;
+    return sgimg;
+}
+
+// Import one frame into entry `v` (render thread, texop run). The old
+// planes retire into the ring; the deepest ring slot dies.
+// Import one frame into entry `v` (render thread, texop run). The
+// dmabuf's identity is its inode (VA exports get a fresh fd NUMBER per
+// export, but the underlying GEM object cycles through a small pool) —
+// so imports are cached per inode and only the FIRST frame per surface
+// pays vkAllocateMemory + VkImage creation.
+static void sh_video_import(sh_video_t* v, sh_video_frame_t* f) {
+    struct stat st;
+    if (f->fd < 0 || fstat(f->fd, &st) != 0) {
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[zc] fstat failed fd=%d errno=%d ino_was=%lu\n",
+                    f->fd, errno, (unsigned long)st.st_ino);
+        g_video_fail = 1;
+        return;
+    }
+    uint64_t ino = (uint64_t)st.st_ino;
+    sh_video_import_t* hit = NULL;
+    if (ino) {
+        for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+            if (v->cache[i].ino == ino) { hit = &v->cache[i]; break; }
+        }
+    }
+
+    if (!hit) {
+        // fresh import: memory props → allocate (consumes the fd) → planes
+        if (!sh_vk_get_fd_props)
+            sh_vk_get_fd_props = (PFN_vkGetMemoryFdPropertiesKHR_t)
+                vkGetDeviceProcAddr(_sg.vk.dev, "vkGetMemoryFdPropertiesKHR");
+        if (!sh_vk_get_fd_props) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[zc] no GetMemoryFdPropertiesKHR\n");
+            g_video_fail = 1; return;
+        }
+        _SG_STRUCT(VkMemoryFdPropertiesKHR, fdp);
+        fdp.sType = VK_STRUCTURE_TYPE_MEMORY_FD_PROPERTIES_KHR;
+        if (sh_vk_get_fd_props(_sg.vk.dev,
+                VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, f->fd,
+                &fdp) != VK_SUCCESS) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[zc] fd props failed fd=%d\n", f->fd);
+            g_video_fail = 1;
+            return;
+        }
+        uint32_t type = 0xFFFFFFFF;
+        _SG_STRUCT(VkPhysicalDeviceMemoryProperties, mp);
+        vkGetPhysicalDeviceMemoryProperties(_sg.vk.phys_dev, &mp);
+        for (uint32_t pass = 0; pass < 2 && type == 0xFFFFFFFF; pass++)
+            for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+                if (!(fdp.memoryTypeBits & (1u << i))) continue;
+                int local = mp.memoryTypes[i].propertyFlags &
+                    VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+                if ((pass == 0) == (local != 0)) { type = i; break; }
+            }
+        if (type == 0xFFFFFFFF) {
+            if (getenv("EGUI_VIDEO_DEBUG")) fprintf(stderr, "[zc] no memory type\n");
+            g_video_fail = 1; return;
+        }
+        _SG_STRUCT(VkImportMemoryFdInfoKHR, imp);
+        imp.sType = VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR;
+        imp.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        imp.fd = f->fd; // ownership passes on success
+        _SG_STRUCT(VkMemoryAllocateInfo, ai);
+        ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+        ai.allocationSize = (VkDeviceSize)f->size;
+        ai.memoryTypeIndex = type;
+        ai.pNext = &imp;
+        VkDeviceMemory mem;
+        if (vkAllocateMemory(_sg.vk.dev, &ai, 0, &mem) != VK_SUCCESS) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[zc] vkAllocateMemory failed size=%d type=%u\n",
+                        f->size, type);
+            g_video_fail = 1;
+            return;
+        }
+        g_zc_fd_eaten++;
+        g_zc_last_eaten = f->fd;
+        sh_zc_live_del(f->fd);
+        f->fd = -1; // consumed by the successful import
+
+        VkImage yraw = 0, uvraw = 0;
+        sg_image y_sg = sh_video_plane(mem, (VkDeviceSize)f->off_y, f->fc_y,
+                                       f->w, f->h, f->modifier, &yraw);
+        sg_image uv_sg = sh_video_plane(mem, (VkDeviceSize)f->off_uv,
+                                        f->fc_uv, f->w / 2, f->h / 2,
+                                        f->modifier, &uvraw);
+        if (!y_sg.id || !uv_sg.id) {
+            if (y_sg.id) sg_destroy_image(y_sg);
+            if (uv_sg.id) sg_destroy_image(uv_sg);
+            if (yraw) vkDestroyImage(_sg.vk.dev, yraw, 0);
+            if (uvraw) vkDestroyImage(_sg.vk.dev, uvraw, 0);
+            vkFreeMemory(_sg.vk.dev, mem, 0);
+            g_video_fail = 1;
+            return;
+        }
+
+        // slot: first empty, else round-robin (never the current one)
+        sh_video_import_t* slot = NULL;
+        for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+            if (v->cache[i].ino == 0) { slot = &v->cache[i]; break; }
+        }
+        while (!slot) {
+            sh_video_import_t* cand = &v->cache[v->cache_next %
+                                                SH_VIDEO_CACHE];
+            v->cache_next++;
+            if (cand->ino == 0) { slot = cand; break; }
+            if (cand->ino == v->cur.ino) continue; // live on screen
+            sg_destroy_image(cand->y_sg);
+            sg_destroy_image(cand->uv_sg);
+            vkDestroyImage(_sg.vk.dev, cand->y, 0);
+            vkDestroyImage(_sg.vk.dev, cand->uv, 0);
+            vkFreeMemory(_sg.vk.dev, cand->mem, 0);
+            slot = cand;
+            break;
+        }
+        if (!slot) { // cache fully pinned (pathological) — drop the import
+            sg_destroy_image(y_sg);
+            sg_destroy_image(uv_sg);
+            vkDestroyImage(_sg.vk.dev, yraw, 0);
+            vkDestroyImage(_sg.vk.dev, uvraw, 0);
+            vkFreeMemory(_sg.vk.dev, mem, 0);
+            g_video_fail = 1;
+            return;
+        }
+        slot->ino = ino;
+        slot->y = yraw;
+        slot->uv = uvraw;
+        slot->mem = mem;
+        slot->y_sg = y_sg;
+        slot->uv_sg = uv_sg;
+        hit = slot;
+    }
+
+    v->cur = *hit; // struct copy — the draw samples these
+    v->w = f->w;
+    v->h = f->h;
+    memcpy(v->cmat, f->cmat, sizeof v->cmat);
+    memcpy(v->range, f->range, sizeof v->range);
+}
+
+static void sh_video_entry_destroy(sh_video_t* v) {
+    for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+        sh_video_import_t* c = &v->cache[i];
+        if (c->ino == 0) continue;
+        sg_destroy_image(c->y_sg);
+        sg_destroy_image(c->uv_sg);
+        vkDestroyImage(_sg.vk.dev, c->y, 0);
+        vkDestroyImage(_sg.vk.dev, c->uv, 0);
+        vkFreeMemory(_sg.vk.dev, c->mem, 0);
+        c->ino = 0;
+    }
+    memset(&v->cur, 0, sizeof v->cur);
+    v->id = 0;
+}
+
+#endif // SOKOL_VULKAN
+
 // Extend the instance-append ring to exactly `cap` slots, creating only
 // the new buffers; `g_sdf_ring_next` stays put. Called from sh_draw_sdf
 // when every existing slot is full for this frame, after sh_sdf_ensure,
@@ -3612,6 +4153,205 @@ static void sh_clip_stash(int kind, int apply_clip, float x, float y,
     sgl_layer(++g_sdf_layer);
 }
 
+#if defined(SOKOL_VULKAN)
+// Draw one stashed video segment (sgl-layer walk, kind 3). Geometry in
+// POINTS — the same ortho the replay pass loads (sgl_ortho(0,w,h,0));
+// rect in s->rtl..rbl, clip in s->cx..ch, video id in s->view.
+static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
+    sh_video_pipeline_ensure();
+    if (g_video_state != 1) return;
+    sh_video_t* v = sh_video_find(s->view);
+    if (!v || !v->cur.y_sg.id || !v->cur.uv_sg.id) return;
+    if (w_pts <= 0.0f || h_pts <= 0.0f) return;
+    float ppp = (float)g_fb_w / w_pts;
+    if (s->apply_clip) {
+        float cx = s->cx * ppp, cy = s->cy * ppp;
+        float cw = s->cw * ppp, ch = s->ch * ppp;
+        if (!(cw >= 0.0f && ch >= 0.0f &&
+              cw <= (float)g_fb_w && ch <= (float)g_fb_h)) {
+            cx = 0.0f; cy = 0.0f;
+            cw = (float)g_fb_w; ch = (float)g_fb_h;
+        }
+        sg_apply_scissor_rectf(cx, cy, cw, ch, true);
+    }
+    // quad: unit corners (buffer), placed by the mvp: points→clip ortho
+    // scaled onto the rect (x=s->rtl, y=s->rtr, w=s->rbr, h=s->rbl)
+    float x = s->rtl, y = s->rtr, rw = s->rbr, rh = s->rbl;
+    float mvp[16];
+    memset(mvp, 0, sizeof mvp);
+    mvp[0] = 2.0f * rw / w_pts;
+    mvp[5] = -2.0f * rh / h_pts;
+    mvp[10] = -1.0f;
+    mvp[12] = 2.0f * x / w_pts - 1.0f;
+    mvp[13] = 1.0f - 2.0f * y / h_pts;
+    mvp[15] = 1.0f;
+    sh_video_vbuf_ensure();
+    if (!g_video_vbuf.id) return;
+    // unit quad, two CCW triangles over the unit square; uv mirrors
+    // pos — the full frame samples [0,1]² (v-flip happens in the mvp's
+    // y scale, not here)
+    struct { float pos[2], uv[2]; } verts[6] = {
+        {{0.0f, 0.0f}, {0.0f, 0.0f}},
+        {{1.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{1.0f, 1.0f}, {1.0f, 1.0f}},
+        {{1.0f, 0.0f}, {1.0f, 0.0f}},
+    };
+    sg_range vd = {.ptr = verts, .size = sizeof verts};
+    int off = sg_append_buffer(g_video_vbuf, &vd);
+    if (off < 0) return;
+    sg_range u0 = {.ptr = mvp, .size = sizeof mvp};
+    // std140: mat3 = 3 columns × vec4 (48 B), range at offset 48
+    struct { float cmat[12]; float range[4]; } fsu;
+    memset(&fsu, 0, sizeof fsu);
+    memcpy(fsu.cmat, v->cmat, sizeof fsu.cmat);
+    memcpy(fsu.range, v->range, sizeof fsu.range);
+    sg_range u1 = {.ptr = &fsu, .size = sizeof fsu};
+    sg_bindings b;
+    memset(&b, 0, sizeof b);
+    b.vertex_buffers[0] = g_video_vbuf;
+    b.vertex_buffer_offsets[0] = off;
+    if (!g_linear_sampler.id) sh_sampler_ensure();
+    b.views[0] = sg_make_view(&(sg_view_desc){
+        .texture = {.image = v->cur.y_sg}, .label = "egui-cr-video-y-view"});
+    b.views[1] = sg_make_view(&(sg_view_desc){
+        .texture = {.image = v->cur.uv_sg}, .label = "egui-cr-video-uv-view"});
+    b.samplers[0] = g_linear_sampler;
+    b.samplers[1] = g_linear_sampler;
+    sg_apply_pipeline(g_video_pip);
+    sg_apply_uniforms(0, &u0);
+    sg_apply_uniforms(1, &u1);
+    sg_apply_bindings(&b);
+    sg_draw(0, 6, 1);
+    sg_destroy_view(b.views[0]); // views are per-draw; images persist
+    sg_destroy_view(b.views[1]);
+}
+
+static void sh_video_vbuf_ensure(void) {
+    if (g_video_vbuf.id) return;
+    g_video_vbuf = sg_make_buffer(&(sg_buffer_desc){
+        .size = 6 * 16 * 64, // 64 quads of append headroom
+        .usage = {.vertex_buffer = true, .dynamic_update = true},
+        .label = "egui-cr-video-verts"});
+}
+
+// Stash a video segment at the current sgl layer (see sh_clip_stash).
+// Geometry/clip in POINTS; bumps the layer like every raw draw.
+static void sh_video_stash(int apply_clip, float x, float y, float w,
+                           float h, float cx, float cy, float cw,
+                           float ch, uint32_t vid) {
+    if (g_sdf_segs_n >= SH_SDF_MAX_SEGS) return;
+    sh_sdf_seg_t* s = &g_sdf_segs[g_sdf_segs_n++];
+    memset(s, 0, sizeof *s);
+    s->layer = g_sdf_layer;
+    s->apply_clip = apply_clip;
+    s->kind = 3;
+    s->cx = cx; s->cy = cy; s->cw = cw; s->ch = ch;
+    s->rtl = x; s->rtr = y; s->rbr = w; s->rbl = h;
+    s->view = vid;
+    sgl_layer(++g_sdf_layer);
+}
+#endif // SOKOL_VULKAN
+
+// A-side API. On GL builds every entry point degrades (supported() = 0,
+// frames/ops dropped) and the player keeps its copy-back pipeline.
+int egui_cr_video_supported(void) {
+#if defined(SOKOL_VULKAN)
+    // llvmpipe (xvfb/CI, software rasterizers) cannot import dmabufs:
+    // the failed vkAllocateMemory cascade-kills the VA decode context
+    // (ffmpeg dies inside its error path). Zero-copy is for real GPUs.
+    static int cached = -1;
+    if (cached < 0) {
+        _SG_STRUCT(VkPhysicalDeviceProperties, props);
+        vkGetPhysicalDeviceProperties(_sg.vk.phys_dev, &props);
+        cached = strstr(props.deviceName, "llvmpipe") ||
+                 strstr(props.deviceName, "swiftshader") ||
+                 strstr(props.deviceName, "lavapipe") ? 0 : 1;
+    }
+    return cached;
+#else
+    return 0;
+#endif
+}
+
+// Video texture ids: 0x40000000+ so they never collide with packet
+// texture ids — the texop coalescing is keyed by id.
+uint32_t egui_cr_video_create(void) {
+#if defined(SOKOL_VULKAN)
+    static _Atomic uint32_t next_id = 0x40000001;
+    return next_id++;
+#else
+    return 0;
+#endif
+}
+
+// Queue one decoded frame (A thread; the dmabuf fd passes OWNED — the
+// op's free/import consumes it). The fd is a standalone dup off the
+// A side's per-surface export cache, so it already outlives any
+// AVFrame — no second dup here (the old one leaked fd_orig per frame).
+void egui_cr_video_frame(uint32_t id, int fd, int size, int w, int h,
+                         int pitch_y, int pitch_uv, int off_y, int off_uv,
+                         uint64_t modifier, uint32_t fc_y, uint32_t fc_uv,
+                         const float* cmat, const float* range) {
+#if defined(SOKOL_VULKAN)
+    // Diagnostic kill-switch: keep the A-side (pool + exports + sync)
+    // but drop the frame before the R-side import — isolates whether
+    // the Vulkan dmabuf import is what stops VA from recycling the
+    // surface (Xe KMD experimental suspicion)
+    if (getenv("EGUI_VIDEO_NOIMPORT") && fd >= 0) {
+        close(fd);
+        return;
+    }
+    if (!sh_run_direct() && fd >= 0) {
+        g_zc_fd_dup++; // fds received from the A side (diagnostics)
+        sh_zc_live_add(fd);
+        if (getenv("EGUI_VIDEO_DEBUG") && (g_zc_fd_dup % 30 == 0))
+            fprintf(stderr, "[fd] frame#%d fd=%d\n", g_zc_fd_dup, fd);
+        if (g_zc_fd_dup % 100 == 0 && getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[zc] fds recv=%d close=%d eaten=%d\n",
+                    g_zc_fd_dup, g_zc_fd_close, g_zc_fd_eaten);
+        sh_video_frame_t f;
+        memset(&f, 0, sizeof f);
+        f.fd = fd; f.size = size; f.w = w; f.h = h;
+        f.pitch_y = pitch_y; f.pitch_uv = pitch_uv;
+        f.off_y = off_y; f.off_uv = off_uv;
+        f.modifier = modifier; f.fc_y = fc_y; f.fc_uv = fc_uv;
+        memcpy(f.cmat, cmat, sizeof f.cmat);
+        memcpy(f.range, range, sizeof f.range);
+        sh_texop_queue(SH_TEX_VIDEOFRAME, id, w, h, 0, &f, sizeof f, 0);
+        return; // the queue malloc'd its own copy; our fd is that copy's
+    }
+#endif
+    if (fd >= 0) close(fd); // unsupported / direct: hand the fd back
+}
+
+int egui_cr_video_last_fd(void) {
+#if defined(SOKOL_VULKAN)
+    return g_zc_last_eaten ? g_zc_last_eaten : -1;
+#else
+    return -1;
+#endif
+}
+
+int egui_cr_video_failed(void) {
+#if defined(SOKOL_VULKAN)
+    return (int)g_video_fail;
+#else
+    return 0;
+#endif
+}
+
+// Destroy a video texture (frame release/close): post-pass — the frame
+// being presented may still sample it.
+void egui_cr_video_destroy(uint32_t id) {
+#if defined(SOKOL_VULKAN)
+    if (!sh_run_direct())
+        sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
+#endif
+}
+
+
 // Draw one mask/unmask instance: the SDF rounded-rect quad with the
 // color mask off and stencil REPLACE — the bracket the content
 // pipelines test against. The unmask (radii 0) clears the whole bbox.
@@ -3702,6 +4442,12 @@ static void sh_sdf_frame(float w_pts, float h_pts) {
         for (int i = 0; i < g_sdf_segs_n; i++) {
             const sh_sdf_seg_t* s = &g_sdf_segs[i];
             if (s->layer != l) continue;
+#if defined(SOKOL_VULKAN)
+            if (s->kind == 3) {
+                sh_draw_video(s, w_pts, h_pts);
+                continue;
+            }
+#endif
             if (s->kind)
                 sh_draw_seg_mask(s, w_pts, h_pts);
             else {
@@ -3734,18 +4480,22 @@ void egui_cr_clip_mask(float x, float y, float w, float h,
     if (dbg < 0) {
         dbg = getenv("EGUI_CLIP_DEBUG") ? 1 : 0;
         if (dbg) {
-            GLint sbits = -1;
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
+            GLint sbits = -1;
             // macOS gl3.h is legacy-free and omits this enum (Linux gl.h
             // has it) — define the standard GL value when missing.
 #ifndef GL_STENCIL_BITS
 #define GL_STENCIL_BITS 0x0D57
 #endif
             glGetIntegerv(GL_STENCIL_BITS, &sbits);
-#endif
             fprintf(stderr,
                     "[clip] stencil_ok=%d depth_fmt=%d stencil_bits=%d\n",
                     (int)sh_stencil_ok(), (int)sapp_depth_format(), sbits);
+#else
+            fprintf(stderr,
+                    "[clip] stencil_ok=%d depth_fmt=%d stencil_bits=n/a\n",
+                    (int)sh_stencil_ok(), (int)sapp_depth_format());
+#endif
         }
     }
     if (!sh_stencil_ok() || w <= 0.0f || h <= 0.0f) return;
@@ -3812,6 +4562,8 @@ static int sh_texture_slot(uint32_t view_id) {
 // detached path (resolved through the render thread's texture table).
 // The sampler is created once and shared.
 uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
+    if (g_sg_down) return 0;
+
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, rgba8, 0, 0);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (!g_linear_sampler.id) {
@@ -3846,6 +4598,8 @@ uint32_t egui_cr_make_texture(int w, int h, const void* rgba8) {
 // cannot be created with initial data (sokol validation:
 // WRITABLE_NO_DATA), so create empty and upload via update_texture.
 uint32_t egui_cr_make_stream_texture(int w, int h) {
+    if (g_sg_down) return 0;
+
     if (w <= 0 || h <= 0) return 0;
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, NULL, 1, 0);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
@@ -3873,6 +4627,8 @@ uint32_t egui_cr_make_stream_texture(int w, int h) {
 
 // Push fresh RGBA8 pixels into a stream texture (same size as created).
 void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
+    if (g_sg_down) return;
+
     if (!sh_run_direct()) {
         if (view_id) sh_texop_queue(SH_TEX_UPDATE, view_id, w, h, 0, rgba8,
                                     (size_t)w * h * 4, 0);
@@ -3897,6 +4653,8 @@ void egui_cr_update_texture(uint32_t view_id, int w, int h, const void* rgba8) {
 
 // Destroy a texture created by make_texture or make_stream_texture.
 void egui_cr_destroy_texture(uint32_t view_id) {
+    if (g_sg_down) return;
+
     if (!sh_run_direct()) {
         if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0, 0);
         return;
@@ -4171,6 +4929,8 @@ static struct {
 static int g_atlas_count = 0;
 
 uint32_t egui_cr_atlas_create(int w, int h, const void* cov) {
+    if (g_sg_down) return 0;
+
     if (!sh_run_direct()) return sh_tex_make_detached(w, h, cov, 0, 1);
     if (!sh_gl_ok()) return 0; // nil-context mid-frame — see sh_gl_ok
     if (g_atlas_count >= EGUI_CR_MAX_ATLASES) return 0;
@@ -4200,6 +4960,8 @@ uint32_t egui_cr_atlas_create(int w, int h, const void* cov) {
 }
 
 void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* cov) {
+    if (g_sg_down) return;
+
     if (!sh_run_direct()) {
         if (getenv("EGUI_FRAME_DEBUG"))
             fprintf(stderr, "[tex] A queues atlas update id=%u\n", view_id);
@@ -4239,6 +5001,8 @@ void egui_cr_atlas_update(uint32_t view_id, int w, int h, const void* cov) {
 // new size — without this the 16-slot registry would fill up). Mirrors
 // egui_cr_destroy_texture: queued on the render thread unless direct.
 void egui_cr_atlas_destroy(uint32_t view_id) {
+    if (g_sg_down) return;
+
     if (!sh_run_direct()) {
         if (view_id) sh_texop_queue(SH_TEX_DESTROY, view_id, 0, 0, 0, NULL, 0, 0);
         return;
@@ -6238,12 +7002,26 @@ typedef struct {
     int r8;      // glyph-atlas coverage (R8); RGBA user textures leave 0
 } sh_texop_t;
 
+#if defined(SOKOL_VULKAN)
+// Free one texop: VIDEOFRAME carries an OWNED fd in its payload — the
+// dma-buf kernel ref drops with it (the mapped AVFrame holds another).
+static void sh_texop_free(sh_texop_t* op) {
+    if (op->kind == SH_TEX_VIDEOFRAME && op->data) {
+        int fd = ((sh_video_frame_t*)op->data)->fd;
+        if (fd >= 0) { close(fd); g_zc_fd_close++; sh_zc_live_del(fd); }
+    }
+    free(op->data);
+}
+#else
+#define sh_texop_free(op) free((op)->data)
+#endif
+
 enum {
     SH_OP_SCISSOR, SH_OP_PIPE, SH_OP_PIPE_POP, SH_OP_TEX, SH_OP_TEX_ON,
     SH_OP_TEX_OFF, SH_OP_BEGIN, SH_OP_END, SH_OP_V, SH_OP_VT,
     SH_OP_MESH3D, SH_OP_SDF, SH_OP_CLIP_MASK, SH_OP_CLIP_UNMASK,
     SH_OP_XFORM, SH_OP_XFORM_POP, SH_OP_TEXT,
-    SH_OP_SCROLL_BEGIN, SH_OP_SCROLL_END,
+    SH_OP_SCROLL_BEGIN, SH_OP_SCROLL_END, SH_OP_VIDEO,
 };
 
 // One composited scroll layer: rides the packet, indexed by
@@ -6288,11 +7066,13 @@ static float g_pkt_ppp = 1.0f;  // ppp for the packet being built (A)
 
 static void sh_packet_free(sh_packet_t* p) {
     if (!p) return;
-    for (int i = 0; i < p->pre_n; i++) free(p->pre[i].data);
-    for (int i = 0; i < p->post_n; i++) free(p->post[i].data);
+    for (int i = 0; i < p->pre_n; i++) sh_texop_free(&p->pre[i]);
+    for (int i = 0; i < p->post_n; i++) sh_texop_free(&p->post[i]);
     free(p->ops); free(p->pre); free(p->post); free(p->scrolls);
     free(p);
 }
+
+
 
 static void sh_build_ensure(void) {
     if (!g_build) g_build = (sh_packet_t*)calloc(1, sizeof(sh_packet_t));
@@ -6347,11 +7127,12 @@ static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
                 // keep the older op's CREATE identity (kind/stream), the
                 // newer payload — a CREATE followed by its first UPDATE
                 // still creates the image, with the newest pixels in it
-                if (g_build->pre[i].kind == SH_TEX_CREATE) {
+                if (g_build->pre[i].kind == SH_TEX_CREATE &&
+                    op.kind != SH_TEX_VIDEOFRAME) {
                     op.kind = SH_TEX_CREATE;
                     op.stream = g_build->pre[i].stream;
                 }
-                free(g_build->pre[i].data);
+                sh_texop_free(&g_build->pre[i]);
                 g_build->pre[i] = op;
                 return;
             }
@@ -6410,7 +7191,7 @@ static void sh_texops_splice(sh_texop_t** dst, int* dst_n, int* dst_cap,
             sh_grow((void**)dst, dst_cap, *dst_n + 1, sizeof(sh_texop_t));
             (*dst)[(*dst_n)++] = src[i];
         } else {
-            free(src[i].data); // older copy — the newer dst op stays
+            sh_texop_free(&src[i]); // older copy — the newer dst op stays
         }
     }
     free(src);
@@ -6446,6 +7227,24 @@ static void egui_cr_pkt_publish(void) {
 }
 
 void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
+
+// Video quad op: rect + ambient clip (POINTS), id from
+// egui_cr_video_create. GL builds record nothing — the player never
+// emits it there (video_supported() = 0). The non-detached stub lives
+// with the other pkt stubs below.
+void egui_cr_pkt_video(float x, float y, float w, float h,
+                       float cx, float cy, float cw, float ch,
+                       uint32_t vid) {
+#if defined(SOKOL_VULKAN)
+    uint32_t o[10] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
+                       sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
+                       sh_f2u(ch), vid };
+    sh_push_words(o, 10);
+#else
+    (void)x; (void)y; (void)w; (void)h;
+    (void)cx; (void)cy; (void)cw; (void)ch; (void)vid;
+#endif
+}
 
 static void egui_cr_pkt_scissor(float x, float y, float w, float h) {
     uint32_t o[5] = { SH_OP_SCISSOR, sh_f2u(x), sh_f2u(y), sh_f2u(w), sh_f2u(h) };
@@ -7051,6 +7850,13 @@ static void sh_tex_run(const sh_texop_t* op) {
         else if (data) sh_tex_upload(t, data, size);
         break;
     case SH_TEX_DESTROY:
+#if defined(SOKOL_VULKAN)
+        if (!t) { // video texture? its objects live in the video registry
+            sh_video_t* v = sh_video_find(op->id);
+            if (v) sh_video_entry_destroy(v);
+            break;
+        }
+#endif
         if (t) {
             sg_destroy_view(t->view);
             sg_destroy_image(t->img);
@@ -7058,6 +7864,21 @@ static void sh_tex_run(const sh_texop_t* op) {
             g_tex_tab_n--;
         }
         break;
+#if defined(SOKOL_VULKAN)
+    case SH_TEX_VIDEOFRAME: {
+        sh_video_t* v = sh_video_find(op->id);
+        if (!v) {
+            for (int i = 0; i < SH_VIDEO_MAX; i++) {
+                if (g_video_tab[i].id == 0) { v = &g_video_tab[i]; break; }
+            }
+            if (!v) { g_video_fail = 1; break; }
+            memset(v, 0, sizeof *v);
+            v->id = op->id;
+        }
+        sh_video_import(v, (sh_video_frame_t*)op->data);
+        break;
+    }
+#endif
     }
 }
 
@@ -7625,6 +8446,27 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             break;
         }
         case SH_OP_XFORM_POP: sgl_pop_matrix(); break;
+        case SH_OP_VIDEO: {
+            float vx = sh_u2f(op[0]), vy = sh_u2f(op[1]);
+            float vw2 = sh_u2f(op[2]), vh2 = sh_u2f(op[3]);
+            float cx = sh_u2f(op[4]), cy = sh_u2f(op[5]);
+            float cw = sh_u2f(op[6]), ch = sh_u2f(op[7]);
+            uint32_t vid = op[8];
+            op += 9;
+            if (scr_n > 0) { // composited scroll: translate like geometry
+                vx -= scr_dx; vy -= scr_dy;
+                cx -= scr_dx; cy -= scr_dy;
+            }
+            // clip semantics: 0×0 = ambient (full pass)
+            int apply_clip = cw > 0.0f && ch > 0.0f;
+#if defined(SOKOL_VULKAN)
+            sh_video_stash(apply_clip, vx, vy, vw2, vh2,
+                           cx, cy, cw, ch, vid);
+#else
+            (void)vid; (void)apply_clip;
+#endif
+            break;
+        }
         case SH_OP_SCROLL_BEGIN: {
             uint32_t idx = op[0];
             op += 1;
@@ -8013,7 +8855,7 @@ static void sh_rt_frame(void) {
             double bt = sh_now();
             for (int i = 0; i < g_post_pending_n; i++) {
                 sh_tex_run(&g_post_pending[i]);
-                free(g_post_pending[i].data);
+                sh_texop_free(&g_post_pending[i]);
             }
             free(g_post_pending);
             g_post_pending = NULL;
@@ -8023,7 +8865,7 @@ static void sh_rt_frame(void) {
         double bt = sh_now();
         for (int i = 0; i < fresh->pre_n; i++) {
             sh_tex_run(&fresh->pre[i]);
-            free(fresh->pre[i].data);
+            sh_texop_free(&fresh->pre[i]);
             fresh->pre[i].data = NULL;
         }
         if (sh_b_on > 0) sh_b_tex_acc += sh_now() - bt;
@@ -8132,7 +8974,25 @@ static void sh_rt_frame_cb(void) {
     sh_wake_a(SH_WAKE_PRESENT);
 }
 
-static void sh_rt_cleanup_cb(void) { }
+// The detached render thread's exit: sokol_gfx/sokol_gl own the Vulkan
+// objects (staging/cmd buffers, shared uniform/stream buffers, frame
+// pools) — without sg_shutdown they leak into vkDestroyDevice, which
+// the validation layer reports as undestroyed objects (VULKAN.md's
+// known limitation, now fixed). Crystal finalizers may still call the
+// texture entry points afterwards — g_sg_down guards them.
+static void sh_rt_cleanup_cb(void) {
+#if defined(SOKOL_VULKAN)
+    // quit-time video cleanup: a pending SH_TEX_DESTROY post-op may
+    // never run (no further packets) — release the imported planes here,
+    // before sg_shutdown tears the pools down
+    for (int i = 0; i < SH_VIDEO_MAX; i++) {
+        if (g_video_tab[i].id) sh_video_entry_destroy(&g_video_tab[i]);
+    }
+#endif
+    sgl_shutdown();
+    sg_shutdown();
+    g_sg_down = 1;
+}
 
 // ---- render thread entry / lifecycle -------------------------------------------
 

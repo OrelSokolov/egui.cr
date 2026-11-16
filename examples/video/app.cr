@@ -132,7 +132,8 @@ class VideoApp < Egui::App
       end
     end
     p = ui.painter
-    if @player.open? && !@player.texture_id.zero?
+    if @player.open? &&
+       (@player.texture_id != 0 || @player.video_texture_id != 0)
       # Always FIT the area (aspect kept): the decode pipeline adapts
       # the texture size down (adaptive scale_vaapi), and a 1.0 cap on
       # the fit factor would show the shrunken texture at native pixels
@@ -140,10 +141,15 @@ class VideoApp < Egui::App
       scale = {@player.width > 0 ? avail.x / @player.width : 0.0,
                @player.height > 0 ? avail.y / @player.height : 0.0}.min
       size = Egui::Vec2.new(@player.width * scale, @player.height * scale)
-      ui.painter.clip = ui.clip
-      ui.painter.image(Egui::Rect.from_min_size(
+      vrect = Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.center.x - size.x / 2.0, rect.center.y - size.y / 2.0),
-        size), @player.texture_id)
+        size)
+      ui.painter.clip = ui.clip
+      if (vid = @player.video_texture_id) != 0
+        ui.painter.video(vrect, vid) # zero-copy: dmabuf planes + YUV shader
+      else
+        ui.painter.image(vrect, @player.texture_id)
+      end
     else
       # placeholder: centered film glyph + title + hint
       cy = rect.center.y
@@ -334,7 +340,10 @@ class VideoApp < Egui::App
                else
                  {"volume_2", ICON_FG}
                end
-    ibtn(ui, ctx, "vbar/vol", vol_icon[0], btn: 34.0, tint: vol_icon[1]) do
+    # id must differ from the slider's "vbar/vol": a shared id lets the
+    # later-registered slider rect win the hit-test, and the button never
+    # receives its click
+    ibtn(ui, ctx, "vbar/mute", vol_icon[0], btn: 34.0, tint: vol_icon[1]) do
       if p.audio?
         @muted = !@muted
         apply_volume
@@ -348,13 +357,18 @@ class VideoApp < Egui::App
   # ограничена max_w при узком окне) или плейсхолдер с иконкой плёнки.
   private def thumb(ui : Egui::Ui, max_w : Float64 = 160.0) : Nil
     p = @player
-    if p.open? && !p.texture_id.zero? && p.height > 0
+    if p.open? && p.height > 0 &&
+       (!p.texture_id.zero? || p.video_texture_id != 0)
       w = {58.0 * p.width / p.height, max_w}.min
       w = {w, 0.5}.max
       h = {w * p.height / p.width, 58.0}.min
       rect = ui.allocate_space(Egui::Vec2.new(w, h))
       ui.painter.clip = ui.clip
-      ui.painter.image(rect, p.texture_id)
+      if (vid = p.video_texture_id) != 0
+        ui.painter.video(rect, vid)
+      else
+        ui.painter.image(rect, p.texture_id)
+      end
     else
       s = {58.0, max_w}.min
       rect = ui.allocate_space(Egui::Vec2.new(s, s))

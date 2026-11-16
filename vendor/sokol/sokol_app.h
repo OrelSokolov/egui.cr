@@ -4564,6 +4564,39 @@ _SOKOL_PRIVATE uint32_t _sapp_vk_required_device_extensions(const char** out_nam
     return count;
 }
 
+// egui-cr patch: OPTIONAL device extensions for the zero-copy video
+// import (dmabuf → VkImage). Appended to the device-create list when the
+// physical device reports them; never required (device pick must not
+// fail on drivers without them — the video seam falls back to copy-back).
+_SOKOL_PRIVATE uint32_t _sapp_vk_optional_device_extensions(VkPhysicalDevice pdev, const char** out_names, uint32_t max_count) {
+    static const char* candidates[] = {
+        "VK_KHR_external_memory_fd",
+        "VK_EXT_external_memory_dma_buf",
+        "VK_EXT_image_drm_format_modifier",
+    };
+    if (!pdev) return 0;
+    uint32_t ext_count = 0;
+    VkResult res = vkEnumerateDeviceExtensionProperties(pdev, 0, &ext_count, 0);
+    if (res != VK_SUCCESS || ext_count == 0) return 0;
+    VkExtensionProperties* props = (VkExtensionProperties*)_sapp_malloc(sizeof(VkExtensionProperties) * ext_count);
+    if (!props) return 0;
+    res = vkEnumerateDeviceExtensionProperties(pdev, 0, &ext_count, props);
+    uint32_t count = 0;
+    if (res == VK_SUCCESS) {
+        for (uint32_t ci = 0; ci < 3; ci++) {
+            for (uint32_t i = 0; i < ext_count; i++) {
+                if (0 == strcmp(candidates[ci], props[i].extensionName)) {
+                    if (count < max_count) out_names[count] = candidates[ci];
+                    count++;
+                    break;
+                }
+            }
+        }
+    }
+    _sapp_free(props);
+    return count;
+}
+
 _SOKOL_PRIVATE bool _sapp_vk_check_device_extensions(VkPhysicalDevice pdev, const char** required_exts, uint32_t num_required_exts) {
     SOKOL_ASSERT(pdev && required_exts && num_required_exts > 0);
     uint32_t ext_count = 0;
@@ -4670,6 +4703,7 @@ _SOKOL_PRIVATE void _sapp_vk_create_device(void) {
 
     _SAPP_VK_ZERO_COUNT_AND_ARRAY(32, const char*, ext_count, ext_names);
     ext_count = _sapp_vk_required_device_extensions(ext_names, 32);
+    ext_count += _sapp_vk_optional_device_extensions(_sapp.vk.physical_device, ext_names + ext_count, 32 - ext_count);
 
     _SAPP_STRUCT(VkPhysicalDeviceFeatures2, supports);
     supports.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
