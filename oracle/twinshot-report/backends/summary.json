@@ -1,0 +1,106 @@
+{
+  "total": 9,
+  "passed": 9,
+  "warned": 0,
+  "failed": 0,
+  "results": [
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "blockquote.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "box_shadow.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "button.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "gradient.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "heading.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/480000)",
+      "ratio": 0.0,
+      "rel": "notepad-menu-open.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (2/880000)",
+      "ratio": 0.0000022727272727272728,
+      "heat": {
+        "cell": 32,
+        "w": 1100,
+        "h": 800,
+        "cells": [
+          [
+            20,
+            18,
+            0.0
+          ],
+          [
+            20,
+            19,
+            0.0
+          ]
+        ]
+      },
+      "rel": "progress.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "radius.png",
+      "group": "backends"
+    },
+    {
+      "kind": "png",
+      "image": true,
+      "status": "pass",
+      "detail": "0.000% px differ (0/880000)",
+      "ratio": 0.0,
+      "rel": "translucent.png",
+      "group": "backends"
+    }
+  ]
+}

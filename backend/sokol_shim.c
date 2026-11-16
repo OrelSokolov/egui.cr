@@ -1133,7 +1133,10 @@ static void egui_cr_wd_report(const char* where, long long since_ns) {
     int len = snprintf(buf, sizeof buf,
         "[watchdog] UI stuck %s frame for %lld ms (frame thread wchan=%s)\n",
         where, ms, wchan);
-    if (len > 0) (void)write(STDERR_FILENO, buf, len);
+    if (len > 0) {
+        ssize_t n = write(STDERR_FILENO, buf, len);
+        (void)n; /* best-effort diagnostics; nothing to do on partial write */
+    }
 }
 
 static void* egui_cr_wd_thread(void* unused) {

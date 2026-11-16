@@ -33,6 +33,26 @@ groups:
       path: html/sdf1
       generate: python3 ../scripts/make_html_sdf_shots.py 1 html/sdf1
 
+  backends:
+    # Backend parity: oracle = the gl render (the shipped default),
+    # current = BACKEND=vulkan of the exact same states. One group for
+    # every backend-specific bug — add a state to
+    # scripts/make_backend_shots.sh when one is spotted (today:
+    # the notepad File-menu popup, whose item text Vulkan drops, and
+    # the html_gallery widget cards — gradients, radius, shadows, …).
+    # Both legs rebuild notepad + html_gallery (the backend stamp flip
+    # recompiles the sokol shim) and capture with the same drivers, so
+    # the comparison stays 1:1 (the app-internal --screenshot readback
+    # is GL-only and hangs under Vulkan — external xwd grabs instead).
+    # Determinism: two gl runs are pixel-identical (the notepad
+    # menu-open state is static; the html cards run under PAUSE=1).
+    oracle:
+      path: backends/gl
+      generate: sh -c 'cd .. && sh scripts/make_backend_shots.sh gl oracle/backends/gl'
+    current:
+      path: backends/vulkan
+      generate: sh -c 'cd .. && sh scripts/make_backend_shots.sh vulkan oracle/backends/vulkan'
+
 png:
   # Flat widget sheets on a solid background: antialiasing aside, the
   # themes are far apart — the diff images are the deliverable, the
