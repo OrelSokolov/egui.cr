@@ -64,12 +64,21 @@
 #   central  id?                            ctx.central_panel
 #   statusbar id?                           ctx.bottom_panel
 #   row | column                           inline layout
+#   form                                   validation scope (form.cr):
+#                                          inputs inside register their
+#                                          validity; button type="submit"
+#                                          gates on_click on all of them
 #   heading | label   text, if?/unless?, live?   live → request_repaint
-#   button   text, on_click, if?/unless?
+#   button   text, on_click, if?/unless?, type? (type="submit" inside a
+#            <form>: fires only through a valid form)
 #   slider   bind, min, max, on_change?
 #   checkbox bind, text, on_change?
 #   progress bind, text?
 #   input    bind, hint?, focus_id?, on_change?   single-line editor
+#            numeric?, trim?, required?, pattern? — the HTML constraint
+#            attrs; an invalid field paints `text_edit:invalid` once
+#            touched or after a blocked submit (pattern compiles at
+#            parse time; a bad regex is a parse error)
 #   textarea bind, hint?, rows, frame, editor_id? multi-line; editor_id
 #            interpolates and switches the child-Ui (per-tab editors),
 #            auto-focusing a CHANGED id (focus follows the tab)
@@ -173,12 +182,12 @@ module Egui
       Separator; Progress; Input; Textarea; Combo; Toggle
       OpenFile; SaveFile; Custom
       Partial; Use; Repeat; Markdown; FlexItem; Template
-      WindowFrame; WindowFrameCustom; WindowButton
+      WindowFrame; WindowFrameCustom; WindowButton; Form
     end
 
     CONTAINERS = {Kind::Page, Kind::Modal, Kind::MenuBar, Kind::Menu,
                   Kind::Central, Kind::Statusbar, Kind::Row, Kind::Column,
-                  Kind::Box, Kind::Repeat}
+                  Kind::Box, Kind::Repeat, Kind::Form}
 
     # Element-name → Kind (enum `parse?` is case-sensitive and has no
     # idea about aliases, so the map carries both). "exml" is the
@@ -192,6 +201,7 @@ module Egui
       "statusbar" => Kind::Statusbar, "bottom_panel" => Kind::Statusbar,
       "row" => Kind::Row, "column" => Kind::Column,
       "box" => Kind::Box,
+      "form" => Kind::Form,
       "heading" => Kind::Heading, "label" => Kind::Label,
       "button" => Kind::Button, "slider" => Kind::Slider,
       "checkbox" => Kind::Checkbox, "separator" => Kind::Separator,
@@ -269,6 +279,13 @@ module Egui
       getter rows_count : Int32
       getter framed : Bool
       getter combo_options : Array(String)
+      # validation (`<input required pattern>` / `<button type=submit>`
+      # inside `<form>` — see form.cr): required is the HTML boolean,
+      # pattern compiles ONCE here (an invalid regex is a parse error,
+      # never a runtime surprise), submit marks a form-gated button.
+      getter input_required : Bool
+      getter input_pattern : Regex?
+      getter button_type : String?
       # `:options="{list}"` — the bound variant: a list slot name the
       # app publishes (rt.lists), nil for a literal options= split
       getter options_key : String?
@@ -380,6 +397,16 @@ module Egui
         @flex_align_self = @attrs["align"]?
         @numeric = @attrs["numeric"]? == "true"
         @trim = @attrs["trim"]? == "true"
+        @input_required = @attrs["required"]? == "true"
+        @input_pattern = @attrs["pattern"]?.try do |p|
+          begin
+            Regex.new(p)
+          rescue e : Regex::Error
+            raise ArgumentError.new(
+              %(<input pattern="#{p}"> is not a valid regex: #{e.message}))
+          end
+        end
+        @button_type = @attrs["type"]?
         @hotkey_attr = @attrs["hotkey"]?
         @on_key_event = @attrs["on_keyup"]? || @attrs["on_keydown"]?
         @file_choosing_text = @attrs["text_choosing"]?
@@ -1371,15 +1398,16 @@ module Egui
                              position top right bottom left z),
       Kind::Heading   => %w(text),
       Kind::Label     => %w(text live),
-      Kind::Button    => %w(text on_click),
+      Kind::Button    => %w(text on_click type),
       Kind::Slider    => %w(bind min max on_change),
       Kind::Checkbox  => %w(bind text on_change),
       Kind::Separator => %w(),
       Kind::Progress  => %w(bind text),
-      Kind::Input     => %w(bind hint focus_id on_change numeric trim),
+      Kind::Input     => %w(bind hint focus_id on_change numeric trim required pattern),
       Kind::Textarea  => %w(bind hint rows frame editor_id on_change),
       Kind::Combo     => %w(bind options delimiter on_change),
       Kind::Toggle    => %w(bind text on_change),
+      Kind::Form      => %w(),
       Kind::OpenFile  => %w(bind text text_choosing text_done filters title directory
                              class label_class on_change),
       Kind::SaveFile  => %w(bind text text_choosing text_done filters title directory
@@ -2052,6 +2080,18 @@ module Egui
           ui.horizontal { |h| node.children.each { |c| render(c, h, ctx, rt) } }
         in .column?
           node.children.each { |c| render(c, ui, ctx, rt) }
+        in .form?
+          # `<form>` — the validation scope (form.cr): paints nothing,
+          # lays out nothing (children flow like a column's); inputs
+          # register against the pushed form id, and a
+          # `type="submit"` button inside gates on them below.
+          form_id = Id.from(node.path)
+          ctx.push_form(form_id)
+          begin
+            node.children.each { |c| render(c, ui, ctx, rt) }
+          ensure
+            ctx.pop_form
+          end
         in .box?
           margin = node.box_padding.try { |p| Vec2.new(p, p) }
           if node.box_flex
@@ -2128,7 +2168,21 @@ module Egui
           ref_set(node, ui.label(text_of(node, rt)))
         in .button?
           if ref_set(node, ui.button(text_of(node, rt, "?"), id: node.path)).clicked?
-            fire_named(node.on_click, rt)
+            # `type="submit"` inside a `<form>`: the click only fires
+            # through a VALID form — a blocked attempt marks the form
+            # attempted instead (fields reveal their `:invalid` state;
+            # HTML submit semantics, minus the navigation). Outside a
+            # form, or without the type, the button behaves as always.
+            if node.button_type == "submit" &&
+               (form_id = ctx.current_form_id)
+              if ctx.form_inputs_invalid?(form_id)
+                ctx.mark_form_attempted(form_id)
+              else
+                fire_named(node.on_click, rt)
+              end
+            else
+              fire_named(node.on_click, rt)
+            end
           end
         in .separator?
           ui.separator
@@ -2171,7 +2225,9 @@ module Egui
           # just doesn't write. trim strips the write-back.
           shown = node.numeric ? rt.float(key).to_s : rt.string(key)
           ref_set(node, ui.text_edit_singleline(shown,
-            hint: node.hint_attr, focus_id: node.focus_id) do |t|
+            hint: node.hint_attr, focus_id: node.focus_id,
+            required: node.input_required,
+            pattern: node.input_pattern) do |t|
             t = t.strip if node.trim
             if node.numeric
               if (f = t.to_f?)

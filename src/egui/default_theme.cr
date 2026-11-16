@@ -232,6 +232,15 @@ module Egui
       sheet.rule("link:active", StyleVars{
         "text_color" => v.fade_color(v.hyperlink_color, 0.8),
       })
+
+      # form validation — `<input required>`/`<input pattern>` (see
+      # form.cr): the `:invalid` state overlay on the text_edit class.
+      # A field only wears it once touched or after a blocked form
+      # submit (browser semantics); the danger stroke reads on light
+      # and dark alike.
+      sheet.rule("text_edit:invalid", StyleVars{
+        "stroke" => v.text_color.lerp(Color32.rgb(0xd5, 0x3f, 0x3f), 0.8),
+      })
     end
   end
 end

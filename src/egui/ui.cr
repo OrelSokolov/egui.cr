@@ -1186,7 +1186,10 @@ module Egui
     # with the new buffer whenever it changed this frame. `password:
     # true` masks the display with circles (one per character).
     # `leading_icon` draws an SVG inside the field's left padding (a
-    # search lens).
+    # search lens). `required`/`pattern` are the HTML constraint
+    # attributes — an invalid field resolves the `:invalid` state of
+    # the `text_edit` class once touched (see form.cr for the form
+    # submit gate).
     def text_edit_singleline(buffer : String, hint : String? = nil,
                              password : Bool = false,
                              focus_id : String? = nil,
@@ -1195,9 +1198,12 @@ module Egui
                              cursor_blinks : Bool = true,
                              width : Float64? = nil,
                              leading_icon : Svg? = nil,
+                             required : Bool = false,
+                             pattern : Regex? = nil,
                              &on_change : String ->) : Response
       edit = TextEdit.new(buffer, hint, password, focus_id, frame,
-        cursor_style, cursor_blinks, width, leading_icon)
+        cursor_style, cursor_blinks, width, leading_icon, required,
+        pattern)
       edit.width(width) if width
       response = add(edit)
       if response.changed? && (text = response.widget_text)

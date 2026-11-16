@@ -48,7 +48,7 @@ BIN_APPS   = %w[
 ]
 BIN_HTML   = %w[
   html_gallery html_positions box_shadow box_shadow_showcase
-  partial_border css_showcase
+  partial_border css_showcase form_validation
   flex_demo transform_showcase
 ]
 BIN_CLONES = %w[theme_gallery music_exml music_gen music_widgets_manual]

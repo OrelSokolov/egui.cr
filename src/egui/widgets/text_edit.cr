@@ -37,13 +37,39 @@ module Egui
     # (DejaVu, Ubuntu, Roboto, Liberation, Segoe UI, Arial, SFNS).
     MASK_CHAR = "●"
 
+    # Id seed for the "touched" validation flag (the user edited the
+    # field or gave up focus at least once — when `:invalid` may show).
+    TOUCH_SEED = 0x70CC_u64
+
     def initialize(@text : String, @hint : String? = nil,
                    @password : Bool = false, @focus_id : String? = nil,
                    @frame : Bool = true,
                    @cursor_style : Symbol = :line,
                    @cursor_blinks : Bool = true,
                    @width : Float64? = nil,
-                   @leading_icon : Svg? = nil)
+                   @leading_icon : Svg? = nil,
+                   @required : Bool = false,
+                   @pattern : Regex? = nil)
+    end
+
+    # HTML `required`: an empty field is invalid. The error surface is
+    # the `:invalid` state of the `text_edit` class (`text_edit:invalid
+    # { stroke: … }` in ECSS) — shown only once the user TOUCHED the
+    # field (an edit, or focus given up) or a form submit was blocked
+    # (`Context#form_attempted?`), browser semantics. A field inside a
+    # `Ui#form` scope also registers its per-frame validity there (see
+    # Form — the submit gate).
+    def required(flag : Bool = true) : self
+      @required = flag
+      self
+    end
+
+    # HTML `pattern`: a non-empty value must match. An empty value
+    # passes (only `required` catches empties — HTML constraint
+    # validation rules).
+    def pattern(re : Regex) : self
+      @pattern = re
+      self
     end
 
     # Fixed field width (points): native-style forms set it so the
@@ -95,6 +121,9 @@ module Egui
       # end-frame pruning drops the selection every frame.
       ui.ctx.memory.use_id(anchor_id)
       ui.ctx.memory.use_id(scroll_id)
+      touch_id = id.child(TOUCH_SEED)
+      ui.ctx.memory.use_id(touch_id)
+      focused_at_start = ui.ctx.memory.focus.has_focus?(id)
 
       cursor = ui.ctx.memory.data.get_int(id, @text.size).clamp(0, @text.size)
       # A stale anchor cell (the buffer shrank since the selection was
@@ -241,10 +270,32 @@ module Egui
       ui.ctx.memory.data.set_f64(scroll_id, scroll)
 
       visuals = style.visuals
+      # --- validation (`required`/`pattern`, HTML semantics) ----------
+      # Touched: the user edited the field once, or gave up focus after
+      # holding it — either way `:invalid` may show from now on. A
+      # blocked form submit (attempted) reveals errors in untouched
+      # fields too, like the browser's submit-time validity pass.
+      touched = ui.ctx.memory.data.get_int(touch_id, 0) == 1
+      touched = true if changed || (focused_at_start && !response.has_focus?)
+      ui.ctx.memory.data.set_int(touch_id, 1) if touched &&
+        ui.ctx.memory.data.get_int(touch_id, 0) == 0
+      # HTML constraint order: `required` catches empties, `pattern`
+      # only judges non-empty values.
+      invalid = (@required && new_text.empty?) ||
+                ((p = @pattern) && !new_text.empty? && !new_text.matches?(p)) ? true : false
+      form_id = ui.ctx.current_form_id
+      if form_id
+        ui.ctx.register_form_input(form_id, id, invalid)
+        invalid &&= touched || ui.ctx.form_attempted?(form_id)
+      else
+        invalid &&= touched
+      end
       # `text_edit` class keys (fill/stroke/rounding) fall back to the
       # Visuals slots — a platform theme makes the field white with a
-      # gray border (macOS) without touching the default look.
-      te_vars = vars
+      # gray border (macOS) without touching the default look. An
+      # invalid-and-shown field resolves the `:invalid` state bag
+      # instead (the default theme paints a danger stroke there).
+      te_vars = invalid ? style_vars(ui, id, "invalid") : vars
       bg = te_vars.color?("fill") ||
            (response.has_focus? ? visuals.button_active : visuals.button_weak)
       # `frame: false` (an embedded field — SelectBox's search entry):
@@ -388,6 +439,7 @@ module Egui
       end
 
       response.widget_text = new_text
+      response.invalid = invalid
       response.mark_changed if changed
       # Clipboard context menu (Copy/Cut/Paste/Select All) — long-press
       # on touch, secondary press on the mouse.

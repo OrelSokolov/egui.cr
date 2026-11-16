@@ -423,6 +423,11 @@ module Egui
       @claimed_ids = Set(Id).new
       @id_style_overrides = {} of Id => Hash(String?, StyleVars)
       @current_widget = nil
+      # Form validation (see the #form_* section below): the live
+      # scope stack (pushed by `Ui#form` / `<form>` while their block
+      # renders) and the per-frame input registry it feeds.
+      @form_stack = [] of Id
+      @form_inputs = {} of Id => Array({Id, Bool})
       # Composited scroll (plans/COMPOSITED_SCROLL.md): ids whose
       # offset the RENDER thread owns this frame (a live wheel/fling
       # gesture). Filled by the backend's produce-time read-back
@@ -482,6 +487,10 @@ module Egui
 
     def begin_frame(raw : RawInput) : Nil
       @in_frame = true
+      # Form validation registry (see the #form_* methods): rebuilt
+      # every frame — inputs register as they render, in DOM order.
+      @form_stack.clear
+      @form_inputs.clear
       # Composited-scroll gesture set: the backend's produce-time
       # read-back filled it BEFORE this call (Sokol#
       # adopt_composited_offsets); it lives exactly one frame.
@@ -1148,6 +1157,58 @@ module Egui
     # and paint-in-place `StyledPart`s see the scope at record/resolve
     # time, where no `Ui` is at hand. Internal.
     property current_style_scope : String? = nil
+
+    # --- forms (validation layer) -----------------------------------------
+    # `Ui#form` (and EXML `<form>`) push the form's id around their
+    # subtree; the TextEdit family registers its per-frame validity
+    # against `#current_form_id` there. `Form#submit_button` gates the
+    # submit on the registry (DOM order: fields must render before the
+    # submit button, same rule as the browser). "Attempted" — a submit
+    # was blocked at least once — is sticky per form id (memory cell),
+    # so required-but-untouched fields reveal their errors.
+
+    # The innermost form id, or nil outside any form scope.
+    def current_form_id : Id?
+      @form_stack.last?
+    end
+
+    def push_form(id : Id) : Nil
+      @form_stack.push(id)
+    end
+
+    def pop_form : Nil
+      @form_stack.pop
+    end
+
+    def register_form_input(form : Id, input : Id, invalid : Bool) : Nil
+      (@form_inputs[form] ||= [] of {Id, Bool}) << {input, invalid}
+    end
+
+    # This frame's {input id, invalid} registrations of `form`.
+    def form_inputs(form : Id) : Array({Id, Bool})
+      @form_inputs[form]? || Array({Id, Bool}).new
+    end
+
+    def form_inputs_invalid?(form : Id) : Bool
+      !!(@form_inputs[form]?.try &.any? { |_id, bad| bad })
+    end
+
+    # Attempted is stored under a child seed — a form named like a
+    # widget must not collide with the widget's own memory cells.
+    FORM_ATTEMPT_SEED = 0xF0A7_u64
+
+    def mark_form_attempted(form : Id) : Nil
+      cell = form.child(FORM_ATTEMPT_SEED)
+      @memory.use_id(cell)
+      @memory.data.set_int(cell, 1)
+      request_repaint
+    end
+
+    def form_attempted?(form : Id) : Bool
+      cell = form.child(FORM_ATTEMPT_SEED)
+      @memory.use_id(cell)
+      @memory.data.get_int(cell, 0) == 1
+    end
 
     # The inspector state (built on first enable — zero cost while
     # off). The backend drives its frame hooks; see `inspector.cr`.

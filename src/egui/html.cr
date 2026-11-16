@@ -30,10 +30,12 @@
 # save }` is `onclick`, the Signal forms are `oninput`.
 #
 # Deliberately NOT wired (no engine semantics behind them — SPEC.md
-# is the contract): `required`/`pattern`/`autocomplete` (no
-# validation layer), `lang` (no fontchain effect), `role`/`aria-*`
-# (no a11y layer yet), `tabindex` (Tab navigation not ported),
-# `target:` (every link already opens through SystemPorts).
+# is the contract): `autocomplete` (a browser-remembered-values store,
+# not a form/validation concern — an app-level keychain would be), `lang`
+# (no fontchain effect), `role`/`aria-*` (no a11y layer yet),
+# `tabindex` (Tab navigation not ported), `target:` (every link
+# already opens through SystemPorts). `required`/`pattern` ARE wired
+# — see `#input` and `#form` (the validation layer, form.cr).
 
 require "../egui"
 
@@ -1028,11 +1030,17 @@ module Egui
     end
 
     # `<input>` — a text field (HTML `input[type=text]`):
-    # `placeholder:` is the hint. Buffer form (block = oninput) and
-    # Signal form (write-back, no block).
+    # `placeholder:` is the hint, `required: true`/`pattern:` the
+    # constraint attributes (see `#form` — the `:invalid` state and
+    # the submit gate). Buffer form (block = oninput) and Signal form
+    # (write-back, no block).
     def input(buffer : String, **attrs, &on_change : String ->) : Response?
-      resp = html_widget(TextEdit.new(buffer,
-        hint: html_str(attrs, :placeholder)), attrs)
+      edit = TextEdit.new(buffer, hint: html_str(attrs, :placeholder))
+      edit.required if attrs[:required]? == true
+      if (p = html_str(attrs, :pattern))
+        edit.pattern(Regex.new(p)) # raises ArgumentError — app-side bug
+      end
+      resp = html_widget(edit, attrs)
       if resp && resp.changed? && (text = resp.widget_text)
         on_change.call(text)
       end
@@ -1040,12 +1048,35 @@ module Egui
     end
 
     def input(sig : Signal(String), **attrs) : Response?
-      resp = html_widget(TextEdit.new(sig.value,
-        hint: html_str(attrs, :placeholder)), attrs)
+      edit = TextEdit.new(sig.value, hint: html_str(attrs, :placeholder))
+      edit.required if attrs[:required]? == true
+      if (p = html_str(attrs, :pattern))
+        edit.pattern(Regex.new(p)) # raises ArgumentError — app-side bug
+      end
+      resp = html_widget(edit, attrs)
       if resp && resp.changed? && (text = resp.widget_text)
         sig.value = text
       end
       resp
+    end
+
+    # `<form>` — the validation scope, no server to submit to: the
+    # block runs with the form pushed (inputs inside register their
+    # validity), `form.submit_button` gates the submit on all of them
+    # and a blocked attempt reveals every field's `:invalid` state
+    # (browser submit semantics — see form.cr). No layout and no
+    # paint: children flow in the parent like any other block alias.
+    def form(id : String, **attrs, &block : Ui, Form ->) : Nil
+      return html_skip(attrs) if html_hidden?(attrs)
+      html_block(attrs) do |ui|
+        form = Form.new(ui, Id.from(id))
+        ui.ctx.push_form(form.id)
+        begin
+          block.call(ui, form)
+        ensure
+          ui.ctx.pop_form
+        end
+      end
     end
 
     # `<select>` — a dropdown. `selected:` the current option; the

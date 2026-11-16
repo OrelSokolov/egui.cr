@@ -1,0 +1,52 @@
+<!doctype html>
+<!-- Browser oracle for examples/form_validation.cr — the SAME form
+     with native constraint validation (required/pattern/:invalid
+     semantics), for side-by-side look checks. Open in a browser and
+     try: submit empty (every error reveals at once), type a bad
+     email (error on input — :invalid shows once the field is
+     touched), fix it, submit. -->
+<html>
+<meta charset="utf-8">
+<title>egui.cr — form validation (oracle)</title>
+<style>
+  body { font: 14px system-ui, sans-serif; background: #1e1e1e; color: #ddd;
+         display: flex; justify-content: center; padding-top: 48px; }
+  form { display: flex; flex-direction: column; gap: 10px; width: 420px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.hint { margin: 0 0 8px; color: #999; }
+  label { display: flex; gap: 12px; align-items: center; }
+  label span { width: 70px; text-align: right; }
+  input { flex: 1; padding: 6px 8px; border: 1px solid #555; border-radius: 4px;
+          background: #2a2a2a; color: #ddd; font: inherit; }
+  /* the twin of the engine's default `text_edit:invalid` rule */
+  input:invalid { border-color: #d53f3f; }
+  button { align-self: flex-start; padding: 6px 14px; border: 1px solid #555;
+           border-radius: 4px; background: #3a3a3a; color: #ddd; font: inherit; }
+  .status { min-height: 1.2em; color: #9cc; }
+</style>
+<form>
+  <h1>Create an account</h1>
+  <p class="hint">Required fields gate the submit; the phone field is
+     optional (pattern judges non-empty values only).</p>
+  <label><span>Name *</span>
+    <input name="name" placeholder="Ada Lovelace" required></label>
+  <label><span>Email *</span>
+    <input name="email" placeholder="ada@example.com" required
+           pattern="[^@]+@[^@]+"></label>
+  <label><span>Phone</span>
+    <input name="phone" placeholder="+1 555 0100"
+           pattern="[0-9 +()-]+"></label>
+  <button>Create account</button>
+  <div class="status" id="status"></div>
+</form>
+<script>
+  document.querySelector("form").addEventListener("submit", e => {
+    e.preventDefault(); // the engine twin: submit is a local handler
+    const fields = [...e.target.querySelectorAll("input")];
+    const bad = fields.filter(f => !f.checkValidity()).length;
+    document.getElementById("status").textContent = bad
+      ? `${bad} field${bad === 1 ? "" : "s"} need attention`
+      : "Account created for " + fields[0].value + " <" + fields[1].value + ">";
+  });
+</script>
+</html>

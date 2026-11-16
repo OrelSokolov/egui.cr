@@ -38,6 +38,11 @@ module Egui
     # Color widgets (ColorPicker) publish the picked color
     # (`ui.color_edit32(color) { |c| … }`).
     property widget_color : Color32?
+    # Validation (TextEdit `required`/`pattern`): true when the field
+    # is invalid AND the error may show (touched, or a blocked form
+    # submit — browser `:invalid` UI semantics). The `:invalid` state
+    # of the widget's style class is what paints.
+    property? invalid : Bool = false
 
     def initialize(@ctx : Context, @id : Id, @rect : Rect, @sense : Sense,
                    @hovered : Bool, @clicked : Bool, @click_count : Int32,
