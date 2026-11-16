@@ -180,11 +180,12 @@ module Egui
     # instead of the flat `fill`/`fill2` pair. Geometry is relative to
     # `rect` (see `Gradient#color_at`), so it survives transforms.
     getter gradient : Gradient?
-    # CSS `border-style: dashed`: the uniform stroke draws as dashes
-    # (`.dashed_stroke_segments` decomposes it into LineCmds along the
-    # rounded perimeter; the backends paint those through their line
-    # paths). Per-side borders ignore the flag.
-    getter? stroke_dash : Bool
+    # CSS `border-style`: how the uniform stroke re-styles (`:dashed`,
+    # `:dotted`, `:double`, `:groove`, `:ridge`, `:inset`, `:outset`,
+    # `:none`; `:solid` = the plain stroke). See
+    # `.styled_stroke_commands` — the decomposition every backend
+    # paints before its solid paths. Per-side borders ignore it.
+    getter stroke_style : Symbol
     # Rounded-clip corner radii carried next to `clip` (see
     # Painter#clip_apply): nil = a plain rect clip, otherwise the
     # backends clip to `clip` rounded by these per-corner radii.
@@ -201,7 +202,7 @@ module Egui
                    @corners : CornerRadii? = nil,
                    @replace : Bool = false, @diag : Bool = false,
                    @gradient : Gradient? = nil,
-                   @stroke_dash : Bool = false,
+                   @stroke_style : Symbol = :solid,
                    @clip_corners : CornerRadii? = nil,
                    @xform : Affine2? = nil)
     end
@@ -211,7 +212,7 @@ module Egui
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       RectCmd.new(clip, @rect, @rounding, @fill, @stroke_color,
         @stroke_width, @fill2, @stroke_sides, @corners, @replace, @diag,
-        @gradient, @stroke_dash, clip_corners, @xform)
+        @gradient, @stroke_style, clip_corners, @xform)
     end
   end
 
@@ -325,38 +326,88 @@ module Egui
     end
   end
 
-  # CSS `border-style: dashed` — the dashed uniform stroke as LineCmd
-  # segments along the rounded-rect perimeter, so every backend draws
-  # dashes through its existing line path. The centerline sits w/2
-  # inside the outline (the CSS two-rect border model — the band
-  # between the outer edge and the deflated background), corner radii
-  # shrink by the same inset (collapsing to square like CSS when the
-  # width eats the radius), and the dash pattern is the browser's 3:1
-  # dash:gap scaled by the border width. The perimeter is walked as a
-  # dense polyline (corner arcs in short chords) so dashes follow the
-  # curves; a dash crossing a corner becomes several collinear pieces
-  # that render seamlessly. Nil when there is nothing to dash (no
-  # flag, per-side borders, no stroke, or a stamped transform the raw
-  # segments would lose) — the caller falls through to the solid
-  # stroke paths.
-  def self.dashed_stroke_segments(cmd : RectCmd) : Array(LineCmd)?
-    return nil unless cmd.stroke_dash? && cmd.stroke_sides.nil? &&
-                     cmd.xform.nil?
+  # CSS `border-style` — the styled uniform stroke decomposed into
+  # paint primitives every backend already draws:
+  #
+  # * `dashed`/`dotted` walk the rounded perimeter as a dense polyline
+  #   (corner arcs in short chords) — dashes become LineCmd segments
+  #   (the browser's 3:1 dash:gap scaled by the border width), dots
+  #   become CircleCmd discs (diameter = border width, period 2w);
+  # * `double`/`groove`/`ridge`/`inset`/`outset` become stroke-only
+  #   ring RectCmds at the CSS band positions (double: two w/3 lines
+  #   with a w/3 gap; groove/ridge: outer/inner half-bands in the
+  #   light/dark variants of the border color; inset/outset: one ring
+  #   with light top/left and dark bottom/right sides — outset — or
+  #   the reverse), painted by the backends' native solid/per-side
+  #   stroke paths;
+  # * `none` paints nothing but keeps the fill (an empty array).
+  #
+  # The line-style centerline sits w/2 inside the outline (the CSS
+  # two-rect border model — the band between the outer edge and the
+  # deflated background), corner radii shrink by the same inset
+  # (collapsing to square like CSS when the width eats the radius).
+  # Nil when there is nothing to decompose (solid style, per-side
+  # borders, no stroke, or a stamped transform the raw segments would
+  # lose) — the caller falls through to the solid stroke paths.
+  def self.styled_stroke_commands(cmd : RectCmd) : Array(PaintCmd)?
+    return nil unless cmd.stroke_sides.nil? && cmd.xform.nil?
     return nil unless (sc = cmd.stroke_color) && cmd.stroke_width > 0.0
+    style = cmd.stroke_style
+    return nil unless {:none, :hidden, :dashed, :dotted, :double,
+                       :groove, :ridge, :inset, :outset}.includes?(style)
+    return [] of PaintCmd if style.in?(:none, :hidden)
+    w = cmd.stroke_width
     r = cmd.rect
-    return nil if r.width <= cmd.stroke_width || r.height <= cmd.stroke_width
+    return nil if r.width <= w || r.height <= w
     base = cmd.corners || CornerRadii.uniform(cmd.rounding)
-    inset = cmd.stroke_width / 2.0
+
+    case style
+    when :dashed
+      pts = border_centerline(r, base, w / 2.0)
+      pattern_lines(pts, cmd.clip, 3.0 * w, w, w, sc)
+        .map(&.as(PaintCmd))
+    when :dotted
+      pts = border_centerline(r, base, w / 2.0)
+      dot_commands(pts, cmd.clip, w, sc)
+    when :double
+      [stroke_ring(cmd, base, w / 6.0, w / 3.0, sc),
+       stroke_ring(cmd, base, 5.0 * w / 6.0, w / 3.0, sc)]
+        .compact.map(&.as(PaintCmd))
+    when :groove, :ridge
+      # The 3D pair: two half-width bands in the light/dark variants
+      # of the border color — groove carves (dark outer), ridge raises
+      # (light outer).
+      light = sc.lerp(Color32.rgb(255, 255, 255), 0.35)
+      dark = sc.lerp(Color32.rgb(0, 0, 0), 0.35)
+      outer, inner = style == :groove ? {dark, light} : {light, dark}
+      [stroke_ring(cmd, base, w / 4.0, w / 2.0, outer),
+       stroke_ring(cmd, base, 3.0 * w / 4.0, w / 2.0, inner)]
+        .select(RectCmd).map(&.as(PaintCmd))
+    else # :inset / :outset
+      # One full-width ring, lit top/left and shadowed bottom/right —
+      # outset raises, inset sunks (the button 3D pair).
+      light = sc.lerp(Color32.rgb(255, 255, 255), 0.35)
+      dark = sc.lerp(Color32.rgb(0, 0, 0), 0.35)
+      tl, br = style == :outset ? {light, dark} : {dark, light}
+      stroke_ring(cmd, base, w / 2.0, w, tl, br)
+        .try { |ring| [ring.as(PaintCmd)] } || [] of PaintCmd
+    end
+  end
+
+  # The rounded-rect perimeter at `inset` from the box edge — a
+  # clockwise closed polyline starting on the top edge, corner arcs in
+  # ≤2px chords: the shared centerline walker of the dashed/dotted
+  # decomposition (a dash or dot crossing a corner becomes several
+  # collinear pieces that render seamlessly).
+  private def self.border_centerline(r : Rect, base : CornerRadii,
+                                     inset : Float64) : Array(Pos2)
     ir = Rect.from_min_size(
       Pos2.new(r.min.x + inset, r.min.y + inset),
-      Vec2.new(r.width - cmd.stroke_width, r.height - cmd.stroke_width))
+      Vec2.new(r.width - inset * 2.0, r.height - inset * 2.0))
     tl = {base.top_left - inset, 0.0}.max
     tr = {base.top_right - inset, 0.0}.max
     br = {base.bottom_right - inset, 0.0}.max
     bl = {base.bottom_left - inset, 0.0}.max
-
-    # The centerline perimeter as a clockwise polyline starting on the
-    # top edge: whole sides, corner arcs in ≤2px chords.
     pts = [] of Pos2
     arc = ->(cx : Float64, cy : Float64, rad : Float64,
              a0 : Float64, a1 : Float64) do
@@ -376,11 +427,15 @@ module Egui
     pts << Pos2.new(ir.left, ir.top + tl)
     arc.call(ir.left + tl, ir.top + tl, tl, Math::PI, Math::PI * 1.5)
     pts << pts.first
+    pts
+  end
 
-    # Walk the polyline with the dash pattern, clipping every dash to
-    # the segments it crosses.
-    dash = 3.0 * cmd.stroke_width
-    gap = cmd.stroke_width
+  # Walk a closed polyline with an on/off pattern, one LineCmd per
+  # dash piece, every piece clipped to the segments it crosses.
+  private def self.pattern_lines(pts : Array(Pos2), clip : Rect,
+                                 dash : Float64, gap : Float64,
+                                 width : Float64,
+                                 color : Color32) : Array(LineCmd)
     segs = [] of LineCmd
     on = true
     remain = dash
@@ -395,11 +450,11 @@ module Egui
       while s0 < len - 1e-9
         take = {remain, len - s0}.min
         if on && take > 1e-9
-          segs << LineCmd.new(cmd.clip,
+          segs << LineCmd.new(clip,
             Pos2.new(p1.x + dx * s0 / len, p1.y + dy * s0 / len),
             Pos2.new(p1.x + dx * (s0 + take) / len,
               p1.y + dy * (s0 + take) / len),
-            cmd.stroke_width, sc)
+            width, color)
         end
         s0 += take
         remain -= take
@@ -409,7 +464,59 @@ module Egui
         end
       end
     end
-    segs.empty? ? nil : segs
+    segs
+  end
+
+  # `border-style: dotted` — round discs of the border width spaced
+  # one width apart (period 2w), placed along the closed polyline.
+  private def self.dot_commands(pts : Array(Pos2), clip : Rect,
+                                w : Float64, color : Color32) : Array(PaintCmd)
+    spacing = 2.0 * w
+    dots = [] of PaintCmd
+    travelled = 0.0
+    next_dot = 0.0
+    (pts.size - 1).times do |i|
+      p1 = pts[i]
+      p2 = pts[i + 1]
+      dx = p2.x - p1.x
+      dy = p2.y - p1.y
+      len = Math.sqrt(dx * dx + dy * dy)
+      next if len < 1e-9
+      while next_dot <= travelled + len + 1e-9
+        t = ((next_dot - travelled) / len).clamp(0.0, 1.0)
+        dots << CircleCmd.new(clip,
+          Pos2.new(p1.x + dx * t, p1.y + dy * t),
+          w / 2.0, color, nil, 0.0)
+        next_dot += spacing
+      end
+      travelled += len
+    end
+    dots
+  end
+
+  # A stroke-only ring RectCmd at `d` inside the box edge, width `t`:
+  # `br` nil = a uniform `tl`-colored ring (double/groove/ridge),
+  # otherwise the 3D per-side split — top/left in `tl`, bottom/right
+  # in `br` (inset/outset, painted by the backends' per-side path).
+  # The rect deflates by `d`, corner radii shrink by the same inset
+  # (collapsing to square, like CSS); nil when the deflated rect is
+  # degenerate.
+  private def self.stroke_ring(cmd : RectCmd, base : CornerRadii,
+                               d : Float64, t : Float64,
+                               tl : Color32, br : Color32? = nil) : RectCmd?
+    r = cmd.rect
+    return nil if r.width <= d * 2.0 || r.height <= d * 2.0
+    inner = Rect.from_min_size(Pos2.new(r.min.x + d, r.min.y + d),
+      Vec2.new(r.width - d * 2.0, r.height - d * 2.0))
+    rad = CornerRadii.new({base.top_left - d, 0.0}.max,
+      {base.top_right - d, 0.0}.max, {base.bottom_right - d, 0.0}.max,
+      {base.bottom_left - d, 0.0}.max)
+    sides = br ? StrokeSides.new(
+      SideStroke.new(t, tl), SideStroke.new(t, br.not_nil!),
+      SideStroke.new(t, br.not_nil!), SideStroke.new(t, tl)) : nil
+    RectCmd.new(cmd.clip, inner, rad.uniform? ? rad.top_left : 0.0,
+      nil, br ? nil : tl, t, stroke_sides: sides,
+      corners: rad.uniform? ? nil : rad)
   end
 
   struct TextCmd
@@ -862,7 +969,7 @@ module Egui
             fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
             cmd.stroke_width, fade_opt(cmd.fill2), sides, cmd.corners,
             cmd.replace?, cmd.diag?, gradient: cmd.gradient,
-            stroke_dash: cmd.stroke_dash?,
+            stroke_style: cmd.stroke_style,
             clip_corners: cmd.clip_corners, xform: merged)
         when TextCmd
           TextCmd.new(cmd.clip, cmd.pos, cmd.text, cmd.size,
@@ -916,7 +1023,7 @@ module Egui
             fade_opt(cmd.fill), fade_opt(cmd.stroke_color),
             cmd.stroke_width * k, fade_opt(cmd.fill2), sides, corners,
             cmd.replace?, cmd.diag?, gradient: cmd.gradient,
-            stroke_dash: cmd.stroke_dash?,
+            stroke_style: cmd.stroke_style,
             clip_corners: cmd.clip_corners)
         when TextCmd
           TextCmd.new(cmd.clip, pt(cmd.pos), cmd.text, cmd.size * k,

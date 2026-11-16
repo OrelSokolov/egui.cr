@@ -187,7 +187,7 @@ describe "raster per-side border" do
       Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(400.0, 300.0)),
       Egui::Rect.from_min_size(Egui::Pos2.new(10.0, 10.0),
         Egui::Vec2.new(60.0, 30.0)),
-      0.0, nil, Egui::Color32.rgb(255, 0, 0), 2.0, stroke_dash: true)
+      0.0, nil, Egui::Color32.rgb(255, 0, 0), 2.0, stroke_style: :dashed)
 
     raster = Egui::Capybara::Raster.new(80, 50, Egui::Color32.rgb(0, 255, 0))
     raster.render([cmd])

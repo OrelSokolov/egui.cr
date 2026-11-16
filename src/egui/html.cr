@@ -163,9 +163,11 @@ module Egui
     class BoxParams
       property fill : Color32?
       property stroke : Color32?
-      # CSS `border-style: dashed` / the `border:` shorthand — the box
-      # stroke draws as dashes (RectCmd#stroke_dash).
-      property stroke_dash : Bool = false
+      # CSS `border-style` (and the `border:` shorthand) — how the box
+      # stroke re-styles (RectCmd#stroke_style): `:dashed`, `:dotted`,
+      # `:double`, `:groove`, `:ridge`, `:inset`, `:outset`;
+      # `:solid` is the plain stroke.
+      property stroke_style : Symbol = :solid
       # The `border: <width> …` shorthand's width (nil = the call-site
       # default 1.0).
       property stroke_width : Float64?
@@ -264,22 +266,42 @@ module Egui
         when "stroke", "border-color"
           base.stroke = color(val)
         when "border-style"
-          # CSS `border-style`: `dashed` turns the uniform stroke into
-          # dashes; the other keywords keep the solid path.
-          base.stroke_dash = true if val.strip == "dashed"
+          # CSS `border-style`: the keyword re-styles the uniform
+          # stroke (dashed/dotted/double/groove/ridge/inset/outset);
+          # `none`/`hidden` drop the stroke entirely.
+          case val.strip.downcase
+          when "none", "hidden" then base.stroke = nil
+          when "solid"          then base.stroke_style = :solid
+          when "dashed"         then base.stroke_style = :dashed
+          when "dotted"         then base.stroke_style = :dotted
+          when "double"         then base.stroke_style = :double
+          when "groove"         then base.stroke_style = :groove
+          when "ridge"          then base.stroke_style = :ridge
+          when "inset"          then base.stroke_style = :inset
+          when "outset"         then base.stroke_style = :outset
+          end
         when "border"
           # The `border: <width> <style> <color>` shorthand (any order,
-          # like CSS): width/color take their slots, `dashed` sets the
-          # dash flag, `none` drops the stroke entirely.
+          # like CSS): width/color take their slots, a style keyword
+          # re-styles the stroke, `none` drops it entirely.
           val.split.each do |tok|
-            if tok == "dashed"
-              base.stroke_dash = true
-            elsif tok == "none"
+            case tok.downcase
+            when "solid" then base.stroke_style = :solid
+            when "dashed" then base.stroke_style = :dashed
+            when "dotted" then base.stroke_style = :dotted
+            when "double" then base.stroke_style = :double
+            when "groove" then base.stroke_style = :groove
+            when "ridge"  then base.stroke_style = :ridge
+            when "inset"  then base.stroke_style = :inset
+            when "outset" then base.stroke_style = :outset
+            when "none", "hidden"
               base.stroke = nil
-            elsif (c = tok.starts_with?('#') ? color(tok) : rgba_color?(tok))
-              base.stroke = c
-            elsif (n = tok.delete("px").to_f64?)
-              base.stroke_width = n
+            else
+              if (c = tok.starts_with?('#') ? color(tok) : rgba_color?(tok))
+                base.stroke = c
+              elsif (n = tok.delete("px").to_f64?)
+                base.stroke_width = n
+              end
             end
           end
         when "border-top", "border-right", "border-bottom", "border-left"
@@ -609,7 +631,7 @@ module Egui
             rounding: params.rounding || params.corners.try(&.max) || 6.0,
             margin: params.margin,
             stroke_width: params.stroke_width || 1.0,
-            stroke_dash: params.stroke_dash,
+            stroke_style: params.stroke_style,
             corners: params.corners,
             stroke_sides: sides,
             shadow: params.shadow,

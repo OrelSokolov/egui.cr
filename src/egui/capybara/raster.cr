@@ -172,18 +172,26 @@ module Egui
       end
 
       private def rect_cmd(cmd : RectCmd) : Nil
-        # CSS `border-style: dashed`: the dashed stroke decomposes into
-        # line segments (Egui.dashed_stroke_segments) — the fill (if
-        # any) paints first WITHOUT the solid border plate, the dashes
-        # ride the plain line path (the CPU mirror of sokol's branch).
-        if (dashes = Egui.dashed_stroke_segments(cmd))
+        # CSS `border-style` (dashed/dotted/double/groove/ridge/inset/
+        # outset): the styled stroke decomposes into primitives
+        # (Egui.styled_stroke_commands) — the fill (if any) paints
+        # first WITHOUT the solid border plate, the pieces ride the
+        # plain line/circle/solid-stroke paths (the CPU mirror of
+        # sokol's branch).
+        if (parts = Egui.styled_stroke_commands(cmd))
           if cmd.fill || cmd.fill2 || cmd.gradient
             fill_only = RectCmd.new(cmd.clip, cmd.rect, cmd.rounding,
               cmd.fill, nil, 0.0, cmd.fill2, nil, cmd.corners, cmd.replace?,
               cmd.diag?, gradient: cmd.gradient)
             rect_cmd(fill_only)
           end
-          dashes.each { |d| line_cmd(d) }
+          parts.each do |pc|
+            case pc
+            when LineCmd   then line_cmd(pc)
+            when CircleCmd then circle_cmd(pc)
+            when RectCmd   then rect_cmd(pc)
+            end
+          end
           return
         end
         # The standard border algorithm: a bordered background paints

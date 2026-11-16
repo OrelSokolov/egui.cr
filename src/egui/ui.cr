@@ -1593,9 +1593,11 @@ module Egui
     # colors (usually resolved from style keys by
     # `StyleVars#stroke_sides?`). `corners` carries the per-corner
     # CSS `border-radius: a b c d` shorthand (nil = uniform
-    # `rounding`). `stroke_dash` is CSS `border-style: dashed` — the
-    # uniform stroke draws as a 3:1 dash pattern along the rounded
-    # perimeter (per-side borders ignore it). `shadow` is the CSS `box-shadow` (an explicit
+    # `rounding`). `stroke_style` is CSS `border-style` — the uniform
+    # stroke re-styles per the keyword (`:dashed` a 3:1 dash pattern,
+    # `:dotted` round dots, `:double`/`:groove`/`:ridge`/`:inset`/
+    # `:outset` the layered CSS bands — see
+    # `.styled_stroke_commands`; per-side borders ignore it). `shadow` is the CSS `box-shadow` (an explicit
     # argument over the box's class chain — the same `shadow.*` keys
     # widgets read); outset paints under the fill, inset over it, in
     # both cases under the contents. `appear`/`appear_delay` override the
@@ -1609,7 +1611,7 @@ module Egui
             style_class : String? = nil,
             stroke_sides : StrokeSides? = nil,
             corners : CornerRadii? = nil,
-            stroke_dash : Bool = false,
+            stroke_style : Symbol = :solid,
             shadow : BoxShadowSpec? = nil,
             appear : String | Symbol? = nil,
             appear_delay : Float64? = nil,
@@ -1637,7 +1639,7 @@ module Egui
             stroke: stroke, rounding: rounding, margin: margin,
             stroke_width: stroke_width, style_class: style_class,
             stroke_sides: stroke_sides, corners: corners,
-            stroke_dash: stroke_dash, shadow: shadow,
+            stroke_style: stroke_style, shadow: shadow,
             appear: appear,
             appear_delay: appear_delay, transform: transform,
             transform_origin: transform_origin, overflow: overflow,
@@ -1675,7 +1677,7 @@ module Egui
       if positioning.is_a?(BoxPlacement)
         return placed_box(positioning, direction, wrap, style_class,
           flat_fill, grad, stroke, sides, rounding, corners, m,
-          stroke_width, shadow, stroke_dash: stroke_dash, &block)
+          stroke_width, shadow, stroke_style: stroke_style, &block)
       end
       rel = positioning || Vec2.zero
       # CSS `box-shadow`: explicit argument over the box's class chain
@@ -1934,7 +1936,7 @@ module Egui
           painter.set(bg_index,
             RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
               stroke_width.as?(Float64) || 1.0, nil, sides, corners,
-              gradient: grad, stroke_dash: stroke_dash))
+              gradient: grad, stroke_style: stroke_style))
         end
         if (s = sh)
           # The reserved slot on the right side of the fill (nil slot =
@@ -2264,7 +2266,7 @@ module Egui
                            corners : CornerRadii?, m : Vec2,
                            stroke_width : Float64 | StyleBox,
                            shadow : BoxShadowSpec? = nil,
-                           stroke_dash : Bool = false,
+                           stroke_style : Symbol = :solid,
                            &block : Ui ->) : Rect
       ctx = @ctx
       ctx.memory.use_id(placement.id)
@@ -2361,7 +2363,7 @@ module Egui
         painter.set(bg_index,
           RectCmd.new(painter.clip, outer, rounding, flat_fill, stroke,
             stroke_width.as?(Float64) || 1.0, nil, sides, corners,
-            gradient: grad, stroke_dash: stroke_dash))
+            gradient: grad, stroke_style: stroke_style))
       end
       if (s = sh)
         slot = s.inset? ? sh_over : sh_under

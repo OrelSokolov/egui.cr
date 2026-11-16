@@ -89,7 +89,7 @@ describe "html vocabulary" do
     frame = ctx.painter.commands.select(Egui::RectCmd)
       .find { |r| r.stroke_color == gray && r.stroke_width == 1.0 }
     frame.should_not be_nil
-    frame.not_nil!.stroke_dash?.should be_true
+    frame.not_nil!.stroke_style.should eq(:dashed)
   end
 
   it "border-left/border-top: none — per-side shorthands and longhands" do
@@ -135,24 +135,58 @@ describe "html vocabulary" do
     # inside, the pattern walks 3 on / 1 off from the top edge.
     box = Egui::Rect.new(Egui::Pos2.new(0, 0), Egui::Pos2.new(100, 20))
     cmd = Egui::RectCmd.new(box, box, 0.0, nil,
-      Egui::Color32.rgb(255, 255, 255), 1.0, stroke_dash: true)
-    segs = Egui.dashed_stroke_segments(cmd).not_nil!
+      Egui::Color32.rgb(255, 255, 255), 1.0, stroke_style: :dashed)
+    segs = Egui.styled_stroke_commands(cmd).not_nil!
     segs.should_not be_empty
     # every segment is a dash piece on the 1px-wide centerline band
-    segs.each do |s|
+    segs.each do |p|
+      s = p.as(Egui::LineCmd)
       s.width.should eq(1.0)
       if s.p1.y == s.p2.y # horizontal piece: top or bottom centerline
         {(s.p1.y - 0.5).abs, (s.p1.y - 19.5).abs}.min.should be_close(0.0, 1e-6)
       end
     end
     # the first dash starts at the top-left corner and runs 3px
-    first = segs.first
+    first = segs.first.as(Egui::LineCmd)
     first.p1.x.should be_close(0.5, 1e-6)
     (first.p2.x - first.p1.x).should be_close(3.0, 1e-6)
     # solid strokes and stroke-less rects stay on their own paths
     solid = Egui::RectCmd.new(box, box, 0.0, nil,
       Egui::Color32.rgb(255, 255, 255), 1.0)
-    Egui.dashed_stroke_segments(solid).should be_nil
+    Egui.styled_stroke_commands(solid).should be_nil
+  end
+
+  it "border-style: dotted/double/groove/outset decompose" do
+    box = Egui::Rect.new(Egui::Pos2.new(0, 0), Egui::Pos2.new(100, 20))
+    white = Egui::Color32.rgb(255, 255, 255)
+    # dotted: round dots (CircleCmd) along the centerline
+    dotted = Egui.styled_stroke_commands(Egui::RectCmd.new(box, box, 0.0,
+      nil, white, 2.0, stroke_style: :dotted)).not_nil!
+    dotted.should_not be_empty
+    dotted.each { |p| p.should be_a(Egui::CircleCmd) }
+    # double: two w/3 stroke-only rings at w/6 and 5w/6 inside
+    dbl = Egui.styled_stroke_commands(Egui::RectCmd.new(box, box, 0.0,
+      nil, white, 6.0, stroke_style: :double)).not_nil!
+    dbl.size.should eq(2)
+    dbl.each do |p|
+      ring = p.as(Egui::RectCmd)
+      ring.stroke_width.should be_close(2.0, 1e-6)
+      ring.stroke_color.should eq(white)
+    end
+    dbl[1].as(Egui::RectCmd).rect.min.x.should be_close(5.0, 1e-6)
+    # groove: outer ring darker, inner lighter than the border color
+    groove = Egui.styled_stroke_commands(Egui::RectCmd.new(box, box, 0.0,
+      nil, white, 4.0, stroke_style: :groove)).not_nil!
+    groove.size.should eq(2)
+    groove[0].as(Egui::RectCmd).stroke_color.not_nil!.r.should be < 255
+    groove[1].as(Egui::RectCmd).stroke_color.not_nil!.r.should eq(255)
+    # outset: one per-side ring — light top/left, dark bottom/right
+    outset = Egui.styled_stroke_commands(Egui::RectCmd.new(box, box, 0.0,
+      nil, white, 4.0, stroke_style: :outset)).not_nil!
+    outset.size.should eq(1)
+    sides = outset.first.as(Egui::RectCmd).stroke_sides.not_nil!
+    sides.top.color.r.should eq(255)
+    sides.bottom.color.r.should be < 255
   end
 
   it "hidden: skips rendering entirely" do

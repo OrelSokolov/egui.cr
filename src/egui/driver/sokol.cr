@@ -3205,18 +3205,25 @@ module Egui
       end
 
       def self.paint_rect_body(cmd : Egui::RectCmd) : Nil
-        # CSS `border-style: dashed`: the dashed stroke decomposes into
-        # line segments (Egui.dashed_stroke_segments) — the fill (if
-        # any) paints first WITHOUT the solid border plate, the dashes
-        # ride the plain line path.
-        if (dashes = Egui.dashed_stroke_segments(cmd))
+        # CSS `border-style` (dashed/dotted/double/groove/ridge/inset/
+        # outset): the styled stroke decomposes into primitives
+        # (Egui.styled_stroke_commands) — the fill (if any) paints
+        # first WITHOUT the solid border plate, the pieces ride the
+        # plain line/circle/solid-stroke paths.
+        if (parts = Egui.styled_stroke_commands(cmd))
           if cmd.fill || cmd.fill2 || cmd.gradient
             fill_only = Egui::RectCmd.new(cmd.clip, cmd.rect, cmd.rounding,
               cmd.fill, nil, 0.0, cmd.fill2, nil, cmd.corners, cmd.replace?,
               cmd.diag?, gradient: cmd.gradient)
             paint_rect_body(fill_only)
           end
-          dashes.each { |d| paint_line(d) }
+          parts.each do |pc|
+            case pc
+            when Egui::LineCmd   then paint_line(pc)
+            when Egui::CircleCmd then paint_circle(pc)
+            when Egui::RectCmd   then paint_rect_body(pc)
+            end
+          end
           return
         end
 
