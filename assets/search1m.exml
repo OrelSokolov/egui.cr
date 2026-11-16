@@ -1,0 +1,20 @@
+<exml>
+  <!-- search1m — the chrome for examples/search1m.cr: a filter field,
+       a live stats/fps line and the <line_list/> custom element (the
+       virtual band over the 1M-line corpus the binary renders). Edit
+       this file while the app runs — it hot-reloads. -->
+
+  <page id="root/root">
+    <column>
+      <heading text="search1m — {total} lines"/>
+      <input bind="query" hint="substring filter — runs on every keystroke" on_change="search"/>
+      <row>
+        <label text="{stats}"/>
+        <label text="{fps}"/>
+      </row>
+      <checkbox bind="continuous" text="continuous rendering"/>
+      <separator/>
+      <line_list/>
+    </column>
+  </page>
+</exml>

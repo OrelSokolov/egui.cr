@@ -108,6 +108,8 @@ binaries:
   apps/tray:                {main: examples/tray.cr}
   apps/voice_echo:          {main: examples/voice_echo.cr}
   apps/stress_scroll:       {main: examples/stress_scroll.cr}
+  apps/search1m:            {main: examples/search1m.cr}
+  apps/logs_viewer:         {main: examples/logs_viewer.cr}
 
   # The Vue SFC port tool (plans/vue2velvet.md) — template+style →
   # .exml/.ecss, the script half is a report for the Crystal
