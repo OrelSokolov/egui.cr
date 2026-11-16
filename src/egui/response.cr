@@ -222,9 +222,9 @@ module Egui
     # tooltip): the message anchored UNDER this widget's rect — no
     # pointer, no hover delay. Shown while the widget is FOCUSED and
     # its error state is live (the caller decides; see TextEdit's
-    # required/pattern handling). The bubble keeps the tooltip look
-    # but carries the danger stroke, tying it to the field's
-    # `:invalid` border.
+    # required/pattern handling). The bubble keeps the tooltip shape
+    # but goes danger-red: DefaultTheme.invalid_fill under white text,
+    # with the `:invalid` stroke tying it to the field's border.
     def show_validation_tooltip(text : String) : Nil
       paint_tooltip_bubble(text,
         Pos2.new(@rect.left, @rect.bottom + 6.0), danger: true)
@@ -260,13 +260,16 @@ module Egui
       painter.layer = Order::Tooltip
       painter.clip = Rect.from_min_size(pos, size)
       painter.rect(Rect.from_min_size(pos, size), 4.0,
-        style.visuals.window_fill,
+        danger ? DefaultTheme.invalid_fill : style.visuals.window_fill,
         danger ? danger_stroke : style.visuals.window_stroke, 1.0)
       # Painter#text anchors the LEFT-CENTER of the text box, so pass the
       # center of the inner (margin-padded) area — pos + margin alone
       # would shift the glyphs up by half a line, under the top border.
+      # The validation bubble writes WHITE on its red fill (the ambient
+      # text color would vanish on light themes).
       painter.text(Pos2.new(pos.x + margin.x, pos.y + margin.y + text_size.y / 2.0),
-        text, font_size, style.visuals.text_color)
+        text, font_size,
+        danger ? DefaultTheme.invalid_text : style.visuals.text_color)
       painter.layer = saved_layer
       painter.clip = saved_clip
     end

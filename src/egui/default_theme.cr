@@ -38,6 +38,17 @@ module Egui
       text_color.lerp(Color32.rgb(0xd5, 0x3f, 0x3f), 0.8)
     end
 
+    # The validation bubble's fill — a muted, deep red (Material's
+    # error tone: assertive, not neon) with white text, so the bubble
+    # reads the same on light and dark themes.
+    def self.invalid_fill : Color32
+      Color32.rgb(0xb3, 0x26, 0x1e)
+    end
+
+    def self.invalid_text : Color32
+      Color32.rgb(255, 255, 255)
+    end
+
     def self.dark : Theme
       build("dark", dark: true)
     end
