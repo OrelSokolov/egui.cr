@@ -220,16 +220,15 @@ module Egui
 
     # The browser's form-validation bubble (Chrome's :invalid
     # tooltip): the message anchored UNDER this widget's rect — no
-    # pointer, no hover delay. Shown while the widget is focused or
-    # hovered and its error state is live (the caller decides; see
-    # TextEdit's required/pattern handling). The bubble keeps the
-    # tooltip look but carries the danger stroke, tying it to the
-    # field's `:invalid` border.
+    # pointer, no hover delay. Shown while the widget is FOCUSED and
+    # its error state is live (the caller decides; see TextEdit's
+    # required/pattern handling). The bubble keeps the tooltip look
+    # but carries the danger stroke, tying it to the field's
+    # `:invalid` border.
     def show_validation_tooltip(text : String) : Nil
       paint_tooltip_bubble(text,
         Pos2.new(@rect.left, @rect.bottom + 6.0), danger: true)
     end
-
     # One bubble, two callers: the hover tooltip (at the pointer, idle
     # stroke) and the validation bubble (widget-anchored, danger
     # stroke). Painted in the Tooltip layer, clamped on-screen.

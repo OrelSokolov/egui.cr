@@ -19,10 +19,9 @@ require "../src/egui/html"
 FORM_SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(800.0, 600.0))
 
 # The validation bubble (Chrome's :invalid tooltip): pops under the
-# field, no hover delay, while the error is live and the field is
-# focused or hovered. The bubble's standard texts appear nowhere
-# else in the app, so scanning the frame's text commands for them
-# is a faithful probe.
+# FOCUSED field, no hover delay, while its error state is live. The
+# bubble's standard texts appear nowhere else in the app, so scanning
+# the frame's text commands for them is a faithful probe.
 def bubble_texts(ctx : Egui::Context) : Array(String)
   ctx.painter.commands.select(Egui::TextCmd).map(&.text)
 end
@@ -167,6 +166,30 @@ describe "form validation" do
                      Egui::Event.pointer_released(center)])
     app.update(ctx, [Egui::Event.text_input("nope")])
     bubble_texts(ctx).should contain("Please match the requested format")
+  end
+
+  it "hover alone never pops the bubble — focus only" do
+    app = FormApp.new
+    ctx = Egui::Context.new
+    app.update(ctx)
+    app.update(ctx)
+    # Touch the name field, clear it (touched + invalid, error shown),
+    # then drop focus with Escape and merely HOVER the field.
+    center = app.name_resp.not_nil!.rect.center
+    app.update(ctx, [Egui::Event.pointer_pressed(center),
+                     Egui::Event.pointer_released(center)])
+    app.update(ctx, [Egui::Event.text_input("a")])
+    app.update(ctx, [Egui::Event.key_pressed(:backspace)])
+    app.update(ctx, [Egui::Event.key_pressed(:escape)])
+    app.update(ctx, [Egui::Event.pointer_moved(center)])
+    app.update(ctx)
+    app.name_resp.not_nil!.invalid?.should be_true # error still shown
+    bubble_texts(ctx).should_not contain("Please fill out this field")
+    # Focusing it again brings the bubble back.
+    app.update(ctx, [Egui::Event.pointer_pressed(center),
+                     Egui::Event.pointer_released(center)])
+    app.update(ctx)
+    bubble_texts(ctx).should contain("Please fill out this field")
   end
 
   it "a blocked submit reveals errors; focusing the field pops the bubble" do

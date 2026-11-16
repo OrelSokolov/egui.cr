@@ -177,12 +177,17 @@ module Egui
       @lock_kb_next = false
       @text = false
       @text_next = false
+      # #clear was called since the last begin_frame — #keep_alive must
+      # not resurrect the focus it dropped (a surrender beats the
+      # dead-man's-switch interest re-request in the SAME frame).
+      @surrendered = false
     end
 
     def begin_frame : Nil
       @id_previous_frame = @id
       @id = @id_next_frame
       @id_next_frame = nil
+      @surrendered = false
       @lock_h = @lock_h_next
       @lock_v = @lock_v_next
       @lock_h_next = false
@@ -195,16 +200,19 @@ module Egui
 
     def request(id : Id) : Nil
       @id_next_frame = id
+      @surrendered = false # an explicit request outvotes a surrender
     end
 
     # Keep-alive (called by interact for the currently focused focusable):
-    # never overrides a pending navigation request made this frame.
+    # never overrides a pending navigation request made this frame, nor a
+    # surrender — #clear this frame means the widget gave focus UP.
     def keep_alive(id : Id) : Nil
-      @id_next_frame = id if @id_next_frame.nil?
+      @id_next_frame = id if @id_next_frame.nil? && !@surrendered
     end
 
     def clear : Nil
       @id_next_frame = nil
+      @surrendered = true
     end
 
     def id : Id?

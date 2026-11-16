@@ -14,10 +14,9 @@
 #   reveals its error at once, like the browser's submit-time pass;
 # - `pattern` judges non-empty values only; empties are `required`'s
 #   concern (HTML constraint validation rules);
-# - focusing (or hovering) a live-invalid field pops the validation
-#   bubble under it — Chrome's :invalid tooltip, standard texts
-#   ("Please fill out this field" / "Please match the requested
-#   format"), no hover delay.
+# - focusing a live-invalid field pops the validation bubble under
+#   it — Chrome's :invalid tooltip, standard texts ("Please fill out
+#   this field" / "Please match the requested format"), no delay.
 #
 # The danger stroke comes from the default theme's
 # `text_edit:invalid` rule — restyle it in ECSS like any state:
