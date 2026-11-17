@@ -2740,7 +2740,21 @@ static int g_sdf_hard;
 #ifndef GL_SAMPLE_SHADING
 #define GL_SAMPLE_SHADING 0x8C36
 #endif
+#if defined(_SAPP_WIN32)
+// opengl32.lib stops at GL 1.1 — sample shading (GL 3.2) is resolved
+// from the live context at first use, like the #if !_SAPP_WIN32 GL
+// calls elsewhere in this file that simply don't run on Windows.
+static void (APIENTRY* sh_glMinSampleShading)(float);
+static void sh_min_sample_shading(float v) {
+    if (!sh_glMinSampleShading)
+        sh_glMinSampleShading = (void (APIENTRY*)(float))
+            (void*)wglGetProcAddress("glMinSampleShading");
+    if (sh_glMinSampleShading) sh_glMinSampleShading(v);
+}
+#define glMinSampleShading(v) sh_min_sample_shading(v)
+#else
 extern void glMinSampleShading(float);
+#endif
 #endif
 static sg_buffer g_sdf_quad; // static corner quad (-1..1), 6 × vec2
 static sg_buffer* g_sdf_ring; // growable (sh_sdf_ring_grow), SH_SDF_RING to start
@@ -8673,12 +8687,13 @@ static void sh_shot(sh_packet_t* p) {
     static int strip_mode = -1, strip_max, strip_x0, strip_x1;
     static uint32_t strip_n;
     if (strip_mode < 0) {
+        const char* v;
         strip_mode = getenv("EGUI_SHOT_STRIP") ? 1 : 0;
         strip_max = 400;
-        if (const char* n = getenv("EGUI_SHOT_N")) strip_max = atoi(n);
+        if ((v = getenv("EGUI_SHOT_N")) != NULL) strip_max = atoi(v);
         strip_x0 = 500; strip_x1 = 600;
-        if (const char* v = getenv("EGUI_SHOT_X0")) strip_x0 = atoi(v);
-        if (const char* v = getenv("EGUI_SHOT_X1")) strip_x1 = atoi(v);
+        if ((v = getenv("EGUI_SHOT_X0")) != NULL) strip_x0 = atoi(v);
+        if ((v = getenv("EGUI_SHOT_X1")) != NULL) strip_x1 = atoi(v);
     }
     if ((intptr_t)dir == -1) return;
     if (strip_mode) {
@@ -8783,8 +8798,9 @@ static void sh_screenshot_try(int w, int h) {
     if (w <= 0 || h <= 0) return;
     static double at = -1.0;
     if (at < 0.0) {
+        const char* v;
         at = SH_SHOT_AT_DEFAULT;
-        if (const char* v = getenv("EGUI_SCREENSHOT_AT")) {
+        if ((v = getenv("EGUI_SCREENSHOT_AT")) != NULL) {
             double d = atof(v);
             if (d >= 0.0) at = d;
         }

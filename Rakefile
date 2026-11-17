@@ -217,7 +217,9 @@ ARCHIVES[RLOTTIE_LIB] = %w[rlottie_shim] if LOTTIE_FEATURE
 # shard's own Rakefile from its vendored single-header C; apps opt in
 # with require "egui/driver/audio", the @[Link] attributes live in
 # the shard. Plain `rake` there is incremental, so this is cheap.
-MINAUDIO_LIB = "lib/minaudio/lib/libminaudio.a"
+# minaudio.cr builds libminaudio.a on POSIX toolchains and miniaudio.lib
+# under MSVC (its own Rakefile switches on Gem.win_platform?).
+MINAUDIO_LIB = WINDOWS ? "lib/minaudio/lib/miniaudio.lib" : "lib/minaudio/lib/libminaudio.a"
 file MINAUDIO_LIB do
   sh "cd lib/minaudio && rake build"
 end
