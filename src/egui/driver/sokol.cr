@@ -4074,11 +4074,16 @@ module Egui
       # centers the gaussian, σ = blur/2, ON the silhouette, so just
       # outside the edge only half the declared alpha shows). exp(-2t²)
       # is that gaussian's tail, renormalized to hit exactly 0 at the
-      # rim (t=1) so the band's inner edge never steps.
+      # rim (t=1) so the band's inner edge never steps. `inner` flips
+      # the ramp to the INSIDE of the silhouette: the same centered
+      # gaussian accumulates coverage inward too — 1 − peak·g, i.e.
+      # half the alpha at the edge rising to full at the reach inside
+      # (the browser's smooth ramp; a solid interior read as an extra
+      # hard-edged shadow on the offset/spread strip).
       def self.shadow_stop(color : Egui::Color32, t : Float64,
-                           peak : Float64 = 1.0) : Egui::Color32
-        a = color.a.to_f64 * peak *
-            (Math.exp(-2.0 * t * t) - Math.exp(-2.0)) / (1.0 - Math.exp(-2.0))
+                           peak : Float64 = 1.0, inner : Bool = false) : Egui::Color32
+        g = (Math.exp(-2.0 * t * t) - Math.exp(-2.0)) / (1.0 - Math.exp(-2.0))
+        a = color.a.to_f64 * (inner ? 1.0 - peak * g : peak * g)
         a = (a + 0.5).floor.to_u8
         Egui::Color32.new(color.r, color.g, color.b, a)
       end
@@ -4089,9 +4094,9 @@ module Egui
       def self.shadow_band(pts : Array(PerimPt),
                            depths : Array(Float64), t0 : Float64, t1 : Float64,
                            color : Egui::Color32, sign : Float64,
-                           peak : Float64 = 1.0) : Nil
-        c0 = shadow_stop(color, t0, peak)
-        c1 = shadow_stop(color, t1, peak)
+                           peak : Float64 = 1.0, inner : Bool = false) : Nil
+        c0 = shadow_stop(color, t0, peak, inner)
+        c1 = shadow_stop(color, t1, peak, inner)
         pts.each_with_index do |(p, n, _, _), i|
           q = pts[(i + 1) % pts.size]
           qn = q[1]
@@ -4144,10 +4149,13 @@ module Egui
           return
         end
 
-        # The caster silhouette itself is solid shadow (CSS fills the
-        # offset shape before blurring) — without it, an `offset` shows
-        # a gap between the rect and the outward fade.
-        rounded_rect_fill(base, radius, cmd.color)
+        # CSS falloff on BOTH sides of the caster silhouette: the
+        # gaussian (σ = blur/2) is centered on the edge, so coverage
+        # ramps INWARD as well — half the color alpha at the edge
+        # rising to full at 1.5·blur inside (inner bands + the solid
+        # core beyond the reach). The old solid silhouette showed the
+        # offset/spread strip at full alpha — an extra hard-edged
+        # shadow no browser paints.
         pts = rounded_perimeter_sided(base, radius)
         # Bands cover the falloff's reach (1.5·blur — same tail as the
         # SDF shader), ~1px each (alpha stops follow the gaussian,
@@ -4159,8 +4167,28 @@ module Egui
         # edge (see #shadow_stop).
         reach = blur * 1.5
         bands = {reach.ceil.to_i, 1}.max.clamp(1..24)
-        depths = Array.new(pts.size, reach)
+        # The solid core (deep inside the reach, where the centered
+        # gaussian has saturated) paints FIRST — #rounded_rect_fill
+        # opens its own begin/end block, so it must NOT sit inside the
+        # bands' one below.
+        inner = {reach, base.width / 2.0, base.height / 2.0}.min
+        if inner > 0.5
+          rounded_rect_fill(base.expand(-inner), {radius - inner, 0.0}.max,
+            cmd.color)
+        else
+          # Caster smaller than the reach: the ramp saturates before
+          # the center — full fill is the deep-inside limit.
+          rounded_rect_fill(base, radius, cmd.color)
+        end
         LibEguiCr.sgl_begin_quads
+        if inner > 0.5
+          depths_in = Array.new(pts.size, inner)
+          bands.times do |k|
+            shadow_band(pts, depths_in, k.to_f64 / bands,
+              (k + 1).to_f64 / bands, cmd.color, 1.0, peak: 0.5, inner: true)
+          end
+        end
+        depths = Array.new(pts.size, reach)
         bands.times do |k|
           shadow_band(pts, depths, k.to_f64 / bands,
             (k + 1).to_f64 / bands, cmd.color, -1.0, peak: 0.5)

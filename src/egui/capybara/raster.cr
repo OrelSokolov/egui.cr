@@ -449,14 +449,18 @@ module Egui
                 else
                   # CSS falloff: the gaussian (sigma = blur/2) is
                   # CENTERED on the caster edge — half the color alpha
-                  # just outside, solid inside, 0 at 1.5*blur.
+                  # at the edge, 0 at 1.5*blur outside and ramping to
+                  # FULL only 1.5*blur inside (1 - 0.5*g, the same
+                  # both-sided ramp as the GL backends; a solid
+                  # interior read as an extra hard-edged shadow).
                   (1.0 - d / reach).clamp(0.0, 1.0)
                 end
             cov = if cmd.inset?
                     0.5 * (Math.exp(-2.0 * t * t) - Math.exp(-2.0)) /
                       (1.0 - Math.exp(-2.0))
                   elsif d <= 0.0
-                    1.0
+                    u = (-d / reach).clamp(0.0, 1.0)
+                    1.0 - 0.5 * (Math.exp(-4.5 * u * u) - rim) / (1.0 - rim)
                   else
                     0.5 * (Math.exp(-4.5 * t * t) - rim) / (1.0 - rim)
                   end

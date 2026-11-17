@@ -2318,9 +2318,10 @@ static void sh_ensure_pipelines(void);
 // only the pre-bracket frames (appear animation) flashing through.
 // Callers degrade to the plain rect scissor instead.
 static int g_sdf_state; // defined with the SDF block below
+static int g_mask_state; // the rounded-clip mask subset — see sh_sdf_ensure
 static bool sh_stencil_ok(void) {
     return sapp_depth_format() == SAPP_PIXELFORMAT_DEPTH_STENCIL &&
-           g_sdf_state == 1;
+           g_mask_state == 1;
 }
 
 // The stencil-test block shared by every content pipeline variant.
@@ -2749,8 +2750,18 @@ static int g_sdf_ring_cap;
 // so consecutive frames start on fresh buffers while the GPU may still
 // read the previous frame's appends.
 static int g_sdf_ring_next;
-// 0 = not tried, 1 = ready, -1 = unsupported/failed on this backend
+// 0 = not tried, 1 = ready, -1 = unsupported/failed on this backend.
+// g_mask_state tracks the MASK subset alone (quad buffer + mask shader +
+// mask/unmask pipelines): Vulkan builds it from SPIR-V while the full
+// batch path stays GLSL-only — sh_stencil_ok() keys on this, so the
+// rounded-clip bracket works there while EGUI_SDF keeps falling back.
 static int g_sdf_state;
+static int g_mask_state;
+#if defined(SOKOL_VULKAN)
+// SPIR-V twins of the rounded-clip mask shader (`rake shaders`) — the
+// GL backends compile the same interface from the GLSL strings below.
+#include "sdf_mask_spv.h"
+#endif
 static int g_sdf_drawn; // draws this frame (EGUI_DRAW_STATS)
 
 #if defined(SOKOL_GLCORE)
@@ -2871,10 +2882,11 @@ static const char SH_SDF_FS[] =
     "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
     "    if (v_params.z > 0.5) {\n"
     // Outset box-shadow, CSS/Skia semantics: the gaussian (sigma =
-    // blur/2) is CENTERED on the caster silhouette, so just outside
-    // the edge the coverage is HALF the color alpha, fading to 0 at
-    // ~1.5*blur; well inside the caster it accumulates to full alpha
-    // (the exposed strip of an offset shadow stays solid). exp(-2t^2)
+    // blur/2) is CENTERED on the caster silhouette, so the coverage
+    // ramps on BOTH sides — half the color alpha at the edge, 0 at
+    // ~1.5*blur outside and full at ~1.5*blur inside (1 - 0.5*g; a
+    // solid interior read as an extra hard-edged shadow on the
+    // offset/spread strip). exp(-2t^2)
     // is the gaussian's tail; renormalized to hit exactly 0 at the
     // quad rim (t = 1.5) so the rim never cuts the curve.
     "    if (v_params.z > 1.5) {\n"
@@ -2917,8 +2929,8 @@ static const char SH_SDF_FS[] =
     "        float blur = max(v_params.w * ppp, 1.0);\n"
     "        float t = d / (blur * 1.5);\n"
     "        if (t >= 1.0) discard;\n"
-    "        float cov = t <= 0.0 ? 1.0\n"
-    "            : 0.5 * (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float g = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float cov = t <= 0.0 ? 1.0 - 0.5 * g : 0.5 * g;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov * cm);\n"
     "        return;\n"
@@ -3075,10 +3087,11 @@ static const char SH_SDF_FS[] =
     "    float d = sd_round_box(v_p, v_half, v_radii) * ppp;\n"
     "    if (v_params.z > 0.5) {\n"
     // Outset box-shadow, CSS/Skia semantics: the gaussian (sigma =
-    // blur/2) is CENTERED on the caster silhouette, so just outside
-    // the edge the coverage is HALF the color alpha, fading to 0 at
-    // ~1.5*blur; well inside the caster it accumulates to full alpha
-    // (the exposed strip of an offset shadow stays solid). exp(-2t^2)
+    // blur/2) is CENTERED on the caster silhouette, so the coverage
+    // ramps on BOTH sides — half the color alpha at the edge, 0 at
+    // ~1.5*blur outside and full at ~1.5*blur inside (1 - 0.5*g; a
+    // solid interior read as an extra hard-edged shadow on the
+    // offset/spread strip). exp(-2t^2)
     // is the gaussian's tail; renormalized to hit exactly 0 at the
     // quad rim (t = 1.5) so the rim never cuts the curve.
     "    if (v_params.z > 1.5) {\n"
@@ -3121,8 +3134,8 @@ static const char SH_SDF_FS[] =
     "        float blur = max(v_params.w * ppp, 1.0);\n"
     "        float t = d / (blur * 1.5);\n"
     "        if (t >= 1.0) discard;\n"
-    "        float cov = t <= 0.0 ? 1.0\n"
-    "            : 0.5 * (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float g = (exp(-2.0 * t * t) - 0.135335) * 1.156818;\n"
+    "        float cov = t <= 0.0 ? 1.0 - 0.5 * g : 0.5 * g;\n"
     "        if (cov <= 0.0) discard;\n"
     "        frag_color = vec4(v_fill.rgb, v_fill.a * cov * cm);\n"
     "        return;\n"
@@ -3168,9 +3181,9 @@ static const char SH_SDF_FS[] =
 
 // Lazy resource creation, same locking/defer rules as sh_ensure_pipelines.
 static void sh_sdf_ensure(void) {
-    if (g_sdf_state) return;
+    if (g_sdf_state && g_mask_state) return;
     SH_LAZY_LOCK();
-    if (g_sdf_state) { SH_LAZY_UNLOCK(); return; }
+    if (g_sdf_state && g_mask_state) { SH_LAZY_UNLOCK(); return; }
     if (!sh_gl_ok()) { SH_LAZY_UNLOCK(); return; } // retry next frame
 #if defined(SOKOL_GLCORE) || defined(SOKOL_GLES3)
     // Assemble the batch FS with SDF_EDGE_AA injected after the #version
@@ -3226,7 +3239,7 @@ static void sh_sdf_ensure(void) {
     sd.label = "egui-cr-sdf-shader";
     g_sdf_shd = sg_make_shader(&sd);
     if (g_sdf_shd.id == 0) {
-        g_sdf_state = -1;
+        g_sdf_state = g_mask_state = -1;
         SH_LAZY_UNLOCK();
         return;
     }
@@ -3254,7 +3267,7 @@ static void sh_sdf_ensure(void) {
     sd.label = "egui-cr-sdf-mask-shader";
     g_sdf_mask_shd = sg_make_shader(&sd);
     if (g_sdf_mask_shd.id == 0) {
-        g_sdf_state = -1;
+        g_sdf_state = g_mask_state = -1;
         SH_LAZY_UNLOCK();
         return;
     }
@@ -3270,7 +3283,7 @@ static void sh_sdf_ensure(void) {
     });
     g_sdf_ring = (sg_buffer*)calloc((size_t)SH_SDF_RING, sizeof(sg_buffer));
     if (!g_sdf_ring) {
-        g_sdf_state = -1;
+        g_sdf_state = g_mask_state = -1;
         SH_LAZY_UNLOCK();
         return;
     }
@@ -3351,8 +3364,76 @@ static void sh_sdf_ensure(void) {
               g_sdf_mask_shd.id != 0;
     for (int i = 0; i < g_sdf_ring_cap; i++) ok = ok && g_sdf_ring[i].id != 0;
     g_sdf_state = ok ? 1 : -1;
-#else // Vulkan/D3D11/Metal/WGPU: no GLSL source path — SDF unavailable
+    g_mask_state = ok ? 1 : -1; // the mask set is part of the same build
+#elif defined(SOKOL_VULKAN)
+    // No runtime GLSL on Vulkan — the instanced BATCH shader stays
+    // unavailable (EGUI_SDF keeps its tessellated fallback), but the
+    // rounded-clip mask has SPIR-V twins (`rake shaders`, backend/
+    // shaders/sdf_mask_spv.h): the stencil bracket works here too, so
+    // overflow:hidden corners round on this backend like on GL.
+    static const float quad[12] = {
+        -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,
+        -1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    };
+    g_sdf_quad = sg_make_buffer(&(sg_buffer_desc){
+        .size = sizeof quad,
+        .usage = {.vertex_buffer = true, .immutable = true},
+        .data = {.ptr = quad, .size = sizeof quad},
+        .label = "egui-cr-sdf-quad",
+    });
+    sg_shader_desc sd;
+    memset(&sd, 0, sizeof sd);
+    sd.vertex_func.bytecode.ptr = sh_sdf_mask_vs_spv;
+    sd.vertex_func.bytecode.size = sh_sdf_mask_vs_spv_len;
+    sd.fragment_func.bytecode.ptr = sh_sdf_mask_fs_spv;
+    sd.fragment_func.bytecode.size = sh_sdf_mask_fs_spv_len;
+    sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[0].size = 64;
+    sd.uniform_blocks[0].spirv_set0_binding_n = 0;
+    sd.uniform_blocks[1].stage = SG_SHADERSTAGE_VERTEX;
+    sd.uniform_blocks[1].size = 48;
+    sd.uniform_blocks[1].spirv_set0_binding_n = 1;
+    sd.label = "egui-cr-sdf-mask-shader";
+    g_sdf_mask_shd = sg_make_shader(&sd);
+    // NOT sglue_swapchain(): it rides sapp_acquire_swapchain(), and the
+    // frame already holds the acquire (the pass setup) — a second one
+    // asserts under Vulkan (swapchain_acquired). sglue_environment()
+    // carries the same three values through the proper sapp→sg pixel
+    // format conversion, with no swapchain side effects.
+    sg_environment env = sglue_environment();
+    sg_pipeline_desc pd;
+    memset(&pd, 0, sizeof pd);
+    pd.shader = g_sdf_mask_shd;
+    pd.index_type = SG_INDEXTYPE_NONE;
+    pd.sample_count = env.defaults.sample_count;
+    pd.depth.pixel_format = env.defaults.depth_format;
+    pd.colors[0].pixel_format = env.defaults.color_format;
+    pd.colors[0].write_mask = SG_COLORMASK_NONE;
+    pd.colors[0].blend.enabled = false;
+    pd.layout.buffers[0].stride = 8; // static quad: 2 floats, no instances
+    pd.layout.attrs[0].format = SG_VERTEXFORMAT_FLOAT2;
+    pd.stencil = (sg_stencil_state){
+        .enabled = true,
+        .front = { .compare = SG_COMPAREFUNC_ALWAYS,
+                   .fail_op = SG_STENCILOP_KEEP,
+                   .depth_fail_op = SG_STENCILOP_KEEP,
+                   .pass_op = SG_STENCILOP_REPLACE },
+        .back = { .compare = SG_COMPAREFUNC_ALWAYS,
+                  .fail_op = SG_STENCILOP_KEEP,
+                  .depth_fail_op = SG_STENCILOP_KEEP,
+                  .pass_op = SG_STENCILOP_REPLACE },
+        .read_mask = 0xFF, .write_mask = 0xFF, .ref = 1,
+    };
+    pd.label = "egui-cr-sdf-mask-pip";
+    g_sdf_mask_pip = sg_make_pipeline(&pd);
+    pd.stencil.ref = 0;
+    pd.label = "egui-cr-sdf-unmask-pip";
+    g_sdf_unmask_pip = sg_make_pipeline(&pd);
     g_sdf_state = -1;
+    g_mask_state = (g_sdf_quad.id && g_sdf_mask_shd.id &&
+                    g_sdf_mask_pip.id && g_sdf_unmask_pip.id) ? 1 : -1;
+#else // D3D11/Metal/WGPU: no GLSL source path — SDF unavailable
+    g_sdf_state = g_mask_state = -1;
 #endif
     SH_LAZY_UNLOCK();
 }
@@ -4372,7 +4453,7 @@ void egui_cr_video_destroy(uint32_t id) {
 static void sh_draw_seg_mask(const sh_sdf_seg_t* s, float w_pts,
                              float h_pts) {
     sh_sdf_ensure();
-    if (g_sdf_state <= 0) return;
+    if (g_mask_state <= 0) return;
     if (w_pts <= 0.0f || h_pts <= 0.0f) return;
     if (s->cw <= 0.0f || s->ch <= 0.0f) return;
     float ppp = s->ppp;
@@ -4516,20 +4597,33 @@ void egui_cr_clip_mask(float x, float y, float w, float h,
 #endif
         }
     }
-    if (!sh_stencil_ok() || w <= 0.0f || h <= 0.0f) return;
+    if (w <= 0.0f || h <= 0.0f) return;
     if (!sh_run_direct()) {
+        // Emit UNCONDITIONALLY: the packet REPLAY gates each op on its
+        // own sh_stencil_ok() (render thread, which resolves the SDF
+        // pipelines every frame — see sh_sdf_frame). Gating HERE baked
+        // the FIRST packet before the render thread had compiled the
+        // mask (g_sdf_state still 0): the op never entered the stream,
+        // and idle replays of that packet showed the rect-scissor
+        // fallback until input minted a fresh, masked packet.
         egui_cr_pkt_clip_mask(x, y, w, h, rtl, rtr, rbr, rbl, ppp);
         g_clip_on = 1; // A-side: picks the sdf batch twin below
         return;
     }
+    // Direct path: resolve the lazy SDF state NOW so the very first
+    // frame clips too (nothing else may have ensured it yet).
+    sh_sdf_ensure();
+    if (!sh_stencil_ok()) return;
     sh_clip_stash(1, 1, x, y, w, h, rtl, rtr, rbr, rbl, ppp);
     g_clip_on = 1;
     sh_clip_base_pip(1);
 }
 
 void egui_cr_clip_unmask(float x, float y, float w, float h, float ppp) {
-    if (!sh_stencil_ok() || w <= 0.0f || h <= 0.0f) return;
+    if (w <= 0.0f || h <= 0.0f) return;
     if (!sh_run_direct()) {
+        // Same unconditional emit — a gated unmask would leave a
+        // bracket stuck open in the replay's local clip_on.
         egui_cr_pkt_clip_unmask(x, y, w, h, ppp);
         g_clip_on = 0;
         return;

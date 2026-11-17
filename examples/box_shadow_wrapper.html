@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<!-- box-shadow wrapper — the browser reference for the
+     bin/box_shadow_wrapper binary: a shadowed product card inside a
+     wrapper with a border + border-radius. The question this page
+     answers: does the card's shadow escape the wrapper?
+
+     A: wrapper with border + border-radius, default overflow (visible)
+        — the shadow DOES escape. border-radius clips only the
+        element's OWN background/border; a descendant's box-shadow is
+        cut only by an ancestor with overflow: hidden/scroll/auto.
+     B: the same wrapper + overflow: hidden — the shadow is cut by the
+        wrapper's ROUNDED shape.
+     C: control — the card alone, no wrapper.
+
+     Open next to the binary and compare case by case. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>egui.cr — box-shadow in a rounded wrapper (browser reference)</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #232329; color: #e8e8ec;
+         font: 14px/1.5 system-ui, sans-serif; padding: 16px 24px; }
+  h1 { font-size: 16px; color: #9a9aa6; font-weight: normal; margin: 0 0 16px; }
+  .cases { display: flex; gap: 48px; align-items: flex-start; }
+  .case  { width: 300px; }
+  .case h2 { font-size: 13px; color: #9a9aa6; font-weight: 600;
+             margin: 0 0 10px; }
+  .case p  { font-size: 12px; color: #9a9aa6; margin: 8px 0 0; }
+
+  /* the wrapper under test: border + border-radius, nothing else */
+  .wrap { border: 1px solid #8a8a94; border-radius: 16px;
+          padding: 16px; }
+  .wrap.hidden { overflow: hidden; }
+
+  /* the product card: the shadow that must (or must not) escape */
+  .card { background: #2e2e36; border-radius: 12px; padding: 12px;
+          box-shadow: 0 8px 24px 4px rgb(0 255 158 / 55%); }
+  .thumb { height: 70px; border-radius: 8px; background: #3a3a44; }
+  .name  { margin: 10px 0 0; color: #e8e8ec; }
+  .price { margin: 2px 0 0; color: #9a9aa6; }
+</style>
+</head>
+<body>
+  <h1>box-shadow on a card inside a rounded wrapper — browser reference</h1>
+  <div class="cases">
+    <div class="case">
+      <h2>A: wrapper (border + radius)</h2>
+      <div class="wrap">
+        <div class="card">
+          <div class="thumb"></div>
+          <p class="name">Product</p>
+          <p class="price">$99.00</p>
+        </div>
+      </div>
+      <p>overflow visible (default) — the shadow escapes the wrapper</p>
+    </div>
+
+    <div class="case">
+      <h2>B: wrapper + overflow: hidden</h2>
+      <div class="wrap hidden">
+        <div class="card">
+          <div class="thumb"></div>
+          <p class="name">Product</p>
+          <p class="price">$99.00</p>
+        </div>
+      </div>
+      <p>the shadow is cut by the wrapper's rounded shape</p>
+    </div>
+
+    <div class="case">
+      <h2>C: no wrapper (control)</h2>
+      <div class="card">
+        <div class="thumb"></div>
+        <p class="name">Product</p>
+        <p class="price">$99.00</p>
+      </div>
+      <p>the full shadow, nothing above to clip it</p>
+    </div>
+  </div>
+</body>
+</html>
