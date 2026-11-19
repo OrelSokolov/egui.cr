@@ -36,8 +36,11 @@ dependencies:
   # "egui/driver/audio". https-шорткат (как у остальных): git@ SSH-URL
   # в shard.lock ломает `shards install` на машинах без ключа — CI-раннеры
   # kodkod падали на клоне.
+  # >= 0.3.0: MinAudio::PlaybackRing — push-model playback (A/V sync
+  # master clock) для examples/video.
   minaudio:
     github: OrelSokolov/minaudio.cr
+    version: 0.3.0
   # FP-инструментарий: многоклозовые функции с матчингом значений
   # (deff + fn с when:-guard'ами), pipe-пайплайн, compose/curry.
   functional:
