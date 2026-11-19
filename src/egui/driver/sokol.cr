@@ -2086,10 +2086,13 @@ module Egui
           # centroid (fb px → points above), sx = the zoom factor.
           @@events << Egui::Event.zoom(sx.to_f64, Egui::Pos2.new(mx, my))
         when KEY_DOWN, KEY_UP
-          # sapp fires KEY_* plus a separate CHAR event for text; we
-          # only forward non-modifier keys here (modifier state rides
-          # along in Modifiers).
-          return if key >= 340 # SAPP_KEYCODE_LEFT_SHIFT .. RIGHT_SUPER
+          # sapp fires KEY_* plus a separate CHAR event for text. The
+          # modifier keys (sokol 340..347) are forwarded TOO — they are
+          # KeyCode members, and their events carry the fresh modifier
+          # mask, so a bare Ctrl/Shift press updates
+          # InputState.modifiers immediately (hover affordances like
+          # go-to-definition links key off it). Modifier presses
+          # produce no CHAR, so nothing double-fires.
           code = Egui::KeyCode.from_value?(key)
           return unless code
           modifiers = Egui::Modifiers.from_mask(mods)
