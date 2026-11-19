@@ -401,7 +401,8 @@ typedef struct {
     int type;        // EGUI_SYS_*
     int seq;         // SAF: request id (Crystal's registry key)
     int value;       // SAF: 1 = picked; MSGBOX: 1 = confirmed
-    char path[1040]; // SAF: content:// uri utf8
+    char path[4096]; // SAF: content:// uri utf8 (newline-JOINED uris
+                     // for a multi pick — still truncated, not lost)
 } egui_sys_rec_t;
 
 #define EGUI_SYS_RING 32
@@ -691,8 +692,10 @@ int egui_cr_android_dir(int which, char* out, int cap) {
 }
 
 // kind: 1 ACTION_OPEN_DOCUMENT / 2 ACTION_CREATE_DOCUMENT /
-// 3 ACTION_OPEN_DOCUMENT_TREE. Returns 1 when launched; the pick (or
-// cancel) arrives as a nativeSafResult record for `seq`.
+// 3 ACTION_OPEN_DOCUMENT_TREE / 4 ACTION_OPEN_DOCUMENT with
+// EXTRA_ALLOW_MULTIPLE (the picks arrive newline-joined). Returns 1
+// when launched; the pick (or cancel) arrives as a nativeSafResult
+// record for `seq`.
 int egui_cr_android_saf_start(int seq, int kind, const char* title,
                               const char* mime, const char* default_name) {
     JNIEnv* env = sh_sys_env();
@@ -6341,16 +6344,22 @@ static const CLSID sh_CLSID_FileSaveDialog =
     {0xC0B4E2F3,0xBA21,0x4773,{0x8D,0xBA,0x33,0x5E,0xC9,0x46,0xEB,0x8B}};
 static const IID sh_IID_IFileDialog =
     {0x42f85136,0xdb7e,0x439c,{0x85,0xf1,0xe4,0x07,0x5d,0x13,0x5f,0xc8}};
+static const IID sh_IID_IFileOpenDialog =
+    {0xd57c7288,0xd4ad,0x4768,{0xbe,0x02,0x9d,0x96,0x95,0x32,0xd9,0x60}};
 static const IID sh_IID_IShellItem =
     {0x43826d1e,0xe718,0x42ee,{0xbc,0x55,0xa1,0xe2,0x61,0xc3,0x7b,0xfe}};
+static const IID sh_IID_IShellItemArray =
+    {0xb63ea76d,0x1f85,0x456f,{0xa1,0x9c,0x31,0x04,0xd0,0x10,0xa6,0xf2}};
 
 typedef struct {
     int save;
+    int multiple;            // multi-select open; ignored for save
     wchar_t title[512];
     wchar_t filter[2048];  // "name\0pattern\0name\0pattern\0\0" (utf-16)
     wchar_t directory[1024];
     wchar_t file_name[512]; // default file name (save dialog)
-    wchar_t result[1024];   // picked path; empty on cancel/failure
+    wchar_t result[8192];   // picked path (newline-joined when multiple);
+                            // empty on cancel/failure
     volatile LONG done;     // 0 running, 1 finished
     HANDLE thread;
 } sh_file_dialog_t;
@@ -6367,6 +6376,7 @@ static void sh_run_com_dialog(sh_file_dialog_t* r) {
         dlg->lpVtbl->GetOptions(dlg, &opts);
         opts |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
         if (r->save) opts |= FOS_OVERWRITEPROMPT;
+        if (r->multiple && !r->save) opts |= FOS_ALLOWMULTISELECT;
         dlg->lpVtbl->SetOptions(dlg, opts);
         if (r->title[0]) dlg->lpVtbl->SetTitle(dlg, r->title);
         if (r->filter[0]) {
@@ -6398,16 +6408,54 @@ static void sh_run_com_dialog(sh_file_dialog_t* r) {
         // Owner must live on the dialog thread for real modality — pass
         // NULL; the frame loop keeps running anyway (see AsyncDialogs).
         if (SUCCEEDED(dlg->lpVtbl->Show(dlg, NULL))) {
-            IShellItem* res = NULL;
-            if (SUCCEEDED(dlg->lpVtbl->GetResult(dlg, &res))) {
-                PWSTR path = NULL;
-                if (SUCCEEDED(res->lpVtbl->GetDisplayName(res, SIGDN_FILESYSPATH,
-                                                          &path)) && path) {
-                    wcsncpy(r->result, path, 1023);
-                    r->result[1023] = 0;
-                    CoTaskMemFree(path);
+            if (r->multiple && !r->save) {
+                // Multi-select: IFileOpenDialog::GetResults walks the
+                // IShellItemArray, each SIGDN_FILESYSPATH joined into
+                // the result with newlines (the multi wire format).
+                IFileOpenDialog* fod = NULL;
+                if (SUCCEEDED(dlg->lpVtbl->QueryInterface(
+                        dlg, &sh_IID_IFileOpenDialog, (void**)&fod)) && fod) {
+                    IShellItemArray* items = NULL;
+                    if (SUCCEEDED(fod->lpVtbl->GetResults(fod, &items)) && items) {
+                        DWORD count = 0;
+                        size_t cap = sizeof(r->result) / sizeof(r->result[0]);
+                        size_t off = 0;
+                        r->result[0] = 0;
+                        items->lpVtbl->GetCount(items, &count);
+                        for (DWORD i = 0; i < count; i++) {
+                            IShellItem* it = NULL;
+                            if (SUCCEEDED(items->lpVtbl->GetItemAt(items, i, &it)) && it) {
+                                PWSTR path = NULL;
+                                if (SUCCEEDED(it->lpVtbl->GetDisplayName(
+                                        it, SIGDN_FILESYSPATH, &path)) && path) {
+                                    size_t len = wcslen(path);
+                                    if (off + len + 1 < cap) {
+                                        if (off) r->result[off++] = L'\n';
+                                        wmemcpy(r->result + off, path, len);
+                                        off += len;
+                                        r->result[off] = 0;
+                                    }
+                                    CoTaskMemFree(path);
+                                }
+                                it->lpVtbl->Release(it);
+                            }
+                        }
+                        items->lpVtbl->Release(items);
+                    }
+                    fod->lpVtbl->Release(fod);
                 }
-                res->lpVtbl->Release(res);
+            } else {
+                IShellItem* res = NULL;
+                if (SUCCEEDED(dlg->lpVtbl->GetResult(dlg, &res))) {
+                    PWSTR path = NULL;
+                    if (SUCCEEDED(res->lpVtbl->GetDisplayName(res, SIGDN_FILESYSPATH,
+                                                              &path)) && path) {
+                        wcsncpy(r->result, path, 1023);
+                        r->result[1023] = 0;
+                        CoTaskMemFree(path);
+                    }
+                    res->lpVtbl->Release(res);
+                }
             }
         }
         dlg->lpVtbl->Release(dlg);
@@ -6428,13 +6476,14 @@ static void sh_wcsncpy(wchar_t* dst, const wchar_t* src, size_t cap) {
     dst[cap - 1] = 0;
 }
 
-void* egui_cr_file_dialog_start(int save, const wchar_t* title,
+void* egui_cr_file_dialog_start(int save, int multiple, const wchar_t* title,
                                 const wchar_t* filter, const wchar_t* directory,
                                 const wchar_t* file_name) {
     sh_file_dialog_t* r = (sh_file_dialog_t*)malloc(sizeof(sh_file_dialog_t));
     if (!r) return NULL;
     memset(r, 0, sizeof(*r));
     r->save = save;
+    r->multiple = multiple;
     sh_wcsncpy(r->title, title, 512);
     sh_wcsncpy(r->filter, filter, 2048);
     sh_wcsncpy(r->directory, directory, 1024);
@@ -6512,10 +6561,11 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 
 #else // !defined(_WIN32)
 
-void* egui_cr_file_dialog_start(int save, const wchar_t* title,
+void* egui_cr_file_dialog_start(int save, int multiple, const wchar_t* title,
                                 const wchar_t* filter, const wchar_t* directory,
                                 const wchar_t* file_name) {
-    (void)save; (void)title; (void)filter; (void)directory; (void)file_name;
+    (void)save; (void)multiple; (void)title; (void)filter; (void)directory;
+    (void)file_name;
     return NULL; // no native backend — the ports use their subprocess path
 }
 int egui_cr_file_dialog_done(void* handle) { (void)handle; return 1; }
@@ -9647,9 +9697,26 @@ static int sh_docpick_state = 0;     // 0 idle, 1 picking, 2 done
 didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
     (void)picker;
     sh_docpick_path = NULL;
+    // Every pick on its own line: single-pick callers get one path,
+    // multi-select (mode 3) callers get the newline-joined wire format.
     if (urls.count > 0) {
-        const char* p = urls[0].fileSystemRepresentation;
-        if (p && p[0]) sh_docpick_path = strdup(p);
+        size_t cap = 0;
+        for (NSURL* u in urls) cap += strlen(u.fileSystemRepresentation) + 1;
+        char* joined = (char*)malloc(cap + 1);
+        if (joined) {
+            joined[0] = 0;
+            char* p = joined;
+            for (NSURL* u in urls) {
+                const char* rep = u.fileSystemRepresentation;
+                size_t len = strlen(rep);
+                if (p != joined) *p++ = '\n';
+                memcpy(p, rep, len);
+                p += len;
+            }
+            *p = 0;
+            if (joined[0]) sh_docpick_path = joined;
+            else free(joined);
+        }
     }
     sh_docpick_state = 2;
 }
@@ -9665,10 +9732,11 @@ didPickDocumentsAtURLs:(NSArray<NSURL*>*)urls {
 // an empty temp file named default_name is MOVED to the chosen
 // destination — the returned path is where the app should treat as
 // saved; later writes to it may need security scope), 2 = pick folder
-// (a folder URL, access needs a security-scoped bookmark). comma_exts
-// is a comma-separated extension list ("png,jpg") or NULL/"" for any
-// file (open mode only). 0 = presented, -1 = busy or no view
-// controller yet (too early in app lifecycle).
+// (a folder URL, access needs a security-scoped bookmark), 3 = open
+// with multiple selection (allowsMultipleSelection — the picks come
+// back newline-joined). comma_exts is a comma-separated extension list
+// ("png,jpg") or NULL/"" for any file (open modes only). 0 = presented,
+// -1 = busy or no view controller yet (too early in app lifecycle).
 int egui_cr_docpick_start(int mode, const char* comma_exts,
                           const char* default_name) {
     if (sh_docpick_state == 1) return -1;
@@ -9712,6 +9780,7 @@ int egui_cr_docpick_start(int mode, const char* comma_exts,
         }
         picker = [[UIDocumentPickerViewController alloc]
             initForOpeningContentTypes:types asCopy:YES];
+        if (mode == 3) picker.allowsMultipleSelection = YES;
     }
     picker.delegate = sh_docpick_dlg;
     [_sapp.ios.view_ctrl presentViewController:picker animated:YES completion:nil];

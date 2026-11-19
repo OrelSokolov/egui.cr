@@ -307,6 +307,7 @@ class VideoApp < Egui::App
     end
     gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
+    ibtn(ui, ctx, "vbar/open_multi", "layers", tint: ICON_FG) { open_dialog_multiple }
 
     # пружина до строго центрального транспорта
     ui.allocate_space(Egui::Vec2.new(
@@ -411,6 +412,23 @@ class VideoApp < Egui::App
       ]
     ) do |path|
       open_video(path) if path
+    end
+  end
+
+  # Multi-pick (the layers button): the player has no playlist, so the
+  # FIRST picked file plays and the status bar reports the rest.
+  private def open_dialog_multiple : Nil
+    Egui::SystemPorts::OpenFileDialog.show_multiple(
+      title: "Open videos",
+      filters: [
+        "*.mp4", "*.mkv", "*.webm", "*.avi", "*.mov", "*.wmv", "*.flv",
+        "*.ts", "*.m4v", "*.mpg", "*.mpeg", "*.vob", "*.3gp", "*.ogv",
+        "*.mts", "*.m2ts", "*.gif", "*",
+      ]
+    ) do |paths|
+      next unless paths && !paths.empty?
+      open_video(paths.first)
+      @status = "#{File.basename(paths.first)} — 1 of #{paths.size} picked"
     end
   end
 

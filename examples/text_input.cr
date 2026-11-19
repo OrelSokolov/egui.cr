@@ -22,6 +22,7 @@ class TextInputApp < Egui::App
   @secret = ""
   @multi = ""
   @opened : String? = nil
+  @opened_many = [] of String
   @notified = 0
   # First frame: focus the plain field so the keyboard is up at launch.
   @autofocus = true
@@ -67,10 +68,18 @@ class TextInputApp < Egui::App
             Egui::SystemPorts::OpenFileDialog.show(
               filters: ["*.png", "*.jpg", "*.txt"]) { |path| @opened = path }
           end
+          if ui.button("Open files…").clicked?
+            @opened_many.clear
+            Egui::SystemPorts::OpenFileDialog.show_multiple(
+              filters: ["*.png", "*.jpg", "*.txt"]) { |paths| @opened_many = paths || [] of String }
+          end
           if Egui::SystemPorts::AsyncDialogs.pending?
             ui.label("opening…")
           else
             ui.label("opened: #{@opened || "—"}")
+            unless @opened_many.empty?
+              ui.label("opened many: #{@opened_many.size} — #{@opened_many.first}")
+            end
           end
 
           if ui.button("Quit").clicked?

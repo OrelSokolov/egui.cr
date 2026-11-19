@@ -119,6 +119,44 @@ describe Egui::Exml do
     exml_file_texts(ctx).should_not contain("/tmp/b.png")
   end
 
+  it "parses the multiple attr on <openfile> only where it belongs" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <openfile bind="src" multiple/>
+        <openfile bind="one"/>
+        <savefile bind="dst"/>
+      </page>
+    ))
+    kids = doc.pages.first.children
+    kids[0].file_multiple?.should be_true
+    kids[1].file_multiple?.should be_false
+    kids[2].file_multiple?.should be_false
+    Egui::Exml.validate(doc).should be_empty
+  end
+
+  it "labels a multiple pick as first path (+N)" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><openfile bind="src" multiple text="Add…"/></page>
+    ))
+    nodes = doc.pages.first.children
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+
+    # the joined wire format in the bound slot; the label compresses
+    # it to the first path plus a count
+    rt.strings["src"] = "/tmp/a.png\n/tmp/b.png\n/tmp/c.png"
+    exml_file_frame(ctx, nodes, rt, renderer)
+    texts = exml_file_texts(ctx)
+    texts.should contain("/tmp/a.png (+2)")
+    texts.should_not contain("/tmp/a.png\n/tmp/b.png\n/tmp/c.png")
+
+    # a single pick shows the plain path
+    rt.strings["src"] = "/tmp/a.png"
+    exml_file_frame(ctx, nodes, rt, renderer)
+    exml_file_texts(ctx).should contain("/tmp/a.png")
+  end
+
   it "understands visible: false on any class-carrying element" do
     doc = Egui::Exml.parse(%(
       <page id="p">

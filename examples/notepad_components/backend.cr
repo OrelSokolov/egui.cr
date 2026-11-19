@@ -343,6 +343,16 @@ module NotepadDialogs
     chan.receive
   end
 
+  # Мульти-диалог: массив путей (каждый — отдельный таб) или nil.
+  def self.open_paths : Array(String)?
+    chan = Channel(Array(String)?).new
+    Egui::SystemPorts::OpenFileDialog.show_multiple(
+      title: "Open text files", filters: [] of String) do |paths|
+      chan.send(paths)
+    end
+    chan.receive
+  end
+
   def self.save_dest(default : String) : String?
     chan = Channel(String?).new
     Egui::SystemPorts::SaveFileDialog.show(
@@ -381,6 +391,17 @@ class DocumentsController < Egui::Mvc::Controller
   def open(request)
     case path = NotepadDialogs.open_path
     when String then NotepadBackend.open_file!(path)
+    else
+      NotepadBackend.status = "Open canceled."
+    end
+    NotepadBackend.envelope
+  end
+
+  # POST /documents/open_multiple — мульти-диалог: каждый выбранный
+  # файл открывается своим табом (open_file! переживает битые файлы).
+  def open_multiple(request)
+    if (paths = NotepadDialogs.open_paths) && !paths.empty?
+      paths.each { |path| NotepadBackend.open_file!(path) }
     else
       NotepadBackend.status = "Open canceled."
     end
@@ -490,6 +511,7 @@ NOTEPAD_ROUTES = Egui::Mvc::Router.new.draw do |r|
   r.post "/documents", DocumentsController, "create"
   r.post "/documents/select", DocumentsController, "pick"
   r.post "/documents/open", DocumentsController, "open"
+  r.post "/documents/open_multiple", DocumentsController, "open_multiple"
   r.post "/documents/open_paths", DocumentsController, "open_paths"
   r.patch "/documents/:id", DocumentsController, "update"
   r.post "/documents/:id/save", DocumentsController, "save"

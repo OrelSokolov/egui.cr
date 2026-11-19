@@ -156,6 +156,7 @@ class LogsViewerApp < Egui::App
     Egui::Exml.validate(@exml, known_custom: %w(levels_bar log_list))
       .each { |i| STDERR.puts "exml: #{i}" }
     @rt.actions["open"] = ->{ open_dialog }
+    @rt.actions["open_multiple"] = ->{ open_dialog_multiple }
     @rt.actions["toggle_bench"] = ->{
       @settings.bench = !@settings.bench?
       save_settings
@@ -199,41 +200,60 @@ class LogsViewerApp < Egui::App
     end
   end
 
+  # Multi-pick: several log files merge into ONE view (the multi-source
+  # grep idiom) — same chunked reader, one store, the status bar names
+  # the first file plus a count.
+  private def open_dialog_multiple : Nil
+    Egui::SystemPorts::OpenFileDialog.show_multiple(
+      title: "Open logs", filters: [] of String) do |paths|
+      load_files(paths) if paths && !paths.empty?
+    end
+  end
+
   # Chunked read + classification with cooperative yields — a 500 MB
   # log loads without freezing the frame loop.
   def load_file(path : String) : Nil
+    load_files([path])
+  end
+
+  def load_files(paths : Array(String)) : Nil
+    label = paths.size == 1 ? paths.first : "#{paths.first} (+#{paths.size - 1})"
     @gen.add(1) # cancel any running filter over the old store
-    @load_status = "opening #{path}…"
+    @load_status = "opening #{label}…"
     ctx.request_repaint
     spawn do
       begin
         t0 = Time.instant
-        text = String.build(capacity: {File.size(path).to_i, 4096}.max) do |io|
-          File.open(path, "rb") do |f|
-            chunk = Bytes.new(1 << 22) # 4 MB
-            while (r = f.read(chunk)) > 0
-              io.write(chunk[0, r])
-              sleep 0.milliseconds # let frames through
+        total_bytes = paths.sum { |p| {File.size(p).to_i, 4096}.max }
+        text = String.build(capacity: total_bytes) do |io|
+          paths.each_with_index do |path, i|
+            io << '\n' if i > 0
+            File.open(path, "rb") do |f|
+              chunk = Bytes.new(1 << 22) # 4 MB
+              while (r = f.read(chunk)) > 0
+                io.write(chunk[0, r])
+                sleep 0.milliseconds # let frames through
+              end
             end
           end
         end
         read_ms = (Time.instant - t0).total_milliseconds
         t1 = Time.instant
         store = LogStore.from_text(
-          text, @settings.levels.map(&.name), path) do |done, total|
-          @load_status = "indexing #{path}: #{"%.0f" % (done * 100.0 / {total, 1}.max)}%"
+          text, @settings.levels.map(&.name), label) do |done, total|
+          @load_status = "indexing #{label}: #{"%.0f" % (done * 100.0 / {total, 1}.max)}%"
           ctx.request_repaint
           sleep 0.milliseconds
         end
         index_ms = (Time.instant - t1).total_milliseconds
         @store = store
-        @settings.last_file = path
+        @settings.last_file = paths.first
         save_settings
-        @load_status = "#{path}: #{self.class.fmt(store.total)} lines, " \
+        @load_status = "#{label}: #{self.class.fmt(store.total)} lines, " \
                        "read #{"%.0f" % read_ms} ms + index #{"%.0f" % index_ms} ms"
         refilter
       rescue e : File::Error | IO::Error
-        @load_status = "failed to open #{path}: #{e.message}"
+        @load_status = "failed to open #{label}: #{e.message}"
         ctx.request_repaint
       end
     end

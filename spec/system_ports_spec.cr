@@ -107,9 +107,9 @@ describe Egui::SystemPorts do
 
   {% if flag?(:win32) %}
     it "file dialogs use the installed native runner (no subprocess)" do
-      calls = [] of {Bool, String, Array(String), String?, String?}
-      Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
-        calls << {save, title, filters, dir, name}
+      calls = [] of {Bool, Bool, String, Array(String), String?, String?}
+      Egui::SystemPorts::Dialogs.use_native_dialogs do |save, multiple, title, filters, dir, name|
+        calls << {save, multiple, title, filters, dir, name}
         save ? "C:\\saved.txt" : "C:\\opened.txt"
       end
       got = [] of String?
@@ -121,10 +121,26 @@ describe Egui::SystemPorts do
       got.should eq(["C:\\opened.txt", "C:\\saved.txt"])
       calls.size.should eq(2)
       calls[0][0].should be_false
-      calls[0][2].should eq(["*.png"])
-      calls[0][3].should eq("C:\\tmp")
+      calls[0][1].should be_false
+      calls[0][3].should eq(["*.png"])
+      calls[0][4].should eq("C:\\tmp")
       calls[1][0].should be_true
-      calls[1][4].should eq("out.png")
+      calls[1][5].should eq("out.png")
+    ensure
+      Egui::SystemPorts::Dialogs.use_native_dialogs
+    end
+
+    it "show_multiple passes the multiple flag and splits the joined result" do
+      calls = [] of {Bool, Bool}
+      Egui::SystemPorts::Dialogs.use_native_dialogs do |save, multiple, title, filters, dir, name|
+        calls << {save, multiple}
+        "C:\\a.txt\nC:\\b.txt"
+      end
+      got = [] of Array(String)?
+      Egui::SystemPorts::OpenFileDialog.show_multiple { |paths| got << paths }
+      drain_async_dialogs
+      got.should eq([["C:\\a.txt", "C:\\b.txt"]])
+      calls.should eq([{false, true}])
     ensure
       Egui::SystemPorts::Dialogs.use_native_dialogs
     end
@@ -326,6 +342,16 @@ describe Egui::SystemPorts::Tray do
 end
 
 describe Egui::SystemPorts::AsyncDialogs do
+  it "OpenFileDialog.split_paths parses the newline-joined wire format" do
+    Egui::SystemPorts::OpenFileDialog.split_paths("a.png\nb.png\nc.png")
+      .should eq(["a.png", "b.png", "c.png"])
+    # a trailing separator (osascript's linefeed loop) drops out
+    Egui::SystemPorts::OpenFileDialog.split_paths("a.png\n")
+      .should eq(["a.png"])
+    Egui::SystemPorts::OpenFileDialog.split_paths("").should be_nil
+    Egui::SystemPorts::OpenFileDialog.split_paths(nil).should be_nil
+  end
+
   it "delivers the result via callback during a scheduler pass" do
     got = [] of String?
     Egui::SystemPorts::AsyncDialogs.start(-> { "picked.png" }, ->(path : String?) { got << path })

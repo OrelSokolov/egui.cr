@@ -126,6 +126,26 @@ class IosDemoApp < Egui::App
             end
           end
         end
+        # Multi-pick (allowsMultipleSelection): every pick is copied
+        # into the sandbox; the preview reads the first.
+        if ui.button("Open several files…").clicked?
+          @open_result = "(picking…)"
+          @open_text = ""
+          Egui::SystemPorts::OpenFileDialog.show_multiple("Open files",
+            ["*.txt", "*.md", "*.json"]) do |paths|
+            if paths && !paths.empty?
+              @open_result = "#{paths.size} picked: #{paths.join(", ")}"
+              text = begin
+                File.read(paths.first)
+              rescue
+                nil
+              end
+              @open_text = text ? text[0, 400] : "(unreadable)"
+            else
+              @open_result = "(cancelled)"
+            end
+          end
+        end
         if ui.button("Save file as…").clicked?
           @open_result = "(saving…)"
           Egui::SystemPorts::SaveFileDialog.show("Save file",

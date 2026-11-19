@@ -22,6 +22,11 @@
 # nil on cancel) arrives in the `on_done` callback on a later frame,
 # dispatched by the backend's `AsyncDialogs.pump` before `app.update`,
 # so callbacks always run in the main fiber and may touch app state.
+#
+# `OpenFileDialog.show_multiple` is the pick-several-files flavor: the
+# backends transport the picks as ONE newline-joined string (the wire
+# format of AsyncDialogs never changes) and the public wrapper splits
+# it into an Array(String) before the callback.
 
 module Egui
   module SystemPorts
@@ -49,6 +54,41 @@ module Egui
                            Android.mime_for(filters), nil, req)
         {% else %}
           AsyncDialogs.start(->{ Dialogs.open(title, filters, directory) }, cb)
+        {% end %}
+      end
+
+      # Split the newline-joined multi-pick wire format back into
+      # paths; empty lines (a trailing separator from some dialog
+      # tools) drop out. Empty / nil input is nil (cancel).
+      def self.split_paths(joined : String?) : Array(String)?
+        return nil unless joined
+        paths = joined.split('\n').reject(&.empty?)
+        paths.empty? ? nil : paths
+      end
+
+      # Start a non-blocking pick-SEVERAL-files dialog. Same async
+      # contract as .show, but `on_done` receives the chosen paths as an
+      # array (never empty — cancel / no dialog tool gives nil). The
+      # backends transport the picks as one newline-joined string (the
+      # AsyncDialogs wire format never changes); Android delivers
+      # content:// URIs the same way, one per line.
+      def self.show_multiple(title : String = "Open files",
+                             filters : Array(String) = [] of String,
+                             directory : String? = nil,
+                             &on_done : Array(String)? ->) : Nil
+        cb = on_done # block args don't resolve through {% if %} branches
+        {% if flag?(:android) %}
+          # SAF picker with EXTRA_ALLOW_MULTIPLE; the picks arrive via
+          # the sysport ring as newline-joined content:// URIs.
+          req = AsyncDialogs.start_detached(->(joined : String?) do
+            cb.call(split_paths(joined))
+          end)
+          Android.saf_open(Android::SAF_OPEN_MULTI, title,
+                           Android.mime_for(filters), nil, req)
+        {% else %}
+          AsyncDialogs.start(
+            ->{ Dialogs.open_multiple(title, filters, directory) },
+            ->(joined : String?) { cb.call(split_paths(joined)) })
         {% end %}
       end
     end
@@ -226,10 +266,13 @@ module Egui
       # Called inside the AsyncDialogs worker fiber: it may block that
       # fiber alone. Installed only on win32 and iOS; nil = headless
       # build → the fail-fast/PowerShell fallbacks take over.
-      @@native : ((Bool, String, Array(String), String?, String?) -> String?)?
+      # Args: save, multiple, title, filters, directory, default_name;
+      # returns one path, or newline-JOINED paths when multiple.
+      @@native : ((Bool, Bool, String, Array(String), String?, String?) -> String?)?
 
-      def self.use_native_dialogs(&runner : Bool, String, Array(String),
-                                  String?, String? -> String?) : Nil
+      def self.use_native_dialogs(&runner : Bool, Bool, String,
+                                  Array(String), String?,
+                                  String? -> String?) : Nil
         @@native = runner
       end
 
@@ -299,16 +342,16 @@ module Egui
           # sandbox, so the returned path needs no extra permissions).
           # Headless builds (no runner installed) fail fast with nil.
           if (runner = @@native)
-            runner.call(false, title, filters, directory, nil)
+            runner.call(false, false, title, filters, directory, nil)
           else
             nil
           end
         {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
-            runner.call(false, title, filters, directory, nil)
+            runner.call(false, false, title, filters, directory, nil)
           else
-            ps_dialog("OpenFileDialog", title, filters, directory, nil)
+            ps_dialog("OpenFileDialog", title, filters, directory, nil, false)
           end
         {% elsif flag?(:darwin) %}
           mac_choose_file(title, filters, directory)
@@ -329,6 +372,50 @@ module Egui
         {% end %}
       end
 
+      # The multi-pick twin of .open: newline-joined paths, or nil on
+      # cancel / when no dialog tool is available. Only the open flavor
+      # exists — saving several files at once is not a platform idiom.
+      protected def self.open_multiple(title : String, filters : Array(String),
+                                       directory : String?) : String?
+        {% if flag?(:ios) %}
+          # iOS: same runner, multiple flag on (allowsMultipleSelection).
+          if (runner = @@native)
+            runner.call(false, true, title, filters, directory, nil)
+          else
+            nil
+          end
+        {% else %}
+        {% if flag?(:win32) %}
+          if (runner = @@native)
+            runner.call(false, true, title, filters, directory, nil)
+          else
+            ps_dialog("OpenFileDialog", title, filters, directory, nil, true)
+          end
+        {% elsif flag?(:darwin) %}
+          mac_choose_files(title, filters, directory)
+        {% else %}
+          # zenity/kdialog both take a switch for multi-select; a newline
+          # separator keeps the output on the AsyncDialogs wire format
+          # without a second round of escaping.
+          case tool
+          when "zenity"
+            args = ["--file-selection", "--multiple", "--separator=\n",
+                    "--title=#{title}"]
+            args << "--file-filter=Files | #{filters.join(" ")}" unless filters.empty?
+            args << "--filename=#{File.join(directory, "/")}" if directory
+            run("zenity", args)
+          when "kdialog"
+            # (--seperator is kdialog's own historical misspelling; the
+            # correctly spelled variant only exists in newer releases.)
+            args = ["--getopenfilename", directory || Dir.current]
+            args << filters.join(" ") unless filters.empty?
+            args.concat(["--seperator", "\n", "--multiple", "--title", title])
+            run("kdialog", args)
+          end
+        {% end %}
+        {% end %}
+      end
+
       protected def self.save(title : String, filters : Array(String),
                               directory : String?, default_name : String?) : String?
         {% if flag?(:ios) %}
@@ -337,9 +424,9 @@ module Egui
         {% else %}
         {% if flag?(:win32) %}
           if (runner = @@native)
-            runner.call(true, title, filters, directory, default_name)
+            runner.call(true, false, title, filters, directory, default_name)
           else
-            ps_dialog("SaveFileDialog", title, filters, directory, default_name)
+            ps_dialog("SaveFileDialog", title, filters, directory, default_name, false)
           end
         {% elsif flag?(:darwin) %}
           mac_choose_file_name(title, directory, default_name)
@@ -454,21 +541,30 @@ module Egui
         end
 
         # A WinForms open/save picker: nil unless the user confirmed a
-        # path (`kind` is the WinForms class name).
+        # path (`kind` is the WinForms class name). With *multiple* the
+        # OpenFileDialog allows MultiSelect and the result is the picked
+        # FileNames joined with newlines (the AsyncDialogs multi wire
+        # format).
         protected def self.ps_dialog(kind : String, title : String,
                                      filters : Array(String),
                                      directory : String?,
-                                     default_name : String?) : String?
+                                     default_name : String?,
+                                     multiple : Bool) : String?
           script = String.build do |s|
             s << "Add-Type -AssemblyName System.Windows.Forms\n"
             s << "$d = New-Object System.Windows.Forms." << kind << "\n"
+            s << "$d.Multiselect = $true\n" if multiple
             s << "$d.Title = " << ps_sq(title) << "\n"
             s << "$d.Filter = " << ps_sq(ps_filter(filters)) << "\n"
             s << "$d.InitialDirectory = " << ps_sq(directory) << "\n" if directory
             s << "$d.FileName = " << ps_sq(default_name) << "\n" if default_name
             s << "$d.RestoreDirectory = $true\n"
             s << "if ($d.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { exit 1 }\n"
-            s << "Write-Output $d.FileName\n"
+            if multiple
+              s << "Write-Output ($d.FileNames -join [char]10)\n"
+            else
+              s << "Write-Output $d.FileName\n"
+            end
           end
           run_powershell(script)
         end
@@ -509,6 +605,29 @@ module Egui
             end
             sb << " default location (POSIX file \"#{as_quote(directory)}\")" if directory
             sb << ")"
+          end
+          run("osascript", ["-e", script])
+        end
+
+        # The multi-pick twin: `choose file with multiple selections
+        # allowed` returns a LIST of aliases — collect each POSIX path
+        # onto its own line (a trailing linefeed survives; the callback
+        # wrapper drops empty lines). Nil on cancel.
+        protected def self.mac_choose_files(title : String, filters : Array(String),
+                                            directory : String?) : String?
+          script = String.build do |sb|
+            sb << "set theChoice to (choose file with prompt \"#{as_quote(title)}\""
+            exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact
+            unless exts.empty?
+              sb << " of type {#{exts.map { |e| "\"#{as_quote(e)}\"" }.join(", ")}}"
+            end
+            sb << " default location (POSIX file \"#{as_quote(directory)}\")" if directory
+            sb << " with multiple selections allowed)\n"
+            sb << "set out to \"\"\n"
+            sb << "repeat with f in theChoice\n"
+            sb << "  set out to out & (POSIX path of f) & linefeed\n"
+            sb << "end repeat\n"
+            sb << "return out"
           end
           run("osascript", ["-e", script])
         end

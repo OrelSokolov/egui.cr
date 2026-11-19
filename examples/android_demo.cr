@@ -131,6 +131,30 @@ class AndroidDemoApp < Egui::App
             end
           end
         end
+        # SAF multi-pick (EXTRA_ALLOW_MULTIPLE): the picks arrive as
+        # newline-joined content:// URIs; the preview reads the first.
+        if ui.button("Open several files…").clicked?
+          @open_result = "(picking…)"
+          @open_text = ""
+          Egui::SystemPorts::OpenFileDialog.show_multiple("Open files",
+            ["*.txt", "*.md", "*.json"]) do |paths|
+            if paths && !paths.empty?
+              @open_result = "#{paths.size} picked: #{paths.join(", ")}"
+              text = {% if flag?(:android) %}
+                Egui::SystemPorts::Android.read_uri_text(paths.first)
+                {% else %}
+                begin
+                  File.read(paths.first)
+                rescue
+                  nil
+                end
+                {% end %}
+              @open_text = text ? text[0, 400] : "(unreadable)"
+            else
+              @open_result = "(cancelled)"
+            end
+          end
+        end
         if ui.button("Save file as…").clicked?
           @open_result = "(saving…)"
           Egui::SystemPorts::SaveFileDialog.show("Save file",

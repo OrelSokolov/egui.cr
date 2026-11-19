@@ -202,6 +202,7 @@ class NotepadExmlApp < Egui::App
     a = @rt.actions
     a["new"]        = ->{ new_doc }
     a["open"]       = ->{ open_doc }
+    a["open_many"]  = ->{ open_docs }
     a["save"]       = ->{ save_doc }
     a["save_as"]    = ->{ save_doc_as }
     a["close"]      = ->{ close_tab if !@docs.empty? }
@@ -374,6 +375,30 @@ class NotepadExmlApp < Egui::App
         rescue e : IO::Error | File::Error
           @status = "Cannot read #{path}: #{e.message}"
         end
+      else
+        @status = "Open canceled."
+      end
+    end
+  end
+
+  # Multi-pick: every chosen file lands as its OWN tab; unreadable ones
+  # are reported in the status bar without stopping the rest.
+  private def open_docs : Nil
+    @status = "Opening dialog…"
+    Egui::SystemPorts::OpenFileDialog.show_multiple(
+      title: "Open text files", filters: [] of String) do |paths|
+      if paths && !paths.empty?
+        opened = 0
+        paths.each do |path|
+          begin
+            @docs << Doc.new(File.read(path), path: path)
+            opened += 1
+          rescue e : IO::Error | File::Error
+            @status = "Cannot read #{path}: #{e.message}"
+          end
+        end
+        self.selected = @docs.size - 1 if opened > 0
+        @status = "Opened #{opened} of #{paths.size} files." if opened > 0
       else
         @status = "Open canceled."
       end

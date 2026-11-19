@@ -13,6 +13,7 @@
     <menubar>
       <menu label="File">
         <item label="Open…" on_click="open" hint="Ctrl+O"/>
+        <item label="Open several…" on_click="open_multiple"/>
       </menu>
       <menu label="Settings">
         <item label="{bench_mark}Show benchmark" on_click="toggle_bench"/>

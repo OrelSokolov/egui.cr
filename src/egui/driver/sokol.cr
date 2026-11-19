@@ -209,8 +209,12 @@ lib LibEguiCr
   fun set_window_icon = egui_cr_set_window_icon(rgba : UInt8*, w : Int32, h : Int32)
 
   # native file dialogs (shim: Win32 IFileDialog on its own thread; the
-  # start/done/result/free handle protocol is polled from a fiber)
-  fun file_dialog_start = egui_cr_file_dialog_start(save : Int32, title : UInt16*,
+  # start/done/result/free handle protocol is polled from a fiber).
+  # multiple: multi-select open — the result is the picked paths joined
+  # with newlines (utf-16); ignored for save.
+  fun file_dialog_start = egui_cr_file_dialog_start(save : Int32,
+                                                    multiple : Int32,
+                                                    title : UInt16*,
                                                     filter : UInt16*,
                                                     directory : UInt16*,
                                                     file_name : UInt16*) : Void*
@@ -220,7 +224,8 @@ lib LibEguiCr
 
   {% if flag?(:ios) %}
     # UIDocumentPickerViewController (shim): the system Files browser —
-    # mode 0 open / 1 save (export) / 2 pick folder. Same
+    # mode 0 open / 1 save (export) / 2 pick folder / 3 open with
+    # multiple selection (the picks come back newline-joined). Same
     # polled-from-a-fiber protocol as the Win32 dialogs above.
     fun docpick_start = egui_cr_docpick_start(mode : Int32, comma_exts : UInt8*, default_name : UInt8*) : Int32
     fun docpick_done = egui_cr_docpick_done : Int32
@@ -1214,14 +1219,14 @@ module Egui
           end
         {% end %}
         {% if flag?(:win32) %}
-          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
-            native_file_dialog(save, title, filters, dir, name)
+          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, multiple, title, filters, dir, name|
+            native_file_dialog(save, multiple, title, filters, dir, name)
           end
         {% elsif flag?(:ios) %}
           # UIDocumentPickerViewController: open only for now — the save
           # flow needs the export picker + security-scope writes.
-          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, title, filters, dir, name|
-            save ? nil : ios_document_picker(filters)
+          Egui::SystemPorts::Dialogs.use_native_dialogs do |save, multiple, title, filters, dir, name|
+            save ? nil : ios_document_picker(filters, multiple)
           end
           # UNUserNotificationCenter local notifications (the osascript
           # tool path obviously does not exist on iOS).
@@ -1649,7 +1654,8 @@ module Egui
       # keeps serving the frame loop while the dialog is open — the
       # AsyncDialogs contract. Nil when the thread failed to start or
       # the user cancelled (empty path).
-      private def self.native_file_dialog(save : Bool, title : String,
+      private def self.native_file_dialog(save : Bool, multiple : Bool,
+                                          title : String,
                                           filters : Array(String),
                                           directory : String?,
                                           default_name : String?) : String?
@@ -1662,7 +1668,7 @@ module Egui
           s << "All files\0*.*\0"
         end
         handle = LibEguiCr.file_dialog_start(
-          save ? 1 : 0,
+          save ? 1 : 0, multiple ? 1 : 0,
           title.to_utf16, filter.to_utf16,
           (directory || "").to_utf16, (default_name || "").to_utf16)
         return nil if handle.null?
@@ -1688,10 +1694,14 @@ module Egui
         # sleep yields the fiber only, and on_frame's pump_pass keeps
         # advancing it between frames, so the frame loop keeps rendering
         # while the picker is up. Called from the AsyncDialogs worker
-        # fiber — blocking it alone is the contract.
-        private def self.ios_document_picker(filters : Array(String)) : String?
+        # fiber — blocking it alone is the contract. With *multiple* the
+        # picker allows several picks and the result is newline-joined
+        # paths (the multi wire format).
+        private def self.ios_document_picker(filters : Array(String),
+                                             multiple : Bool = false) : String?
           exts = filters.map { |f| f.starts_with?("*.") ? f[2..] : nil }.compact.join(",")
-          return nil if LibEguiCr.docpick_start(0, exts.to_unsafe, "".to_unsafe) != 0
+          mode = multiple ? 3 : 0
+          return nil if LibEguiCr.docpick_start(mode, exts.to_unsafe, "".to_unsafe) != 0
           until LibEguiCr.docpick_done != 0
             sleep 20.milliseconds
           end

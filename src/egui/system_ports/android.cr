@@ -16,9 +16,10 @@ module Egui
   module SystemPorts
     module Android
       # SAF picker kinds (Intent actions, mirrored in the shim).
-      SAF_OPEN  = 1
-      SAF_SAVE  = 2
-      SAF_TREE  = 3
+      SAF_OPEN      = 1
+      SAF_SAVE      = 2
+      SAF_TREE      = 3
+      SAF_OPEN_MULTI = 4
 
       # sysDir ids: 0 files / 1 cache / 2 home / 3 documents /
       # 4 downloads / 5 pictures / 6 music / 7 videos.
@@ -37,7 +38,7 @@ module Egui
             type : Int32
             seq : Int32
             value : Int32
-            path : UInt8[1040]
+            path : UInt8[4096]
           end
 
           fun notify = egui_cr_android_notify(title : UInt8*, body : UInt8*) : Void

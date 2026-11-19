@@ -412,9 +412,11 @@ public class EguiCrActivity extends NativeActivity {
     }
 
     // SAF pickers (the file dialogs): kind 1 ACTION_OPEN_DOCUMENT /
-    // 2 ACTION_CREATE_DOCUMENT / 3 ACTION_OPEN_DOCUMENT_TREE. The result
-    // (or cancel) arrives in onActivityResult → nativeSafResult, keyed
-    // by requestCode = 1000 + seq. `defaultName` pre-fills the save
+    // 2 ACTION_CREATE_DOCUMENT / 3 ACTION_OPEN_DOCUMENT_TREE /
+    // 4 ACTION_OPEN_DOCUMENT + EXTRA_ALLOW_MULTIPLE (the picks arrive
+    // newline-joined in one nativeSafResult). The result (or cancel)
+    // arrives in onActivityResult → nativeSafResult, keyed by
+    // requestCode = 1000 + seq. `defaultName` pre-fills the save
     // dialog's suggested name (EXTRA_TITLE).
     public static void safStart(final int seq, final int kind, final String title,
                                 final String mime, final String defaultName) {
@@ -428,6 +430,7 @@ public class EguiCrActivity extends NativeActivity {
                     else if (kind == 3)  i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
                     else                 i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                     if (kind != 3) i.addCategory(Intent.CATEGORY_OPENABLE);
+                    if (kind == 4) i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
                     // MIME only for the document pickers — OEM
                     // DocumentsUI builds (Huawei &c.) reject a typed
                     // tree request with an empty picker or nothing at
@@ -451,8 +454,24 @@ public class EguiCrActivity extends NativeActivity {
         int seq = requestCode - 1000;
         if (seq < 0 || seq > 1000000) return; // not ours
         String uri = null;
-        if (resultCode == RESULT_OK && data != null && data.getData() != null)
-            uri = data.getData().toString();
+        if (resultCode == RESULT_OK && data != null) {
+            // EXTRA_ALLOW_MULTIPLE picks arrive as clip items, not the
+            // data URI — join them with newlines (the multi wire
+            // format the Crystal side splits back apart).
+            ClipData clip = data.getClipData();
+            if (clip != null && clip.getItemCount() > 0) {
+                StringBuilder sb = new StringBuilder();
+                for (int k = 0; k < clip.getItemCount(); k++) {
+                    Uri u = clip.getItemAt(k).getUri();
+                    if (u == null) continue;
+                    if (sb.length() > 0) sb.append('\n');
+                    sb.append(u.toString());
+                }
+                uri = sb.length() > 0 ? sb.toString() : null;
+            } else if (data.getData() != null) {
+                uri = data.getData().toString();
+            }
+        }
         nativeSafResult(seq, uri != null ? 1 : 0, uri);
     }
 

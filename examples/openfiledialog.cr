@@ -7,6 +7,7 @@ require "../src/egui/driver_selector"
 
 class OpenFileDialogApp < Egui::App
   @picked : String? = nil
+  @picked_many : Array(String) = [] of String
   @save_to : String? = nil
   @status = "Nothing picked yet."
 
@@ -29,6 +30,26 @@ class OpenFileDialogApp < Egui::App
             @status = "Canceled."
           end
         end
+      end
+
+      if ui.button("Open several files…").clicked?
+        @status = "Opening multi dialog…"
+        Egui::SystemPorts::OpenFileDialog.show_multiple(
+          title: "Pick any files",
+          filters: [] of String
+        ) do |paths|
+          if paths
+            @picked_many = paths
+            @status = "Picked #{paths.size} files."
+          else
+            @status = "Canceled."
+          end
+        end
+      end
+
+      unless @picked_many.empty?
+        ui.label("Multi pick:")
+        @picked_many.each { |p| ui.label("  • #{p}") }
       end
 
       if (p = @picked)

@@ -157,8 +157,9 @@ Differences from the Linux build:
 The same core runs as an Android NativeActivity app: sokol's GLES
 backend on a Java activity (`tmp/android/java/…/EguiCrActivity.java`)
 with a JNI bridge for everything the OS delivers — soft keyboard (IME
-kind/action profiles), clipboard, SAF file pickers (open / save /
-folder, results land between frames through a mutex ring drained by
+kind/action profiles), clipboard, SAF file pickers (single/multi
+open, save, folder, results land between frames through a mutex ring
+drained by
 the frame loop), AlertDialog message boxes with async confirm,
 NotificationManager notifications, ACTION_VIEW URL opening and the
 user directories. Canvas drag-to-scroll follows the finger (upstream

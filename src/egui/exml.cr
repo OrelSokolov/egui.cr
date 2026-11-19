@@ -87,7 +87,7 @@
 #            a literal split; the dynamic counterpart, same push
 #            model as <repeat over=…> rows
 #   openfile bind, text?, text_choosing?, text_done?,  native file
-#            filters?, title?, directory?,              dialog (never
+#            filters?, title?, directory?, multiple?,    dialog (never
 #            label_class?, on_change?                   blocks the
 #   savefile …+ default_name?                          frame) + a
 #            path label. The chosen path lands in the bound string
@@ -327,13 +327,16 @@ module Egui
       getter on_key_event : String?
       # file pickers (`<openfile>`/`<savefile>`) — the per-state button
       # texts, the pipe-separated filter globs, the dialog plumbing and
-      # the class of the path label ("file-label" when not given)
+      # the class of the path label ("file-label" when not given).
+      # file_multiple: `<openfile multiple>` — pick several files; the
+      # bound string slot holds the newline-JOINED paths.
       getter file_choosing_text : String?
       getter file_done_text : String?
       getter file_filters : Array(String)
       getter file_label_class : String?
       getter file_default_name : String?
       getter file_directory : String?
+      getter? file_multiple : Bool
       # window frame (`<window-frame>`/`<window-frame-custom>`) — the
       # style NAME (a WindowFrame::STYLE_NAMES key, interpolatable for
       # live theme switching) and the custom frame's caption-height
@@ -415,6 +418,7 @@ module Egui
         @file_label_class = @attrs["label_class"]?
         @file_default_name = @attrs["default_name"]?
         @file_directory = @attrs["directory"]?
+        @file_multiple = @attrs.has_key?("multiple")
         @frame_style = @attrs["style"]?
         @frame_height = @attrs["height"]?.try(&.to_f?)
         @button_type = @attrs["type"]?
@@ -683,9 +687,9 @@ module Egui
       if rest = parts[1]?
         # Attribute names: ATTR_NAME (canonical HTML names — `c1=`/
         # `s20=` are valid; a digit-less class silently dropped them as
-        # "junk" — plus the Vue directive spellings). Bare `v-else`
-        # (the subset's only valueless attribute) is picked out of the
-        # remainder below.
+        # "junk" — plus the Vue directive spellings). The valueless
+        # boolean attributes of the subset — `v-else`, `multiple` on
+        # <openfile> — are picked out of the remainder below.
         rest.scan(ATTR_VALUE_RE) do |m|
           attrs[m[1].downcase] = unescape(m[2])
         end
@@ -693,6 +697,10 @@ module Egui
         if stray =~ /\bv-else\b/
           attrs["v-else"] = "true"
           stray = stray.gsub(/\bv-else\b/, "").strip
+        end
+        if stray =~ /\bmultiple\b/
+          attrs["multiple"] = "true"
+          stray = stray.gsub(/\bmultiple\b/, "").strip
         end
         STDERR.puts "exml: junk in <#{name}> tag: #{stray}" unless stray.empty?
       end
@@ -1409,7 +1417,7 @@ module Egui
       Kind::Toggle    => %w(bind text on_change),
       Kind::Form      => %w(),
       Kind::OpenFile  => %w(bind text text_choosing text_done filters title directory
-                             class label_class on_change),
+                             multiple class label_class on_change),
       Kind::SaveFile  => %w(bind text text_choosing text_done filters title directory
                              default_name class label_class on_change),
       Kind::Custom    => %w(), # handler-defined — not checked
@@ -2512,6 +2520,10 @@ module Egui
       # pipe-separated glob list ("*.png|*.jpg"); savefile's suggested
       # name is `default_name=`, falling back to the chosen path's
       # basename. `on_change=` fires after a successful pick.
+      # `<openfile multiple>` picks several files: the bound string
+      # slot holds the newline-JOINED paths (split with '\n' from app
+      # code), the label shows the first path plus " (+N)" when more
+      # than one file is chosen.
       private def render_file_picker(node : Node, ui : Ui, ctx : Context,
                                      rt : Runtime, save : Bool) : Nil
         key = node.bind_key || ""
@@ -2548,6 +2560,14 @@ module Egui
                               (path.empty? ? nil : File.basename(path))) do |picked|
                 done.call(picked)
               end
+            elsif node.file_multiple?
+              done_multi = ->(paths : Array(String)?) do
+                done.call(paths.try(&.join('\n')))
+              end
+              Egui::SystemPorts::OpenFileDialog.show_multiple(
+                title: title, filters: filters, directory: directory) do |paths|
+                done_multi.call(paths)
+              end
             else
               Egui::SystemPorts::OpenFileDialog.show(
                 title: title, filters: filters, directory: directory) do |picked|
@@ -2559,7 +2579,11 @@ module Egui
           raw_cls = node.file_label_class || "file-label"
           label_cls = raw_cls.includes?('{') ? rt.interpolate(raw_cls) : raw_cls
           next if ctx.stylesheet.resolve(label_cls).bool?("visible") == false
-          h.with_style_scope(label_cls) { |s| s.label(path) }
+          shown = path
+          if node.file_multiple? && (parts = path.split('\n')) && parts.size > 1
+            shown = "#{parts.first} (+#{parts.size - 1})"
+          end
+          h.with_style_scope(label_cls) { |s| s.label(shown) }
         end
       end
 

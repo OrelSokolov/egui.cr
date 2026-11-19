@@ -230,6 +230,7 @@ class NotepadApp < Egui::App
   # App actions (menus and hotkeys reference these, never key strings).
   ACTION_NEW      = Egui::HotkeyAction.new("notepad.new")
   ACTION_OPEN     = Egui::HotkeyAction.new("notepad.open")
+  ACTION_OPEN_MULTI = Egui::HotkeyAction.new("notepad.open_multi")
   ACTION_SAVE     = Egui::HotkeyAction.new("notepad.save")
   ACTION_SAVE_AS  = Egui::HotkeyAction.new("notepad.save_as")
   ACTION_CLOSE    = Egui::HotkeyAction.new("notepad.close")
@@ -269,6 +270,7 @@ class NotepadApp < Egui::App
           bar.menu_button("File") do |menu|
             menu.menu_item("New", ACTION_NEW)
             menu.menu_item("Open…", ACTION_OPEN)
+            menu.menu_item("Open Several…", ACTION_OPEN_MULTI)
             menu.menu_item("Save", ACTION_SAVE)
             menu.menu_item("Save As…", ACTION_SAVE_AS)
             menu.menu_item("Close Tab", ACTION_CLOSE)
@@ -374,6 +376,7 @@ class NotepadApp < Egui::App
   private def handle_actions(ctx : Egui::Context) : Nil
     send("POST", "/documents") if ctx.consume_action(ACTION_NEW)
     send("POST", "/documents/open") if ctx.consume_action(ACTION_OPEN)
+    send("POST", "/documents/open_multiple") if ctx.consume_action(ACTION_OPEN_MULTI)
     save_doc if ctx.consume_action(ACTION_SAVE)
     save_doc_as if ctx.consume_action(ACTION_SAVE_AS)
     close_tab if ctx.consume_action(ACTION_CLOSE) && !@docs.empty?

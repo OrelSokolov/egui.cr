@@ -12,6 +12,7 @@
       <menu label="File">
         <item label="New" on_click="new" hint="Ctrl+N"/>
         <item label="Open…" on_click="open" hint="Ctrl+O"/>
+        <item label="Open Several…" on_click="open_many"/>
         <item label="Save" on_click="save" hint="Ctrl+S"/>
         <item label="Save As…" on_click="save_as" hint="Ctrl+Shift+S"/>
         <item label="Close Tab" on_click="close" hint="Ctrl+W"/>

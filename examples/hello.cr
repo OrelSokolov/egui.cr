@@ -15,6 +15,7 @@ require "../src/egui/driver_selector"
 class HelloApp < Egui::App
   @count = 0
   @opened : String? = nil
+  @opened_many = [] of String
 
   # GC telemetry: allocation delta per frame + collection counter
   # (GC.stats has no collection count, so detect a GC run by the
@@ -41,10 +42,18 @@ class HelloApp < Egui::App
             Egui::SystemPorts::OpenFileDialog.show(
               filters: ["*.png", "*.jpg"]) { |path| @opened = path }
           end
+          if ui.button("Open files…").clicked?
+            @opened_many.clear
+            Egui::SystemPorts::OpenFileDialog.show_multiple(
+              filters: ["*.png", "*.jpg"]) { |paths| @opened_many = paths || [] of String }
+          end
           if Egui::SystemPorts::AsyncDialogs.pending?
             ui.label("opening…")
           else
             ui.label("opened: #{@opened || "—"}")
+            unless @opened_many.empty?
+              ui.label("opened many: #{@opened_many.size} — #{@opened_many.first}")
+            end
           end
 
           if ui.button("Quit").clicked?
