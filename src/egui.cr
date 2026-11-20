@@ -177,4 +177,12 @@ module Egui
   def self.no_animations? : Bool
     @@no_animations ||= (env = ENV["EGUI_NOANIMATIONS"]?) ? env != "0" : false
   end
+
+  # EGUI_PULLDIFF=1 — the exml renderer's subtree-key memoization
+  # (push-дифф §8, FPS_OPTIMIZATION.md) goes off: keys fold from
+  # scratch every frame, the pre-push-diff pull behavior. The debug/
+  # fallback leg for "a store-driven view looks stale" bisects.
+  def self.pull_diff? : Bool
+    @@pull_diff ||= (env = ENV["EGUI_PULLDIFF"]?) ? env != "0" : false
+  end
 end

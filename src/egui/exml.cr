@@ -346,6 +346,15 @@ module Egui
       getter button_type : String?
 
       @children_under : Hash(String, Array(Node))? = nil
+      # Memoized Id of #path (push-дифф §8 (а)): handlers and the
+      # renderer fold Id.from(path) per frame — one path-string hash
+      # per node lifetime instead. Rows re-path ONCE per key change
+      # (#children_under), so the memo stays valid.
+      @id : Id? = nil
+
+      def id : Id
+        @id ||= Id.from(@path)
+      end
 
       def initialize(@kind, @name, @attrs, @children, @path)
         @if_cond = @attrs["if"]?
@@ -1159,6 +1168,10 @@ module Egui
       getter pages : Array(Node)
       getter partials : Hash(String, Node)
       getter path : String?
+      # Bumps on every hot-reload (#reload_if_changed) — the subtree-key
+      # memoization folds it, so re-parsed markup can never be served
+      # from a stale memo (paths repeat across reloads).
+      getter version : UInt64 = 0u64
       @mtime : Time? = nil
 
       def initialize(@pages, @partials = {} of String => Node,
@@ -1208,6 +1221,7 @@ module Egui
         @pages = fresh.pages
         @partials = fresh.partials
         @mtime = mtime
+        @version &+= 1u64
         true
       end
 
@@ -1601,10 +1615,48 @@ module Egui
     # app writes (its model) and the widgets write back (bindings), plus
     # the named actions markup can fire. All logic stays in the binary —
     # actions are registered procs, never markup.
+    # Версионированное хранилище слота (push-дифф §8,
+    # FPS_OPTIMIZATION.md): запись с ИЗМЕНЁННЫМ значением поднимает
+    # версию имени. Мемоизация ключей subtree (Renderer#
+    # custom_subtree_key) сравнивает версии вместо реинтерполяции
+    # всех атрибутов поддерева — стационарный кадр не платит за
+    # value-дифф. Наследник Hash: все читатели ([]=, []?, each,
+    # merge!) работают как раньше; == контентный, спеки не видят
+    # подкласс. `always` — для rows: значение — Array, который
+    # приложение может мутировать на месте (контракт «renderer only
+    # reads»), глубокое сравнение стоило бы строк на каждую запись —
+    # версия поднимается на каждую запись.
+    class SlotHash(K, V) < Hash(K, V)
+      def initialize(@versions : Hash(K, UInt64), @always : Bool = false)
+        super()
+      end
+
+      def []=(key : K, value : V) : V
+        if @always || (old = self[key]?).nil? || old != value
+          @versions[key] = (@versions[key]? || 0u64) &+ 1
+        end
+        super(key, value)
+      end
+
+      def delete(key : K) : V?
+        @versions[key] = (@versions[key]? || 0u64) &+ 1
+        super(key)
+      end
+    end
+
     class Runtime
-      property strings = {} of String => String
-      property floats = {} of String => Float64
-      property bools = {} of String => Bool
+      @slot_versions = {} of String => UInt64
+
+      # Версия слота-имени: 0 = никогда не писался. Компонентный
+      # скоуп смешивает свою и родительскую (мультипликативно — обе
+      # стороны видны). Читается мемоизацией ключей каждый кадр.
+      def slot_version(name : String) : UInt64
+        @slot_versions[name]? || 0u64
+      end
+
+      property strings : SlotHash(String, String)
+      property floats : SlotHash(String, Float64)
+      property bools : SlotHash(String, Bool)
       property actions = {} of String => -> Nil
       # List slots — the `<repeat over="…">` data: rows of string
       # fields the app publishes (one nesting level; format numbers
@@ -1613,8 +1665,16 @@ module Egui
       # Array(String): the app owns the array's lifetime (may mutate
       # it in place), the renderer only reads — a steady-state frame
       # allocates nothing.
-      property rows = {} of String => Array(Hash(String, String))
+      property rows : SlotHash(String, Array(Hash(String, String)))
       property lists = {} of String => Array(String)
+
+      def initialize
+        @strings = SlotHash(String, String).new(@slot_versions)
+        @floats = SlotHash(String, Float64).new(@slot_versions)
+        @bools = SlotHash(String, Bool).new(@slot_versions)
+        @rows = SlotHash(String, Array(Hash(String, String))).new(
+          @slot_versions, always: true)
+      end
 
       # The rows of a list slot; nil = no such slot (a warn-once at
       # render time, not here — lenient).
@@ -1657,7 +1717,7 @@ module Egui
       # Row scopes (repeat) live ONE frame — a cache there never hits
       # and only adds its bookkeeping allocations; they interpolate
       # uncached. Overridden by ScopedRuntime.
-      protected def cache_interpolations? : Bool
+      def cache_interpolations? : Bool
         true
       end
 
@@ -1755,8 +1815,15 @@ module Egui
       # A row scope lives one frame — an interpolation cache there
       # never hits, it only allocates the bookkeeping. Rows render
       # uncached; long-lived scopes (components) keep the cache.
-      protected def cache_interpolations? : Bool
+      def cache_interpolations? : Bool
         repeat_index.nil?
+      end
+
+      # Slot versions mix both stores: a name may resolve locally or
+      # fall through to the parent, so a bump on EITHER side must
+      # re-key (multiplicative mix — both directions visible).
+      def slot_version(name : String) : UInt64
+        super(name) &* 1_000_003u64 &+ @parent.slot_version(name)
       end
 
       def lookup(key : String) : String?
@@ -1892,6 +1959,13 @@ module Egui
         # were absent last frame but are back now
         @subtree_last, @subtree_cur = @subtree_cur, @subtree_last
         @subtree_cur.clear
+        # A hot-reloaded document invalidated every folded key and
+        # every static name list — same paths may map to new markup.
+        if doc.version != @doc_version
+          @doc_version = doc.version
+          @key_memo.clear
+          @key_names.clear
+        end
         # Last frame's markup hotkeys lapse; visible nodes re-bind
         # theirs during the walk (bind_hotkey below)
         @markup_hotkeys.each { |hk| ctx.hotkeys.unbind(hk) }
@@ -2364,6 +2438,44 @@ module Egui
       # a miss — the handler must run to restart the entrance
       # animation — while a settled run lingering in Memory keeps
       # steady frames hitting.
+      #
+      # ── memoized fold (push-дифф §8, ч.1) ─────────────────────────
+      # The attr fold re-interpolates every dynamic template of the
+      # subtree each frame just to learn nothing changed — the walk's
+      # remaining value-diff tax. Instead, the store VERSIONS each
+      # slot name (Runtime::SlotHash) and the memo records which names
+      # the subtree's templates read plus their versions at fold time;
+      # when none moved (and the style/document epochs hold), the last
+      # fold is returned as-is — the interpolated values are provably
+      # identical, so the hash is too. The dependency NAME list is
+      # extracted statically from the raw templates (same regex as
+      # #interpolate). Row scopes (repeat) never memoize: their store
+      # is rebuilt per frame, versions restart. EGUI_PULLDIFF=1 turns
+      # the memo off (fold every frame — the pre-push-diff behavior).
+      private class KeyMemo
+        getter fold : UInt64
+        getter cls : String
+        getter resolve_id : UInt64
+        getter resolve_hover_id : UInt64
+        getter names : Array(String)
+        getter vers : Array(UInt64)
+        getter vals : Array(String)
+        getter style_ver : UInt64
+        getter doc_ver : UInt64
+
+        def initialize(@fold, @cls, @resolve_id, @resolve_hover_id,
+                       @names, @vers, @vals, @style_ver, @doc_ver)
+        end
+      end
+
+      @key_memo = {} of String => KeyMemo
+      @key_names = {} of String => Array(String)
+      @doc_version = 0u64
+
+      # The {name} placeholder regex — the SAME literal #interpolate
+      # walks; name extraction must never diverge from resolution.
+      INTERP_NAME = /\{([a-zA-Z_][\w.]*)\}/
+
       private def custom_subtree_key(node : Node, ui : Ui, ctx : Context,
                                      rt : Runtime) : UInt64?
         return nil unless Exml.cacheable_tags.includes?(node.name)
@@ -2404,12 +2516,85 @@ module Egui
         end
         cls = (raw = node.attrs["class"]?) ?
                 (raw.includes?('{') ? rt.interpolate(raw) : raw) : ""
+        style_ver = ctx.stylesheet.version
+        if (memo = key_memo_hit?(node, rt, cls, style_ver))
+          Egui::Bench.count("exml.key.memo")
+          return {node.path, memo.fold, memo.resolve_id,
+                  memo.resolve_hover_id, fold_hover_states(node, ctx),
+                  subtree_generation(node)}.hash
+        end
+        Egui::Bench.count("exml.key.fold")
+        fold = fold_subtree(node, rt)
+        names = (@key_names[node.path] ||= subtree_dep_names(node))
+        @key_memo[node.path] = KeyMemo.new(fold, cls,
+          ctx.stylesheet.resolve(cls).object_id,
+          ctx.stylesheet.resolve(cls, "hover").object_id,
+          names, names.map { |n| rt.slot_version(n) },
+          names.map { |n| rt.lookup(n) || "" },
+          style_ver, @doc_version)
         {node.path,
-         fold_subtree(node, rt),
+         fold,
          ctx.stylesheet.resolve(cls).object_id,
          ctx.stylesheet.resolve(cls, "hover").object_id,
          fold_hover_states(node, ctx),
          subtree_generation(node)}.hash
+      end
+
+      # The memo serves this frame iff the subtree's dependencies, the
+      # style epoch and the document epoch all hold — the folded attr
+      # hash is then provably identical to last frame's. Two check
+      # modes, one per store flavor:
+      #
+      # - a LONG-LIVED store (root, component scopes) compares SLOT
+      #   VERSIONS — O(1) hash reads, zero allocations;
+      # - a ROW scope (repeat) is rebuilt each frame, its versions
+      #   restart — there the dependency VALUES are compared instead
+      #   (the same #lookup interpolation resolves through, so equal
+      #   values fold to an equal hash; a row's own fields differ per
+      #   row and keep rows apart). The value walk is still cheaper
+      #   than the fold: unique names, no attr hashing, no templates.
+      private def key_memo_hit?(node : Node, rt : Runtime, cls : String,
+                                style_ver : UInt64) : KeyMemo?
+        return nil if Egui.pull_diff?
+        memo = @key_memo[node.path]?
+        return nil unless memo
+        return nil unless memo.cls == cls &&
+                          memo.style_ver == style_ver &&
+                          memo.doc_ver == @doc_version
+        names = memo.names
+        if rt.cache_interpolations?
+          i = 0
+          while i < names.size
+            return nil if rt.slot_version(names[i]) != memo.vers[i]
+            i += 1
+          end
+        else
+          i = 0
+          while i < names.size
+            return nil if (rt.lookup(names[i]) || "") != memo.vals[i]
+            i += 1
+          end
+        end
+        memo
+      end
+
+      # The slot names a subtree's attr templates read — extracted
+      # statically (INTERP_NAME over every attr of every descendant),
+      # computed once per path. Must stay in lockstep with what
+      # #fold_subtree hashes: every dynamic value it interpolates is
+      # resolved through exactly these names.
+      private def subtree_dep_names(node : Node) : Array(String)
+        names = [] of String
+        walk_dep_names(node, names)
+        names.uniq!
+        names
+      end
+
+      private def walk_dep_names(node : Node, names : Array(String)) : Nil
+        node.attrs.each_value do |v|
+          v.scan(INTERP_NAME) { |m| names << m[1] }
+        end
+        node.children.each { |c| walk_dep_names(c, names) }
       end
 
       # The hover/active verdicts of every custom node in the subtree
@@ -2425,8 +2610,10 @@ module Egui
       # through (they never interact themselves).
       private def fold_hover_states(node : Node, ctx : Context) : UInt64
         path = node.path
-        h = ctx.memory.interaction_state(Egui::Id.from(path)).hash &
-            ctx.memory.interaction_state(Egui::Id.from("#{path}/hover")).hash
+        id = node.id
+        h = ctx.memory.interaction_state(id).hash &
+            ctx.memory.interaction_state(
+              Egui::Id.from("#{path}/hover")).hash
         node.children.each do |c|
           case c.kind
           when .custom?, .row?, .column?

@@ -727,6 +727,10 @@ module Egui
     def initialize
       @classes = {} of String => StyleClass
       @resolved = {} of {String, String?} => StyleVars
+      # Style epoch: bumps wherever the resolve caches drop (a rule
+      # change, a touch, a media flip) — the exml subtree-key
+      # memoization folds it, so a re-styled tree always re-folds.
+      @version = 0u64
       # Style-sharing cache (FPS_OPTIMIZATION.md §3, этап 1):
       # memoized `StyleVars#apply_over` results, keyed by the IDENTITY
       # of (bag, base). Both are contractually immutable shared objects
@@ -765,6 +769,16 @@ module Egui
       @classes[path] ||= StyleClass.new(path)
     end
 
+    # Bumped with every resolve-cache drop — see @version.
+    getter version : UInt64
+
+    private def drop_resolve_cache! : Nil
+      @version &+= 1u64
+      @resolved.clear
+      @shared_styles.clear
+      @shared_inline_styles.clear
+    end
+
     def []?(path : String) : StyleClass?
       @classes[path]?
     end
@@ -791,9 +805,7 @@ module Egui
         cls = self[path]
         state ? cls.set(state, vars) : cls.set(vars)
       end
-      @resolved.clear
-      @shared_styles.clear
-      @shared_inline_styles.clear
+      drop_resolve_cache!
       self
     end
 
@@ -929,9 +941,7 @@ module Egui
           cls.vars.delete(key)
         end
       end
-      @resolved.clear
-      @shared_styles.clear
-      @shared_inline_styles.clear
+      drop_resolve_cache!
       self
     end
 
@@ -961,18 +971,14 @@ module Egui
         @media_rules.reject! { |e| e.path == path && e.state == state }
         refresh_media_matches
       end
-      @resolved.clear
-      @shared_styles.clear
-      @shared_inline_styles.clear
+      drop_resolve_cache!
       self
     end
 
     # Drop the cached merges manually (after mutating a StyleClass
     # directly through `[]`; `rule` does this itself).
     def touch : self
-      @resolved.clear
-      @shared_styles.clear
-      @shared_inline_styles.clear
+      drop_resolve_cache!
       self
     end
 
@@ -1024,9 +1030,7 @@ module Egui
         entry.cond.matches?(@viewport_width, @viewport_height, @pointer_coarse)
       end
       if bits != @media_bits
-        @resolved.clear
-        @shared_styles.clear
-        @shared_inline_styles.clear
+        drop_resolve_cache!
       end
       @media_bits = bits
     end
