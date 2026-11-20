@@ -16,6 +16,9 @@
 //   OpenGLES 3 (GLKit/EAGL); everything window-manager-ish (AppKit
 //   NSWindow/NSCursor) is macOS-only, the SH_IOS branches below fall
 //   back to the same no-op stubs the "other backends" path provides.
+//   macOS renders through NSOpenGL (SOKOL_GLCORE) or, with
+//   BACKEND=metal (see METAL.md), through CAMetalLayer (SOKOL_METAL,
+//   -D'd by the Rakefile — never define it here, GL is the default).
 // - Android: sokol_app owns ANativeActivity_onCreate and calls sokol_main()
 //   synchronously on the activity thread; SOKOL_NO_ENTRY/sapp_run are not
 //   supported there (sokol_app.h:1158). The desc registered by Crystal's
@@ -25,7 +28,7 @@
 #if TARGET_OS_IPHONE
 #define SOKOL_GLES3
 #define SH_IOS 1
-#else
+#elif !defined(SOKOL_METAL)
 #define SOKOL_GLCORE
 #endif
 #elif defined(__ANDROID__)
@@ -813,6 +816,12 @@ static int g_transparent;
 // HighDPI (each sample multiplies the framebuffer), so apps can trade
 // edge smoothness for a ~100 MB smaller footprint.
 static int g_msaa = 1;
+#if defined(SOKOL_METAL)
+// Metal-only: swap_interval was 0 (vsync off / EGUI_NOVSYNC) and got
+// clamped to 1 — the desc routes the "uncapped" intent into the Metal
+// layer's displaySyncEnabled instead (see egui_cr_sapp_run).
+static bool g_mtl_no_vsync;
+#endif
 
 // The msaa parameter arrives from Crystal as a sample count (Bool was
 // normalized there: true → 4, false → 0). EGUI_MSAA overrides it for
@@ -1659,6 +1668,13 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
      * compositor's present feedback (bisects swap stalls under
      * XWayland). */
     if (getenv("EGUI_NOVSYNC")) swap_interval = 0;
+#if defined(SOKOL_METAL) && !defined(SH_IOS)
+    // Metal's frame driver divides the display-link rate by swap_interval
+    // (sokol_app _sapp_macos_mtl_start_display_link) — 0 would divide by
+    // zero. Uncapped goes through the layer's displaySyncEnabled instead.
+    g_mtl_no_vsync = (swap_interval == 0);
+    if (swap_interval < 1) swap_interval = 1;
+#endif
 #if defined(_SAPP_LINUX)
     // XWayland DRI3 deadlock workaround. Under rapid input, sokol's X11
     // loop (Xlib XPending/XNextEvent on the app connection) races with
@@ -1721,6 +1737,12 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .depth_format = transparent ? SAPP_PIXELFORMAT_DEPTH
                                     : SAPP_PIXELFORMAT_DEPTH_STENCIL,
         .swap_interval = swap_interval,
+        #if defined(SOKOL_METAL)
+        // VSync-off arrived as swap_interval=0 (EGUI_NOVSYNC or the vsync:
+        // false run option) — Metal can't take 0 (display-link rate
+        // division, see egui_cr_sapp_run), the layer knob carries it.
+        .metal.disable_display_sync = g_mtl_no_vsync,
+        #endif
         .enable_clipboard = true, // SystemPorts::Clipboard (sapp_set/get_clipboard_string)
         .enable_dragndrop = true, // Event.dropped_files (drop.enabled gates the FILES_DROPPED event)
         .max_dropped_files = 8,
@@ -1997,9 +2019,81 @@ static void sh_x11_sync_request_confirm(int presented_w, int presented_h) {
 extern void glReadPixels(int x, int y, int w, int h, unsigned format,
                          unsigned type, void* data);
 #endif
+
+#if defined(SOKOL_METAL) && defined(__APPLE__) && !defined(SH_IOS)
+// Metal frame readback for the capture paths (EGUI_SHOT PPM dumps, the
+// one-shot --screenshot): there is no glReadPixels twin — the frame's
+// drawable texture is read CPU-side instead. Two-phase: the first grab
+// call RETAINS the just-committed frame's drawable (g_mtl_frame_drawable,
+// stashed by egui_cr_begin_pass) and answers "not yet"; the actual
+// getBytes happens on a later call (the next frame's hook), when that
+// frame's command buffer has long completed — the blocking read never
+// races in-flight GPU work. Sokol's layer is framebufferOnly=false
+// (egui-cr patch in sokol_app.h) and BGRA8Unorm with a top-left origin,
+// so the output is top-down RGBA8. A size/format mismatch releases the
+// drawable and answers false (the caller retries with a fresh frame).
+#include <Metal/Metal.h>
+static id g_mtl_shot_drawable; // id<CAMetalDrawable>, retained between phases
+// The frame's own drawable (see egui_cr_begin_pass, which stashes it).
+static id g_mtl_frame_drawable; // id<CAMetalDrawable>
+static bool sh_mtl_grab_rgba(int w, int h, unsigned char* topdown_rgba) {
+    if (g_mtl_shot_drawable == nil) {
+        if (g_mtl_frame_drawable == nil) return false;
+        g_mtl_shot_drawable = [g_mtl_frame_drawable retain];
+        return false;
+    }
+    bool ok = false;
+    id<MTLTexture> tex = [(id<CAMetalDrawable>)g_mtl_shot_drawable texture];
+    if (tex != nil && (int)tex.width == w && (int)tex.height == h &&
+        tex.pixelFormat == MTLPixelFormatBGRA8Unorm) {
+        MTLRegion region = MTLRegionMake2D(0, 0, (NSUInteger)w, (NSUInteger)h);
+        [tex getBytes:topdown_rgba bytesPerRow:(NSUInteger)w * 4
+            fromRegion:region mipmapLevel:0];
+        for (size_t i = 0; i < (size_t)w * h * 4; i += 4) { // BGRA → RGBA
+            unsigned char b = topdown_rgba[i];
+            topdown_rgba[i] = topdown_rgba[i + 2];
+            topdown_rgba[i + 2] = b;
+        }
+        ok = true;
+    }
+    [g_mtl_shot_drawable release];
+    g_mtl_shot_drawable = nil;
+    return ok;
+}
+#endif // SOKOL_METAL mac readback helper
+
 static void sh_shot_legacy(void) {
 #if defined(SOKOL_VULKAN)
     return; // no GL entry points on the Vulkan backend (debug tool only)
+#elif defined(SOKOL_METAL) && defined(__APPLE__) && !defined(SH_IOS)
+    static const char* dir;
+    static int idx;
+    static const int ticks[] = {15, 40, 80};
+    if (!dir) { dir = getenv("EGUI_SHOT"); if (!dir) dir = (const char*)-1; }
+    if ((intptr_t)dir == -1 || idx >= 3) return;
+    static uint32_t count;
+    count++;
+    if (count < (uint32_t)ticks[idx]) return;
+    int w = sapp_width(), h = sapp_height();
+    if (w <= 0 || h <= 0) return;
+    // First call only retains the drawable (sh_mtl_grab_rgba's two-phase
+    // contract); the dump lands on the next frame's call.
+    unsigned char* rgba = (unsigned char*)malloc((size_t)w * h * 4);
+    if (!rgba) { idx++; return; }
+    if (!sh_mtl_grab_rgba(w, h, rgba)) { free(rgba); return; }
+    char path[512];
+    snprintf(path, sizeof path, "%s/legacy_%d.ppm", dir, ticks[idx]);
+    FILE* f = fopen(path, "wb");
+    if (f) {
+        fprintf(f, "P6\n%d %d\n255\n", w, h);
+        for (int y = 0; y < h; y++) { // Metal origin is top-left: no flip
+            for (int x = 0; x < w; x++)
+                fwrite(rgba + ((size_t)y * w + x) * 4, 1, 3, f);
+        }
+        fclose(f);
+    }
+    free(rgba);
+    idx++;
 #else
     static const char* dir;
     static int idx;
@@ -2037,7 +2131,7 @@ static void sh_shot_legacy(void) {
 // viewport after a 3D draw.
 static int g_fb_w, g_fb_h;
 
-#if defined(__APPLE__) && !defined(SH_IOS)
+#if defined(SOKOL_GLCORE) && defined(__APPLE__) && !defined(SH_IOS)
 // macOS 26: AppKit's update-cycle thread can run drawRect (the whole
 // frame) with the GL context not current — sokol_app's frame entry
 // skips such frames, but the context can ALSO go nil MID-frame, while
@@ -2047,6 +2141,8 @@ static int g_fb_w, g_fb_h;
 // crashes). Dropping is benign — sokol_gl buffers geometry on the CPU,
 // texture ids of 0 mean "retry next frame", and an abandoned sg pass
 // is closed lazily by the next successful begin_pass (see g_pass_open).
+// Metal (BACKEND=metal) has no shared-current-context concept — sokol's
+// command buffers own the work — so the guard is GL-only.
 static bool sh_gl_ok(void) {
     return [NSOpenGLContext currentContext] != nil;
 }
@@ -2122,7 +2218,7 @@ void egui_cr_begin_pass(int w, int h) {
     glDisable(GL_SCISSOR_TEST);
     glScissor(0, 0, w, h);
 #endif
-    sg_begin_pass(&(sg_pass){
+    sg_pass pass = {
         .swapchain = sglue_swapchain(),
         .action = {
             .colors[0] = {
@@ -2130,7 +2226,15 @@ void egui_cr_begin_pass(int w, int h) {
                 .clear_value = { g_clear[0], g_clear[1], g_clear[2], g_clear[3] },
             },
         },
-    });
+    };
+#if defined(SOKOL_METAL) && defined(__APPLE__) && !defined(SH_IOS)
+    if (pass.swapchain.metal.current_drawable) {
+        [g_mtl_frame_drawable release];
+        g_mtl_frame_drawable =
+            [(id<CAMetalDrawable>)pass.swapchain.metal.current_drawable retain];
+    }
+#endif
+    sg_begin_pass(&pass);
     g_pass_open = true;
 }
 
@@ -2231,6 +2335,15 @@ void egui_cr_set_transparent(void) {
     if (!win) return;
     win.opaque = NO;
     win.backgroundColor = [NSColor clearColor];
+#if defined(SOKOL_METAL)
+    // The Metal surface equivalent of the NSOpenGL surface-opacity knob:
+    // a non-opaque CAMetalLayer makes the window server blend the
+    // framebuffer alpha (premultiplied by the alpha pipelines) over the
+    // desktop. Runtime-settable — sokol_app created it opaque from
+    // composite_mode, which the shim doesn't control at desc-build time.
+    CAMetalLayer* layer = (CAMetalLayer*)win.contentView.layer;
+    if ([layer isKindOfClass:[CAMetalLayer class]]) layer.opaque = NO;
+#else
     // The GL surface itself defaults to "opaque": the window server then
     // ignores the framebuffer alpha and pixels cleared to a=0 composite
     // black instead of showing the desktop. Opting the surface out is
@@ -2240,6 +2353,7 @@ void egui_cr_set_transparent(void) {
     NSOpenGLContext* ctx = view.openGLContext;
     GLint surface_opacity = 0;
     [ctx setValues:&surface_opacity forParameter:NSOpenGLContextParameterSurfaceOpacity];
+#endif
 }
 #endif
 
@@ -2286,10 +2400,16 @@ void egui_cr_present_clear(void) {}
 void egui_cr_present_clear(void) {
     if (!sh_run_direct()) return;
     sh_clear_pass();
+#if defined(SOKOL_METAL)
+    // Metal: ending the default pass presents the drawable itself — no
+    // context flush needed (the GL branch below works around NSOpenGL's
+    // makeCurrent/flushBuffer contract).
+#else
     NSWindow* win = (NSWindow*)sapp_macos_get_window();
     NSOpenGLView* view = win ? (NSOpenGLView*)win.contentView : NULL;
     NSOpenGLContext* ctx = view ? view.openGLContext : NULL;
     if (ctx) { [ctx makeCurrentContext]; [ctx flushBuffer]; }
+#endif
 }
 #endif
 
@@ -2365,9 +2485,10 @@ static sg_stencil_state sh_clip_stencil(void) {
 // True when the glyph atlas uploads as a single-channel (R8) coverage
 // texture: the text pipelines need a fragment shader that samples the
 // RED channel, which is only possible where sokol can compile GLSL at
-// runtime (GLCORE/GLES3 — everything but the optional Vulkan backend,
-// whose sgl shader is embedded SPIR-V). The SDF batch shader (GL-only)
-// follows the same flag. Memoized; only queried after sg_setup.
+// runtime (GLCORE/GLES3 — everything but the optional Vulkan/Metal
+// backends, whose sgl shaders are embedded SPIR-V/AIR). The SDF batch
+// shader (GL-only) follows the same flag. Memoized; only queried after
+// sg_setup.
 static int g_atlas_r8 = -1;
 static bool sh_atlas_r8(void) {
     if (g_atlas_r8 < 0) {
@@ -9202,6 +9323,13 @@ static void sh_screenshot_try(int w, int h) {
         }
     }
     if (sh_now() - sh_shot_t0 < at) return;
+#if defined(SOKOL_METAL) && defined(__APPLE__) && !defined(SH_IOS)
+    // First call only retains the drawable (sh_mtl_grab_rgba's two-phase
+    // contract) — the pixels land on the next frame's poll.
+    unsigned char* flip = (unsigned char*)malloc((size_t)w * h * 4);
+    if (!flip) return;
+    if (!sh_mtl_grab_rgba(w, h, flip)) { free(flip); return; }
+#else
     unsigned char* raw = (unsigned char*)malloc((size_t)w * h * 4);
     unsigned char* flip = (unsigned char*)malloc((size_t)w * h * 4);
     if (!raw || !flip) { free(raw); free(flip); return; }
@@ -9214,6 +9342,7 @@ static void sh_screenshot_try(int w, int h) {
         memcpy(flip + (size_t)y * w * 4, raw + (size_t)(h - 1 - y) * w * 4,
                (size_t)w * 4);
     free(raw);
+#endif
     free(g_shot_px); // a late resize could stash twice; keep the last
     g_shot_px = flip;
     sh_shot_w = w;

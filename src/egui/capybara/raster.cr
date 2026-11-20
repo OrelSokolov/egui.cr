@@ -51,6 +51,8 @@ module Egui
           in ArcCmd     then arc_cmd(cmd)
           in ShadowCmd  then shadow_cmd(cmd)
           in ImageCmd   then image_cmd(cmd)
+          in VideoCmd   then # no-op: GPU video quad (dmabuf/NV12 planes)
+            # samples sg stream images — no CPU twin in the headless raster.
           in Mesh3DCmd  then # no-op: 3D content has no CPU path (yet)
           in ScrollBracketCmd then # no-op: composited scroll is a backend
             # present-time concern (see ScrollBracketCmd); the CPU raster

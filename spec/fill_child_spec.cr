@@ -1,11 +1,13 @@
 require "spec"
 require "../src/egui"
 
-VSCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(800.0, 600.0))
+# FILL_VSCREEN, not VSCREEN: crystal spec compiles every spec file into
+# one program and textarea_virtual_spec.cr already owns that name.
+FILL_VSCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(800.0, 600.0))
 
 def fill_frame(ctx : Egui::Context, events : Array(Egui::Event) = [] of Egui::Event,
                time : Float64 = 0.016)
-  ctx.begin_frame(Egui::RawInput.new(VSCREEN, events, time))
+  ctx.begin_frame(Egui::RawInput.new(FILL_VSCREEN, events, time))
 end
 
 describe "Ui#fill_child (fill-editor pattern)" do

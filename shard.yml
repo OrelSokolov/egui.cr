@@ -72,7 +72,7 @@ binaries:
     link_flags:
       "*": [-Llib]
       linux: [lib/libegui_cr_sokol.a, -Llib, -Llib/minaudio/lib]
-      darwin: [-framework Cocoa, -framework OpenGL, -framework QuartzCore, -framework AVFoundation, -framework CoreMedia, -framework IOKit]
+      darwin: [-framework Cocoa, -framework OpenGL, -framework Metal, -framework QuartzCore, -framework AVFoundation, -framework CoreMedia, -framework IOKit]
       windows: [/LIBPATH:lib]
 
   apps/hello:               {main: examples/hello.cr}

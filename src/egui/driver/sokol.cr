@@ -72,10 +72,11 @@ require "../capybara/png" # --screenshot PNG encode
   @[Link("user32")]
   @[Link("shell32")]
 {% elsif flag?(:darwin) %}
-  # sokol_app/macOS = Cocoa + NSOpenGL. Frameworks are passed by the
-  # Rakefile's --link-flags (-framework Cocoa/OpenGL/QuartzCore), and
-  # brew's libfreetype resolves through -L/opt/homebrew/lib — no -l links
-  # are needed here.
+  # sokol_app/macOS = Cocoa + NSOpenGL (default) or CAMetalLayer
+  # (BACKEND=metal, see METAL.md). Frameworks are passed by the
+  # Rakefile's --link-flags (-framework Cocoa/OpenGL-or-Metal/
+  # QuartzCore), and brew's libfreetype resolves through
+  # -L/opt/homebrew/lib — no -l links are needed here.
 {% else %}
   @[Link("GL")]
   @[Link("X11")]

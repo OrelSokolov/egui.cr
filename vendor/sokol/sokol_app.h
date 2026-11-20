@@ -5579,7 +5579,12 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_init(void) {
     _sapp.mtl.layer.magnificationFilter = kCAFilterNearest;
     _sapp.mtl.layer.opaque = _sapp.desc.composite_mode == SAPP_COMPOSITEMODE_OPAQUE;
     _sapp.mtl.layer.pixelFormat = _sapp_mtl_color_format();
-    _sapp.mtl.layer.framebufferOnly = true;
+    // egui-cr patch: false, not true — the shim's capture paths
+    // (--screenshot PNG pipeline, EGUI_SHOT PPM dumps) read the
+    // drawable's texture CPU-side after present (see sh_mtl_grab_rgba
+    // in backend/sokol_shim.c); framebufferOnly would forbid that.
+    // Compositor cost is negligible for UI-sized framebuffers.
+    _sapp.mtl.layer.framebufferOnly = false;
     CGColorSpaceRef colorspace = CGColorSpaceCreateWithName(_sapp_mtl_color_space());
     _sapp.mtl.layer.colorspace = colorspace;
     CGColorSpaceRelease(colorspace);

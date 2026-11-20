@@ -4,20 +4,25 @@ require "monitor"
 
 WINDOWS    = Gem.win_platform?
 DARWIN     = RUBY_PLATFORM.include?("darwin")
-# Render backend for the Linux native lib (see VULKAN.md): "gl" (default,
-# GLX through XWayland) or "vulkan" (X11 window + Vulkan swapchain —
-# immune to the NVIDIA GLX userspace/kernel skew that breaks
-# glXCreateContextAttribsARB after an apt upgrade). macOS (Cocoa/GL) and
-# Windows (WGL) stay GL regardless.
+# Render backend for the native lib: "gl" (default everywhere), "vulkan"
+# (Linux only, see VULKAN.md — X11 window + Vulkan swapchain, immune to the
+# NVIDIA GLX userspace/kernel skew that breaks glXCreateContextAttribsARB
+# after an apt upgrade) or "metal" (macOS only, see METAL.md — Cocoa +
+# CAMetalLayer instead of NSOpenGL). Windows (WGL) stays GL regardless.
 #   BACKEND=vulkan rake build:release
+#   BACKEND=metal  rake build:release
 BACKEND    = ENV.fetch("BACKEND", "gl").downcase
-unless %w[gl vulkan].include?(BACKEND)
-  raise "BACKEND must be gl or vulkan (got: #{BACKEND})"
+unless %w[gl vulkan metal].include?(BACKEND)
+  raise "BACKEND must be gl, vulkan or metal (got: #{BACKEND})"
 end
 if BACKEND == "vulkan" && (WINDOWS || DARWIN)
   raise "BACKEND=vulkan is Linux-only (macOS/Windows have no Vulkan sokol_app path here)"
 end
+if BACKEND == "metal" && !DARWIN
+  raise "BACKEND=metal is macOS-only (Linux/Windows keep GL/Vulkan)"
+end
 VULKAN     = BACKEND == "vulkan"
+METAL      = BACKEND == "metal"
 # MSVC resolves @[Link("egui_cr_sokol")] to exactly egui_cr_sokol.lib —
 # no lib prefix, no -l rewriting like cc (egui_cr_pty.lib likewise).
 NATIVE_LIB = WINDOWS ? "lib/egui_cr_sokol.lib" : "lib/libegui_cr_sokol.a"
@@ -188,7 +193,7 @@ SHIM_HEADERS.each do |shim, headers|
       args = case shim
         when "sokol_shim"
           "#{DARWIN ? "-x objective-c" : ""} -Ivendor/sokol -Ivendor/fontstash -Ivendor -Ibackend/shaders " \
-          "#{" -DSOKOL_VULKAN" if VULKAN}"
+          "#{" -DSOKOL_VULKAN" if VULKAN}#{" -DSOKOL_METAL" if METAL}"
         when "nanosvg_shim"      then "-Ivendor/nanosvg"
         when "rlottie_shim"      then "-Ivendor/rlottie/inc"
         else ""
@@ -446,14 +451,16 @@ def build_examples(names, opt_flags, label)
     lib_flag += DARWIN ? " -lc++" : " -lstdc++" unless WINDOWS
   end
   if DARWIN
-    # sokol_app needs the Cocoa/OpenGL frameworks; FreeType lives in the
-    # brew prefix (-L only — @[Link("freetype")] already adds -lfreetype).
+    # sokol_app needs the Cocoa frameworks; FreeType lives in the brew
+    # prefix (-L only — @[Link("freetype")] already adds -lfreetype).
     # AVFoundation/CoreMedia: the shim's camera section (one big object)
-    # references them, so every macOS example link pulls them in.
+    # references them, so every macOS example link pulls them in. The 3D API
+    # framework follows the backend: NSOpenGL (GL) or CAMetalLayer/Metal.
     ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
     ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
+    gfx_fw = METAL ? "Metal" : "OpenGL"
     lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
-               "-framework OpenGL -framework QuartzCore " \
+               "-framework #{gfx_fw} -framework QuartzCore " \
                "-framework AVFoundation -framework CoreMedia " \
                "-framework IOKit"
   end
