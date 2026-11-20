@@ -1195,6 +1195,11 @@ module Egui
       #   The `EGUI_MSAA` environment variable overrides the parameter
       #   at startup (live experiments: `EGUI_MSAA=0 crystal run
       #   examples/widgets_gallery.cr`), like `EGUI_NOVSYNC`.
+      #   The swapchain's depth/stencil side has an env-only experiment
+      #   knob too: `EGUI_DEPTH=none|depth|stencil` (default
+      #   DEPTH_STENCIL — the stencil carries the rounded content clip;
+      #   measured cost of the whole depth+stencil pair: ~17 MB, see
+      #   plans/todo/memory_optimization.md, step 1).
       # * *chrome* — the client-side frame for a borderless window:
       #   `Egui::WindowFrame` drawn by the backend before every app
       #   frame, including edge resize grips. `nil` (default) = on for

@@ -963,6 +963,26 @@ static int sh_msaa_resolve(int msaa) {
     return msaa;
 }
 
+// The default swapchain format is DEPTH_STENCIL (stencil carries the
+// rounded content clip, egui_cr_clip_mask; transparent windows keep
+// depth-only — the scarce ARGB fbconfigs must not gain a stencil
+// constraint). EGUI_DEPTH=none|depth overrides the non-transparent
+// default for live memory experiments (memory_optimization.md step 1:
+// eframe/glutin requests depth_buffer=0/stencil_buffer=0 — measure what
+// the depth+stencil attachments actually cost before changing any
+// default). Both overrides degrade gracefully: the stencil clip falls
+// back to the plain rect scissor (sh_stencil_ok), and sokol_gl's 2D
+// pipelines run depth-ALWAYS/no-write with format NONE.
+static sapp_pixel_format sh_depth_resolve(int transparent) {
+    if (transparent) return SAPP_PIXELFORMAT_DEPTH;
+    const char* env = getenv("EGUI_DEPTH");
+    if (env && *env) {
+        if (0 == strcmp(env, "none")) return SAPP_PIXELFORMAT_NONE;
+        if (0 == strcmp(env, "depth")) return SAPP_PIXELFORMAT_DEPTH;
+    }
+    return SAPP_PIXELFORMAT_DEPTH_STENCIL;
+}
+
 // Detached-render-loop routing (see the section at the end of this
 // file): on Linux and Win32, paint/texture/window entry points called
 // off the render thread are forwarded to the packet builder / command
@@ -1854,8 +1874,7 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         // windows — the ARGB fbconfigs GLX offers are scarce enough
         // without a stencil constraint (their rounded corners fall
         // back to the platform window shape + rect scissor).
-        .depth_format = transparent ? SAPP_PIXELFORMAT_DEPTH
-                                    : SAPP_PIXELFORMAT_DEPTH_STENCIL,
+        .depth_format = sh_depth_resolve(transparent),
         .swap_interval = swap_interval,
         #if defined(SOKOL_METAL)
         // VSync-off arrived as swap_interval=0 (EGUI_NOVSYNC or the vsync:
@@ -2815,11 +2834,16 @@ static void sh_ensure_pipelines(void) {
         d.label = "egui-cr-replace-pip-st";
         g_replace_pip_st = sgl_make_pipeline(&d);
     }
+    // Without a swapchain depth attachment (EGUI_DEPTH=none) the
+    // LESS_EQUAL compare fails sokol validation — build the
+    // painter's-order 3D variants instead (apps that need depth keep
+    // the default DEPTH_STENCIL format).
+    const bool depth_ok = sapp_depth_format() != SAPP_PIXELFORMAT_NONE;
     if (!g_pip_3d.id) {
         g_pip_3d = sgl_make_pipeline(&(sg_pipeline_desc){
             .depth = {
-                .compare = SG_COMPAREFUNC_LESS_EQUAL,
-                .write_enabled = true,
+                .compare = depth_ok ? SG_COMPAREFUNC_LESS_EQUAL : SG_COMPAREFUNC_ALWAYS,
+                .write_enabled = depth_ok,
             },
             .colors[0] = {
                 .write_mask = SG_COLORMASK_RGBA,
@@ -2830,7 +2854,7 @@ static void sh_ensure_pipelines(void) {
     }
     if (!g_pip_3d_blend.id) {
         g_pip_3d_blend = sgl_make_pipeline(&(sg_pipeline_desc){
-            .depth = { .compare = SG_COMPAREFUNC_LESS_EQUAL },
+            .depth = { .compare = depth_ok ? SG_COMPAREFUNC_LESS_EQUAL : SG_COMPAREFUNC_ALWAYS },
             .colors[0] = {
                 .write_mask = SG_COLORMASK_RGBA,
                 .blend = {
@@ -10148,8 +10172,7 @@ static void* sh_render_thread(void* unused) {
         // back to the plain rect scissor. Transparent windows keep the
         // depth-only format (their scarce ARGB fbconfigs must not gain
         // a stencil constraint).
-        .depth_format = g_transparent ? SAPP_PIXELFORMAT_DEPTH
-                                      : SAPP_PIXELFORMAT_DEPTH_STENCIL,
+        .depth_format = sh_depth_resolve(g_transparent),
         .swap_interval = g_rt_swap,
         .enable_clipboard = true,
         .enable_dragndrop = true,
