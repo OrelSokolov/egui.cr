@@ -56,14 +56,24 @@ Vulkan-опцией Linux-сборки: один и тот же проект с�
   скруглённые клипы деградируют до прямоугольного scissor (у попапов
   квадратные углы). Порт = MSL-source в `sg_shader_desc` (sokol_gfx
   умеет) или AIR в `backend/shaders/`.
-- Video NV12 fast-path: `SH_VIDEO` под Metal не определён →
-  `egui_cr_video_supported()=0` → examples/video уходит в CPU
-  copy-back (фолбэк встроен, Crystal-сторона не менялась).
 - GPU-сегмент EGUI_BENCH (GL_TIME_ELAPSED): недоступен, фиолетового
   бара нет. Metal-замена — GPUStart/GPUEnd у MTLCommandBuffer (sg не
   экспонирует command buffer).
 - VSync: swap_interval>1 делит display-link rate (2 = 30 FPS),
   untethered — через disable_display_sync, см. выше.
+
+## Видео (zero-copy, как у Vulkan-варианта)
+
+VideoToolbox-кадры идут без единой копии пикселей: декодер пишет в
+CVPixelBuffer (IOSurface), рендер оборачивает его плоскости в
+MTLTexture через `CVMetalTextureCache` (`sh_video_flush_mtl` в
+backend/sokol_shim.c) — sg-обёртки инжектируются через
+`sg_image_desc.mtl_textures`. Обёртки кэшируются по указателю буфера
+(пул поверхностей фиксирован), YUV→RGB — MSL-шейдер видеопайплайна
+(`SH_VIDEO_VS_MTL/FS_MTL`, рантайм-компиляция). Лестница фолбэков:
+mtl-zc → NV12/P010 plane upload (как GL) → sws copy-back;
+`EGUI_VIDEO_MTL=0` форсирует вторую ступень для тестов. Ключевая
+метрика HUD: `upd=0ms` (у GL-пути было 210–270 мс/с CPU на аплоаде).
 
 ## Критерий готовности (выполнен)
 

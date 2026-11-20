@@ -45,11 +45,22 @@
 
 #if defined(SOKOL_VULKAN)
 #define SH_VIDEO_ZC 1
+#elif defined(SOKOL_METAL) && defined(__APPLE__)
+#define SH_VIDEO_MTL 1
 #elif defined(SOKOL_GLCORE) && defined(__APPLE__)
 #define SH_VIDEO_NV12 1
 #endif
-#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_NV12)
+#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_MTL) || defined(SH_VIDEO_NV12)
 #define SH_VIDEO 1
+#endif
+#if defined(SH_VIDEO_NV12) || defined(SH_VIDEO_MTL)
+#define SH_VIDEO_UPLOAD 1 // CPU NV12/P010 plane upload fallback
+#endif
+#if defined(SH_VIDEO_MTL)
+// Zero-copy VideoToolbox→Metal: wrap the decoder's CVPixelBuffer planes
+// as MTLTextures through CVMetalTextureCache (no pixel copy).
+#include <CoreVideo/CVPixelBuffer.h>
+#include <CoreVideo/CVMetalTexture.h>
 #endif
 
 // Not on Android: there sokol_app owns the entry (ANativeActivity_onCreate
@@ -859,9 +870,9 @@ static int sh_run_direct(void);
 // SDF deferred-interleave state (defined with the SDF section below;
 // begin/end_pass and the sdf entry points drive it)
 static void sh_sdf_reset(void);
-#if defined(SH_VIDEO_NV12)
-// VideoToolbox plane flush (defined with the video section; called from
-// egui_cr_begin_pass — before it, in file order)
+#if defined(SH_VIDEO_UPLOAD)
+// VideoToolbox plane flush / Metal zero-copy wrap (defined with the video
+// section; called from egui_cr_begin_pass — before it, in file order)
 static void sh_video_flush(void);
 #endif
 static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
@@ -2196,9 +2207,10 @@ void egui_cr_begin_pass(int w, int h) {
     if (!sh_gl_ok()) return;
     if (g_pass_open) { sg_end_pass(); sg_commit(); g_pass_open = false; }
     sh_sdf_reset(); // deferred SDF batches from the abandoned frame die
-#if defined(SH_VIDEO_NV12)
-    // VideoToolbox plane upload — must run OUTSIDE a pass (sokol rule),
-    // newest frame per tick (VALIDATE_UPDIMG_ONCE). See sh_video_flush.
+#if defined(SH_VIDEO_UPLOAD)
+    // VideoToolbox plane upload / Metal zero-copy wrap — must run OUTSIDE
+    // a pass (sokol rule), newest frame per tick (VALIDATE_UPDIMG_ONCE).
+    // See sh_video_flush.
     sh_video_flush();
 #endif
     // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
@@ -3618,7 +3630,45 @@ static sg_pipeline g_video_pip;
 static sg_shader g_video_shd;
 static int g_video_state; // 0 not tried, 1 ready, -1 failed
 
-#if !defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO_MTL)
+// Metal: runtime-compiled MSL (sokol compiles source with the default
+// "_main" entry on Metal — see _sg_shader_desc_defaults). Buffer and
+// texture/sampler slots mirror the msl_*_n fields set in
+// sh_video_pipeline_ensure: VS mvp at buffer(0), FS colors at buffer(1),
+// Y at texture(0)/sampler(0), UV at texture(1)/sampler(1). The FS block
+// is four float4s — byte-identical to the CPU payload {cmat[12], range[4]}.
+static const char SH_VIDEO_VS_MTL[] =
+    "#include <metal_stdlib>\n"
+    "#include <simd/simd.h>\n"
+    "using namespace metal;\n"
+    "struct video_vs_t { float4x4 mvp; };\n"
+    "struct vs_in { float2 pos [[attribute(0)]];\n"
+    "              float2 uv [[attribute(1)]]; };\n"
+    "struct vs_out { float4 pos [[position]]; float2 uv; };\n"
+    "vertex vs_out _main(vs_in in [[stage_in]],\n"
+    "                    constant video_vs_t& vu [[buffer(0)]]) {\n"
+    "    vs_out o;\n"
+    "    o.uv = in.uv;\n"
+    "    o.pos = vu.mvp * float4(in.pos, 0.0, 1.0);\n"
+    "    return o;\n"
+    "}\n";
+
+static const char SH_VIDEO_FS_MTL[] =
+    "#include <metal_stdlib>\n"
+    "using namespace metal;\n"
+    "struct video_fs_t { float4 c0; float4 c1; float4 c2; float4 range; };\n"
+    "struct fs_in { float4 pos [[position]]; float2 uv; };\n"
+    "fragment float4 _main(fs_in in [[stage_in]],\n"
+    "    texture2d<float> y_tex [[texture(0)]], sampler y_smp [[sampler(0)]],\n"
+    "    texture2d<float> uv_tex [[texture(1)]], sampler uv_smp [[sampler(1)]],\n"
+    "    constant video_fs_t& fu [[buffer(1)]]) {\n"
+    "    float y = y_tex.sample(y_smp, in.uv).r * fu.range.x + fu.range.y;\n"
+    "    float2 uv = uv_tex.sample(uv_smp, in.uv).rg * fu.range.z + fu.range.w;\n"
+    "    float3x3 cmat = float3x3(fu.c0.xyz, fu.c1.xyz, fu.c2.xyz);\n"
+    "    float3 rgb = cmat * float3(y, uv.x, uv.y);\n"
+    "    return float4(clamp(rgb, 0.0, 1.0), 1.0);\n"
+    "}\n";
+#elif !defined(SOKOL_VULKAN)
 static const char SH_VIDEO_VS[] =
 #if defined(SOKOL_GLCORE)
     "#version 410\n"
@@ -3634,7 +3684,6 @@ static const char SH_VIDEO_VS[] =
     "layout(location = 1) in vec2 uv0;\n"
     "layout(location = 0) out vec2 v_uv;\n"
     "void main() { v_uv = uv0; gl_Position = mvp * vec4(pos, 0.0, 1.0); }\n";
-
 static const char SH_VIDEO_FS[] =
 #if defined(SOKOL_GLCORE)
     "#version 410\n"
@@ -3695,20 +3744,31 @@ static void sh_video_pipeline_ensure(void) {
         sd.views[i].texture.image_type = SG_IMAGETYPE_2D;
         sd.views[i].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
         sd.views[i].texture.spirv_set1_binding_n = (uint8_t)i;
+        sd.views[i].texture.msl_texture_n = (uint8_t)i;
         sd.samplers[i].stage = SG_SHADERSTAGE_FRAGMENT;
         sd.samplers[i].sampler_type = SG_SAMPLERTYPE_FILTERING;
         sd.samplers[i].spirv_set1_binding_n = (uint8_t)(32 + i);
+        sd.samplers[i].msl_sampler_n = (uint8_t)i;
         sd.texture_sampler_pairs[i].stage = SG_SHADERSTAGE_FRAGMENT;
         sd.texture_sampler_pairs[i].view_slot = i;
         sd.texture_sampler_pairs[i].sampler_slot = i;
         sd.texture_sampler_pairs[i].glsl_name =
             i == 0 ? "y_smp" : "uv_smp";
     }
+#if defined(SH_VIDEO_MTL)
+    // MSL bind slots (see SH_VIDEO_VS_MTL/FS_MTL): VS block at buffer(0),
+    // FS block at buffer(1); the texture/sampler slots are set above.
+    sd.uniform_blocks[0].msl_buffer_n = 0;
+    sd.uniform_blocks[1].msl_buffer_n = 1;
+#endif
 #if defined(SOKOL_VULKAN)
     sd.vertex_func.bytecode.ptr = sh_video_vs_spv;
     sd.vertex_func.bytecode.size = sh_video_vs_spv_len;
     sd.fragment_func.bytecode.ptr = sh_video_fs_spv;
     sd.fragment_func.bytecode.size = sh_video_fs_spv_len;
+#elif defined(SH_VIDEO_MTL)
+    sd.vertex_func.source = SH_VIDEO_VS_MTL;
+    sd.fragment_func.source = SH_VIDEO_FS_MTL;
 #else
     sd.vertex_func.source = SH_VIDEO_VS;
     sd.fragment_func.source = SH_VIDEO_FS;
@@ -3766,7 +3826,7 @@ static void sh_video_pipeline_ensure(void) {
 
 #define SH_VIDEO_MAX 8
 
-#if defined(SH_VIDEO_NV12)
+#if defined(SH_VIDEO_UPLOAD)
 // Pending-frame header; the packed planes (Y then UV) follow in the
 // same malloc. Newest wins — the flush picks up whatever the A side
 // pushed last (the mailbox coalescing of the detached path).
@@ -3799,6 +3859,24 @@ typedef struct {
 } sh_video_import_t;
 #endif
 
+#if defined(SH_VIDEO_MTL)
+// import-once-per-surface cache (the VideoToolbox twin of the dmabuf
+// inode cache): the decoder cycles a small pool of CVPixelBuffers, so
+// the SAME buffer pointer keeps coming back. First sight wraps its two
+// IOSurface planes through CVMetalTextureCache into MTLTextures
+// (NO copy — the texture points at the decoder's IOSurface memory);
+// later frames reuse the wrap. The CVMetalTextureRef pins both the
+// MTLTexture and the IOSurface; the CFRetain on the buffer keeps the
+// decoder from recycling the surface under the sampler (the Linux
+// tearing lesson). 32 slots cover the whole surface working set.
+#define SH_VIDEO_CACHE 32
+typedef struct {
+    const void* cvb;              // CVPixelBufferRef identity, 0 = empty
+    CVMetalTextureRef y_cv, uv_cv;
+    sg_image y_sg, uv_sg;         // sg wrappers (mtl_textures injected)
+} sh_video_import_t;
+#endif
+
 #ifdef SH_VIDEO
 typedef struct {
     uint32_t id;
@@ -3807,6 +3885,18 @@ typedef struct {
     sh_video_import_t cur;    // what the draw samples right now
     sh_video_import_t cache[SH_VIDEO_CACHE];
     int cache_next;           // round-robin eviction
+    #elif defined(SH_VIDEO_MTL)
+    CVMetalTextureCacheRef cv_cache; // one per device, lazy
+    sh_video_import_t cur;    // what the draw samples right now
+    sh_video_import_t cache[SH_VIDEO_CACHE];
+    int cache_next;           // round-robin eviction
+    const void* pend_cvb;     // newest pending CVPixelBuffer (CFRetain'd)
+    float pend_cmat[12];      // its colorimetry (applied on wrap)
+    float pend_range[4];
+    // NV12-upload fallback (see #vt_frame): same fields as the GL path
+    sg_image y, uv;           // CPU-uploaded planes (R8/RG8, R16/RG16)
+    int tenbit;
+    sh_video_nv12_t* pend;    // newest not-yet-uploaded frame
     #else
     sg_image y, uv;           // CPU-uploaded planes (R8/RG8, R16/RG16)
     int tenbit;
@@ -4182,9 +4272,33 @@ static void sh_video_entry_destroy(sh_video_t* v) {
 
 #endif // SOKOL_VULKAN
 
-#if defined(SH_VIDEO_NV12)
-// GL entry teardown: destroy the plane images, drop the pending frame.
+#if defined(SH_VIDEO_UPLOAD)
+// GL/Metal entry teardown: destroy the plane images, drop the pending
+// frame; on Metal also the zero-copy wraps (their CFRetains pin decoder
+// surfaces — see sh_video_flush_mtl).
 static void sh_video_entry_destroy(sh_video_t* v) {
+#if defined(SH_VIDEO_MTL)
+    for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+        sh_video_import_t* c = &v->cache[i];
+        if (!c->cvb) continue;
+        sg_destroy_image(c->y_sg); // deferred release = the pool's ONLY
+        sg_destroy_image(c->uv_sg); // ref (see the retain note in flush)
+        CFRelease(c->y_cv); // pins the IOSurface planes
+        CFRelease(c->uv_cv);
+        CFRelease(c->cvb);  // unpins the decoder surface
+        c->cvb = NULL;
+    }
+    memset(&v->cur, 0, sizeof v->cur);
+    if (v->cv_cache) {
+        CVMetalTextureCacheFlush(v->cv_cache, 0);
+        CFRelease(v->cv_cache);
+        v->cv_cache = NULL;
+    }
+    if (v->pend_cvb) {
+        CFRelease(v->pend_cvb);
+        v->pend_cvb = NULL;
+    }
+#endif
     if (v->y.id) sg_destroy_image(v->y);
     if (v->uv.id) sg_destroy_image(v->uv);
     v->y = (sg_image){0};
@@ -4195,69 +4309,239 @@ static void sh_video_entry_destroy(sh_video_t* v) {
     v->id = 0;
 }
 
-// Flush the newest pending NV12/P010 frame into the plane images.
+#if defined(SH_VIDEO_MTL)
+// Zero-copy flush of the newest pending CVPixelBuffer: wrap both planes
+// through the shared CVMetalTextureCache — the MTLTextures point at the
+// decoder's IOSurface, no pixel copy. Wraps are cached per buffer
+// pointer (the decoder cycles a fixed surface pool), so only the first
+// frame per surface pays; every other frame is two pointer compares.
+static void sh_video_flush_mtl(sh_video_t* v) {
+    if (!v->pend_cvb) return;
+    CVPixelBufferRef cvb = (CVPixelBufferRef)v->pend_cvb;
+    v->pend_cvb = NULL;
+
+    sh_video_import_t* hit = NULL;
+    for (int i = 0; i < SH_VIDEO_CACHE; i++)
+        if (v->cache[i].cvb == cvb) { hit = &v->cache[i]; break; }
+
+    if (!hit) {
+        int w = (int)CVPixelBufferGetWidth(cvb);
+        int h = (int)CVPixelBufferGetHeight(cvb);
+        // 'P010' vs '420v'/'420f' — the pixel format picks the plane
+        // texture formats (and the R8/RG8 vs R16/RG16 sg wrappers)
+        int tenbit = CVPixelBufferGetPixelFormatType(cvb) ==
+                     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+        if (!v->cv_cache &&
+            CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL,
+                                      _sg.mtl.device, NULL,
+                                      &v->cv_cache) != kCVReturnSuccess) {
+            v->cv_cache = NULL;
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[video] CVMetalTextureCacheCreate failed\n");
+            g_video_fail = 1;
+            CFRelease(cvb);
+            return;
+        }
+        CVMetalTextureRef y_cv = NULL, uv_cv = NULL;
+        CVReturn rc = CVMetalTextureCacheCreateTextureFromImage(
+            kCFAllocatorDefault, v->cv_cache, cvb, NULL,
+            tenbit ? MTLPixelFormatR16Unorm : MTLPixelFormatR8Unorm,
+            w, h, 0, &y_cv);
+        if (rc == kCVReturnSuccess)
+            rc = CVMetalTextureCacheCreateTextureFromImage(
+                kCFAllocatorDefault, v->cv_cache, cvb, NULL,
+                tenbit ? MTLPixelFormatRG16Unorm : MTLPixelFormatRG8Unorm,
+                (w + 1) / 2, (h + 1) / 2, 1, &uv_cv);
+        id<MTLTexture> y_tex = y_cv ? CVMetalTextureGetTexture(y_cv) : nil;
+        id<MTLTexture> uv_tex = uv_cv ? CVMetalTextureGetTexture(uv_cv) : nil;
+        if (rc != kCVReturnSuccess || !y_tex || !uv_tex) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[video] cv wrap failed rc=%d\n", (int)rc);
+            if (y_cv) CFRelease(y_cv);
+            if (uv_cv) CFRelease(uv_cv);
+            g_video_fail = 1;
+            CFRelease(cvb);
+            return;
+        }
+        // MRC ownership: retain once and treat that +1 as TRANSFERRED to
+        // sg — its injected-image path is pool-assign(+1) then
+        // release(-1), so our retain is exactly the reference the pool
+        // ends up owning (the GetTexture return alone owns nothing).
+        // sg_destroy_image's deferred release is then the ONLY release:
+        // keeping a second pin of our own over-releases at eviction
+        // (the wrap-43 crash). y_cv/uv_cv stay for the IOSurface pin.
+        [y_tex retain];
+        [uv_tex retain];
+        // sg wrappers inject the SAME MTLTexture into every inflight slot
+        // — an immutable external wrap, no dynamic_update, no data. The
+        // texture outlives the wrapper only while y_cv/uv_cv pin it (the
+        // pool's retain is its ONLY reference — see _sg_mtl_create_image).
+        sg_image_desc idesc;
+        memset(&idesc, 0, sizeof idesc);
+        idesc.width = w;
+        idesc.height = h;
+        idesc.pixel_format = tenbit ? SG_PIXELFORMAT_R16
+                                    : SG_PIXELFORMAT_R8;
+        idesc.label = "egui-cr-video-y";
+        for (int s = 0; s < SG_NUM_INFLIGHT_FRAMES; s++)
+            idesc.mtl_textures[s] = (__bridge const void*)y_tex;
+        sg_image y_sg = sg_make_image(&idesc);
+        idesc.width = (w + 1) / 2;
+        idesc.height = (h + 1) / 2;
+        idesc.pixel_format = tenbit ? SG_PIXELFORMAT_RG16
+                                    : SG_PIXELFORMAT_RG8;
+        idesc.label = "egui-cr-video-uv";
+        for (int s = 0; s < SG_NUM_INFLIGHT_FRAMES; s++)
+            idesc.mtl_textures[s] = (__bridge const void*)uv_tex;
+        sg_image uv_sg = sg_make_image(&idesc);
+        if (!y_sg.id || !uv_sg.id) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[video] sg wrap failed %dx%d\n", w, h);
+            if (y_sg.id) sg_destroy_image(y_sg);
+            if (uv_sg.id) sg_destroy_image(uv_sg);
+            CFRelease(y_cv);
+            CFRelease(uv_cv);
+            g_video_fail = 1;
+            CFRelease(cvb);
+            return;
+        }
+
+        // slot: first empty, else round-robin (never the current one)
+        sh_video_import_t* slot = NULL;
+        for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+            if (v->cache[i].cvb == NULL) { slot = &v->cache[i]; break; }
+        }
+        while (!slot) {
+            sh_video_import_t* cand = &v->cache[v->cache_next %
+                                                SH_VIDEO_CACHE];
+            v->cache_next++;
+            if (cand->cvb == NULL) { slot = cand; break; }
+            if (cand->cvb == v->cur.cvb) continue; // live on screen
+            sg_destroy_image(cand->y_sg); // deferred release = the pool's
+            sg_destroy_image(cand->uv_sg); // ONLY ref (see retain note)
+            CFRelease(cand->y_cv);
+            CFRelease(cand->uv_cv);
+            CFRelease(cand->cvb);
+            slot = cand;
+            break;
+        }
+        if (!slot) { // cache fully pinned (pathological) — drop the wrap
+            sg_destroy_image(y_sg);
+            sg_destroy_image(uv_sg);
+            CFRelease(y_cv);
+            CFRelease(uv_cv);
+            g_video_fail = 1;
+            CFRelease(cvb);
+            return;
+        }
+        // the pending CFRetain transfers into the slot (identity key)
+        slot->cvb = cvb;
+        slot->y_cv = y_cv;
+        slot->uv_cv = uv_cv;
+        slot->y_sg = y_sg;
+        slot->uv_sg = uv_sg;
+        hit = slot;
+        v->w = w;
+        v->h = h;
+    } else {
+        // already wrapped — the cache slot holds its own retain
+        CFRelease(cvb);
+    }
+
+    v->cur = *hit; // struct copy — the draw samples these
+    memcpy(v->cmat, v->pend_cmat, sizeof v->cmat);
+    memcpy(v->range, v->pend_range, sizeof v->range);
+}
+#endif // SH_VIDEO_MTL
+
+// Flush the newest pending NV12/P010 frame into the plane images (the
+// Metal upload FALLBACK — see sh_video_flush_mtl for the fast path).
+static void sh_video_flush_upload(sh_video_t* v) {
+    sh_video_nv12_t* f = v->pend;
+    if (!f) return;
+    v->pend = NULL;
+#if defined(SH_VIDEO_MTL)
+    // Fallback won: stop sampling the stale zero-copy wrap and drop the
+    // whole import cache — its CFRetains would pin the decoder's surface
+    // pool against recycling for as long as the entry lives.
+    memset(&v->cur, 0, sizeof v->cur);
+    for (int i = 0; i < SH_VIDEO_CACHE; i++) {
+        sh_video_import_t* c = &v->cache[i];
+        if (!c->cvb) continue;
+        sg_destroy_image(c->y_sg);
+        sg_destroy_image(c->uv_sg);
+        CFRelease(c->y_cv);
+        CFRelease(c->uv_cv);
+        CFRelease(c->cvb);
+        c->cvb = NULL;
+    }
+#endif
+    int bpp = f->tenbit ? 2 : 1;
+    int uvh = (f->h + 1) / 2;
+    if (v->y.id == 0 || v->w != f->w || v->h != f->h ||
+        v->tenbit != f->tenbit) {
+        if (v->y.id) sg_destroy_image(v->y);
+        if (v->uv.id) sg_destroy_image(v->uv);
+        v->y = sg_make_image(&(sg_image_desc){
+            .width = f->w, .height = f->h,
+            .pixel_format = f->tenbit ? SG_PIXELFORMAT_R16
+                                      : SG_PIXELFORMAT_R8,
+            .usage = {.dynamic_update = true},
+            .label = "egui-cr-video-y"});
+        v->uv = sg_make_image(&(sg_image_desc){
+            .width = (f->w + 1) / 2, .height = uvh,
+            .pixel_format = f->tenbit ? SG_PIXELFORMAT_RG16
+                                      : SG_PIXELFORMAT_RG8,
+            .usage = {.dynamic_update = true},
+            .label = "egui-cr-video-uv"});
+        if (!v->y.id || !v->uv.id) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr,
+                        "[video] plane image creation failed %dx%d\n",
+                        f->w, f->h);
+            g_video_fail = 1;
+            free(f);
+            return;
+        }
+        v->w = f->w;
+        v->h = f->h;
+        v->tenbit = f->tenbit;
+    }
+    const unsigned char* ypx = (const unsigned char*)(f + 1);
+    const unsigned char* uvpx = ypx + (size_t)f->w * f->h * bpp;
+    sg_image_data d;
+    memset(&d, 0, sizeof d);
+    d.mip_levels[0].ptr = ypx;
+    d.mip_levels[0].size = (size_t)f->w * f->h * bpp;
+    sg_update_image(v->y, &d);
+    d.mip_levels[0].ptr = uvpx;
+    d.mip_levels[0].size =
+        (size_t)((f->w + 1) / 2) * uvh * 2 * bpp; // RG8/RG16: 2 B/sample
+    sg_update_image(v->uv, &d);
+    // _sg_gl_update_image rebinds textures behind the state cache's
+    // back (see sh_tex_upload) — reset it or the next draw samples a
+    // stale slot. (Harmless no-op-ish on Metal.)
+    sg_reset_state_cache();
+    memcpy(v->cmat, f->cmat, sizeof v->cmat);
+    memcpy(v->range, f->range, sizeof v->range);
+    free(f);
+}
+
 // Runs in egui_cr_begin_pass BEFORE the sg pass opens (sokol allows
 // sg_update_image only between passes, at most once per image and
-// frame — the pending slot above is the coalescing that guarantees
-// both on the direct path).
+// frame — the pending slots are the coalescing that guarantees both on
+// the direct path). Metal tries the zero-copy wrap first, then the CPU
+// upload fallback; GL uploads directly.
 static void sh_video_flush(void) {
     for (int i = 0; i < SH_VIDEO_MAX; i++) {
         sh_video_t* v = &g_video_tab[i];
-        sh_video_nv12_t* f = v->pend;
-        if (!f) continue;
-        v->pend = NULL;
-        int bpp = f->tenbit ? 2 : 1;
-        int uvh = (f->h + 1) / 2;
-        if (v->y.id == 0 || v->w != f->w || v->h != f->h ||
-            v->tenbit != f->tenbit) {
-            if (v->y.id) sg_destroy_image(v->y);
-            if (v->uv.id) sg_destroy_image(v->uv);
-            v->y = sg_make_image(&(sg_image_desc){
-                .width = f->w, .height = f->h,
-                .pixel_format = f->tenbit ? SG_PIXELFORMAT_R16
-                                          : SG_PIXELFORMAT_R8,
-                .usage = {.dynamic_update = true},
-                .label = "egui-cr-video-y"});
-            v->uv = sg_make_image(&(sg_image_desc){
-                .width = (f->w + 1) / 2, .height = uvh,
-                .pixel_format = f->tenbit ? SG_PIXELFORMAT_RG16
-                                          : SG_PIXELFORMAT_RG8,
-                .usage = {.dynamic_update = true},
-                .label = "egui-cr-video-uv"});
-            if (!v->y.id || !v->uv.id) {
-                if (getenv("EGUI_VIDEO_DEBUG"))
-                    fprintf(stderr,
-                            "[video] plane image creation failed %dx%d\n",
-                            f->w, f->h);
-                g_video_fail = 1;
-                free(f);
-                continue;
-            }
-            v->w = f->w;
-            v->h = f->h;
-            v->tenbit = f->tenbit;
-        }
-        const unsigned char* ypx = (const unsigned char*)(f + 1);
-        const unsigned char* uvpx = ypx + (size_t)f->w * f->h * bpp;
-        sg_image_data d;
-        memset(&d, 0, sizeof d);
-        d.mip_levels[0].ptr = ypx;
-        d.mip_levels[0].size = (size_t)f->w * f->h * bpp;
-        sg_update_image(v->y, &d);
-        d.mip_levels[0].ptr = uvpx;
-        d.mip_levels[0].size =
-            (size_t)((f->w + 1) / 2) * uvh * 2 * bpp; // RG8/RG16: 2 B/sample
-        sg_update_image(v->uv, &d);
-        // _sg_gl_update_image rebinds textures behind the state cache's
-        // back (see sh_tex_upload) — reset it or the next draw samples a
-        // stale slot.
-        sg_reset_state_cache();
-        memcpy(v->cmat, f->cmat, sizeof v->cmat);
-        memcpy(v->range, f->range, sizeof v->range);
-        free(f);
+#if defined(SH_VIDEO_MTL)
+        sh_video_flush_mtl(v);
+#endif
+        sh_video_flush_upload(v);
     }
 }
-#endif // SH_VIDEO_NV12
+#endif // SH_VIDEO_UPLOAD
 // Extend the instance-append ring to exactly `cap` slots, creating only
 // the new buffers; `g_sdf_ring_next` stays put. Called from sh_draw_sdf
 // when every existing slot is full for this frame, after sh_sdf_ensure,
@@ -4546,6 +4830,11 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     sh_video_t* v = sh_video_find(s->view);
 #if defined(SH_VIDEO_ZC)
     if (!v || !v->cur.y_sg.id || !v->cur.uv_sg.id) return;
+#elif defined(SH_VIDEO_MTL)
+    // zero-copy wraps while live; after a fallback the cleared cur hands
+    // the draw to the upload planes (see the bindings below)
+    if (!v) return;
+    if (!v->cur.y_sg.id && (!v->y.id || !v->uv.id)) return;
 #else
     if (!v || !v->y.id || !v->uv.id) return;
 #endif
@@ -4605,6 +4894,20 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
         .texture = {.image = v->cur.y_sg}, .label = "egui-cr-video-y-view"});
     b.views[1] = sg_make_view(&(sg_view_desc){
         .texture = {.image = v->cur.uv_sg}, .label = "egui-cr-video-uv-view"});
+#elif defined(SH_VIDEO_MTL)
+    // zero-copy wrap while live; the upload fallback clears cur (see
+    // sh_video_flush_upload) and samples the CPU planes instead
+    if (v->cur.y_sg.id) {
+        b.views[0] = sg_make_view(&(sg_view_desc){
+            .texture = {.image = v->cur.y_sg}, .label = "egui-cr-video-y-view"});
+        b.views[1] = sg_make_view(&(sg_view_desc){
+            .texture = {.image = v->cur.uv_sg}, .label = "egui-cr-video-uv-view"});
+    } else {
+        b.views[0] = sg_make_view(&(sg_view_desc){
+            .texture = {.image = v->y}, .label = "egui-cr-video-y-view"});
+        b.views[1] = sg_make_view(&(sg_view_desc){
+            .texture = {.image = v->uv}, .label = "egui-cr-video-uv-view"});
+    }
 #else
     b.views[0] = sg_make_view(&(sg_view_desc){
         .texture = {.image = v->y}, .label = "egui-cr-video-y-view"});
@@ -4664,6 +4967,8 @@ int egui_cr_video_supported(void) {
                  strstr(props.deviceName, "lavapipe") ? 0 : 1;
     }
     return cached;
+#elif defined(SH_VIDEO_MTL)
+    return 1; // CVMetalTextureCache wrap works wherever Metal does
 #elif defined(SH_VIDEO_NV12)
     return 1; // plane upload works everywhere GL does
 #else
@@ -4746,7 +5051,7 @@ void egui_cr_video_destroy(uint32_t id) {
 #if defined(SH_VIDEO_ZC)
     if (!sh_run_direct())
         sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
-#elif defined(SH_VIDEO_NV12)
+#elif defined(SH_VIDEO_UPLOAD)
     sh_video_t* v = sh_video_find(id);
     if (v) sh_video_entry_destroy(v);
 #endif
@@ -4761,7 +5066,7 @@ void egui_cr_video_frame_nv12(uint32_t id, int w, int h,
                               const void* uv, int uv_stride,
                               int tenbit, const float* cmat,
                               const float* range) {
-#if defined(SH_VIDEO_NV12)
+#if defined(SH_VIDEO_UPLOAD)
     if (w <= 0 || h <= 0 || !y || !uv || y_stride <= 0 || uv_stride <= 0)
         return;
     sh_video_t* v = sh_video_find(id);
@@ -4801,6 +5106,60 @@ void egui_cr_video_frame_nv12(uint32_t id, int w, int h,
 #else
     (void)id; (void)w; (void)h; (void)y; (void)y_stride;
     (void)uv; (void)uv_stride; (void)tenbit; (void)cmat; (void)range;
+#endif
+}
+
+// Metal zero-copy availability: 1 when frames can ride as CVPixelBuffers
+// (egui_cr_video_frame_cvpixelbuffer). video_supported() alone cannot
+// tell the player WHICH fast path to pick on macOS.
+int egui_cr_video_zc_supported(void) {
+#if defined(SH_VIDEO_MTL)
+    return 1;
+#else
+    return 0;
+#endif
+}
+
+// Clear the failure latch after a controlled downgrade (Metal: zc →
+// plane upload) so the fallback path starts with a clean slate. A real
+// failure on the fallback re-sets it and the player drops to sws.
+void egui_cr_video_clear_fail(void) {
+#if defined(SH_VIDEO)
+    g_video_fail = 0;
+#endif
+}
+
+// Queue one decoded VideoToolbox frame for the Metal zero-copy path
+// (macOS direct): retain the CVPixelBuffer into the entry's pending
+// slot; the flush at the next begin_pass wraps its IOSurface planes as
+// MTLTextures. w/h/tenbit are advisory only — the flush derives them
+// from the buffer itself (its pixel format is authoritative for P010).
+// Newest frame wins; the flush's import cache keeps one retain per
+// surface, so the decoder never recycles a buffer the sampler reads.
+void egui_cr_video_frame_cvpixelbuffer(uint32_t id, const void* cvb,
+                                       int w, int h, int tenbit,
+                                       const float* cmat,
+                                       const float* range) {
+#if defined(SH_VIDEO_MTL)
+    (void)w; (void)h; (void)tenbit; // derived from the buffer in flush
+    if (!cvb || !cmat || !range) return;
+    sh_video_t* v = sh_video_find(id);
+    if (!v) {
+        for (int i = 0; i < SH_VIDEO_MAX; i++) {
+            if (g_video_tab[i].id == 0) { v = &g_video_tab[i]; break; }
+        }
+        if (!v) return;
+        memset(v, 0, sizeof *v);
+        v->id = id;
+    }
+    if (v->pend_cvb) CFRelease(v->pend_cvb); // superseded — newest wins
+    v->pend_cvb = cvb; // transfers the caller's retain semantics: add one
+    CFRetain(v->pend_cvb);
+    memcpy(v->pend_cmat, cmat, sizeof v->pend_cmat);
+    memcpy(v->pend_range, range, sizeof v->pend_range);
+#else
+    (void)id; (void)cvb; (void)w; (void)h; (void)tenbit;
+    (void)cmat; (void)range;
 #endif
 }
 
@@ -7768,7 +8127,7 @@ void egui_cr_pkt_video(float x, float y, float w, float h,
                        sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
                        sh_f2u(ch), vid };
     sh_push_words(o, 10);
-#elif defined(SH_VIDEO_NV12)
+#elif defined(SH_VIDEO_NV12) || defined(SH_VIDEO_MTL)
     sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch, vid);
 #else
     (void)x; (void)y; (void)w; (void)h;

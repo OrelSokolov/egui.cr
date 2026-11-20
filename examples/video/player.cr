@@ -282,14 +282,22 @@ class VideoPlayer
     if hw && (darwin ? !@@nv12_dead : !@@zc_dead) &&
        LibEguiCr.video_supported != 0 && ENV["EGUI_VIDEO_ZC"]? != "0"
       if darwin
-        # macOS fast path: VideoToolbox decode, copy-back NV12/P010, GPU
-        # YUV→RGB through the video quad pipeline (see #vt_frame). No
-        # fixed pool, no exports — VideoToolbox owns its surfaces and
-        # av_hwframe_transfer_data is the per-frame barrier.
-        @nv12 = true
+        # macOS fast path. Metal first: VideoToolbox decodes straight into
+        # CVPixelBuffers whose IOSurface planes the shim wraps as
+        # MTLTextures — no transfer, no copy (see #vt_zc_frame). The GL
+        # fallback (and the Metal upload fallback after a mid-session
+        # wrap failure) keeps the copy-back NV12/P010 model (see
+        # #vt_frame): av_hwframe_transfer_data is the per-frame barrier.
+        if LibEguiCr.video_zc_supported != 0 && !@@mtl_dead &&
+           ENV["EGUI_VIDEO_MTL"]? != "0"
+          @mtl_zc = true
+          STDERR.puts("video: fast path (Metal zero-copy)") if ENV["EGUI_VIDEO_DEBUG"]?
+        else
+          @nv12 = true
+          STDERR.puts("video: fast path (VideoToolbox + GPU YUV)") if ENV["EGUI_VIDEO_DEBUG"]?
+        end
         @video_id = LibEguiCr.video_create
         @video_texture_id = @video_id.to_u64
-        STDERR.puts("video: fast path (VideoToolbox + GPU YUV)") if ENV["EGUI_VIDEO_DEBUG"]?
       elsif (dev = @hw_device)
         # The pool must match what the DECODER will output: probe it by
         # decoding one frame (see #probe_hw_params) — a wrong sw_format
@@ -358,8 +366,9 @@ class VideoPlayer
     avg = st.value.avg_frame_rate
     @frame_dur = avg.den > 0 && avg.num > 0 ? avg.den.to_f64 / avg.num : 1.0 / 30.0
 
-    unless @zc || @nv12 # fast paths own no CPU pixels — the copy-back
-                        # texture materializes lazily on fallback
+    unless @zc || @nv12 || @mtl_zc # fast paths own no CPU pixels — the
+                                  # copy-back texture materializes lazily
+                                  # on fallback
       @rgba = Bytes.new(@width * @height * 4)
       @texture_id = @ctx.textures.create_stream(@width, @height)
       if @texture_id.zero?
@@ -507,6 +516,7 @@ class VideoPlayer
     close_audio
     zc_disable
     nv12_disable
+    mtl_teardown
     if (f = @zc_frames)
       fp = f
       LibFF.av_buffer_unref(pointerof(fp))
@@ -692,7 +702,7 @@ class VideoPlayer
                  File.symlink?("/proc/self/fd/#{last_dup}") ? 1 : 0
       hwstat = if @hw_transfer
                  size = @lad[@li]? || 0
-                 zc = @zc ? "zc " : @nv12 ? "nv12 " : ""
+                 zc = @zc ? "zc " : @mtl_zc ? "mtl-zc " : @nv12 ? "nv12 " : ""
                  locked = @adapt_locked ? "=" : "~"
                  pool = if @zc
                          pm = @zc_pool_match
@@ -1193,6 +1203,7 @@ class VideoPlayer
   # failures).
   @zc : Bool = false
   @nv12 : Bool = false          # macOS fast path (VideoToolbox + GPU YUV)
+  @mtl_zc : Bool = false        # macOS Metal: CVPixelBuffer zero-copy wrap
   @video_id : UInt32 = 0_u32
   getter video_texture_id : UInt64 = 0_u64
   @zc_frames : UInt8*? = nil      # OUR fixed VA surface pool
@@ -1217,6 +1228,9 @@ class VideoPlayer
   # same latch for the macOS plane-upload path (a failed plane-image
   # creation stays failed for the process lifetime)
   @@nv12_dead = false
+  # same latch for the macOS Metal zero-copy wrap (CVMetalTextureCache
+  # failure stays failed — downgrade ladder: mtl-zc → nv12 upload → sws)
+  @@mtl_dead = false
   @@dbg_n : Int32 = 0
   @@zc_sync_ms : Float64 = 0.0 # vaSyncSurface time (diagnostics)
   @@zc_sync_n : Int32 = 0
@@ -1525,6 +1539,81 @@ class VideoPlayer
     true
   end
 
+  # Metal zero-copy teardown: drop the wrap entry (its CFRetains pin the
+  # decoder surfaces) and, mid-session, hand the session to the NV12
+  # upload path (a FRESH entry — the failed one stays poisoned on the C
+  # side). The failure latch is cleared after reading so the fallback
+  # starts clean; a real upload failure re-sets it and nv12_disable
+  # drops to sws. Ladder: mtl-zc → nv12 upload → sws copy-back.
+  private def mtl_teardown : Nil
+    return unless @mtl_zc
+    @@mtl_dead = true if LibEguiCr.video_failed != 0
+    @mtl_zc = false
+    @video_texture_id = 0_u64
+    unless @video_id.zero?
+      LibEguiCr.video_destroy(@video_id)
+      @video_id = 0_u32
+    end
+    LibEguiCr.video_clear_fail
+  end
+
+  private def mtl_fallback : Nil
+    mtl_teardown
+    return if @@nv12_dead
+    @nv12 = true
+    @video_id = LibEguiCr.video_create
+    @video_texture_id = @video_id.to_u64
+  end
+
+  # One hw frame → CVPixelBuffer → Metal, zero-copy (macOS/Metal fast
+  # path). VideoToolbox decoded straight into the IOSurface; the shim's
+  # flush wraps its planes as MTLTextures via CVMetalTextureCache — no
+  # av_hwframe_transfer_data, no CPU pixel traffic. The C side takes its
+  # own CFRetain synchronously, so the surface may return to the decode
+  # pool as soon as the call returns. False = failure (caller's ladder
+  # downgrades to the nv12 upload path).
+  private def vt_zc_frame(frame : LibFF::AVFrame*) : Bool
+    if LibEguiCr.video_failed != 0 || frame.value.data[3].null?
+      mtl_fallback
+      LibFF.av_frame_unref(frame)
+      return false
+    end
+    pts0 = frame.value.pts
+    pts0 = frame.value.best_effort_timestamp if pts0 == LibFF::NOPTS || pts0 < 0
+    # 10-bit hint for the colorimetry offsets: the frame pool's
+    # sw_format is p010le exactly when the surfaces carry 10-bit planes
+    # (the C side re-derives it from the buffer's pixel format anyway)
+    tenbit = false
+    unless frame.value.hw_frames_ctx.null?
+      if (fc = LibVideoPool.ref_data(frame.value.hw_frames_ctx))
+        tenbit = fc.as(LibFF::AVHWFramesContext*).value.sw_format == @@p010_fmt
+      end
+    end
+    compute_colorimetry(@codec_ctx.not_nil!, tenbit)
+    w = frame.value.width
+    h = frame.value.height
+    LibEguiCr.video_frame_cvpixelbuffer(@video_id, frame.value.data[3],
+                                        w, h,
+                                        tenbit ? 1 : 0,
+                                        @zc_cmat.not_nil!.to_unsafe,
+                                        @zc_range.not_nil!.to_unsafe)
+    LibFF.av_frame_unref(frame) # the C-side CFRetain keeps the surface
+    @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
+    @display_pts = @shown_pts
+    @next_pts = @shown_pts + @frame_dur
+    @width = w
+    @height = h
+    @frame_count += 1
+    @fps_frames += 1
+    if @fps_frames == 1
+      @fps_wall = now_sec
+    elsif (dt = now_sec - @fps_wall) >= 1.0
+      @decode_fps = @fps_frames / dt
+      @fps_frames = 0
+    end
+    true
+  end
+
   private def maybe_transfer(frame : LibFF::AVFrame*) : LibFF::AVFrame*?
     return frame unless @hw_transfer
     # the scale_vaapi graph is VAAPI-only (Linux); VideoToolbox frames
@@ -1600,11 +1689,12 @@ class VideoPlayer
       code = LibFF.avcodec_receive_frame(cctx, frame)
       if code == 0
         t0 = Time.instant
-        if (@zc || @nv12) && @hw_transfer && frame.value.format == @@hw_pix_fmt
-          ok = @zc ? zc_frame(frame) : vt_frame(frame)
+        if (@zc || @nv12 || @mtl_zc) && @hw_transfer && frame.value.format == @@hw_pix_fmt
+          ok = @zc ? zc_frame(frame) : @mtl_zc ? vt_zc_frame(frame) : vt_frame(frame)
           if !ok && LibEguiCr.video_failed != 0
             zc_disable if @zc
             nv12_disable if @nv12
+            mtl_teardown if @mtl_zc
             return false
           end
           adapt_tick((Time.instant - t0).total_milliseconds) if @hw_transfer

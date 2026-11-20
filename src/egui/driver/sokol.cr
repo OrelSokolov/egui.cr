@@ -353,6 +353,13 @@ lib LibEguiCr
   fun video_frame_nv12 = egui_cr_video_frame_nv12(id : UInt32, w : Int32,
     h : Int32, y : UInt8*, y_stride : Int32, uv : UInt8*, uv_stride : Int32,
     tenbit : Int32, cmat : Float32*, range : Float32*)
+  # macOS Metal fast path (shim section): CVPixelBuffer IOSurface planes
+  # wrapped zero-copy as MTLTextures via CVMetalTextureCache
+  fun video_zc_supported = egui_cr_video_zc_supported : Int32
+  fun video_clear_fail = egui_cr_video_clear_fail
+  fun video_frame_cvpixelbuffer = egui_cr_video_frame_cvpixelbuffer(
+    id : UInt32, cvb : Void*, w : Int32, h : Int32, tenbit : Int32,
+    cmat : Float32*, range : Float32*)
   fun pkt_video = egui_cr_pkt_video(x : Float32, y : Float32, w : Float32,
     h : Float32, cx : Float32, cy : Float32, cw : Float32, ch : Float32,
     vid : UInt32)

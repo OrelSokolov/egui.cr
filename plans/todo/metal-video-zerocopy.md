@@ -1,5 +1,7 @@
 # Metal video zero-copy — plan
 
+**Status: DONE (see the completion notes at the bottom).**
+
 **Prerequisite (assumed done):** the SOKOL_METAL backend of the sokol
 shim exists and macOS renders through it — sgl / paint packets /
 kind-3 video segments unchanged, and macOS still renders DIRECT (no
@@ -146,3 +148,27 @@ Nothing new for video: the Metal backend task brings
 `upd` drops to ~0, the CPU packing memcpy disappears, and 4K/6K
 become bus-bound nowhere — the same class of win the Linux zero-copy
 path got over its copy-back fallback.
+
+## Completion notes (implementation as built)
+
+- Shim: `SH_VIDEO_MTL` / `SH_VIDEO_UPLOAD` macros, `sh_video_flush_mtl`
+  (wrap + 32-slot pointer-keyed import cache, MRC retain transferred
+  to sg's pool — see the ownership comment there), `sh_draw_video`
+  MTL guard (cur wrap if live, else upload planes), MSL shaders
+  `SH_VIDEO_VS_MTL/FS_MTL` (entry `_main`, msl slots 0/1 + 0/1/0/1).
+- Entry points: `egui_cr_video_frame_cvpixelbuffer`,
+  `egui_cr_video_zc_supported`, `egui_cr_video_clear_fail` (ladder
+  reset). w/h/tenbit derived on the C side from the buffer's pixel
+  format ('P010' → R16/RG16).
+- Player: `vt_zc_frame` (no transfer, `data[3]`, pts bookkeeping),
+  `mtl_teardown`/`mtl_fallback` ladder, `EGUI_VIDEO_MTL=0` kill switch
+  for the fallback drill. No hold ring needed: the C-side CFRetain per
+  cache slot pins the surface (the plan's item 4 turned out redundant).
+- Verified: `upd=0ms/0` + `mtl-zc` HUD marker; 8-bit h264 avg RGB
+  matches SW (245,246,247 both); 10-bit HEVC P010 averages match, diff
+  profile is pure temporal skew of testsrc2; `EGUI_VIDEO_MTL=0`
+  downgrades cleanly to nv12 upload with correct color; GL backend
+  rebuild still green; 6/6 crash-free runs after the zombie-MTLTexture
+  fix (NSZombie caught the over-release; root cause: sg's injected
+  image path is pool(+1)/release(−1) — the caller's +1 IS the pool's
+  reference, an extra pin double-owns it).

@@ -455,14 +455,17 @@ def build_examples(names, opt_flags, label)
     # prefix (-L only — @[Link("freetype")] already adds -lfreetype).
     # AVFoundation/CoreMedia: the shim's camera section (one big object)
     # references them, so every macOS example link pulls them in. The 3D API
-    # framework follows the backend: NSOpenGL (GL) or CAMetalLayer/Metal.
+    # framework follows the backend: NSOpenGL (GL) or CAMetalLayer/Metal;
+    # Metal also wants CoreVideo (the zero-copy video path's
+    # CVMetalTextureCache lives there).
     ft_libs = %x{pkg-config --libs-only-L freetype2 2>/dev/null}.strip
     ft_libs = "-L/opt/homebrew/lib" if ft_libs.empty?
     gfx_fw = METAL ? "Metal" : "OpenGL"
+    cv_fw = METAL ? " -framework CoreVideo" : ""
     lib_flag = "#{lib_flag} #{ft_libs} -framework Cocoa " \
                "-framework #{gfx_fw} -framework QuartzCore " \
                "-framework AVFoundation -framework CoreMedia " \
-               "-framework IOKit"
+               "-framework IOKit#{cv_fw}"
   end
   # Vulkan backend (BACKEND=vulkan, Linux): sokol_app calls into
   # libvulkan directly — every example link needs it.
