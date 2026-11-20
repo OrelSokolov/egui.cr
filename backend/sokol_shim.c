@@ -834,6 +834,115 @@ static int g_msaa = 1;
 static bool g_mtl_no_vsync;
 #endif
 
+// ---- runtime frame pacing (floating_fps.md) -------------------------------------
+// Runtime swap-interval ("frame divisor") + monitor refresh-rate query.
+// The divisor divides the monitor refresh (2 = half rate) and applies
+// live where the platform allows: the Metal display link re-rates
+// immediately, D3D11 re-reads the interval at every Present, GLX takes
+// the setter directly; WGL/EGL consume it at context (re)creation and
+// Vulkan at swapchain creation (a true mid-session change on the
+// detached Linux/Win32 render thread would need a routed packet — out
+// of scope here). EGUI_FPS_DIVISOR=N seeds it at start, same pattern
+// as EGUI_MSAA above.
+
+// Platform re-apply after the sokol global changed. Runs on the
+// calling thread — on macOS legacy that IS the AppKit main thread; on
+// Linux/Win32 legacy (EGUI_RENDER_THREAD=0) it is the GL thread too.
+static void sh_frame_divisor_apply(int n) {
+#if defined(_SAPP_MACOS) && defined(SOKOL_METAL)
+    // The live display link: preferredFrameRateRange = refresh / n.
+    // Paused links re-rate on the next start (see the sokol patch).
+    if (_sapp.mtl.display_link != nil) {
+        const NSInteger max_fps = _sapp_macos_max_fps();
+        const float preferred_fps = max_fps / n;
+        const CAFrameRateRange frame_rate_range = { preferred_fps, preferred_fps, preferred_fps };
+        _sapp.mtl.display_link.preferredFrameRateRange = frame_rate_range;
+    }
+#elif defined(_SAPP_MACOS) && defined(SOKOL_GLCORE)
+    // NSOpenGLContext swap interval is ignored since macOS 13 — best
+    // effort; the GL timer path keeps its own cadence regardless.
+    if (_sapp.macos.view != nil) {
+        NSOpenGLContext* ctx = [_sapp.macos.view openGLContext];
+        if (ctx != nil) {
+            GLint interval = n;
+            [ctx setValues:&interval forParameter:NSOpenGLContextParameterSwapInterval];
+        }
+    }
+#elif defined(_SAPP_GLX)
+    // glXSwapIntervalEXT takes the drawable explicitly — no current
+    // context needed, safe from any thread with the X display up.
+    if (_sapp.x11.display) _sapp_glx_swapinterval(n);
+#elif defined(_SAPP_EGL)
+    (void)n; // consumed at context (re)creation (see the sokol patch)
+#elif defined(_SAPP_WGL)
+    (void)n; // consumed at context (re)creation (see the sokol patch)
+#else
+    (void)n; // D3D11 and the iOS display links re-read the global per frame
+#endif
+}
+
+void egui_cr_set_frame_divisor(int n) {
+    if (n < 1) n = 1;
+    if (n > 60) n = 60; // sanity cap: 1 fps would be a different feature
+    _sapp_egui_rt_interval = n;
+    sh_frame_divisor_apply(n);
+}
+
+// Monitor refresh rate in Hz; 60 when the platform can't tell (or the
+// mode reports 0/1 — some drivers do for variable refresh).
+int egui_cr_refresh_rate(void) {
+#if defined(_SAPP_MACOS)
+    const NSInteger fps = _sapp_macos_max_fps();
+    return fps > 1 ? (int)fps : 60;
+#elif defined(_WIN32)
+    DEVMODEW dm;
+    memset(&dm, 0, sizeof(dm));
+    dm.dmSize = sizeof(dm);
+    if (EnumDisplaySettingsW(NULL, ENUM_CURRENT_SETTINGS, &dm) &&
+        (dm.dmFields & DM_DISPLAYFREQUENCY) && dm.dmDisplayFrequency > 1) {
+        return (int)dm.dmDisplayFrequency;
+    }
+    return 60;
+#elif defined(__linux__) && !defined(__ANDROID__)
+    // X11 Xrandr via dlopen — no hard -lXrandr dependency (and no
+    // Xrandr headers in this TU); Wayland returns the 60 fallback.
+    void* xrr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
+    if (!xrr) xrr = dlopen("libXrandr.so", RTLD_LAZY | RTLD_LOCAL);
+    if (xrr && _sapp.x11.display) {
+        typedef void* (*xrr_get_info_t)(void*, unsigned long);
+        typedef short (*xrr_rate_t)(void*);
+        typedef void (*xrr_free_t)(void*);
+        xrr_get_info_t get_info = (xrr_get_info_t)dlsym(xrr, "XRRGetScreenInfo");
+        xrr_rate_t rate = (xrr_rate_t)dlsym(xrr, "XRRConfigCurrentRate");
+        xrr_free_t free_info = (xrr_free_t)dlsym(xrr, "XRRFreeScreenConfigInfo");
+        if (get_info && rate && free_info) {
+            void* cfg = get_info(_sapp.x11.display,
+                                 (unsigned long)DefaultRootWindow(_sapp.x11.display));
+            if (cfg) {
+                const short r = rate(cfg);
+                free_info(cfg);
+                if (r > 1) return (int)r;
+            }
+        }
+    }
+    return 60;
+#else
+    return 60;
+#endif
+}
+
+// EGUI_FPS_DIVISOR=N (>=1): runtime divisor seeded before the loop
+// starts — live experiments without touching app code, same pattern
+// as EGUI_MSAA / EGUI_NOVSYNC.
+static void sh_env_divisor(void) {
+    const char* env = getenv("EGUI_FPS_DIVISOR");
+    if (env && *env) {
+        char* end = NULL;
+        long v = strtol(env, &end, 10);
+        if (end != env && v >= 1) egui_cr_set_frame_divisor((int)v);
+    }
+}
+
 // The msaa parameter arrives from Crystal as a sample count (Bool was
 // normalized there: true → 4, false → 0). EGUI_MSAA overrides it for
 // live experiments (EGUI_MSAA=0/2/4/8/16 crystal run examples/…), the
@@ -1760,6 +1869,9 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
         .max_dropped_file_path_length = 8192,
         .logger.func = slog_func,
     };
+    // EGUI_FPS_DIVISOR=N: runtime divisor seeded before the loop starts
+    // (floating_fps.md) — the first display-link / context setup reads it.
+    sh_env_divisor();
     sapp_run(&g_main_desc);
 #endif
 }
@@ -10064,6 +10176,7 @@ intptr_t egui_cr_start(const char* title, int width, int height, int borderless,
     g_rt_w = width;
     g_rt_h = height;
     g_rt_swap = getenv("EGUI_NOVSYNC") ? 0 : swap_interval;
+    sh_env_divisor(); // EGUI_FPS_DIVISOR=N (floating_fps.md) — GLX/D3D11 pick it up at init
     g_rt_title = title ? strdup(title) : strdup("egui-cr");
 #if defined(_SAPP_LINUX)
     // Same XWayland DRI3 workaround as the legacy path below.

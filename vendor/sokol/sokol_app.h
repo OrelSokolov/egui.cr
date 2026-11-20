@@ -3365,6 +3365,19 @@ typedef struct {
 } _sapp_t;
 static _sapp_t _sapp;
 
+/* egui-cr patch (floating_fps.md): runtime swap interval. This vendored
+ * snapshot predates upstream's sapp_set_swap_interval(); the interval
+ * consumers below read this global instead of _sapp.desc.swap_interval.
+ * -1 = no runtime override yet (follow the desc); >=1 = live divisor of
+ * the monitor rate (2 = half rate, ...). Plain int stores are atomic on
+ * all supported targets, and the consumers re-read the value per frame
+ * (or per (re)creation, noted at each site). */
+static int _sapp_egui_rt_interval = -1;
+_SOKOL_PRIVATE int _sapp_egui_interval(void) {
+    return _sapp_egui_rt_interval >= 0 ? _sapp_egui_rt_interval
+                                       : _sapp.desc.swap_interval;
+}
+
 // ██       ██████   ██████   ██████  ██ ███    ██  ██████
 // ██      ██    ██ ██       ██       ██ ████   ██ ██
 // ██      ██    ██ ██   ███ ██   ███ ██ ██ ██  ██ ██   ███
@@ -5515,6 +5528,13 @@ _SOKOL_PRIVATE double _sapp_macos_mtl_timing_frame_duration(void) {
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_start_display_link(void) {
     if (nil != _sapp.mtl.display_link) {
+        // egui-cr patch (floating_fps.md): re-apply the divided frame
+        // rate on the unpause path too — the runtime interval may have
+        // changed while the link was paused (egui_cr_set_frame_divisor).
+        const NSInteger max_fps = _sapp_macos_max_fps();
+        const float preferred_fps = max_fps / _sapp_egui_interval();
+        const CAFrameRateRange frame_rate_range = { preferred_fps, preferred_fps, preferred_fps };
+        _sapp.mtl.display_link.preferredFrameRateRange = frame_rate_range;
         _sapp.mtl.display_link.paused = false;
         return;
     }
@@ -5524,7 +5544,7 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_start_display_link(void) {
     SOKOL_ASSERT(nil != _sapp.macos.view);
     NSInteger max_fps = _sapp_macos_max_fps();
     _sapp.mtl.display_link = [_sapp.macos.view displayLinkWithTarget:_sapp.macos.view selector:@selector(displayLinkFired:)];
-    const float preferred_fps = max_fps / _sapp.desc.swap_interval;
+    const float preferred_fps = max_fps / _sapp_egui_interval();
     const CAFrameRateRange frame_rate_range = { preferred_fps, preferred_fps, preferred_fps };
     _sapp.mtl.display_link.preferredFrameRateRange = frame_rate_range;
     [_sapp.mtl.display_link addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
@@ -6533,7 +6553,7 @@ _SOKOL_PRIVATE void _sapp_macos_frame(void) {
 - (void)prepareOpenGL {
     [super prepareOpenGL];
     // NOTE: NSOpenGLContext swap interval is broken/ignored since macOS 13
-    GLint swap_interval = _sapp.desc.swap_interval;
+    GLint swap_interval = _sapp_egui_interval(); // egui-cr patch: runtime divisor
     if (_sapp.desc.disable_vsync) {
         swap_interval = 0;
     }
@@ -6838,7 +6858,7 @@ _SOKOL_PRIVATE void _sapp_ios_mtl_start_display_link(void) {
     SOKOL_ASSERT(nil == _sapp.mtl.display_link);
     SOKOL_ASSERT(nil != _sapp.ios.view);
     _sapp.mtl.display_link = [CADisplayLink displayLinkWithTarget:_sapp.ios.view selector:@selector(displayLinkFired:)];
-    const float preferred_fps = _sapp_ios_max_fps() / _sapp.desc.swap_interval;
+    const float preferred_fps = _sapp_ios_max_fps() / _sapp_egui_interval();
     const CAFrameRateRange frame_rate_range = { preferred_fps, preferred_fps, preferred_fps };
     _sapp.mtl.display_link.preferredFrameRateRange = frame_rate_range;
     [_sapp.mtl.display_link addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSRunLoopCommonModes];
@@ -6958,7 +6978,7 @@ _SOKOL_PRIVATE void _sapp_ios_gles3_init(UIWindowScene* windowScene) {
     }
     _sapp.ios.view_ctrl = [[GLKViewController alloc] init];
     _sapp.ios.view_ctrl.view = _sapp.ios.view;
-    _sapp.ios.view_ctrl.preferredFramesPerSecond = _sapp_ios_max_fps() / _sapp.desc.swap_interval;
+    _sapp.ios.view_ctrl.preferredFramesPerSecond = _sapp_ios_max_fps() / _sapp_egui_interval();
     _sapp.ios.window.rootViewController = _sapp.ios.view_ctrl;
 }
 
@@ -9210,7 +9230,7 @@ _SOKOL_PRIVATE void _sapp_d3d11_resize_default_render_target(void) {
 
 _SOKOL_PRIVATE void _sapp_d3d11_present(bool from_winproc) {
     UINT flags = 0;
-    UINT swap_interval = (UINT)_sapp.desc.swap_interval;
+    UINT swap_interval = (UINT)_sapp_egui_interval(); // egui-cr patch: runtime divisor
     // DXGI_PRESENT_DO_NOT_WAIT isn't supported on Win7
     if (_sapp.win32.is_win10_or_greater) {
         if (_sapp.desc.disable_vsync || from_winproc) {
@@ -9521,7 +9541,7 @@ _SOKOL_PRIVATE void _sapp_wgl_create_context(void) {
         } else {
             // NOTE: Intel GL SwapIntervalEXT seems to be broken (only 0 and 1 is accepted)
             // values greater 1 disable vsync but still return true. We'll simply ignore that bug.
-            _sapp.wgl.SwapIntervalEXT(_sapp.desc.swap_interval);
+            _sapp.wgl.SwapIntervalEXT(_sapp_egui_interval()); // egui-cr patch: runtime divisor
         }
     }
     const uint32_t gl_framebuffer_binding = 0x8CA6;
@@ -10038,7 +10058,7 @@ _SOKOL_PRIVATE void _sapp_win32_frame(bool from_winproc) {
     #endif
     if (!from_winproc) {
         if (IsIconic(_sapp.win32.hwnd)) {
-            Sleep((DWORD)(16 * _sapp.desc.swap_interval));
+            Sleep((DWORD)(16 * _sapp_egui_interval())); // egui-cr patch: runtime divisor
         }
     }
 }
@@ -14445,7 +14465,7 @@ _SOKOL_PRIVATE void _sapp_egl_init(void) {
     if (_sapp.desc.disable_vsync) {
         eglSwapInterval(_sapp.egl.display, 0);
     } else {
-        eglSwapInterval(_sapp.egl.display, _sapp.desc.swap_interval);
+        eglSwapInterval(_sapp.egl.display, _sapp_egui_interval()); // egui-cr patch: runtime divisor
     }
 }
 
@@ -14554,7 +14574,7 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
         if (_sapp.desc.disable_vsync) {
             _sapp_glx_swapinterval(0);
         } else {
-            _sapp_glx_swapinterval(_sapp.desc.swap_interval);
+            _sapp_glx_swapinterval(_sapp_egui_interval()); // egui-cr patch: runtime divisor
         }
     #elif defined(_SAPP_EGL)
         _sapp_egl_init();

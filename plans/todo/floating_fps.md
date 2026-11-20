@@ -77,6 +77,70 @@ Present-рейт жёстко привязан к vsync монитора (60/144
 4. (Опционально) **Бэкпорт `sapp_cancel_frame`** для произвольных
    25/50/90/160 и настраиваемого лимита из UI.
 
-## Статус
+## Перепроверка 2026-11-20
 
-Не начато. Порядок: (1) → (2) → (3); (4) по востребованности.
+- Подтверждено «не начато»: ни `energy_mode`, ни делителя, ни опроса
+  refresh rate в кодовой базе нет; vendored sokol по-прежнему без
+  `sapp_set_swap_interval` / `sapp_cancel_frame`.
+- **Metal-путь уже делит частоту на `swap_interval`**:
+  `_sapp_macos_mtl_start_display_link` ставит
+  `preferredFrameRateRange = max_fps / desc.swap_interval`
+  (`vendor/sokol/sokol_app.h:5527`); GL-путь на macOS — NSOpenGL
+  `NSOpenGLContextParameterSwapInterval` (`:6536`), но он игнорируется
+  системой с macOS 13 (кадры гоняет NSTimer, см. `:5719`).
+- Появился готовый крючок: detached-режим хранит интервал в глобале
+  `g_rt_swap` (`backend/sokol_shim.c:10017`).
+- Пример-паттерн env-оверрайда: `EGUI_MSAA` → `sh_msaa_resolve`
+  (`sokol_shim.c:843`); по нему сделан `EGUI_FPS_DIVISOR`.
+- `sokol_shim.c` — единая TU: `sokol_app.h` включён с `SOKOL_IMPL`,
+  приватные (`static`) функции sokol вызываются из шима напрямую —
+  публичный API sokol расширять не нужно.
+- Refresh rate на macOS уже есть внутри sokol:
+  `_sapp_macos_max_fps()` = `[NSScreen.mainScreen maximumFramesPerSecond]`
+  (`sokol_app.h:5476`); для X11 решено через `dlopen("libXrandr.so.2")`
+  (без жёсткой линковки `-lXrandr`), Win32 — `EnumDisplaySettingsW`;
+  Wayland — fallback 60 (как и было запланировано, отдельная задача).
+
+## Реализация (2026-11-20, шаги 1–3)
+
+- **sokol_app.h (микропатч)**: глобал `_sapp_egui_rt_interval` (-1 =
+  следовать desc) + `_sapp_egui_interval()`; все потребители
+  `desc.swap_interval` (Metal display link, NSOpenGL, iOS display
+  link, D3D11 Present, WGL, EGL, GLX, Sleep-fallback) читают его;
+  `_sapp_macos_mtl_start_display_link` ре-аплаит
+  `preferredFrameRateRange` и на unpause-ветке.
+- **shim**: `egui_cr_set_frame_divisor(n)` (клэмп ≥1 + платформенный
+  re-apply: живой Metal display link, NSOpenGL best-effort, GLX; D3D11
+  подхватывает сам — читает глобал на каждом Present; WGL/EGL
+  применяются при (пере)создании контекста — true mid-session смена
+  на detached render-потоке требует пакета, вне скоупа; Vulkan —
+  present mode фиксируется при создании swapchain, делитель живёт
+  только для новых окон) и `egui_cr_refresh_rate()` (macOS —
+  `_sapp_macos_max_fps`, Win32 — `EnumDisplaySettingsW`, X11 —
+  Xrandr через dlopen, fallback 60). `EGUI_FPS_DIVISOR=N` в шиме —
+  оверрайд при старте (по образцу `EGUI_MSAA`).
+- **Crystal**: `Driver::Sokol.set_frame_divisor / refresh_rate /
+  energy_mode=` (+ фасад `Egui.*` в driver_selector.cr);
+  `:saving` → делитель `round(refresh/30)` (60→2, 90→3, 144→5,
+  160→5), `:normal`/`:game` → 1.
+- Шаг 4 (`sapp_cancel_frame`, произвольные 25/50/90) — не сделан,
+  по востребованности.
+
+## Верификация (2026-11-20)
+
+- Шим собирается в обоих бэкендах: `rake build:native` (GL) и
+  `rake BACKEND=metal build:native` — чисто.
+- `examples/hello` собрался и отработал 6 с под `EGUI_FPS_DIVISOR=2`
+  без падений (окно убито по таймеру — exit 143).
+- API-пробник `tmp/fps_api_probe.cr` (собирался против изолированной
+  копии src — см. ниже): `refresh_rate: 60`, `set_frame_divisor(2)`,
+  `energy_mode= :saving/:normal` переключаются, неизвестный режим
+  (`:turbo`) кидает ArgumentError. Окно жило 4 с, делитель 2.
+- Глазами FPS-делитель пока не проверен: запустить
+  `EGUI_FPS_DIVISOR=2 ./bin/apps/hello` и сравнить плавность/нагрузку
+  (заодно `:saving` из UI, когда появится переключатель).
+- Нюанс на момент проверки: рабочее дерево не собирается целиком из-за
+  незавершённой popup-exit-анимации (Ур.3) — `context.cr`:
+  `close_popup` использует `POPUP_EXIT_MS` без префикса `Memory::`
+  (в изолированной копии для пробника это чинилось одной строкой).
+  К пробнику/фичей floating_fps отношения не имеет.

@@ -20,6 +20,26 @@ module Egui
   def self.run(app : App, **opts) : Nil
     Driver::Sokol.run(app, **opts)
   end
+
+  # Runtime frame pacing (floating_fps.md) — thin delegates to the
+  # driver. `energy_mode=` takes :saving / :normal / :game; the divisor
+  # form applies raw (2 = half the monitor refresh).
+  def self.set_frame_divisor(n : Int32) : Nil
+    Driver::Sokol.set_frame_divisor(n)
+  end
+
+  # Monitor refresh rate in Hz (60 when the platform can't tell).
+  def self.refresh_rate : Int32
+    Driver::Sokol.refresh_rate
+  end
+
+  def self.energy_mode=(mode : Symbol) : Nil
+    Driver::Sokol.energy_mode = mode
+  end
+
+  def self.energy_mode : Symbol
+    Driver::Sokol.energy_mode
+  end
 end
 
 # Startup-crash report (egui/crash_report.cr): a raise before the

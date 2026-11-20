@@ -106,6 +106,12 @@ lib LibEguiCr
                                                 b : Float32, a : Float32)
   fun present_clear = egui_cr_present_clear
 
+  # Runtime frame pacing (floating_fps.md): the divisor divides the
+  # monitor refresh (2 = half rate), applied live where the platform
+  # allows; refresh_rate queries the monitor in Hz (60 fallback).
+  fun set_frame_divisor = egui_cr_set_frame_divisor(n : Int32)
+  fun refresh_rate = egui_cr_refresh_rate : Int32
+
   # detached render loop (shim, Linux + Win32): spawn the render thread
   # and get the main-thread doorbell handle (a pipe fd on Linux, an
   # overlapped socket on Win32); events arrive through a ring
@@ -1115,6 +1121,55 @@ module Egui
       # SH_EVENT_PINCH) — not a sapp_event_type value. mx/my = centroid
       # in framebuffer pixels, sx = multiplicative zoom factor.
       PINCH         = 100
+
+      # ---- runtime frame pacing (floating_fps.md) ---------------------
+      # The present-rate lever: divide the monitor refresh instead of
+      # running every loop tick at full vsync. Applied live by the shim
+      # (Metal display link re-rate, D3D11 per-Present read; WGL/EGL/
+      # Vulkan consume the divisor at window/context creation only).
+
+      # Monitor refresh rate in Hz, queried once from the shim; 60 when
+      # the platform can't tell (Wayland, unknown display mode).
+      def self.refresh_rate : Int32
+        @@refresh_rate = LibEguiCr.refresh_rate if @@refresh_rate == 0
+        @@refresh_rate
+      end
+
+      # Divide the monitor refresh: 2 = half rate (30 fps on 60 Hz,
+      # 72 on 144). Live — no restart. EGUI_FPS_DIVISOR=N does the same
+      # from the environment (the shim applies it before the loop
+      # starts), same pattern as EGUI_MSAA.
+      def self.set_frame_divisor(n : Int32) : Nil
+        LibEguiCr.set_frame_divisor(n.clamp(1, 60))
+      end
+
+      # Energy presets over the divisor (floating_fps.md):
+      # * `:saving` — the divisor that stays nearest 30 fps on this
+      #   monitor (60→2, 90→3, 120→4, 144→5 (28.8), 160→5 (32)) — a
+      #   true vsync divisor, no frame-skip judder;
+      # * `:normal` / `:game` — interval 1 (full monitor rate; `:game`
+      #   is the same knob, kept as a named preset for UI parity).
+      def self.energy_mode=(mode : Symbol) : Nil
+        case mode
+        when :saving
+          set_frame_divisor(((refresh_rate + 15) // 30).clamp(1, 60))
+        when :normal, :game
+          set_frame_divisor(1)
+        else
+          raise ArgumentError.new(
+            "unknown energy mode: #{mode.inspect} " \
+            "(expected :saving, :normal or :game)")
+        end
+        @@energy_mode = mode
+      end
+
+      # The mode set by `energy_mode=` (:normal until changed).
+      def self.energy_mode : Symbol
+        @@energy_mode
+      end
+
+      @@energy_mode : Symbol = :normal
+      @@refresh_rate : Int32 = 0
 
       # eframe::run_native — blocks until the window closes.
       #
