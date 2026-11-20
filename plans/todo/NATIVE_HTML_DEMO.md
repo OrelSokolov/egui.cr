@@ -100,12 +100,13 @@
   между слоями с сохранением порядка painter'а). Квад half и shape
   half разделены (тень расширяет квад, не искажая SDF).
 - **Драйвер**: RectCmd (fill/градиент/uniform stroke/per-corner
-  радиусы), ShadowCmd (outset; inset — fallback), CircleCmd → батчи по
-  clip. Несовместимое — старый тесселяционный путь.
+  радиусы), ShadowCmd (outset И inset — `paint_shadow_inset`,
+  сверено 2026-11-20), CircleCmd → батчи по clip. Несовместимое —
+  старый тесселяционный путь.
 - Проверено: border_radius 1260 / box_shadow 6174 SDF-батчей с
   флагом, 0 без; A/B RMSE 1.2–1.4% (только край); спеки зелёные.
-- Осталось по §3.1: inset-тени, глифы через SDF-пайплайн, замер
-  выигрыша draw-количества.
+- Осталось по §3.1: глифы через SDF-пайплайн, замер выигрыша
+  draw-количества.
 
 ### 3.2 Spring-слой анимаций («живость» Raven) — ✅ частично 2026-11-10
 
@@ -125,9 +126,13 @@ shorthand и delay-суффикс). Спеки spec/spring_spec.cr.
 slide×2`, параметры кривых взяты из rvn_transition_begin), reduced-
 motion форсит none. Спеки spec/appear_spec.cr, демо examples/appear.cr.
 
-**Осталось**: paint-пружины на hover/press дефолтами виджетов, exml-
-маппинг атрибутов Raven Appear/AppearDelay, layout-пружины (island/
-панели), ghost закрывающихся попапов, time-step override для тестов.
+**Осталось**: paint-пружины на hover/press дефолтами виджетов,
+layout-пружины (island/панели), ghost закрывающихся попапов.
+(exml-маппинг Appear/AppearDelay закрыт `appear:`/`appear-delay:`;
+reduce-motion — `EGUI_NOANIMATIONS=1`, глушит easing/keyframes/springs/
+appear/transform разом; time-step override для тестов — capybara-харнесс
+`step(dt:)`/`idle(frames, dt)` даёт полный контроль времени.
+Сверено 2026-11-20.)
 
 Модель Raven (`tmp/Raven/src/widget/anim.c`, 319 строк; раздел Animation
 в docs/ARCHITECTURE.md): **пружина** — затухающий осциллятор (значение +
@@ -244,20 +249,25 @@ Notch — macOS-only, отдельно и потом (на Linux-дев-маши
 
 ## 4. Порядок работ — статус 2026-11-10
 
+**Сверено с кодом 2026-11-20** (правки ниже помечены этой датой):
+этапы 3 (темы), 7 (island), хвосты 4/4b (inset, reduce-motion) и
+полировка 9 оказались сделаны раньше, чем отражено в таблице.
+
 | # | Этап | Статус |
 |---|------|--------|
 | 1 | Каркас: окно, sidebar, 5 страниц, плеер-состояние, тикер, клавиши, данные `library.cr` | ✅ examples/music.cr + music_components/library.cr (данные 1:1 с library.c), bin/music, скриншоты tmp/music_*.png |
 | 2 | 3.6 + 3.7: param-defaults (~полдня) + хендлеры тегов демо | ✅ 2026-11-10 вторым заходом: `examples/music_exml.cr` + `assets/music.exml` + `assets/music.ecss` + теги `examples/music_components/music_tags.cr` — оракул 1:1, RMSE 41–65, находки и расхождения в plans/music-exml-stage2.md (включая правку парсера: цифры в именах атрибутов). param-defaults не понадобились (Component не использованы). **2026-11-11: этап 3 (live)** — порт поведения oracle/oracle_live (Vue): music_library.cr + music_player.cr + music_app.cr, акцент из обложки (обход через store-интерполяцию), очередь/shuffle/repeat, поиск, коллекция альбом/плейлист, island notices, клавиши; спеки music_* 28 примеров; детали в plans/music-exml-stage2.md. **2026-11-13: мобильная (вертикальная) раскладка** — окно <760 pt: шапка без поиска, без сайдбара/now-playing, низ — мини-плеер + таб-бар (`<mtab>`, `pbar mode="stack"`), карточки 2 в ряд; флаг `mobile` + вычисляемые размеры в store (music_app.cr), общая геометрия — `@media (max-width: 760px)` в music.ecss, настройки — двухэтажные строки |
-| 3 | 3.5 + темы Nocturne/Aurora/Daylight; процедурные обложки + extraction акцента | обложки ✅; акцент в демо ✅ (2026-11-11, через make_accent + store — оверрайд каскада не потребовался); темы Aurora/Daylight — не начаты |
-| 4 | 3.1 SDF-примитивы | ✅ Rect/Shadow(outset)/Circle, флаг EGUI_SDF; хвост: inset-тени, глифы |
-| 4b | 3.2 spring-слой | ✅ инкременты 1–2 (spring() в transition, appear: + painter-transform); хвост: paint-пружины hover/press, layout-пружины, ghost, reduce-motion=env |
-| 5 | 3.3 эффекты фона; «Animate» вкл/выкл | не начато — следующий заход |
-| 6 | 3.4 glass для Aurora-темы | не начато |
-| 7 | 3.8 island (+ later notch) | не начато |
-| 8 | 3.9 mailbox + pacing | не начато |
-| 9 | Полировка: notice-таймер, history/Alt+←, empty-состояния, 16 луков | history/Alt+← уже в каркасе; остальное не начато |
+| 3 | 3.5 + темы Nocturne/Aurora/Daylight; процедурные обложки + extraction акцента | ✅ сверено 2026-11-20: обложки ✅; акцент ✅ (2026-11-11, через make_accent + store); темы ✅ — все 16 луков (Nocturne/Aurora/Daylight + платформенные) в `MusicTags.looks`, переключение Look-комбо в настройках живое (apply_look) |
+| 4 | 3.1 SDF-примитивы | ✅ Rect/Shadow(outset+inset)/Circle, флаг EGUI_SDF; хвост: глифы через SDF |
+| 4b | 3.2 spring-слой | ✅ инкременты 1–2 (spring() в transition, appear: + painter-transform); reduce-motion ✅ (`EGUI_NOANIMATIONS=1`, сверено 2026-11-20); хвост: paint-пружины hover/press дефолтами виджетов, layout-пружины, ghost |
+| 5 | 3.3 эффекты фона; «Animate» вкл/выкл | не начато (mesh — painter-аппроксимация с дрейфом, «Animate» живой в демо) — следующий заход |
+| 6 | 3.4 glass для Aurora-темы | не начато (backdrop blur в движке отсутствует) |
+| 7 | 3.8 island (+ later notch) | ✅ сверено 2026-11-20: overlay-остров + ExpandOnHover + мини-плеер с seek + radius-glide — в демо (music_tags.cr `<island>`); notch — не начат (§7 не-цель до проверки на Mac) |
+| 8 | 3.9 mailbox + pacing | ⚠️ частично: back-pressure/очередь кадров сделаны в loop_redesign (render thread + FramePacket mailbox, latest-wins — sokol_shim.c); MAILBOX present mode для BACKEND=vulkan не подтверждён |
+| 9 | Полировка: notice-таймер, history/Alt+←, empty-состояния, 16 луков | ✅ по большей части, сверено 2026-11-20: history/Alt+← ✅, notice-таймер ✅ (2.5 c), 16 луков ✅ (этап 3), empty-очередь ✅ («Nothing after this song»); осталось — пройти остальные empty-состояния |
 
-Полный `crystal spec` после инкрементов: 1067 examples, 0 failures.
+Полный `crystal spec` после инкрементов: 1067 examples, 0 failures
+(1137 на 2026-11-11 — см. plans/completed/music-exml-stage2.md).
 
 Этапы 1–3 не трогают рендер; 4 — точка невозврата по шейдеру (всё
 дальше поверх пайплайна).
