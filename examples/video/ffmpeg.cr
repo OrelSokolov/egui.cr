@@ -193,6 +193,16 @@ lib LibFF
   fun av_get_pix_fmt = av_get_pix_fmt(name : UInt8*) : Int32
   fun av_log_set_level = av_log_set_level(level : Int32)
   # --- libavutil/hwcontext (VAAPI copy-back decode) ---
+  # hwaccel config query (the decoder's own pix fmt per hw device —
+  # "videotoolbox" is missing from ffmpeg's pix-fmt NAME table, so
+  # macOS resolves its hw pix fmt through this instead)
+  struct AVCodecHWConfig
+    pix_fmt : Int32
+    methods : Int32
+    device_type : Int32
+  end
+
+  fun avcodec_get_hw_config = avcodec_get_hw_config(codec : Void*, index : Int32) : AVCodecHWConfig*
   fun av_hwdevice_ctx_create = av_hwdevice_ctx_create(device : UInt8**,
                                                       type : Int32,
                                                       device_path : UInt8*,
@@ -341,10 +351,12 @@ lib LibFF
   # --- helpers -----------------------------------------------------------
 
   AVERROR_EOF    = -541478725 # MKTAG('E','O','F',' ') negated
-  AVERROR_EAGAIN = -11        # -EAGAIN on Linux
+  # -EAGAIN: errno-derived, platform-specific (11 on Linux, 35 on macOS)
+  AVERROR_EAGAIN = -Errno::EAGAIN.value
   AVMEDIA_TYPE_VIDEO = 0
   AVMEDIA_TYPE_AUDIO = 1
   AV_HWDEVICE_TYPE_VAAPI = 3
+  AV_HWDEVICE_TYPE_VIDEOTOOLBOX = 6
   AVSEEK_FLAG_BACKWARD = 1
   SWS_BILINEAR = 2
   AV_LOG_ERROR = 16

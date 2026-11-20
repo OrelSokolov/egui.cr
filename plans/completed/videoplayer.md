@@ -240,3 +240,65 @@ effects returns the branches' value — `n.times { … }` is Nil, so
 "convert in a case, return bytes at the end" silently returned nil from
 every branch. `bytes` must be the explicit tail expression after
 `return nil` in `else`.
+
+## Fast rendering — Linux (zero-copy) and macOS (VideoToolbox)
+
+Two GPU paths, same player, same video quad pipeline:
+
+- **Linux/Vulkan zero-copy**: hw decode → fixed VAAPI surface pool
+  (backend/video_pool.c) → per-surface dmabuf export →
+  `egui_cr_video_frame` op → the render thread imports the planes as
+  VkImages (inode-keyed import cache) and draws through the SPIR-V
+  video quad shader. No pixels cross to the CPU.
+- **macOS/GL VideoToolbox**: hw decode through ffmpeg's videotoolbox
+  hwcontext (mpv's `--hwdec=videotoolbox-copy` model) →
+  `av_hwframe_transfer_data` lands CPU NV12/P010 →
+  `egui_cr_video_frame_nv12` packs the two planes (row-memcpy —
+  VideoToolbox pads rows past width) into a pending slot → the next
+  `egui_cr_begin_pass` uploads them as two GL stream images (Y:
+  R8/R16, UV: RG8/RG16) → the same quad pipeline does YUV→RGB on the
+  GPU. No sws_scale, no per-pixel CPU work. True IOSurface zero-copy
+  is impossible on the NSOpenGL backend (CGLTexImageIOSurface2D needs
+  GL_TEXTURE_RECTANGLE; sokol binds GL_TEXTURE_2D), so this is the
+  practical ceiling on mac.
+
+macOS specifics worth remembering (all verified on Apple Silicon):
+
+- macOS renders DIRECT (no packet mailbox): the flush must run in
+  begin_pass OUTSIDE the sg pass (sokol: one sg_update_image per image
+  per frame — the pending slot is the coalescing), and
+  egui_cr_pkt_video stashes the quad directly — the paint call IS the
+  render thread there.
+- The SH_VIDEO_ZC / SH_VIDEO_NV12 / SH_VIDEO macros live at the TOP
+  of sokol_shim.c: first use (the begin_pass hook) sits far above the
+  video section — a `#if` before its `#define` silently dead-strips
+  the whole path at -O2 (the "everything links, nothing draws" trap).
+- GL sokol binds uniform-block MEMBERS by name (plain `uniform`
+  declarations — std140 named blocks are invisible to
+  glGetUniformLocation) and has no MAT3 uniform type: the colorimetry
+  mat3 rides as 3 FLOAT4 columns. The GLSL quad shader must mirror
+  the Vulkan math exactly (`uv * range.z + range.w` — both chroma
+  axes share the scalar scale/bias).
+- ffmpeg (brew 8.x) has no "videotoolbox" entry in the pix-fmt NAME
+  table (`av_get_pix_fmt` answers -1) — resolve the hw pix fmt from
+  the decoder's `avcodec_get_hw_config` (device_type == VIDEOTOOLBOX).
+- `AVERROR_EAGAIN` is errno-derived: -11 on Linux, **-35 on macOS**
+  (`-Errno::EAGAIN.value`, never a literal).
+- 10-bit HEVC (P010 → R16/RG16) rides the same path; the UV plane is
+  2 bytes/sample (RG8/RG16) — the size math must double it.
+
+Fallbacks: EGUI_VIDEO_HW=0 forces software; a plane-upload failure
+latches `egui_cr_video_failed` and the player drops to the sws
+copy-back pipeline mid-run (no reopen needed on mac — VideoToolbox
+owns its surfaces, no pool surgery). The helper archive
+`lib/libegui_video.a` (backend/video_pool.c) now has a Rakefile rule
+— `rake build:examples` produces it on every platform (libva bodies
+stay Linux-only #ifdefs).
+
+Verified on macOS (arm64, GL core): h264 720p at ~60 fps decode and
+10-bit HEVC at 30 fps through the fast path; screenshot RGB means
+match the software path within ~2/255 per channel (no tint); the
+`[sg]` validation layer stays silent. Brew's ffmpeg CLI on this box
+needs DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/Cellar/x265/4.2/lib
+(libavformat wants libx265.216, only the 4.2 keg ships it).
+

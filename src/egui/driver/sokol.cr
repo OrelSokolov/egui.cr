@@ -347,6 +347,11 @@ lib LibEguiCr
     w : Int32, h : Int32, pitch_y : Int32, pitch_uv : Int32, off_y : Int32,
     off_uv : Int32, modifier : UInt64, fc_y : UInt32, fc_uv : UInt32,
     cmat : Float32*, range : Float32*)
+  # macOS fast path (GL shim section): VideoToolbox copy-back NV12/P010
+  # planes → GL stream images, drawn via the same video pipeline
+  fun video_frame_nv12 = egui_cr_video_frame_nv12(id : UInt32, w : Int32,
+    h : Int32, y : UInt8*, y_stride : Int32, uv : UInt8*, uv_stride : Int32,
+    tenbit : Int32, cmat : Float32*, range : Float32*)
   fun pkt_video = egui_cr_pkt_video(x : Float32, y : Float32, w : Float32,
     h : Float32, cx : Float32, cy : Float32, cw : Float32, ch : Float32,
     vid : UInt32)

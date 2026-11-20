@@ -276,36 +276,48 @@ class VideoPlayer
       cctx.value.thread_type = ttype.to_i? || 0
     end
     # hw decode BEFORE open2: hw_device_ctx must be attached when the
-    # decoder initializes (get_format then offers the VAAPI pix fmt)
-    hw = setup_hw(cctx)
-    if hw && !@@zc_dead && LibEguiCr.video_supported != 0 &&
-       ENV["EGUI_VIDEO_ZC"]? != "0" && (dev = @hw_device)
-      # The pool must match what the DECODER will output: probe it by
-      # decoding one frame (see #probe_hw_params) — a wrong sw_format
-      # guess makes ffmpeg drop our fixed pool for a dynamic one.
-      sw_fmt, pw, ph = probe_hw_params(path, codec) ||
-        {par.format == 62 ? 158 : 23, # P010LE / NV12 (container hint)
-         @width > 0 ? @width : par.width,
-         @height > 0 ? @height : par.height}
-      unless (fref = LibVideoPool.pool_create(dev, @@hw_pix_fmt,
-               sw_fmt, pw, ph, 34)).null?
-        # GStreamer-style FIXED surface pool (gstvaallocator): surfaces
-        # pre-allocated once, recycled by the decoder forever — the
-        # dynamic pool allocated a NEW surface per frame (unique dmabuf
-        # inodes → export+import churn → the ~700-frame degradation).
-        # Struct writes live in C (backend/video_pool.c) — Crystal-side
-        # offsets kept drifting. ONLY under zc: the copy-back fallback
-        # needs the decoder's own pool (scale_vaapi refuses ours).
-        cctx.value.hw_frames_ctx = LibFF.av_buffer_ref(fref)
-        cctx.value.extra_hw_frames = 8
-        @zc_frames = fref
-        # the get_format callback re-attaches this ref on the decoding
-        # context (ffmpeg strips the pre-open2 attach — see HW_GET_FORMAT)
-        @@hw_pool_ref = fref
-        @zc = true
+    # decoder initializes (get_format then offers the hw pix fmt)
+    hw = setup_hw(cctx, codec)
+    darwin = {{ flag?(:darwin) }}
+    if hw && (darwin ? !@@nv12_dead : !@@zc_dead) &&
+       LibEguiCr.video_supported != 0 && ENV["EGUI_VIDEO_ZC"]? != "0"
+      if darwin
+        # macOS fast path: VideoToolbox decode, copy-back NV12/P010, GPU
+        # YUV→RGB through the video quad pipeline (see #vt_frame). No
+        # fixed pool, no exports — VideoToolbox owns its surfaces and
+        # av_hwframe_transfer_data is the per-frame barrier.
+        @nv12 = true
         @video_id = LibEguiCr.video_create
         @video_texture_id = @video_id.to_u64
-        STDERR.puts("video: zero-copy path (Vulkan), fixed pool") if ENV["EGUI_VIDEO_DEBUG"]?
+        STDERR.puts("video: fast path (VideoToolbox + GPU YUV)") if ENV["EGUI_VIDEO_DEBUG"]?
+      elsif (dev = @hw_device)
+        # The pool must match what the DECODER will output: probe it by
+        # decoding one frame (see #probe_hw_params) — a wrong sw_format
+        # guess makes ffmpeg drop our fixed pool for a dynamic one.
+        sw_fmt, pw, ph = probe_hw_params(path, codec) ||
+          {par.format == 62 ? 158 : 23, # P010LE / NV12 (container hint)
+           @width > 0 ? @width : par.width,
+           @height > 0 ? @height : par.height}
+        unless (fref = LibVideoPool.pool_create(dev, @@hw_pix_fmt,
+                 sw_fmt, pw, ph, 34)).null?
+          # GStreamer-style FIXED surface pool (gstvaallocator): surfaces
+          # pre-allocated once, recycled by the decoder forever — the
+          # dynamic pool allocated a NEW surface per frame (unique dmabuf
+          # inodes → export+import churn → the ~700-frame degradation).
+          # Struct writes live in C (backend/video_pool.c) — Crystal-side
+          # offsets kept drifting. ONLY under zc: the copy-back fallback
+          # needs the decoder's own pool (scale_vaapi refuses ours).
+          cctx.value.hw_frames_ctx = LibFF.av_buffer_ref(fref)
+          cctx.value.extra_hw_frames = 8
+          @zc_frames = fref
+          # the get_format callback re-attaches this ref on the decoding
+          # context (ffmpeg strips the pre-open2 attach — see HW_GET_FORMAT)
+          @@hw_pool_ref = fref
+          @zc = true
+          @video_id = LibEguiCr.video_create
+          @video_texture_id = @video_id.to_u64
+          STDERR.puts("video: zero-copy path (Vulkan), fixed pool") if ENV["EGUI_VIDEO_DEBUG"]?
+        end
       end
     end
     if LibFF.avcodec_open2(cctx, codec, nil) < 0
@@ -346,8 +358,8 @@ class VideoPlayer
     avg = st.value.avg_frame_rate
     @frame_dur = avg.den > 0 && avg.num > 0 ? avg.den.to_f64 / avg.num : 1.0 / 30.0
 
-    unless @zc # zero-copy owns no CPU pixels — the copy-back texture
-                # materializes lazily on fallback (see #convert_frame)
+    unless @zc || @nv12 # fast paths own no CPU pixels — the copy-back
+                        # texture materializes lazily on fallback
       @rgba = Bytes.new(@width * @height * 4)
       @texture_id = @ctx.textures.create_stream(@width, @height)
       if @texture_id.zero?
@@ -494,6 +506,7 @@ class VideoPlayer
   def close : Nil
     close_audio
     zc_disable
+    nv12_disable
     if (f = @zc_frames)
       fp = f
       LibFF.av_buffer_unref(pointerof(fp))
@@ -679,7 +692,7 @@ class VideoPlayer
                  File.symlink?("/proc/self/fd/#{last_dup}") ? 1 : 0
       hwstat = if @hw_transfer
                  size = @lad[@li]? || 0
-                 zc = @zc ? "zc " : ""
+                 zc = @zc ? "zc " : @nv12 ? "nv12 " : ""
                  locked = @adapt_locked ? "=" : "~"
                  pool = if @zc
                          pm = @zc_pool_match
@@ -827,11 +840,16 @@ class VideoPlayer
   @probe_n : Int32 = 0
   @skip_sample : Bool = false
 
-  # get_format callback: pick the VAAPI pix fmt when the decoder offers
-  # it, else the first software format (a decoder without a VAAPI hw
-  # config simply never offers it). Class-level: a C callback cannot
-  # capture, and the pix fmt value is runtime (av_get_pix_fmt).
+  # get_format callback: pick the hw pix fmt (VAAPI on Linux,
+  # VideoToolbox on macOS) when the decoder offers it, else the first
+  # software format (a decoder without an hw config simply never offers
+  # it). Class-level: a C callback cannot capture, and the pix fmt value
+  # is runtime (av_get_pix_fmt).
   @@hw_pix_fmt : Int32 = -1
+  # VideoToolbox copy-back formats (setup_hw on darwin): NV12 (8-bit)
+  # and P010LE (10-bit) — everything else falls back to sws.
+  @@nv12_fmt : Int32 = -1
+  @@p010_fmt : Int32 = -1
   # OUR fixed pool, re-attached BY this callback: ffmpeg 7.1's
   # ff_get_format starts every iteration with ff_hwaccel_uninit, which
   # unconditionally unrefs avctx->hw_frames_ctx — a pool attached before
@@ -855,10 +873,40 @@ class VideoPlayer
     fmts[0]
   end
 
-  # Attach the VAAPI device + get_format to a fresh codec context.
-  # True = attached (copy-back transfer engages), false = software.
-  private def setup_hw(cctx : LibFF::AVCodecContext*) : Bool
+  # Attach the hw device + get_format to a fresh codec context.
+  # True = attached (hw transfer engages), false = software.
+  # macOS: VideoToolbox (no device path — the session is implicit; the
+  # hw pix fmt comes from the decoder's hw config — ffmpeg's pix-fmt
+  # name table has no "videotoolbox" entry on this build).
+  # Linux: VAAPI through the DRM render node.
+  private def setup_hw(cctx : LibFF::AVCodecContext*, codec : Void*) : Bool
     return false if ENV["EGUI_VIDEO_HW"]? == "0"
+    if {{ flag?(:darwin) }}
+      hwfmt = -1
+      i = 0
+      while !(conf = LibFF.avcodec_get_hw_config(codec, i)).null?
+        if conf.value.device_type == LibFF::AV_HWDEVICE_TYPE_VIDEOTOOLBOX
+          hwfmt = conf.value.pix_fmt
+          break
+        end
+        i += 1
+      end
+      return false if hwfmt < 0
+      dev = Pointer(UInt8).null
+      code = LibFF.av_hwdevice_ctx_create(pointerof(dev),
+        LibFF::AV_HWDEVICE_TYPE_VIDEOTOOLBOX, Pointer(UInt8).null, nil, 0)
+      return false if code < 0 || dev.null?
+      @@hw_pix_fmt = hwfmt
+      # sw formats av_hwframe_transfer_data lands for VT frames
+      @@nv12_fmt = LibFF.av_get_pix_fmt("nv12".to_unsafe)
+      @@p010_fmt = LibFF.av_get_pix_fmt("p010le".to_unsafe)
+      @hw_device = dev
+      @hw_transfer = true
+      cctx.value.hw_device_ctx = dev
+      cctx.value.get_format = HW_GET_FORMAT
+      STDERR.puts("video: hw decode via videotoolbox (pix fmt #{hwfmt})") if ENV["EGUI_VIDEO_DEBUG"]?
+      return true
+    end
     dev_path = ENV["EGUI_VIDEO_HW_DEVICE"]? || "/dev/dri/renderD128"
     return false unless File.exists?(dev_path)
     hwfmt = LibFF.av_get_pix_fmt("vaapi".to_unsafe)
@@ -1144,6 +1192,7 @@ class VideoPlayer
   # the copy-back pipeline stays as the fallback (GL backends, import
   # failures).
   @zc : Bool = false
+  @nv12 : Bool = false          # macOS fast path (VideoToolbox + GPU YUV)
   @video_id : UInt32 = 0_u32
   getter video_texture_id : UInt64 = 0_u64
   @zc_frames : UInt8*? = nil      # OUR fixed VA surface pool
@@ -1165,6 +1214,9 @@ class VideoPlayer
   # latch: once an import pipeline died in this process, never retry zc
   # (prevents reopen loops on drivers without dmabuf import)
   @@zc_dead = false
+  # same latch for the macOS plane-upload path (a failed plane-image
+  # creation stays failed for the process lifetime)
+  @@nv12_dead = false
   @@dbg_n : Int32 = 0
   @@zc_sync_ms : Float64 = 0.0 # vaSyncSurface time (diagnostics)
   @@zc_sync_n : Int32 = 0
@@ -1400,9 +1452,87 @@ class VideoPlayer
     @sws = nil
   end
 
+  # Drop the macOS fast path mid-play: back to the sws copy-back
+  # pipeline (plane upload failed — unsupported format, image creation
+  # failure). The latch only sets when the RENDER side reported failure;
+  # a plain close (file switch) retries the fast path on the next open.
+  private def nv12_disable : Nil
+    return unless @nv12
+    @@nv12_dead = true if LibEguiCr.video_failed != 0
+    @nv12 = false
+    @video_texture_id = 0_u64
+    unless @video_id.zero?
+      LibEguiCr.video_destroy(@video_id)
+      @video_id = 0_u32
+    end
+  end
+
+  # One hw frame → CPU NV12/P010 → plane upload (macOS fast path).
+  # VideoToolbox surfaces live in the decoder's own pool; the transfer
+  # IS the decode-write barrier (synchronous GPU→CPU copy — mpv's
+  # --hwdec=videotoolbox-copy model). The shim packs the planes and
+  # uploads them at the next begin_pass; YUV→RGB happens in the video
+  # quad shader. False = failure (caller falls back to sws copy-back).
+  private def vt_frame(frame : LibFF::AVFrame*) : Bool
+    if LibEguiCr.video_failed != 0
+      nv12_disable
+      LibFF.av_frame_unref(frame)
+      return false
+    end
+    # pts BEFORE any unref — the frame dies on both paths below
+    pts0 = frame.value.pts
+    pts0 = frame.value.best_effort_timestamp if pts0 == LibFF::NOPTS || pts0 < 0
+    dst = (@sw_frame ||= LibFF.av_frame_alloc)
+    LibFF.av_frame_unref(dst)
+    code = LibFF.av_hwframe_transfer_data(dst, frame, 0)
+    LibFF.av_frame_unref(frame) # surface back to the decoder's pool
+    if code < 0
+      @error = "vt frame transfer failed: #{FF.error_string(code)}"
+      return false
+    end
+    fmt = dst.value.format
+    unless fmt == @@nv12_fmt || fmt == @@p010_fmt
+      # exotic transfer format (BGRA and friends) — the plane-upload
+      # model does not cover it; hand the CPU frame to sws and continue
+      # on the copy-back pipeline from here on
+      nv12_disable
+      convert_frame(dst, nil)
+      return true
+    end
+    tenbit = fmt == @@p010_fmt
+    compute_colorimetry(@codec_ctx.not_nil!, tenbit)
+    w = dst.value.width
+    h = dst.value.height
+    LibEguiCr.video_frame_nv12(@video_id, w, h,
+      dst.value.data[0], dst.value.linesize[0],
+      dst.value.data[1], dst.value.linesize[1],
+      tenbit ? 1 : 0,
+      @zc_cmat.not_nil!.to_unsafe, @zc_range.not_nil!.to_unsafe)
+    @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
+    @display_pts = @shown_pts
+    @next_pts = @shown_pts + @frame_dur
+    @width = w
+    @height = h
+    LibFF.av_frame_unref(dst)
+    @frame_count += 1
+    @fps_frames += 1
+    if @fps_frames == 1
+      @fps_wall = now_sec
+    elsif (dt = now_sec - @fps_wall) >= 1.0
+      @decode_fps = @fps_frames / dt
+      @fps_frames = 0
+    end
+    true
+  end
+
   private def maybe_transfer(frame : LibFF::AVFrame*) : LibFF::AVFrame*?
     return frame unless @hw_transfer
-    if frame.value.format == @@hw_pix_fmt && hw_graph_ensure(frame) &&
+    # the scale_vaapi graph is VAAPI-only (Linux); VideoToolbox frames
+    # always take the direct full-res transfer — macOS needs no scaling
+    # hop, the upload path pays no per-pixel CPU cost
+    graph_capable = !{{ flag?(:darwin) }}
+    if graph_capable && frame.value.format == @@hw_pix_fmt &&
+       hw_graph_ensure(frame) &&
        (src = @buffersrc) && (sink = @buffersink)
       code = LibFF.av_buffersrc_add_frame_flags(src, frame, 0)
       LibFF.av_frame_unref(frame) # surface back to the decoder's pool
@@ -1470,10 +1600,11 @@ class VideoPlayer
       code = LibFF.avcodec_receive_frame(cctx, frame)
       if code == 0
         t0 = Time.instant
-        if @zc && @hw_transfer && frame.value.format == @@hw_pix_fmt
-          ok = zc_frame(frame)
+        if (@zc || @nv12) && @hw_transfer && frame.value.format == @@hw_pix_fmt
+          ok = @zc ? zc_frame(frame) : vt_frame(frame)
           if !ok && LibEguiCr.video_failed != 0
-            zc_disable
+            zc_disable if @zc
+            nv12_disable if @nv12
             return false
           end
           adapt_tick((Time.instant - t0).total_milliseconds) if @hw_transfer

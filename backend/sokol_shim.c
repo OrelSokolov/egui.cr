@@ -40,6 +40,15 @@
 #define SOKOL_GLCORE
 #endif
 
+#if defined(SOKOL_VULKAN)
+#define SH_VIDEO_ZC 1
+#elif defined(SOKOL_GLCORE) && defined(__APPLE__)
+#define SH_VIDEO_NV12 1
+#endif
+#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_NV12)
+#define SH_VIDEO 1
+#endif
+
 // Not on Android: there sokol_app owns the entry (ANativeActivity_onCreate
 // calls our sokol_main directly) and SOKOL_NO_ENTRY is a hard #error there.
 #if !defined(__ANDROID__)
@@ -841,6 +850,11 @@ static int sh_run_direct(void);
 // SDF deferred-interleave state (defined with the SDF section below;
 // begin/end_pass and the sdf entry points drive it)
 static void sh_sdf_reset(void);
+#if defined(SH_VIDEO_NV12)
+// VideoToolbox plane flush (defined with the video section; called from
+// egui_cr_begin_pass — before it, in file order)
+static void sh_video_flush(void);
+#endif
 static void sh_sdf_stash(int apply_clip, float cx, float cy, float cw,
                          float ch, const float* inst, int count, int copy,
                          int stencil, uint32_t view);
@@ -2086,6 +2100,11 @@ void egui_cr_begin_pass(int w, int h) {
     if (!sh_gl_ok()) return;
     if (g_pass_open) { sg_end_pass(); sg_commit(); g_pass_open = false; }
     sh_sdf_reset(); // deferred SDF batches from the abandoned frame die
+#if defined(SH_VIDEO_NV12)
+    // VideoToolbox plane upload — must run OUTSIDE a pass (sokol rule),
+    // newest frame per tick (VALIDATE_UPDIMG_ONCE). See sh_video_flush.
+    sh_video_flush();
+#endif
     // Direct path: nothing else keeps g_pkt_ppp fresh (egui_cr_set_ppp
     // is only called by the detached produce loop), yet the mesh3d
     // restore divides by it — a stale 0 turns the restored ortho into
@@ -3486,11 +3505,14 @@ static const char SH_VIDEO_VS[] =
     "#version 300 es\n"
     "precision highp float;\n"
 #endif
-    "layout(std140) uniform video_vs_t { mat4 mvp; } vs;\n"
+    // PLAIN uniforms, not a std140 block: sokol's GL backend feeds
+    // members by name through glUniform*, which cannot reach inside a
+    // named uniform block (the SDF shaders do the same)
+    "uniform mat4 mvp;\n"
     "layout(location = 0) in vec2 pos;\n"
     "layout(location = 1) in vec2 uv0;\n"
     "layout(location = 0) out vec2 v_uv;\n"
-    "void main() { v_uv = uv0; gl_Position = vs.mvp * vec4(pos, 0.0, 1.0); }\n";
+    "void main() { v_uv = uv0; gl_Position = mvp * vec4(pos, 0.0, 1.0); }\n";
 
 static const char SH_VIDEO_FS[] =
 #if defined(SOKOL_GLCORE)
@@ -3499,15 +3521,22 @@ static const char SH_VIDEO_FS[] =
     "#version 300 es\n"
     "precision highp float;\n"
 #endif
-    "layout(std140) uniform video_fs_t { mat3 cmat; vec4 range; } fs;\n"
+    // plain uniforms (see SH_VIDEO_VS) — the mat3 rides as 3 vec4
+    // columns: sokol's uniform types have no MAT3, and GL binds
+    // per-member anyway (same byte layout the Vulkan block reflects)
+    "uniform vec4 cmat0;\n"
+    "uniform vec4 cmat1;\n"
+    "uniform vec4 cmat2;\n"
+    "uniform vec4 range;\n"
     "uniform sampler2D y_smp;\n"
     "uniform sampler2D uv_smp;\n"
     "layout(location = 0) in vec2 v_uv;\n"
     "layout(location = 0) out vec4 frag_color;\n"
     "void main() {\n"
-    "    float y = texture(y_smp, v_uv).r * fs.range.x + fs.range.y;\n"
-    "    vec2 uvr = texture(uv_smp, v_uv).rg * fs.range.zw;\n"
-    "    vec3 rgb = fs.cmat * vec3(y, uvr.x + fs.range.w, uvr.y + fs.range.w);\n"
+    "    float y = texture(y_smp, v_uv).r * range.x + range.y;\n"
+    "    vec2 uv = texture(uv_smp, v_uv).rg * range.z + range.w;\n"
+    "    mat3 cmat = mat3(cmat0.xyz, cmat1.xyz, cmat2.xyz);\n"
+    "    vec3 rgb = cmat * vec3(y, uv.x, uv.y);\n"
     "    frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n"
     "}\n";
 #endif // !SOKOL_VULKAN
@@ -3524,11 +3553,22 @@ static void sh_video_pipeline_ensure(void) {
     sd.uniform_blocks[0].stage = SG_SHADERSTAGE_VERTEX;
     sd.uniform_blocks[0].size = 64;
     sd.uniform_blocks[0].spirv_set0_binding_n = 0;
-    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "video_vs_t";
+    sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "mvp";
+    sd.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
     sd.uniform_blocks[1].stage = SG_SHADERSTAGE_FRAGMENT;
     sd.uniform_blocks[1].size = 64; // mat3 48 + vec4 16, std140 layout
     sd.uniform_blocks[1].spirv_set0_binding_n = 1;
-    sd.uniform_blocks[1].glsl_uniforms[0].glsl_name = "video_fs_t";
+    // GL binds the std140 mat3 column-wise: 3 FLOAT4 members (this
+    // sokol has no MAT3 uniform type) — same byte layout the Vulkan
+    // block reflects as a real mat3
+    sd.uniform_blocks[1].glsl_uniforms[0].glsl_name = "cmat0";
+    sd.uniform_blocks[1].glsl_uniforms[0].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[1].glsl_uniforms[1].glsl_name = "cmat1";
+    sd.uniform_blocks[1].glsl_uniforms[1].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[1].glsl_uniforms[2].glsl_name = "cmat2";
+    sd.uniform_blocks[1].glsl_uniforms[2].type = SG_UNIFORMTYPE_FLOAT4;
+    sd.uniform_blocks[1].glsl_uniforms[3].glsl_name = "range";
+    sd.uniform_blocks[1].glsl_uniforms[3].type = SG_UNIFORMTYPE_FLOAT4;
     for (int i = 0; i < 2; i++) {
         sd.views[i].texture.stage = SG_SHADERSTAGE_FRAGMENT;
         sd.views[i].texture.image_type = SG_IMAGETYPE_2D;
@@ -3576,10 +3616,10 @@ static void sh_video_pipeline_ensure(void) {
     SH_LAZY_UNLOCK();
 }
 
-// ---- zero-copy video textures (dmabuf → VkImage → sg image) ---------------
+// ---- fast video textures ---------------------------------------------------
 //
-// The A thread decodes (VAAPI) and maps the surface to a dmabuf
-// descriptor (ffmpeg av_hwframe map — see examples/video/player.cr); the
+// Vulkan (Linux): zero-copy — the A thread decodes (VAAPI) and maps the
+// surface to a dmabuf descriptor (see examples/video/player.cr); the
 // descriptor rides the packet as an SH_TEX_VIDEOFRAME op; the RENDER
 // thread imports it here: one VkDeviceMemory per dmabuf, two VkImages
 // bound at the plane offsets, each wrapped into an sg image via the
@@ -3587,26 +3627,36 @@ static void sh_video_pipeline_ensure(void) {
 // sgl-layer segment, kind 3) samples both planes through the video
 // pipeline with the frame's colorimetry uniforms.
 //
-// GL backends: no path — egui_cr_video_supported() answers 0 and the
-// player keeps the copy-back pipeline.
-
-#if defined(SOKOL_VULKAN)
+// macOS (GL): VideoToolbox copy-back — the A thread decodes through
+// ffmpeg's videotoolbox hwcontext and transfers the frame back to CPU
+// NV12/P010 (mpv's --hwdec=videotoolbox-copy); the planes ride
+// egui_cr_video_frame_nv12 into a pending slot and flush here as two GL
+// stream images (Y: R8/R16, UV: RG8/RG16). The same video pipeline does
+// YUV→RGB on the GPU — no sws_scale RGBA conversion, no per-pixel CPU
+// work. macOS renders DIRECT (no packet mailbox), so the flush runs in
+// begin_pass (outside the sg pass, one sg_update_image per plane per
+// frame) and egui_cr_pkt_video stashes the quad directly — the paint
+// call IS the render thread there.
+//
+// Other GL builds: no path — egui_cr_video_supported() answers 0 and
+// the player keeps the copy-back pipeline.
+// (The SH_VIDEO_ZC / SH_VIDEO_NV12 / SH_VIDEO backend macros live at
+// the top of the file — first use is in egui_cr_begin_pass, far above.)
 
 #define SH_VIDEO_MAX 8
-#define DRM_FORMAT_MOD_LINEAR 0ULL
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <dirent.h>
-#include <errno.h>
 
-static sg_buffer g_video_vbuf;
-static void sh_video_vbuf_ensure(void);
+#if defined(SH_VIDEO_NV12)
+// Pending-frame header; the packed planes (Y then UV) follow in the
+// same malloc. Newest wins — the flush picks up whatever the A side
+// pushed last (the mailbox coalescing of the detached path).
+typedef struct {
+    int w, h, tenbit;
+    float cmat[12];
+    float range[4];
+} sh_video_nv12_t;
+#endif
 
-// Extension function: fetched per device (the loader exports only core)
-typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR_t)(
-    VkDevice, VkExternalMemoryHandleTypeFlagBits, int, VkMemoryFdPropertiesKHR*);
-static PFN_vkGetMemoryFdPropertiesKHR_t sh_vk_get_fd_props;
-
+#if defined(SH_VIDEO_ZC)
 // imported plane-set cache: the VA decode pool cycles a fixed set of
 // surfaces (pool_size 20 + extra_hw_frames 8 on the player side), so
 // the SAME dma-buf object (same inode — export dups get a fresh fd
@@ -3626,18 +3676,51 @@ typedef struct {
     VkDeviceMemory mem;
     sg_image y_sg, uv_sg;     // sg wrappers (injected)
 } sh_video_import_t;
+#endif
 
+#ifdef SH_VIDEO
 typedef struct {
     uint32_t id;
     int w, h;
+    #if defined(SH_VIDEO_ZC)
     sh_video_import_t cur;    // what the draw samples right now
     sh_video_import_t cache[SH_VIDEO_CACHE];
     int cache_next;           // round-robin eviction
+    #else
+    sg_image y, uv;           // CPU-uploaded planes (R8/RG8, R16/RG16)
+    int tenbit;
+    sh_video_nv12_t* pend;    // newest not-yet-uploaded frame
+    #endif
     float cmat[12];           // std140 mat3 layout (3 padded columns)
     float range[4];
 } sh_video_t;
 static sh_video_t g_video_tab[SH_VIDEO_MAX];
 static _Atomic int g_video_fail; // 1 after any import failure → fallback
+
+static sh_video_t* sh_video_find(uint32_t id) {
+    for (int i = 0; i < SH_VIDEO_MAX; i++)
+        if (g_video_tab[i].id == id) return &g_video_tab[i];
+    return NULL;
+}
+
+// shared vertex ring for the video quads (see sh_video_vbuf_ensure)
+static sg_buffer g_video_vbuf;
+static void sh_video_vbuf_ensure(void);
+#endif // SH_VIDEO
+
+#if defined(SOKOL_VULKAN)
+
+#define DRM_FORMAT_MOD_LINEAR 0ULL
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
+#include <errno.h>
+
+// Extension function: fetched per device (the loader exports only core)
+typedef VkResult (VKAPI_PTR *PFN_vkGetMemoryFdPropertiesKHR_t)(
+    VkDevice, VkExternalMemoryHandleTypeFlagBits, int, VkMemoryFdPropertiesKHR*);
+static PFN_vkGetMemoryFdPropertiesKHR_t sh_vk_get_fd_props;
+
 // fd bookkeeping (diagnostics): dups by the A side vs closes/eats
 static int g_zc_fd_dup, g_zc_fd_close, g_zc_fd_eaten;
 static int g_zc_last_dup, g_zc_last_eaten;
@@ -3699,12 +3782,6 @@ typedef struct {
     float cmat[12]; // std140 mat3: 3 vec4-padded columns (see the shader)
     float range[4];
 } sh_video_frame_t;
-
-static sh_video_t* sh_video_find(uint32_t id) {
-    for (int i = 0; i < SH_VIDEO_MAX; i++)
-        if (g_video_tab[i].id == id) return &g_video_tab[i];
-    return NULL;
-}
 
 static VkFormat sh_video_vk_format(uint32_t fourcc) {
     switch (fourcc) {
@@ -3984,6 +4061,82 @@ static void sh_video_entry_destroy(sh_video_t* v) {
 
 #endif // SOKOL_VULKAN
 
+#if defined(SH_VIDEO_NV12)
+// GL entry teardown: destroy the plane images, drop the pending frame.
+static void sh_video_entry_destroy(sh_video_t* v) {
+    if (v->y.id) sg_destroy_image(v->y);
+    if (v->uv.id) sg_destroy_image(v->uv);
+    v->y = (sg_image){0};
+    v->uv = (sg_image){0};
+    free(v->pend);
+    v->pend = NULL;
+    v->w = v->h = v->tenbit = 0;
+    v->id = 0;
+}
+
+// Flush the newest pending NV12/P010 frame into the plane images.
+// Runs in egui_cr_begin_pass BEFORE the sg pass opens (sokol allows
+// sg_update_image only between passes, at most once per image and
+// frame — the pending slot above is the coalescing that guarantees
+// both on the direct path).
+static void sh_video_flush(void) {
+    for (int i = 0; i < SH_VIDEO_MAX; i++) {
+        sh_video_t* v = &g_video_tab[i];
+        sh_video_nv12_t* f = v->pend;
+        if (!f) continue;
+        v->pend = NULL;
+        int bpp = f->tenbit ? 2 : 1;
+        int uvh = (f->h + 1) / 2;
+        if (v->y.id == 0 || v->w != f->w || v->h != f->h ||
+            v->tenbit != f->tenbit) {
+            if (v->y.id) sg_destroy_image(v->y);
+            if (v->uv.id) sg_destroy_image(v->uv);
+            v->y = sg_make_image(&(sg_image_desc){
+                .width = f->w, .height = f->h,
+                .pixel_format = f->tenbit ? SG_PIXELFORMAT_R16
+                                          : SG_PIXELFORMAT_R8,
+                .usage = {.dynamic_update = true},
+                .label = "egui-cr-video-y"});
+            v->uv = sg_make_image(&(sg_image_desc){
+                .width = (f->w + 1) / 2, .height = uvh,
+                .pixel_format = f->tenbit ? SG_PIXELFORMAT_RG16
+                                          : SG_PIXELFORMAT_RG8,
+                .usage = {.dynamic_update = true},
+                .label = "egui-cr-video-uv"});
+            if (!v->y.id || !v->uv.id) {
+                if (getenv("EGUI_VIDEO_DEBUG"))
+                    fprintf(stderr,
+                            "[video] plane image creation failed %dx%d\n",
+                            f->w, f->h);
+                g_video_fail = 1;
+                free(f);
+                continue;
+            }
+            v->w = f->w;
+            v->h = f->h;
+            v->tenbit = f->tenbit;
+        }
+        const unsigned char* ypx = (const unsigned char*)(f + 1);
+        const unsigned char* uvpx = ypx + (size_t)f->w * f->h * bpp;
+        sg_image_data d;
+        memset(&d, 0, sizeof d);
+        d.mip_levels[0].ptr = ypx;
+        d.mip_levels[0].size = (size_t)f->w * f->h * bpp;
+        sg_update_image(v->y, &d);
+        d.mip_levels[0].ptr = uvpx;
+        d.mip_levels[0].size =
+            (size_t)((f->w + 1) / 2) * uvh * 2 * bpp; // RG8/RG16: 2 B/sample
+        sg_update_image(v->uv, &d);
+        // _sg_gl_update_image rebinds textures behind the state cache's
+        // back (see sh_tex_upload) — reset it or the next draw samples a
+        // stale slot.
+        sg_reset_state_cache();
+        memcpy(v->cmat, f->cmat, sizeof v->cmat);
+        memcpy(v->range, f->range, sizeof v->range);
+        free(f);
+    }
+}
+#endif // SH_VIDEO_NV12
 // Extend the instance-append ring to exactly `cap` slots, creating only
 // the new buffers; `g_sdf_ring_next` stays put. Called from sh_draw_sdf
 // when every existing slot is full for this frame, after sh_sdf_ensure,
@@ -4262,7 +4415,7 @@ static void sh_clip_stash(int kind, int apply_clip, float x, float y,
     sgl_layer(++g_sdf_layer);
 }
 
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO)
 // Draw one stashed video segment (sgl-layer walk, kind 3). Geometry in
 // POINTS — the same ortho the replay pass loads (sgl_ortho(0,w,h,0));
 // rect in s->rtl..rbl, clip in s->cx..ch, video id in s->view.
@@ -4270,7 +4423,11 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     sh_video_pipeline_ensure();
     if (g_video_state != 1) return;
     sh_video_t* v = sh_video_find(s->view);
+#if defined(SH_VIDEO_ZC)
     if (!v || !v->cur.y_sg.id || !v->cur.uv_sg.id) return;
+#else
+    if (!v || !v->y.id || !v->uv.id) return;
+#endif
     if (w_pts <= 0.0f || h_pts <= 0.0f) return;
     float ppp = (float)g_fb_w / w_pts;
     if (s->apply_clip) {
@@ -4322,10 +4479,17 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     b.vertex_buffers[0] = g_video_vbuf;
     b.vertex_buffer_offsets[0] = off;
     if (!g_linear_sampler.id) sh_sampler_ensure();
+#if defined(SH_VIDEO_ZC)
     b.views[0] = sg_make_view(&(sg_view_desc){
         .texture = {.image = v->cur.y_sg}, .label = "egui-cr-video-y-view"});
     b.views[1] = sg_make_view(&(sg_view_desc){
         .texture = {.image = v->cur.uv_sg}, .label = "egui-cr-video-uv-view"});
+#else
+    b.views[0] = sg_make_view(&(sg_view_desc){
+        .texture = {.image = v->y}, .label = "egui-cr-video-y-view"});
+    b.views[1] = sg_make_view(&(sg_view_desc){
+        .texture = {.image = v->uv}, .label = "egui-cr-video-uv-view"});
+#endif
     b.samplers[0] = g_linear_sampler;
     b.samplers[1] = g_linear_sampler;
     sg_apply_pipeline(g_video_pip);
@@ -4361,12 +4525,12 @@ static void sh_video_stash(int apply_clip, float x, float y, float w,
     s->view = vid;
     sgl_layer(++g_sdf_layer);
 }
-#endif // SOKOL_VULKAN
+#endif // SH_VIDEO
 
-// A-side API. On GL builds every entry point degrades (supported() = 0,
-// frames/ops dropped) and the player keeps its copy-back pipeline.
+// A-side API. Unsupported builds degrade (supported() = 0, frames/ops
+// dropped) and the player keeps its copy-back pipeline.
 int egui_cr_video_supported(void) {
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO_ZC)
     // llvmpipe (xvfb/CI, software rasterizers) cannot import dmabufs:
     // the failed vkAllocateMemory cascade-kills the VA decode context
     // (ffmpeg dies inside its error path). Zero-copy is for real GPUs.
@@ -4379,6 +4543,8 @@ int egui_cr_video_supported(void) {
                  strstr(props.deviceName, "lavapipe") ? 0 : 1;
     }
     return cached;
+#elif defined(SH_VIDEO_NV12)
+    return 1; // plane upload works everywhere GL does
 #else
     return 0;
 #endif
@@ -4387,7 +4553,7 @@ int egui_cr_video_supported(void) {
 // Video texture ids: 0x40000000+ so they never collide with packet
 // texture ids — the texop coalescing is keyed by id.
 uint32_t egui_cr_video_create(void) {
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO)
     static _Atomic uint32_t next_id = 0x40000001;
     return next_id++;
 #else
@@ -4444,19 +4610,76 @@ int egui_cr_video_last_fd(void) {
 }
 
 int egui_cr_video_failed(void) {
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO)
     return (int)g_video_fail;
 #else
     return 0;
 #endif
 }
 
-// Destroy a video texture (frame release/close): post-pass — the frame
-// being presented may still sample it.
+// Destroy a video texture (frame release/close). Detached (Vulkan):
+// post-pass — the frame being presented may still sample it. Direct
+// (macOS): the paint list no longer references the id and the previous
+// frame is fully presented — tear down immediately.
 void egui_cr_video_destroy(uint32_t id) {
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO_ZC)
     if (!sh_run_direct())
         sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
+#elif defined(SH_VIDEO_NV12)
+    sh_video_t* v = sh_video_find(id);
+    if (v) sh_video_entry_destroy(v);
+#endif
+}
+
+// Queue one decoded VideoToolbox frame (macOS direct path): pack the
+// two NV12/P010 planes (row-memcpy — VideoToolbox rows are padded past
+// width) into the entry's pending slot; the flush at the next
+// begin_pass turns them into plane-image updates. Newest frame wins.
+void egui_cr_video_frame_nv12(uint32_t id, int w, int h,
+                              const void* y, int y_stride,
+                              const void* uv, int uv_stride,
+                              int tenbit, const float* cmat,
+                              const float* range) {
+#if defined(SH_VIDEO_NV12)
+    if (w <= 0 || h <= 0 || !y || !uv || y_stride <= 0 || uv_stride <= 0)
+        return;
+    sh_video_t* v = sh_video_find(id);
+    if (!v) {
+        for (int i = 0; i < SH_VIDEO_MAX; i++) {
+            if (g_video_tab[i].id == 0) { v = &g_video_tab[i]; break; }
+        }
+        if (!v) return;
+        memset(v, 0, sizeof *v);
+        v->id = id;
+    }
+    int bpp = tenbit ? 2 : 1;
+    // Y: R8/R16 (bpp bytes/sample); UV: RG8/RG16 (2 bpp bytes/sample
+    // — one U+V pair), so a UV row is (w/2)*2*bpp bytes
+    size_t ysz = (size_t)w * h * bpp;
+    size_t uvsz = (size_t)((w + 1) / 2) * ((h + 1) / 2) * 2 * bpp;
+    sh_video_nv12_t* f =
+        (sh_video_nv12_t*)malloc(sizeof *f + ysz + uvsz);
+    if (!f) return;
+    f->w = w;
+    f->h = h;
+    f->tenbit = tenbit ? 1 : 0;
+    memcpy(f->cmat, cmat, sizeof f->cmat);
+    memcpy(f->range, range, sizeof f->range);
+    unsigned char* dy = (unsigned char*)(f + 1);
+    const unsigned char* sy = (const unsigned char*)y;
+    size_t row = (size_t)w * bpp;
+    for (int r = 0; r < h; r++)
+        memcpy(dy + (size_t)r * row, sy + (size_t)r * y_stride, row);
+    unsigned char* duv = dy + ysz;
+    const unsigned char* suv = (const unsigned char*)uv;
+    size_t urow = (size_t)((w + 1) / 2) * 2 * bpp;
+    for (int r = 0; r < (h + 1) / 2; r++)
+        memcpy(duv + (size_t)r * urow, suv + (size_t)r * uv_stride, urow);
+    free(v->pend); // superseded pending — newest wins
+    v->pend = f;
+#else
+    (void)id; (void)w; (void)h; (void)y; (void)y_stride;
+    (void)uv; (void)uv_stride; (void)tenbit; (void)cmat; (void)range;
 #endif
 }
 
@@ -4557,7 +4780,7 @@ static void sh_sdf_frame(float w_pts, float h_pts) {
         for (int i = 0; i < g_sdf_segs_n; i++) {
             const sh_sdf_seg_t* s = &g_sdf_segs[i];
             if (s->layer != l) continue;
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO)
             if (s->kind == 3) {
                 sh_draw_video(s, w_pts, h_pts);
                 continue;
@@ -7403,24 +7626,35 @@ static void egui_cr_pkt_publish(void) {
 }
 
 void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
+#endif // _SAPP_LINUX || _SAPP_WIN32
+
+// One glyph quad = 12 floats (x0,y0,x1,y1, u0,v0,u1,v1, r,g,b,a) — the
+// layout of both the pkt builder below (detached) and sh_text_run
+// (direct path) — hence the common spot outside the platform guards.
+#define SH_TEXT_FLOATS 12
 
 // Video quad op: rect + ambient clip (POINTS), id from
-// egui_cr_video_create. GL builds record nothing — the player never
-// emits it there (video_supported() = 0). The non-detached stub lives
-// with the other pkt stubs below.
+// egui_cr_video_create. Vulkan rides the opstream to the render
+// thread; macOS renders DIRECT (no mailbox) — the paint call IS the
+// render thread, so the quad stashes right here (kind-3 segment,
+// drawn at end_pass like the SDF batches). Other builds record
+// nothing — the player never emits it there (video_supported() = 0).
 void egui_cr_pkt_video(float x, float y, float w, float h,
                        float cx, float cy, float cw, float ch,
                        uint32_t vid) {
-#if defined(SOKOL_VULKAN)
+#if defined(SH_VIDEO_ZC)
     uint32_t o[10] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
                        sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
                        sh_f2u(ch), vid };
     sh_push_words(o, 10);
+#elif defined(SH_VIDEO_NV12)
+    sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch, vid);
 #else
     (void)x; (void)y; (void)w; (void)h;
     (void)cx; (void)cy; (void)cw; (void)ch; (void)vid;
 #endif
 }
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // pkt builder continues
 
 static void egui_cr_pkt_scissor(float x, float y, float w, float h) {
     uint32_t o[5] = { SH_OP_SCISSOR, sh_f2u(x), sh_f2u(y), sh_f2u(w), sh_f2u(h) };
@@ -7493,7 +7727,6 @@ static void egui_cr_pkt_mesh3d(const float* mvp, int blend, int prim,
 // 0..255 straight alpha): x0,y0,x1,y1, u0,v0,u1,v1, r,g,b,a. One op
 // replaces ~5 sgl wrapper calls per GLYPH the per-vertex path made —
 // the whole run draws as a single sgl quads bracket on the render side.
-#define SH_TEXT_FLOATS 12
 static void egui_cr_pkt_text(uint32_t view_id, const float* v,
                              int count, int stencil) {
     if (count <= 0 || !v) return;
@@ -7882,6 +8115,7 @@ void egui_cr_pkt_blocker(float x, float y, float w, float h, float z,
     s->horizontal = can_h;
     s->blocker = 1;
 }
+#endif // _SAPP_LINUX || _SAPP_WIN32
 
 // ---- R-side texture table -----------------------------------------------------
 // id → (sg_image, sg_view). Ids are allocated on A (atomic counter) and
@@ -7960,6 +8194,7 @@ static void sh_text_run(uint32_t view_id, const float* v, int count,
     sgl_pop_pipeline();
     sgl_disable_texture();
 }
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // pkt replay continues
 
 static void sh_tex_upload(sh_tex_t* t, const void* data, size_t size) {
     sg_image_data d;
@@ -8896,6 +9131,23 @@ static void sh_shot(sh_packet_t* p) {
 
 static sh_texop_t* g_post_pending;
 static int g_post_pending_n;
+#endif // _SAPP_LINUX || _SAPP_WIN32
+
+// The screenshot path is shared by every backend (Crystal calls
+// egui_cr_screenshot_request unconditionally), so it lives outside the
+// detached-mailbox guard. macOS — single-threaded direct rendering —
+// needs no atomics: plain loads/stores replace the ones above.
+#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32)
+#include <time.h>
+typedef int sh_atom_i;
+static int sh_ai_load(sh_atom_i* v) { return *v; }
+static void sh_ai_store(sh_atom_i* v, int x) { *v = x; }
+static double sh_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (double)ts.tv_sec + (double)ts.tv_nsec * 1e-9;
+}
+#endif
 
 // ---- one-shot app screenshot (--screenshot <path>) -----------------------
 //
@@ -8975,7 +9227,7 @@ void egui_cr_screenshot_free(void) {}
 static void sh_screenshot_try(int w, int h) { (void)w; (void)h; }
 #endif
 
-
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // detached mailbox continues
 // Window position cache: R refreshes it every few ticks (on its own
 // connection / window thread) so A reads a slightly stale position
 // instead of a condvar roundtrip. Without the cache a per-frame position

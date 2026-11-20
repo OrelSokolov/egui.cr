@@ -168,8 +168,7 @@ SHIM_HEADERS.each do |shim, headers|
   # the backend stamp gates the sokol shim: a BACKEND flip recompiles it
   prereqs = ["backend/#{shim}.c"] + headers
   prereqs << NATIVE_BACKEND_STAMP if shim == "sokol_shim"
-  file obj => prereqs do
-    FileUtils.mkdir_p("lib")
+  file obj => prereqs do    FileUtils.mkdir_p("lib")
     if WINDOWS
       includes = case shim
         when "sokol_shim"        then "/Ivendor\\sokol /Ivendor\\fontstash /Ivendor"
@@ -196,6 +195,39 @@ SHIM_HEADERS.each do |shim, headers|
       end
       sh "cc -O2 #{args} -c backend/#{shim}.c -o #{obj}"
     end
+  end
+end
+
+# Video-pool helper archive (backend/video_pool.c): avutil-linked C kept
+# out of the core shim — only the video example links it (see the link
+# flags in #build_examples). The libva export/sync bodies are Linux-only
+# (#ifdef'd in the source); on macOS/Windows the generic hwcontext pool
+# helpers remain and the VAAPI entry points answer -1.
+VIDEO_POOL_OBJ = "lib/video_pool#{OBJ_EXT}"
+VIDEO_POOL_LIB = WINDOWS ? "lib/libegui_video.lib" : "lib/libegui_video.a"
+file VIDEO_POOL_OBJ => ["backend/video_pool.c"] do
+  FileUtils.mkdir_p("lib")
+  inc = %x{pkg-config --cflags-only-I libavutil 2>/dev/null}.strip
+  if inc.empty?
+    %w[/opt/homebrew/include /usr/local/include /usr/include].each do |dir|
+      break inc = "-I#{dir}" if File.exist?(File.join(dir, "libavutil", "hwcontext.h"))
+    end
+  end
+  if WINDOWS
+    msvc("cl /nologo /O2 /MD /std:c11 /c backend\\video_pool.c #{inc} " \
+         "/Fo#{VIDEO_POOL_OBJ.tr('/', '\\')}")
+  else
+    sh "cc -O2 #{inc} -c backend/video_pool.c -o #{VIDEO_POOL_OBJ}"
+  end
+end
+file VIDEO_POOL_LIB => [VIDEO_POOL_OBJ] do
+  FileUtils.mkdir_p("lib")
+  FileUtils.rm_f(VIDEO_POOL_LIB)
+  if WINDOWS
+    msvc("lib /NOLOGO /OUT:#{VIDEO_POOL_LIB.tr('/', '\\')} " \
+         "#{VIDEO_POOL_OBJ.tr('/', '\\')}")
+  else
+    sh "ar rcs #{VIDEO_POOL_LIB} #{VIDEO_POOL_OBJ}"
   end
 end
 
@@ -430,6 +462,8 @@ def build_examples(names, opt_flags, label)
   lib_flag = "#{lib_flag} -lvulkan" if VULKAN
   # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
   jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
+  # the video example links the helper archive — build it first
+  Rake::Task[VIDEO_POOL_LIB].invoke if names.include?("video")
   warm_compiler_caches(jobs, opt_flags, lib_flag)
   queue = names.dup
   queue.extend(MonitorMixin) # pop from worker threads
