@@ -259,3 +259,18 @@ describe "vue key-event modifiers" do
     Egui::Exml.warnings.any?(&.includes?("event modifiers")).should be_true
   end
 end
+
+describe "vue v-bind spread" do
+  it "renames bare v-bind= → props= (a dict slot name)" do
+    n = vue_nodes(%(<propped v-bind="settings"/>))
+    n[0].attrs["props"].should eq("settings")
+    Egui::Exml.warnings.should be_empty
+  end
+
+  it "warns on an expression value but keeps the spread" do
+    n = vue_nodes(%(<propped v-bind="{...settings}"/>))
+    n[0].attrs["props"].should eq("{...settings}")
+    Egui::Exml.warnings.any?(&.includes?("expressions are not supported"))
+      .should be_true
+  end
+end

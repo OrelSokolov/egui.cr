@@ -29,7 +29,7 @@
 |---|---|---|---|
 | 5 | `@keyup.enter="save"` | хоткей-биндинг | значение — по-прежнему голое имя экшена, `.enter` — ИМЯ КЛАВИШИ, не выражение. Десугар в атрибут `hotkey="enter"` + `on_keyup="save"`; рендерер регистрирует через `ctx.hotkeys.bind` (hotkeys.cr:177). Снимает давнее ограничение exml «hotkeys — markup показывает только hint» (exml.cr:29-30) — шапку обновить. Ограничить `Hotkey.parse?`-набором (enter/esc/tab, ctrl+…), остальное — issue |
 | 6 | `<component :is="name">` | `is="slot"` → диспетчеризация | рендерер читает слот (имя элемента), смотрит в `@custom`/`Exml.widgets`; стабильность Id — путь по `component[0]`, состояние разных элементов НЕ общее (это фича) |
-| 7 | `v-bind="settings"` | спред полей слота в пропсы | расширение `seed_props` (exml.cr:999): значение — голое имя слота, его поля сеются как пропсы (конфиг-подобные пропсы). `v-bind="x"` без `:`-аргумента — новый случай в `desugar_vue_attrs` |
+| 7 | `v-bind="settings"` | спред полей слота в пропсы | **СДЕЛАНО (2026-11-20)**: `v-bind="x"` → `props="x"` в `desugar_vue_attrs`; новые dict-слоты `rt.dicts[name]` (Hash, app-owned, как `lists`) + `Runtime#dicts?` с fallback в `ScopedRuntime`; `seed_props` сеет поля слота первыми, явные attrs поверх (Vue 3-приоритет), `props=` не пропс; `props` в `COMMON_ATTRS` (линт). Спеки: vue_aliases_spec (parse), exml_spec (спред + live-мутация dict) |
 | 8 | `v-model:prop="x"` (Vue 3) | двусторонний проп | нужен канал write-back scope→родительский store (`ScopedRuntime` сейчас пишет только локально, exml.cr:1062+): флаг синка на scope, `fire`-подобный путь вверх. Самая большая работа яруса — делать по живой потребности |
 | 9 | `<transition name="fade">` | проводка к appear/`animation:*` | анимационный стек уже есть (appear.cr, ECSS `appear:`/`animation:*`, keyframes); алиас лишь назначает appear-вид по имени. Сначала убедиться, что семантика enter/leave ложится на appear — иначе полусвойство |
 
@@ -59,7 +59,7 @@
 | 3 | `v-for` по нескольким детям (`<template v-for>`) | полдня | те же RectCmd, что у рукописного repeat с N детьми |
 | 4 | `v-model.number` | часы | float-слот после инпута; `.trim` |
 | 5 | `@keyup.enter` → hotkey | ~день | клавиша firing-ает экшен без фокуса; шапка exml.cr обновлена |
-| 6+ | `:is`, `v-bind=`, `v-model:prop`, `<transition>` | по потребности | каждый — отдельный мини-план в этом файле |
+| 6+ | `:is`, `v-model:prop`, `<transition>` | по потребности | каждый — отдельный мини-план в этом файле; `v-bind=`-спред из этого списка сделан (ярус 2 #7) |
 
 Регресс тот же: полный `crystal spec` до/после шага; канонические
 assets/*.exml дают то же дерево (`Exml.warnings` пуст).

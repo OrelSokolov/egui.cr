@@ -924,6 +924,45 @@ describe Egui::Exml do
       .map(&.text).should contain("precision=2 label=Ready plain=x")
   end
 
+  it "v-bind spreads a dict slot into props; explicit attrs win" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><propped v-bind="settings" label="explicit"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    rt.dicts["settings"] = {"precision" => "3", "label" => "spread",
+                            "plain" => "y"}
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(Propped.new)
+
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    # spread fields seed the scope, the explicit label= overrides the
+    # spread one (Vue 3 precedence), verbatim values (app-formatted)
+    ctx.painter.commands.select(Egui::TextCmd)
+      .map(&.text).should contain("precision=3 label=explicit plain=y")
+  end
+
+  it "the v-bind spread follows the parent store in a component scope" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><propped v-bind="settings"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    rt.dicts["settings"] = {"precision" => "1", "plain" => "x"}
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(Propped.new)
+
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ->{ ctx.painter.commands.select(Egui::TextCmd).map(&.text).join }
+    texts.call.should contain("precision=1")
+    texts.call.should contain("plain=x")
+
+    # the app owns the dict — an in-place mutation shows next frame
+    rt.dicts["settings"]["precision"] = "9"
+    exml_frame(ctx, doc.pages.first.children, rt, renderer, time: 0.032)
+    texts.call.should contain("precision=9")
+  end
+
   it "a dynamic prop follows the enclosing store across frames" do
     doc = Egui::Exml.parse(
       %(<page id="p"><propped label="{status}"/></page>)

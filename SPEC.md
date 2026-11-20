@@ -233,6 +233,7 @@ are additive (plans/vue-aliases.md).
 | `@change="save"` / `v-on:change` | `on_change="save"` | |
 | `@keyup.enter="save"` | `hotkey="enter" on_keyup="save"` | key events' dotted suffix is a KEY (`Hotkey` spelling: `enter`, `esc`, `ctrl+enter` via `@keyup.ctrl.enter`) — the key fires the action WINDOW-globally through the regular HotkeyMap, no focus needed; the binding lives while the node is visible and lapses with it |
 | `v-bind:title="x"` / `:title="x"` | `title="{x}"` | value is a slot name; a literal (`:x="5"`) warns and applies as `x="5"` |
+| `v-bind="settings"` (bare, no `:`-arg) | `props="settings"` | the DICT slot's fields (`rt.dicts["settings"]`, app-owned Hash, mutable in place) spread as component use-site props — values verbatim (app-formatted, like every other slot); explicit use-site attrs win over the spread (Vue 3 precedence); re-seeded live every frame; a component scope reads the parent store's dicts; a non-bare value warns |
 | `v-for="item in items"` | synthesized `<repeat for="item" in="items">` | the wrapper takes the element's path; `:key`/`key` and `index` ride the wrapper |
 | `v-for="(item, i) in items"` | …+ `index="i"` | `{i}` interpolates next to `{_i}` |
 | `:key="item.id"` (inside v-for) | `key="id"` | `<var>.` prefix dropped; a bare value is a warned issue |

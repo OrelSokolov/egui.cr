@@ -155,7 +155,9 @@
 # → a synthesized `<repeat>` wrapper, `ref="name"` → `id="name"` (the
 # template-ref registry), `v-model.number`/`.trim` → `numeric=`/
 # `trim=`, `@keyup.enter="save"` → `hotkey="enter"` + `on_keyup=`
-# (window-global, the regular HotkeyMap), and `<template>` — a
+# (window-global, the regular HotkeyMap), `v-bind="settings"` (bare,
+# no `:`-argument) → `props="settings"` — the dict slot's fields
+# spread as use-site props — and `<template>` — a
 # parse-time group wrapper whose children splice into the parent (the
 # group's `v-if`/`v-else` gate copied onto each child; `<template
 # v-for>` repeats the whole group). The values stay OURS — a bare
@@ -811,6 +813,13 @@ module Egui
                        %( in the subset; dropped))
             end
           end
+        when "v-bind"
+          # Bare `v-bind="settings"` (no `:`-argument): the dict
+          # slot's fields spread as use-site props (plans/
+          # vue-aliases2.md §7) — canonical `props=`, resolved at
+          # seed time against the ENCLOSING store
+          expr_warn(path, key, value) unless bare_ref?(value)
+          renames << {key, "props", value}
         when "v-for", "v-else"
           # consumed by the tree pass below
         else
@@ -1354,12 +1363,20 @@ module Egui
       # ENCLOSING store (so `label="{selected}"` is dynamic);
       # structural attrs (if/unless/id) are not props.
       # structural attrs (if/unless/id) are not props, and neither are
-      # the hotkey pair (window-global, not a per-widget value)
+      # the hotkey pair (window-global, not a per-widget value) or
+      # `props=` itself. `props="settings"` (`v-bind=`'s alias) seeds
+      # FIRST — the dict slot's fields spread as props (values
+      # verbatim: the app formatted them, like every other slot);
+      # explicit attrs below WIN over the spread (Vue 3 precedence).
+      # Props are live: re-seeded every frame.
       private def seed_props(node : Node, scope : ScopedRuntime,
                              rt : Runtime) : Nil
+        if (name = node.attrs["props"]?) && (d = rt.dict?(name))
+          d.each { |k, v| scope.strings[k] = v }
+        end
         node.attrs.each do |k, v|
           next if {"if", "unless", "id", "hotkey", "on_keyup",
-                   "on_keydown"}.includes?(k)
+                   "on_keydown", "props"}.includes?(k)
           scope.strings[k] = rt.interpolate(v)
         end
       end
@@ -1403,8 +1420,10 @@ module Egui
     # one is itself an issue.
 
     # Structural attrs every element accepts; the hotkey pair rides
-    # here too — the binding is window-global, not a per-widget prop.
-    COMMON_ATTRS = %w(if unless id hotkey on_keyup on_keydown)
+    # here too — the binding is window-global, not a per-widget prop —
+    # and `props=`, the `v-bind="name"` spread (a store read, not a
+    # per-widget value).
+    COMMON_ATTRS = %w(if unless id hotkey on_keyup on_keydown props)
 
     ATTRS_BY_KIND = {
       Kind::Page      => %w(title),
@@ -1667,6 +1686,12 @@ module Egui
       # allocates nothing.
       property rows : SlotHash(String, Array(Hash(String, String)))
       property lists = {} of String => Array(String)
+      # Dict slots — named field sets the app publishes; `v-bind=
+      # "settings"` spreads a dict's fields as component use-site
+      # props (config-like props). A plain Hash the app OWNS (may
+      # mutate in place), the renderer only reads — same push model
+      # as `lists`.
+      property dicts = {} of String => Hash(String, String)
 
       def initialize
         @strings = SlotHash(String, String).new(@slot_versions)
@@ -1688,7 +1713,12 @@ module Egui
         lists[key]?
       end
 
-      # One key's display string — strings verbatim, floats with two
+      # The fields of a dict slot (`v-bind="name"`); nil = no such
+      # slot — lenient like `rows?`/`list?` (a warn-once at seed
+      # time).
+      def dict?(key : String) : Hash(String, String)?
+        dicts[key]?
+      end
       # decimals, bools as true/false; nil = no such slot. The
       # interpolation hook: ScopedRuntime overrides this for the
       # local-then-parent fallback.
@@ -1836,6 +1866,10 @@ module Egui
 
       def list?(key : String) : Array(String)?
         super || @parent.list?(key)
+      end
+
+      def dict?(key : String) : Hash(String, String)?
+        super || @parent.dict?(key)
       end
 
       def bool(key : String) : Bool
