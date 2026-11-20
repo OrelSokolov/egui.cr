@@ -153,20 +153,92 @@ module Egui
 
       # Walk the run exactly like the draw path does (fractional advances +
       # kerning), yielding (pen_x, glyph) per char. Returns the final pen.
+      # The arithmetic lives in #shape_run — its result is memoized, so a
+      # static run pays one hash lookup per frame instead of a per-char
+      # cmap + kern + cache sweep (see #shape_run).
       def walk(text : String, size : Float64, & : Float64, Glyph -> Nil) : Float64
         return 0.0 if text.empty? || !loaded?
+        run = shape_run(text, size)
+        ids = run.ids
+        pens = run.pens
+        i = 0
+        n = ids.size
+        while i < n
+          yield pens[i], glyph(ids[i], size)
+          i += 1
+        end
+        run.width
+      end
+
+      # One shaped run — the memoized body of #walk: glyph ids and pen
+      # positions per char plus the final width. Shaping is a constant of
+      # the immutable font file (advances and kerning are per-glyph
+      # constants), so a (text, 0.1px size, tracking) always shapes to the
+      # same numbers — no invalidation is ever needed for them, only for
+      # the BAKED flag: an atlas reset wipes the pixels (and #glyph's
+      # epoch check drops the UV cache); #shape_run re-bakes eagerly so
+      # `touch` can never serve stale UVs. This is the hot path a static
+      # frame's `touch` rides: re-touching unchanged text used to re-shape
+      # every run per char (cmap probe + kern + glyph cache lookups, two
+      # tuple allocations per glyph) just to learn everything was already
+      # baked — now it collapses to one cache hit.
+      #
+      # Bounded like the kern cache: clear-on-overflow (a dropped entry
+      # reshapes in one walk — cheaper than LRU bookkeeping on every hit)
+      # and a length filter. The filter is looser than measure cache's
+      # 64 chars: paragraphs are exactly where per-frame re-shaping hurt
+      # most, and draw-side text is widget-rendered, not user churn.
+      private class ShapeRun
+        getter ids = [] of Int32
+        getter pens = [] of Float64
+        property baked = false
+        property width : Float64
+
+        def initialize(@width : Float64 = 0.0)
+        end
+      end
+
+      SHAPE_CACHE_TEXT_MAX = 256
+      SHAPE_CACHE_MAX      = 4096
+      @shape_cache = {} of {String, Int32, Int32} => ShapeRun
+
+      private def shape_run(text : String, size : Float64) : ShapeRun
+        key = {text, size_key(size), size_key(@letter_spacing)}
+        if (run = @shape_cache[key]?)
+          if run.baked && @atlas_epoch == @atlas.epoch
+            return run # every glyph baked, UVs valid — nothing to do
+          end
+          if @atlas_epoch != @atlas.epoch
+            # A (shared-)atlas reset wiped the pixels — the story #glyph
+            # tells lazily, told here eagerly: drop the UV cache, re-bake
+            # every glyph of the run on the spot.
+            @atlas_epoch = @atlas.epoch
+            @glyphs.clear
+          end
+          run.ids.each { |gid| glyph(gid, size) }
+          run.baked = true
+          return run
+        end
+        run = ShapeRun.new
         pen = 0.0
         prev = 0
         text.each_char_with_index do |ch, idx|
           gid = glyph_index(ch.ord)
           pen += kern_at(prev, gid, size) if prev > 0
           pen += letter_spacing if idx > 0
-          g = glyph(gid, size)
-          yield pen, g
+          g = glyph(gid, size) # bakes on first sight
+          run.ids << gid
+          run.pens << pen
           pen += g.advance
           prev = gid
         end
-        pen
+        run.width = pen
+        run.baked = true # shape_run bakes every glyph it records
+        if text.size <= SHAPE_CACHE_TEXT_MAX
+          @shape_cache.clear if @shape_cache.size >= SHAPE_CACHE_MAX
+          @shape_cache[key] = run
+        end
+        run
       end
 
       # Memoized kerning in front of the backend FFI: kerning is a
@@ -227,6 +299,7 @@ module Egui
         @atlas.reset
         @atlas_epoch = @atlas.epoch
         @glyphs.clear
+        @shape_cache.clear # every run's baked flag is now a lie
         true
       end
 
@@ -289,8 +362,14 @@ module Egui
       # uploaded first (see flush). `scale` = framebuffer pixels per point —
       # glyphs are rasterized at the physical size (crisp on retina); 1.0
       # for callers without a window (specs, fontpreview tabs).
+      #
+      # Memoized through #shape_run: on a static frame this used to
+      # re-shape every command's text per char only to learn every glyph
+      # was already baked; now the baked+epoch hit returns without
+      # touching anything.
       def touch(cmd : Egui::TextCmd, scale : Float64 = 1.0) : Nil
-        walk(cmd.text, cmd.size * scale) { |_, _| }
+        return if cmd.text.empty? || !loaded?
+        shape_run(cmd.text, cmd.size * scale)
       end
 
       # Upload dirty atlas regions to the GPU. Must run outside a pass.

@@ -14,18 +14,13 @@ require "../examples/html_gallery_components/html_gallery_app"
 WIDTH  = (ENV["BENCH_W"]? || "1100").to_f64
 HEIGHT = (ENV["BENCH_H"]? || "800").to_f64
 
-# Real font stack, like Sokol#on_init picks one — forced to the pure
-# Crystal backend (what release ships): the headless monospace
-# estimate would make measure() free and the bench would measure a
-# different program than the one shipping.
+# Real font stack, like Sokol#on_init picks one — the same
+# SystemPorts::Fonts.search_paths the live backend feeds its loaders
+# (SFNS on macOS, DejaVu on Linux, Segoe on win32). A hand-picked
+# Linux list would run fontless on macOS — measure() free — and the
+# bench would measure a different program than the one shipping.
 def bench_font : Egui::Driver::CrystalFonts?
-  paths = [
-    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/liberation/LiberationMono-Regular.ttf",
-    "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-    "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
-    "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
-  ].select { |p| File.exists?(p) }
+  paths = Egui::SystemPorts::Fonts.search_paths
   return nil if paths.empty?
   Egui::Driver::CrystalFonts.from_system(paths)
 end
