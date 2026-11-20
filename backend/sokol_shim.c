@@ -4328,9 +4328,18 @@ static void sh_video_flush_mtl(sh_video_t* v) {
         int w = (int)CVPixelBufferGetWidth(cvb);
         int h = (int)CVPixelBufferGetHeight(cvb);
         // 'P010' vs '420v'/'420f' — the pixel format picks the plane
-        // texture formats (and the R8/RG8 vs R16/RG16 sg wrappers)
-        int tenbit = CVPixelBufferGetPixelFormatType(cvb) ==
-                     kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange;
+        // texture formats (and the R8/RG8 vs R16/RG16 sg wrappers).
+        // Both 10-bit biplanar tags exist: 'x420' (video range) and
+        // 'xf20' (FULL range — Sony/etc cameras, color_range=pc); the
+        // byte layout is identical (10 bits in the high half of each
+        // 16-bit sample), only the luma ladder differs (CPU side).
+        OSType cvfmt = CVPixelBufferGetPixelFormatType(cvb);
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[mtl] cvb fourcc='%c%c%c%c' %dx%d\n",
+                    (char)(cvfmt >> 24), (char)(cvfmt >> 16),
+                    (char)(cvfmt >> 8), (char)cvfmt, w, h);
+        int tenbit = cvfmt == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ||
+                     cvfmt == kCVPixelFormatType_420YpCbCr10BiPlanarFullRange;
         if (!v->cv_cache &&
             CVMetalTextureCacheCreate(kCFAllocatorDefault, NULL,
                                       _sg.mtl.device, NULL,
