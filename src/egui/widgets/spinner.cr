@@ -33,7 +33,12 @@ module Egui
       size = @size || vars.f64("size", style.spacing.interact_size.y)
       rect = ui.allocate_at_least(Vec2.new(size, size))
 
-      ui.ctx.request_repaint
+      # egui's visibility contract: an animated widget keeps frames
+      # coming only while its rect meets the Ui's clip — a culled
+      # spinner must not pin the loop at full frames, or the loop's
+      # idle path (re-emit the last commands, skip the walk) would
+      # never engage. Scrolling back is an event, so frames resume.
+      ui.ctx.request_repaint if rect.intersects?(ui.clip)
 
       tau = 2.0 * Math::PI
       angle = (ui.ctx.input.time * tau / 3.0) % tau

@@ -67,9 +67,17 @@ class HtmlGalleryApp < Egui::App
   # T-zero for the animated-progress card (Time::Instant diff → seconds).
   @t0 = Time.instant
 
+  # An animated demo keeps frames coming only while it is on screen:
+  # a repaint bought for a widget outside the scroll viewport would
+  # pin the loop at full frames forever (the loop's idle path —
+  # re-emit the last commands, skip the walk — would never engage).
+  # Scrolling back is an event, so animation resumes on its own.
+  private def animate_when_visible(ui : Egui::Ui, resp : Egui::Response?) : Nil
+    return unless resp # html_hidden? filters the widget out
+    ui.ctx.request_repaint if resp.rect.intersects?(ui.clip)
+  end
+
   def update(ctx : Egui::Context) : Nil
-    # The animated-progress and spinner cards need continuous frames.
-    ctx.request_repaint
     setup_rules(ctx) unless @rules_ready
 
     needle = @query.strip.downcase
@@ -1060,13 +1068,13 @@ class HtmlGalleryApp < Egui::App
         %(progressbar { selection_fill: accent }),
         %(<progress bind="load" live="true"/>)) do |ui|
         t = (Time.instant - @t0).total_seconds
-        ui.progress(0.5 + 0.5 * Math.sin(t))
+        animate_when_visible(ui, ui.progress(0.5 + 0.5 * Math.sin(t)))
       end,
       Demo.new("spinner",
         %(ui.spinner),
         %(/* spinner visuals come from the theme */),
         %(<spinner/>)) do |ui|
-        ui.spinner
+        animate_when_visible(ui, ui.spinner)
       end,
     ]
   end
