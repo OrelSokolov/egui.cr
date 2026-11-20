@@ -859,7 +859,7 @@ end
 
 # <icon name= size= color= w=/> — векторный глиф; w — ширина слота
 # (иконка центрируется, аналог .heart width:32).
-widget :icon do |node, ui, ctx, rt, r|
+widget :icon, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "name") || "circle"
   size = MusicTags.f(node, rt, "size", 18.0)
@@ -876,7 +876,7 @@ end
 # <ibtn icon= size= btn= on_click=/> — круглая кнопка-иконка (.icon-btn):
 # 34×34, hover → control-подложка, иконка 18. Переходы CSS .15s —
 # подложка и цвет глифа мягко едут (animate_style_*).
-widget :ibtn do |node, ui, ctx, rt, r|
+widget :ibtn, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "icon") || "circle"
   isz = MusicTags.f(node, rt, "size", 18.0)
@@ -907,7 +907,7 @@ widget :ibtn do |node, ui, ctx, rt, r|
 end
 
 # <navitem icon= text= active= on_click=/> — пункт сайдбара (.nav-item).
-widget :navitem do |node, ui, ctx, rt, r|
+widget :navitem, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "icon") || "home"
   text = MusicTags.a(node, rt, "text") || ""
@@ -950,7 +950,7 @@ widget :navitem do |node, ui, ctx, rt, r|
 end
 
 # <chip text= on=/> — пилюля-фильтр (.chip), 30 высотой.
-widget :chip do |node, ui, ctx, rt, r|
+widget :chip, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   text = MusicTags.a(node, rt, "text") || ""
   on = MusicTags.b(node, rt, "on")
@@ -1308,7 +1308,7 @@ widget :crow, cache: true do |node, ui, ctx, rt, r|
 end
 
 # <hline pad=/> — разделитель 1px (.sep / .col-sep); pad — боковые поля.
-widget :hline do |node, ui, ctx, rt, r|
+widget :hline, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   pad = MusicTags.f(node, rt, "pad", 0.0)
   w = MusicTags.f(node, rt, "w", -1.0)
@@ -1411,7 +1411,7 @@ def MusicTags.search_changed(rt, ctx) : Nil
 end
 
 # <avatar/> — круг M в шапке.
-widget :avatar do |node, ui, ctx, rt, r|
+widget :avatar, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   s = MusicTags.f(node, rt, "s", 30.0)
   rect = ui.allocate_space(Egui::Vec2.new(s, s))
@@ -1423,7 +1423,7 @@ widget :avatar do |node, ui, ctx, rt, r|
 end
 
 # <logo/> — белый скруглённый квадрат с нотой.
-widget :logo do |node, ui, ctx, rt, r|
+widget :logo, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   s = MusicTags.f(node, rt, "s", 30.0)
   isz = MusicTags.f(node, rt, "size", 18.0)
@@ -1479,7 +1479,7 @@ end
 
 # <gtile g= t= c1= c2= txt=/> — плитка жанра (.genre-tile): цвет фона,
 # заголовок, обложка в углу (позиционирование в углу — painter'ом).
-widget :gtile do |node, ui, ctx, rt, r|
+widget :gtile, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   g = MusicTags.hex(MusicTags.a(node, rt, "g")) || MusicTags.accent(rt)
   title = MusicTags.a(node, rt, "t") || ""
@@ -1536,7 +1536,7 @@ end
 # <hero c1= c2=/> — шапка страницы коллекции (.hero): два радиальных
 # пятна из цветов обложки (app.js: heroStyle — c1×0.55 у 75%/-10%,
 # c2×0.22 у 15%/120%, база #111117) + ряд детей, padding 40/28/26.
-widget :hero do |node, ui, ctx, rt, r|
+widget :hero, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 298.0)
   rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))
@@ -1565,7 +1565,7 @@ end
 
 # <oswitch on=/> — тумблер настроек (.switch), 44×24. Ползунок и фон
 # едут за .18s (CSS transition), а не прыгают.
-widget :oswitch do |node, ui, ctx, rt, r|
+widget :oswitch, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   on = MusicTags.b(node, rt, "on")
   act = MusicTags.a(node, rt, "on_click")
@@ -1597,7 +1597,7 @@ widget :oswitch do |node, ui, ctx, rt, r|
 end
 
 # <swatch/> — квадратик цвета акцента (.swatch).
-widget :swatch do |node, ui, ctx, rt, r|
+widget :swatch, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   s = MusicTags.f(node, rt, "s", 34.0)
   rect = ui.allocate_space(Egui::Vec2.new(s, s))
@@ -1684,7 +1684,7 @@ end
 
 # <oslider frac= w=/> — слайдер-вид (seek 28%, volume 70%, crossfade 42%):
 # track 4px + fill + knob 12 — статичный оракул, некликабелен.
-widget :oslider do |node, ui, ctx, rt, r|
+widget :oslider, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   key = node.attrs["bind"]?
   frac = key ? rt.float(key).clamp(0.0, 1.0)
@@ -1929,7 +1929,7 @@ end
 # <hbar h=> — строка-контейнер фиксированной высоты (шапка 56): дети
 # центрируются по вертикали полосы; <spring/> делит остаток ширины
 # (предрасчёт — flex-распределения в движке нет).
-widget :hbar do |node, ui, ctx, rt, r|
+widget :hbar, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 56.0)
   # h="auto" — полоса по содержимому: максимум оценок видимых детей
@@ -1965,7 +1965,7 @@ end
 # <mtab icon= text= active= on_click=/> — вкладка нижнего таб-бара
 # мобильной раскладки: иконка над подписью, активная — цвет акцента
 # (текущего лука), hit-зона — вся ячейка (по высоте ≥ 44 pt).
-widget :mtab do |node, ui, ctx, rt, r|
+widget :mtab, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   name = MusicTags.a(node, rt, "icon") || "home"
   text = MusicTags.a(node, rt, "text") || ""
@@ -2013,7 +2013,7 @@ end
 
 # <pbar> — нижний бар плеера (.playerbar): фон bar-bg, три колонки
 # 1fr/1.3fr/1fr (grid, align-items:center), дети по порядку.
-widget :pbar do |node, ui, ctx, rt, r|
+widget :pbar, cache: true do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
   h = MusicTags.f(node, rt, "h", 88.0)
   rect = ui.allocate_space(Egui::Vec2.new(ui.available_width, h))

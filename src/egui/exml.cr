@@ -2404,14 +2404,36 @@ module Egui
         end
         cls = (raw = node.attrs["class"]?) ?
                 (raw.includes?('{') ? rt.interpolate(raw) : raw) : ""
-        istate = ctx.memory.interaction_state(
-          Egui::Id.from("#{node.path}/hover"))
         {node.path,
          fold_subtree(node, rt),
          ctx.stylesheet.resolve(cls).object_id,
          ctx.stylesheet.resolve(cls, "hover").object_id,
-         istate,
+         fold_hover_states(node, ctx),
          subtree_generation(node)}.hash
+      end
+
+      # The hover/active verdicts of every custom node in the subtree
+      # (root included), folded into one UInt64. Child tags paint their
+      # own hover feedback (ibtn, chip, navitem …) from their interact
+      # id — the root's verdict alone would replay a stale child hover,
+      # so any child's flip must re-key the whole subtree. Both id
+      # conventions are folded: "#{path}/hover" (the on_click panels)
+      # and the bare "#{path}" (ibtn/navitem/chip/…). Absent ids read
+      # nil forever (Memory#interaction_state mirrors the verdict
+      # deterministically), so pure children cost two hash lookups
+      # each and nothing else. Inert row/column containers recurse
+      # through (they never interact themselves).
+      private def fold_hover_states(node : Node, ctx : Context) : UInt64
+        path = node.path
+        h = ctx.memory.interaction_state(Egui::Id.from(path)).hash &
+            ctx.memory.interaction_state(Egui::Id.from("#{path}/hover")).hash
+        node.children.each do |c|
+          case c.kind
+          when .custom?, .row?, .column?
+            h = h &* 1_000_003 &+ fold_hover_states(c, ctx)
+          end
+        end
+        h
       end
 
       # Appearance generation: bumps every time the node was NOT

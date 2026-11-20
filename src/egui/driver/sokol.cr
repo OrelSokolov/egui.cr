@@ -267,6 +267,10 @@ lib LibEguiCr
   fun sgl_v2f_c4b = egui_cr_sgl_v2f_c4b(x : Float32, y : Float32, r : UInt8, g : UInt8, b : UInt8, a : UInt8)
   fun sgl_v2f_t2f_c4b = egui_cr_sgl_v2f_t2f_c4b(x : Float32, y : Float32, u : Float32, v : Float32,
                                                 r : UInt8, g : UInt8, b : UInt8, a : UInt8)
+  # One tessellated quad bracket: nverts vertices of 6 floats (x, y,
+  # r, g, b, a — colors float-cast u8) cross the FFI once, instead of
+  # one wrapper call per vertex (the quad-fan twin of text_quads).
+  fun quad_fan = egui_cr_quad_fan(v : Float32*, nverts : Int32)
   # 3D mesh (Viewport3D): one batched SoA mesh under `mvp` (16 floats,
   # column-major) mapped onto the framebuffer-pixel viewport rect;
   # primitive 0 = triangles, 1 = lines. Self-contained: pushes a
@@ -584,6 +588,15 @@ module Egui
       # (12 floats per glyph: corners, uv, rgba — see sh_text_run).
       TEXT_BUF_GLYPHS = 8192
       @@text_buf = Slice(Float32).new(12 * TEXT_BUF_GLYPHS)
+      # Quad-fan staging for the tessellated paint paths (rounded-rect
+      # fills, gradient rings, strokes): 6 floats per vertex (x, y,
+      # rgba float-cast u8), one FFI per bracket instead of one per
+      # vertex — the same trick as @@text_buf, for untextured quads
+      # (see egui_cr_quad_fan). FAN_VERTS is a multiple of 4 so a
+      # chunked mid-bracket flush never splits a quad.
+      FAN_VERTS = 16384
+      @@fan_buf = Slice(Float32).new(6 * FAN_VERTS)
+      @@fan_n = 0
       @@sdf_n = 0
       @@sdf_view : UInt32? = nil
       # --screenshot <path>: parsed in #run before the loop starts,
@@ -3326,12 +3339,12 @@ module Egui
             tr = grad_color_diag(fill, fill2, r.max.x, r.min.y, r)
             br = grad_color_diag(fill, fill2, r.max.x, r.max.y, r)
             bl = grad_color_diag(fill, fill2, r.min.x, r.max.y, r)
-            LibEguiCr.sgl_begin_quads
-            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, tl.r, tl.g, tl.b, tl.a)
-            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, tr.r, tr.g, tr.b, tr.a)
-            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, br.r, br.g, br.b, br.a)
-            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, bl.r, bl.g, bl.b, bl.a)
-            LibEguiCr.sgl_end
+            quads_begin
+            fan_vert(r.min.x, r.min.y, tl)
+            fan_vert(r.max.x, r.min.y, tr)
+            fan_vert(r.max.x, r.max.y, br)
+            fan_vert(r.min.x, r.max.y, bl)
+            quads_end
           end
         elsif (fill = cmd.fill) && (fill2 = cmd.fill2)
           # Vertical gradient: per-vertex colors, interpolated by the
@@ -3339,20 +3352,20 @@ module Egui
           if round > 0.5
             rounded_rect_fill(r, round, fill, fill2)
           else
-            LibEguiCr.sgl_begin_quads
-            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
-            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.min.y.to_f32, fill.r, fill.g, fill.b, fill.a)
-            LibEguiCr.sgl_v2f_c4b(r.max.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
-            LibEguiCr.sgl_v2f_c4b(r.min.x.to_f32, r.max.y.to_f32, fill2.r, fill2.g, fill2.b, fill2.a)
-            LibEguiCr.sgl_end
+            quads_begin
+            fan_vert(r.min.x, r.min.y, fill)
+            fan_vert(r.max.x, r.min.y, fill)
+            fan_vert(r.max.x, r.max.y, fill2)
+            fan_vert(r.min.x, r.max.y, fill2)
+            quads_end
           end
         elsif fill
           if round > 0.5
             rounded_rect_fill(r, round, fill)
           else
-            LibEguiCr.sgl_begin_quads
+            quads_begin
             quad(r, fill)
-            LibEguiCr.sgl_end
+            quads_end
           end
         end
 
@@ -3360,7 +3373,7 @@ module Egui
           if round > 0.5
             paint_rect_stroke_rounded_sides(r, round, sides, cmd.clip)
           else
-            LibEguiCr.sgl_begin_quads
+            quads_begin
             # top / bottom / left / right bars, each its own width/color
             # (a side with width 0 — CSS `border-style: none` — draws
             # nothing).
@@ -3383,7 +3396,7 @@ module Egui
                 Egui::Pos2.new(r.max.x - sides.right.width, r.min.y),
                 Egui::Vec2.new(sides.right.width, r.height)), sides.right.color)
             end
-            LibEguiCr.sgl_end
+            quads_end
           end
         elsif (stroke = cmd.stroke_color) && cmd.stroke_width > 0
           w = cmd.stroke_width
@@ -3394,7 +3407,7 @@ module Egui
           elsif round > 0.5
             paint_rect_stroke_rounded(r, round, w, stroke, cmd.clip)
           else
-            LibEguiCr.sgl_begin_quads
+            quads_begin
             # top / bottom / left / right bars
             bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(r.width, w)), stroke)
             bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x, r.max.y - w),
@@ -3402,7 +3415,7 @@ module Egui
             bar(Egui::Rect.from_min_size(r.min, Egui::Vec2.new(w, r.height)), stroke)
             bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y),
               Egui::Vec2.new(w, r.height)), stroke)
-            LibEguiCr.sgl_end
+            quads_end
           end
         end
       end
@@ -3434,7 +3447,7 @@ module Egui
         tr = {c.top_right, lim}.min
         br = {c.bottom_right, lim}.min
         bl = {c.bottom_left, lim}.min
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + tl, r.min.y),
           Egui::Vec2.new(r.width - tl - tr, w)), stroke)
         bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.min.x + bl, r.max.y - w),
@@ -3443,7 +3456,7 @@ module Egui
           Egui::Vec2.new(w, r.height - tl - bl)), stroke)
         bar(Egui::Rect.from_min_size(Egui::Pos2.new(r.max.x - w, r.min.y + tr),
           Egui::Vec2.new(w, r.height - tr - br)), stroke)
-        LibEguiCr.sgl_end
+        quads_end
 
         rad = Math::PI
         ring = ->(ccx : Float64, ccy : Float64, cr : Float64, a0 : Float64) do
@@ -3470,7 +3483,7 @@ module Egui
       def self.paint_rect_stroke_rounded_sides(r : Egui::Rect, round : Float64,
                                                sides : Egui::StrokeSides,
                                                clip : Egui::Rect) : Nil
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         if sides.top.on?
           bar(Egui::Rect.from_min_size(
             Egui::Pos2.new(r.min.x + round, r.min.y),
@@ -3495,7 +3508,7 @@ module Egui
             Egui::Vec2.new(sides.right.width, r.height - 2 * round)),
             sides.right.color)
         end
-        LibEguiCr.sgl_end
+        quads_end
 
         rad = Math::PI
         corner = ->(a : Egui::SideStroke, b : Egui::SideStroke,
@@ -3533,16 +3546,26 @@ module Egui
         return if pts.size < 3
 
         center = r.center
-        LibEguiCr.sgl_begin_quads
-        pts.each_with_index do |p, i|
-          q = pts[(i + 1) % pts.size]
-          if fill2
-            quad_pts_grad(center, p, q, fill, fill2.not_nil!, r, diag)
-          else
+        quads_begin
+        if (c2 = fill2)
+          # Per-vertex gradient colors with the extent math hoisted out
+          # of the loop: Rect#width/#height run a finite_guard each, and
+          # a gradient cover hits this 4× per edge × ~30 edges/frame.
+          col = gouraud_color_fn(r, fill, c2, diag)
+          pts.each_with_index do |p, i|
+            q = pts[(i + 1) % pts.size]
+            fan_vert(center.x, center.y, col.call(center.x, center.y))
+            fan_vert(center.x, center.y, col.call(center.x, center.y))
+            fan_vert(p.x, p.y, col.call(p.x, p.y))
+            fan_vert(q.x, q.y, col.call(q.x, q.y))
+          end
+        else
+          pts.each_with_index do |p, i|
+            q = pts[(i + 1) % pts.size]
             quad_pts(center, center, p, q, fill)
           end
         end
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       # Per-corner rounding: the same perimeter fan, but every corner
@@ -3556,27 +3579,55 @@ module Egui
         return if pts.size < 3
 
         center = r.center
-        LibEguiCr.sgl_begin_quads
-        pts.each_with_index do |p, i|
-          q = pts[(i + 1) % pts.size]
-          if fill2
-            quad_pts_grad(center, p, q, fill, fill2, r)
-          else
+        quads_begin
+        if (c2 = fill2)
+          col = gouraud_color_fn(r, fill, c2, false)
+          pts.each_with_index do |p, i|
+            q = pts[(i + 1) % pts.size]
+            fan_vert(center.x, center.y, col.call(center.x, center.y))
+            fan_vert(center.x, center.y, col.call(center.x, center.y))
+            fan_vert(p.x, p.y, col.call(p.x, p.y))
+            fan_vert(q.x, q.y, col.call(q.x, q.y))
+          end
+        else
+          pts.each_with_index do |p, i|
+            q = pts[(i + 1) % pts.size]
             quad_pts(center, center, p, q, fill)
           end
         end
-        LibEguiCr.sgl_end
+        quads_end
+      end
+
+      # The fill→fill2 Gouraud ramp as a closure with the rect's min
+      # corner and reciprocal extent captured once (the hot-loop form
+      # of #grad_color_diag — same channel math, vertical or diagonal).
+      private def self.gouraud_color_fn(r : Egui::Rect, c1 : Egui::Color32,
+                                        c2 : Egui::Color32, diag : Bool)
+        mx = r.min.x
+        my = r.min.y
+        den = diag ? {r.max.x - mx + r.max.y - my, 1e-9}.max
+                   : {r.max.y - my, 1e-9}.max
+        inv = 1.0 / den
+        ->(x : Float64, y : Float64) do
+          t = ((diag ? x - mx + (y - my) : y - my) * inv).clamp(0.0, 1.0)
+          Egui::Color32.new(
+            (c1.r.to_f + (c2.r.to_f - c1.r.to_f) * t).round.to_u8,
+            (c1.g.to_f + (c2.g.to_f - c1.g.to_f) * t).round.to_u8,
+            (c1.b.to_f + (c2.b.to_f - c1.b.to_f) * t).round.to_u8,
+            (c1.a.to_f + (c2.a.to_f - c1.a.to_f) * t).round.to_u8)
+        end
       end
 
       # Arc tessellation density: segments per quarter chosen so the
-      # chord sagitta stays under ~1/500 px — fine enough that MSAA
-      # sample coverage of the polygon matches the analytic SDF arc
-      # (the EGUI_SDF=1 parity oracle; the old ~5px/segment density
-      # left a 0.07px bulge at r=8 corners), still cheap for the CPU
-      # fan (≤64 segments per quarter).
+      # chord sagitta stays under ~1/20 px — invisible under MSAA×4
+      # (sample spacing ~0.5px), still cheap for the CPU fan (≤64
+      # segments per quarter). The former 0.002px target was the SDF
+      # parity oracle (EGUI_SDF=1) — 3-5× the vertices for a chord
+      # error no sample can see; SDF twins re-tighten locally if
+      # pixel parity ever demands it.
       def self.arc_segments(rad : Float64) : Int32
         return 8 if rad <= 0.5
-        theta = 2.0 * Math.acos({1.0 - 0.002 / rad, -1.0}.max)
+        theta = 2.0 * Math.acos({1.0 - 0.05 / rad, -1.0}.max)
         return 64 if theta <= 0.0
         (Math::PI / 2.0 / theta).ceil.to_i.clamp(8, 64)
       end
@@ -3650,34 +3701,45 @@ module Egui
       def self.gradient_fill(r : Egui::Rect, pts : Array(Egui::Pos2),
                              grad : Egui::Gradient) : Nil
         return if pts.size < 3 || r.width < 1.0 || r.height < 1.0
-        vx = ->(p : Egui::Pos2) do
-          c = grad.color_at(p.x, p.y, r)
-          LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, c.r, c.g, c.b, c.a)
-        end
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         if grad.kind == :radial
           px = r.left + grad.cx * r.width
           py = r.top + grad.cy * r.height
-          lerp_pt = ->(p : Egui::Pos2, f : Float64) do
-            Egui::Pos2.new(px + (p.x - px) * f, py + (p.y - py) * f)
-          end
           fr = grad.stops.map(&.pos)
-          n = (grad.stops.size * 8).clamp(16, 48)
+          # Ring intermediates: ~3 per stop segment is plenty for the
+          # smooth falloffs this path serves (CSS radial blobs/spots)
+          # — the stops themselves already sample the profile; the
+          # former 8-per-stop subdivision tripled the geometry for a
+          # Gouraud difference under 1/255 alpha on soft blurs.
+          n = (grad.stops.size * 3).clamp(12, 32)
           (0..n).each { |k| fr << k.to_f64 / n }
           fr = fr.sort.uniq
+          # A ring point at fraction f sits at axis position f·t_p
+          # (the radial projection scales linearly from the center),
+          # so each edge's ring colors precompute as ONE eval per
+          # (point, ring) — the per-vertex color_at calls of the old
+          # path spent four of those plus a Pos2 allocation per ring.
+          cp = Array(Egui::Color32).new(fr.size)
+          cq = Array(Egui::Color32).new(fr.size)
           pts.each_with_index do |p, i|
             q = pts[(i + 1) % pts.size]
+            tp = grad.t_raw(p.x, p.y, r)
+            tq = grad.t_raw(q.x, q.y, r)
+            cp.clear
+            fr.each { |f| cp << grad.eval(f * tp) }
+            cq.clear
+            fr.each { |f| cq << grad.eval(f * tq) }
+            pdx = p.x - px
+            pdy = p.y - py
+            qdx = q.x - px
+            qdy = q.y - py
             (fr.size - 1).times do |k|
               f0 = fr[k]
               f1 = fr[k + 1]
-              p0 = lerp_pt.call(p, f0)
-              p1 = lerp_pt.call(p, f1)
-              q0 = lerp_pt.call(q, f0)
-              q1 = lerp_pt.call(q, f1)
-              vx.call(p0)
-              vx.call(p1)
-              vx.call(q1)
-              vx.call(q0)
+              fan_vert(px + pdx * f0, py + pdy * f0, cp[k])
+              fan_vert(px + pdx * f1, py + pdy * f1, cp[k + 1])
+              fan_vert(px + qdx * f1, py + qdy * f1, cq[k + 1])
+              fan_vert(px + qdx * f0, py + qdy * f0, cq[k])
             end
           end
         else
@@ -3696,15 +3758,16 @@ module Egui
             band = clip_halfplane(band, ctr.x, ctr.y, -dx, -dy, (0.5 - tb) * len)
             next if band.size < 3
             anchor = band[0]
+            ac = grad.color_at(anchor.x, anchor.y, r)
             1.upto(band.size - 2) do |i|
-              vx.call(anchor)
-              vx.call(anchor)
-              vx.call(band[i])
-              vx.call(band[i + 1])
+              fan_vert(anchor.x, anchor.y, ac)
+              fan_vert(anchor.x, anchor.y, ac)
+              fan_vert(band[i].x, band[i].y, grad.color_at(band[i].x, band[i].y, r))
+              fan_vert(band[i + 1].x, band[i + 1].y, grad.color_at(band[i + 1].x, band[i + 1].y, r))
             end
           end
         end
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       # Sutherland–Hodgman clip of a polygon against the half-plane
@@ -3747,33 +3810,6 @@ module Egui
           (c1.g.to_f + (c2.g.to_f - c1.g.to_f) * t).round.to_u8,
           (c1.b.to_f + (c2.b.to_f - c1.b.to_f) * t).round.to_u8,
           (c1.a.to_f + (c2.a.to_f - c1.a.to_f) * t).round.to_u8)
-      end
-
-      # Vertical-gradient color at `y` within `r` (Gouraud per-vertex).
-      def self.grad_color(c1 : Egui::Color32, c2 : Egui::Color32,
-                          y : Float64, r : Egui::Rect) : Egui::Color32
-        t = ((y - r.min.y) / {r.height, 1e-9}.max).clamp(0.0, 1.0)
-        Egui::Color32.new(
-          (c1.r.to_f + (c2.r.to_f - c1.r.to_f) * t).round.to_u8,
-          (c1.g.to_f + (c2.g.to_f - c1.g.to_f) * t).round.to_u8,
-          (c1.b.to_f + (c2.b.to_f - c1.b.to_f) * t).round.to_u8,
-          (c1.a.to_f + (c2.a.to_f - c1.a.to_f) * t).round.to_u8)
-      end
-
-      # Triangle fan slice (center, p, q) with per-vertex gradient colors.
-      def self.quad_pts_grad(center : Egui::Pos2, p : Egui::Pos2, q : Egui::Pos2,
-                             c1 : Egui::Color32, c2 : Egui::Color32,
-                             r : Egui::Rect, diag : Bool = false) : Nil
-        cc = diag ? grad_color_diag(c1, c2, center.x, center.y, r)
-                  : grad_color(c1, c2, center.y, r)
-        pc = diag ? grad_color_diag(c1, c2, p.x, p.y, r)
-                  : grad_color(c1, c2, p.y, r)
-        qc = diag ? grad_color_diag(c1, c2, q.x, q.y, r)
-                  : grad_color(c1, c2, q.y, r)
-        LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
-        LibEguiCr.sgl_v2f_c4b(center.x.to_f32, center.y.to_f32, cc.r, cc.g, cc.b, cc.a)
-        LibEguiCr.sgl_v2f_c4b(p.x.to_f32, p.y.to_f32, pc.r, pc.g, pc.b, pc.a)
-        LibEguiCr.sgl_v2f_c4b(q.x.to_f32, q.y.to_f32, qc.r, qc.g, qc.b, qc.a)
       end
 
       def self.paint_text(cmd : Egui::TextCmd) : Nil
@@ -3904,15 +3940,43 @@ module Egui
         fonts.letter_spacing = saved_spacing
       end
 
+      # ── quad-fan staging (egui_cr_quad_fan) ─────────────────────────
+      # Tessellated untextured quads (fills, gradient rings, strokes)
+      # stage in @@fan_buf and cross the FFI once per bracket:
+      # #quads_begin opens a bracket, the vertex helpers append, and
+      # #quads_end flushes — same order semantics as the sgl begin/end
+      # pair it replaces (a mid-bracket overflow chunk-flushes; sgl
+      # merges consecutive same-state draws, so the split is free).
+      def self.quads_begin : Nil
+        @@fan_n = 0
+      end
+
+      def self.quads_end : Nil
+        return if @@fan_n == 0
+        LibEguiCr.quad_fan(@@fan_buf.to_unsafe, @@fan_n)
+        @@fan_n = 0
+      end
+
+      def self.fan_vert(x : Float64, y : Float64, c : Egui::Color32) : Nil
+        if @@fan_n == FAN_VERTS
+          LibEguiCr.quad_fan(@@fan_buf.to_unsafe, @@fan_n)
+          @@fan_n = 0
+        end
+        d = @@fan_buf.to_unsafe + @@fan_n * 6
+        d[0] = x.to_f32
+        d[1] = y.to_f32
+        d[2] = c.r.to_f32
+        d[3] = c.g.to_f32
+        d[4] = c.b.to_f32
+        d[5] = c.a.to_f32
+        @@fan_n += 1
+      end
+
       def self.quad(r : Egui::Rect, c : Egui::Color32) : Nil
-        x0 = r.min.x.to_f32
-        y0 = r.min.y.to_f32
-        x1 = r.max.x.to_f32
-        y1 = r.max.y.to_f32
-        LibEguiCr.sgl_v2f_c4b(x0, y0, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(x1, y0, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(x1, y1, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(x0, y1, c.r, c.g, c.b, c.a)
+        fan_vert(r.min.x, r.min.y, c)
+        fan_vert(r.max.x, r.min.y, c)
+        fan_vert(r.max.x, r.max.y, c)
+        fan_vert(r.min.x, r.max.y, c)
       end
 
       # A quad from four arbitrary points (what the egui tessellator
@@ -3920,10 +3984,10 @@ module Egui
       # just quads in epaint too).
       def self.quad_pts(p1 : Egui::Pos2, p2 : Egui::Pos2, p3 : Egui::Pos2,
                         p4 : Egui::Pos2, c : Egui::Color32) : Nil
-        LibEguiCr.sgl_v2f_c4b(p1.x.to_f32, p1.y.to_f32, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(p2.x.to_f32, p2.y.to_f32, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(p3.x.to_f32, p3.y.to_f32, c.r, c.g, c.b, c.a)
-        LibEguiCr.sgl_v2f_c4b(p4.x.to_f32, p4.y.to_f32, c.r, c.g, c.b, c.a)
+        fan_vert(p1.x, p1.y, c)
+        fan_vert(p2.x, p2.y, c)
+        fan_vert(p3.x, p3.y, c)
+        fan_vert(p4.x, p4.y, c)
       end
 
       TAU = (2.0 * Math::PI)
@@ -3951,7 +4015,7 @@ module Egui
         apply_scissor(cmd.clip)
 
         if fill = cmd.fill
-          LibEguiCr.sgl_begin_quads
+          quads_begin
           segments = circle_segments(cmd.radius)
           segments.times do |i|
             a0 = TAU * i / segments
@@ -3963,7 +4027,7 @@ module Egui
             # degenerate quad == triangle (c, c, v0, v1)
             quad_pts(cmd.center, cmd.center, v0, v1, fill)
           end
-          LibEguiCr.sgl_end
+          quads_end
         end
 
         if (stroke = cmd.stroke) && cmd.stroke_width > 0
@@ -3993,9 +4057,9 @@ module Egui
         return if len < 1e-9
         # perpendicular unit vector scaled to half the stroke width
         n = Egui::Vec2.new(-d.y / len, d.x / len) * (cmd.width / 2.0)
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         quad_pts(p1 - n, p2 - n, p2 + n, p1 + n, cmd.color)
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       def self.paint_arc(cmd : Egui::ArcCmd) : Nil
@@ -4008,9 +4072,9 @@ module Egui
       # trick the circle fan in #paint_circle uses.
       def self.paint_tri(cmd : Egui::TriCmd) : Nil
         apply_scissor(cmd.clip)
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         quad_pts(cmd.a, cmd.a, cmd.b, cmd.c, cmd.fill)
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       # The shared geometry of stroked circles and arcs: a strip of quads
@@ -4027,7 +4091,7 @@ module Egui
         segments = Math.max(8,
           (circle_segments(r1) * span.abs / TAU).ceil.to_i)
 
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         segments.times do |i|
           a0 = start_angle + span * i / segments
           a1 = start_angle + span * (i + 1) / segments
@@ -4042,7 +4106,7 @@ module Egui
             Egui::Pos2.new(center.x + r0 * c1, center.y + r0 * s1),
             color)
         end
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       # --- box-shadow (CSS) --------------------------------------------------
@@ -4138,14 +4202,10 @@ module Egui
                                p2 : Egui::Pos2, p3 : Egui::Pos2,
                                c_edge : Egui::Color32,
                                c_inner : Egui::Color32) : Nil
-        LibEguiCr.sgl_v2f_c4b(p0.x.to_f32, p0.y.to_f32,
-          c_edge.r, c_edge.g, c_edge.b, c_edge.a)
-        LibEguiCr.sgl_v2f_c4b(p1.x.to_f32, p1.y.to_f32,
-          c_edge.r, c_edge.g, c_edge.b, c_edge.a)
-        LibEguiCr.sgl_v2f_c4b(p2.x.to_f32, p2.y.to_f32,
-          c_inner.r, c_inner.g, c_inner.b, c_inner.a)
-        LibEguiCr.sgl_v2f_c4b(p3.x.to_f32, p3.y.to_f32,
-          c_inner.r, c_inner.g, c_inner.b, c_inner.a)
+        fan_vert(p0.x, p0.y, c_edge)
+        fan_vert(p1.x, p1.y, c_edge)
+        fan_vert(p2.x, p2.y, c_inner)
+        fan_vert(p3.x, p3.y, c_inner)
       end
 
       def self.paint_shadow(cmd : Egui::ShadowCmd) : Nil
@@ -4206,7 +4266,7 @@ module Egui
           # the center — full fill is the deep-inside limit.
           rounded_rect_fill(base, radius, cmd.color)
         end
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         if inner > 0.5
           depths_in = Array.new(pts.size, inner)
           bands.times do |k|
@@ -4219,7 +4279,7 @@ module Egui
           shadow_band(pts, depths, k.to_f64 / bands,
             (k + 1).to_f64 / bands, cmd.color, -1.0, peak: 0.5)
         end
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       # Inset: the band lives INSIDE the rect, per-side depth ≈ 0.7×blur
@@ -4263,12 +4323,12 @@ module Egui
         return if max_depth <= 0.0
 
         bands = {max_depth.ceil.to_i, 1}.max.clamp(1..12)
-        LibEguiCr.sgl_begin_quads
+        quads_begin
         bands.times do |k|
           shadow_band(pts, depths, k.to_f64 / bands,
             (k + 1).to_f64 / bands, cmd.color, 1.0, peak: 0.5)
         end
-        LibEguiCr.sgl_end
+        quads_end
       end
 
       def self.side_depth(side : Symbol, d_top : Float64, d_bottom : Float64,

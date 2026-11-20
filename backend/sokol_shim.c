@@ -5647,6 +5647,33 @@ void egui_cr_text_quads(uint32_t view_id, const float* v, int count) {
     }
     sh_text_run(view_id, v, count, g_clip_on && sh_stencil_ok());
 }
+
+// One tessellated quad bracket (rounded-rect fills, gradient rings,
+// strokes): nverts vertices of 6 floats each (x, y, r, g, b, a — the
+// color channels float-cast u8) cross the FFI once, instead of one
+// wrapper call per vertex (the same trick egui_cr_text_quads applies
+// to glyphs; on the packet path it records as one begin/verts/end
+// span).
+void egui_cr_quad_fan(const float* v, int nverts) {
+    if (!sh_run_direct()) {
+        egui_cr_pkt_begin_quads();
+        for (int i = 0; i < nverts; i++) {
+            const float* q = v + i * 6;
+            egui_cr_pkt_v(q[0], q[1], (unsigned char)q[2],
+                          (unsigned char)q[3], (unsigned char)q[4],
+                          (unsigned char)q[5]);
+        }
+        egui_cr_pkt_end_quads();
+        return;
+    }
+    sgl_begin_quads();
+    for (int i = 0; i < nverts; i++) {
+        const float* q = v + i * 6;
+        sgl_v2f_c4b(q[0], q[1], (unsigned char)q[2], (unsigned char)q[3],
+                    (unsigned char)q[4], (unsigned char)q[5]);
+    }
+    sgl_end();
+}
 #else /* not a detached platform (macOS): straight pass-throughs */
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     sgl_viewport(x, y, w, h, origin_top_left);
@@ -5697,6 +5724,18 @@ void egui_cr_sdf_batch(uint32_t view, const float* clip4,
 // macOS pass-through: same direct emitter (no packet path exists).
 void egui_cr_text_quads(uint32_t view_id, const float* v, int count) {
     sh_text_run(view_id, v, count, g_clip_on && sh_stencil_ok());
+}
+
+// macOS pass-through: one direct sgl bracket (see the detached twin
+// above for the vertex layout).
+void egui_cr_quad_fan(const float* v, int nverts) {
+    sgl_begin_quads();
+    for (int i = 0; i < nverts; i++) {
+        const float* q = v + i * 6;
+        sgl_v2f_c4b(q[0], q[1], (unsigned char)q[2], (unsigned char)q[3],
+                    (unsigned char)q[4], (unsigned char)q[5]);
+    }
+    sgl_end();
 }
 #endif
 

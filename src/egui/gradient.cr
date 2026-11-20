@@ -344,20 +344,22 @@ module Egui
       eval(t)
     end
 
-    # The gradient axis position (0..1, clamped) of a point — public
-    # for backends that color per-vertex and need the raw projection.
-    def t_at(x : Float64, y : Float64, rect : Rect) : Float64
+    # Unclamped #t_at — backends that batch per-vertex colors (sokol's
+    # radial gradient rings) scale the axis position linearly along a
+    # ring edge and need the raw projection (the clamp is a no-op for
+    # #eval: it saturates at the end stops by itself).
+    def t_raw(x : Float64, y : Float64, rect : Rect) : Float64
       if kind == :radial
         px = rect.left + cx * rect.width
         py = rect.top + cy * rect.height
         if (rxp = @rx) && (ryp = @ry)
           # Explicit radii: an ellipse in absolute px (CSS
           # `<ellipse-size>`), independent of the painted rect.
-          t = Math.sqrt(((x - px) / rxp) ** 2 + ((y - py) / ryp) ** 2)
+          Math.sqrt(((x - px) / rxp) ** 2 + ((y - py) / ryp) ** 2)
         else
           dist = Math.sqrt((x - px) ** 2 + (y - py) ** 2)
           r = radial_radius(rect, px, py)
-          t = r > 0 ? dist / r : 1.0
+          r > 0 ? dist / r : 1.0
         end
       else
         rad = angle_deg * Math::PI / 180.0
@@ -367,9 +369,14 @@ module Egui
         # the CSS |W·sinθ| + |H·cosθ| projection.
         len = rect.width * dx.abs + rect.height * dy.abs
         ctr = rect.center
-        t = len > 0 ? ((x - ctr.x) * dx + (y - ctr.y) * dy) / len + 0.5 : 0.0
+        len > 0 ? ((x - ctr.x) * dx + (y - ctr.y) * dy) / len + 0.5 : 0.0
       end
-      t.clamp(0.0, 1.0)
+    end
+
+    # The gradient axis position (0..1, clamped) of a point — public
+    # for backends that color per-vertex and need the raw projection.
+    def t_at(x : Float64, y : Float64, rect : Rect) : Float64
+      t_raw(x, y, rect).clamp(0.0, 1.0)
     end
 
     # The gradient color at axis position t (0..1): the stop colors
