@@ -238,3 +238,106 @@ class HoverProbe
     raise "probe is not drawable"
   end
 end
+
+# --- Этап 5/6: OS font scale / reduced-motion override + hit floor ------
+
+# A 20×20 button: paints tiny on purpose, so the 44pt hit floor has
+# visible effect around it. Captures the widget's rect and the
+# press/click verdict of the frame.
+private record TinyHit, rect : Egui::Rect, pressed : Bool,
+  clicked : Bool
+
+private def tiny_hit_frame(ctx : Egui::Context,
+                           events : Array(Egui::Event) = [] of Egui::Event) : TinyHit
+  state : TinyHit? = nil
+  ctx.begin_frame(Egui::RawInput.new(EXTRAS_SCREEN, events, 0.016))
+  ctx.central_panel do |ui|
+    resp = ui.add(Egui::Button.new("ok"))
+    state = TinyHit.new(resp.rect, resp.pressed?, resp.clicked?)
+  end
+  ctx.end_frame
+  state.not_nil!
+end
+
+describe "OS prefs and hit-target floor" do
+  it "a touch event flips pointer_coarse, sticky" do
+    ctx = Egui::Context.new
+    ctx.pointer_coarse?.should be_false
+
+    touch = Egui::Event.pointer_moved(Egui::Pos2.new(10.0, 10.0),
+      from_touch: true)
+    ctx.begin_frame(Egui::RawInput.new(EXTRAS_SCREEN, [touch], 0.016))
+    ctx.end_frame
+    ctx.pointer_coarse?.should be_true
+
+    # Sticky: later mouse-only frames never un-coarse the device.
+    extras_frame(ctx) { |_c| }
+    ctx.pointer_coarse?.should be_true
+  end
+
+  it "raw font_scale / reduced_motion override the manual setters" do
+    ctx = Egui::Context.new
+    ctx.font_scale = 0.8
+    raw = Egui::RawInput.new(EXTRAS_SCREEN, [] of Egui::Event, 0.016,
+      font_scale: 1.3, reduced_motion: true)
+    ctx.begin_frame(raw)
+    ctx.font_scale.should eq 1.3
+    ctx.reduced_motion?.should be_true
+    ctx.end_frame
+
+    # nil stays nil: the OS had no opinion this frame, the manual
+    # setter (and the OS-flag latched before) survives untouched.
+    ctx.font_scale = 0.9
+    extras_frame(ctx) { |_c| }
+    ctx.font_scale.should eq 0.9
+    ctx.reduced_motion?.should be_true
+  end
+
+  it "coarse pointer: tap outside the paint rect, inside 44pt, clicks" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "width" => 20.0, "height" => 20.0,
+    })
+    first = tiny_hit_frame(ctx)
+    ctx.pointer_coarse = true
+
+    # 18pt below the center: outside the 20×20 paint rect, inside the
+    # 44pt zone (center ± 22).
+    below = Egui::Pos2.new(first.rect.center.x, first.rect.max.y + 8.0)
+    press = tiny_hit_frame(ctx, [Egui::Event.pointer_pressed(below)])
+    press.pressed.should be_true
+    release = tiny_hit_frame(ctx, [Egui::Event.pointer_released(below)])
+    release.clicked.should be_true
+  end
+
+  it "fine pointer: no floor — the same tap misses" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "width" => 20.0, "height" => 20.0,
+    })
+    first = tiny_hit_frame(ctx)
+
+    below = Egui::Pos2.new(first.rect.center.x, first.rect.max.y + 8.0)
+    press = tiny_hit_frame(ctx, [Egui::Event.pointer_pressed(below)])
+    press.pressed.should be_false
+    release = tiny_hit_frame(ctx, [Egui::Event.pointer_released(below)])
+    release.clicked.should be_false
+  end
+
+  it "hit floor scales with font_scale (44pt × scale)" do
+    ctx = Egui::Context.new
+    ctx.stylesheet.rule("button", Egui::StyleVars{
+      "width" => 20.0, "height" => 20.0,
+    })
+    first = tiny_hit_frame(ctx)
+    ctx.pointer_coarse = true
+    ctx.font_scale = 2.0 # floor 88 → center ± 44
+
+    # 30pt below the center: misses a 44pt zone, hits an 88pt one.
+    below = Egui::Pos2.new(first.rect.center.x, first.rect.max.y + 20.0)
+    press = tiny_hit_frame(ctx, [Egui::Event.pointer_pressed(below)])
+    press.pressed.should be_true
+    release = tiny_hit_frame(ctx, [Egui::Event.pointer_released(below)])
+    release.clicked.should be_true
+  end
+end

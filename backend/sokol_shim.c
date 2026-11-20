@@ -1737,6 +1737,110 @@ void egui_cr_safe_area(float* top, float* right, float* bottom, float* left) {
 }
 #endif
 
+// ---- System accessibility prefs (Этап 5/6, plans/responsive-mobile.md) --
+// OS font scale (Dynamic Type / Configuration.fontScale) and the
+// reduced-motion flag, polled by the backend into RawInput (desktops:
+// the 1.0/false no-op below — Context keeps a manual value there).
+#if defined(SH_IOS)
+// Dynamic Type mapped to a multiplier of the Large baseline (Apple's
+// published body sizes: Large body = 17pt). Acessibility tiers go up
+// to ~3.1x; Context clamps to its own 0.5..4.0 range.
+void egui_cr_system_prefs(float* font_scale, int* reduced_motion) {
+    *font_scale = 1.0f;
+    *reduced_motion = UIAccessibilityIsReduceMotionEnabled() ? 1 : 0;
+    NSString* cat = [UIApplication sharedApplication].preferredContentSizeCategory;
+    if (!cat) return;
+    if ([cat isEqualToString:UIContentSizeCategoryExtraSmall]) *font_scale = 14.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategorySmall]) *font_scale = 15.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryMedium]) *font_scale = 16.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryExtraLarge]) *font_scale = 19.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryExtraExtraLarge]) *font_scale = 21.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryExtraExtraExtraLarge]) *font_scale = 23.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryAccessibilityMedium]) *font_scale = 28.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryAccessibilityLarge]) *font_scale = 33.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryAccessibilityExtraLarge]) *font_scale = 38.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryAccessibilityExtraExtraLarge]) *font_scale = 44.0f / 17.0f;
+    else if ([cat isEqualToString:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) *font_scale = 53.0f / 17.0f;
+}
+#elif defined(__ANDROID__)
+#include <jni.h>
+// Configuration.fontScale (Resources) + the "remove animations"
+// accessibility setting read as Settings.Global.ANIMATOR_DURATION_SCALE
+// == 0 — the standard proxy, via JNI off the NativeActivity. Both move
+// only on a configuration change (rotation/font setting), so poll the
+// first frame and every framebuffer size change like the insets above.
+static float sh_android_font_scale = 1.0f;
+static int sh_android_reduced_motion = 0;
+static int sh_android_prefs_done = 0;
+static float sh_android_prefs_last_w = 0, sh_android_prefs_last_h = 0;
+
+static void sh_android_prefs_refresh(float fb_w, float fb_h) {
+    if (sh_android_prefs_done && fb_w == sh_android_prefs_last_w && fb_h == sh_android_prefs_last_h)
+        return;
+    sh_android_prefs_done = 1;
+    sh_android_prefs_last_w = fb_w; sh_android_prefs_last_h = fb_h;
+
+    ANativeActivity* act = (ANativeActivity*)sapp_android_get_native_activity();
+    if (!act || !act->vm || !act->clazz) return;
+    JavaVM* vm = act->vm;
+    JNIEnv* env = NULL;
+    if ((*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        if ((*vm)->AttachCurrentThread(vm, &env, NULL) != JNI_OK) return;
+    }
+
+    // Resources.getConfiguration().fontScale
+    jclass act_cls = (*env)->GetObjectClass(env, act->clazz);
+    jmethodID get_res = act_cls
+        ? (*env)->GetMethodID(env, act_cls, "getResources", "()Landroid/content/res/Resources;") : NULL;
+    jobject res = get_res ? (*env)->CallObjectMethod(env, act->clazz, get_res) : NULL;
+    jclass res_cls = res ? (*env)->GetObjectClass(env, res) : NULL;
+    jmethodID get_cfg = res_cls
+        ? (*env)->GetMethodID(env, res_cls, "getConfiguration", "()Landroid/content/res/Configuration;") : NULL;
+    jobject cfg = get_cfg ? (*env)->CallObjectMethod(env, res, get_cfg) : NULL;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); return; }
+    if (cfg) {
+        jclass cfg_cls = (*env)->GetObjectClass(env, cfg);
+        jfieldID f_scale = cfg_cls ? (*env)->GetFieldID(env, cfg_cls, "fontScale", "F") : NULL;
+        if (f_scale) {
+            float s = (*env)->GetFloatField(env, cfg, f_scale);
+            if (s > 0.0f) sh_android_font_scale = s;
+        }
+    }
+
+    // Settings.Global.getFloat(resolver, ANIMATOR_DURATION_SCALE, 1) == 0
+    jmethodID get_resolver = act_cls
+        ? (*env)->GetMethodID(env, act_cls, "getContentResolver", "()Landroid/content/ContentResolver;") : NULL;
+    jobject resolver = get_resolver ? (*env)->CallObjectMethod(env, act->clazz, get_resolver) : NULL;
+    jclass settings_cls = (*env)->FindClass(env, "android/provider/Settings$Global");
+    jstring key = (*env)->NewStringUTF(env, "animator_duration_scale");
+    jmethodID get_float = settings_cls
+        ? (*env)->GetStaticMethodID(env, settings_cls, "getFloat",
+            "(Landroid/content/ContentResolver;Ljava/lang/String;F)F") : NULL;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); }
+    if (resolver && get_float && key) {
+        float dscale = (*env)->CallStaticFloatMethod(env, settings_cls, get_float,
+            resolver, key, 1.0f);
+        if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); }
+        else sh_android_reduced_motion = (dscale == 0.0f) ? 1 : 0;
+    }
+    if (key) (*env)->DeleteLocalRef(env, key);
+}
+
+void egui_cr_system_prefs(float* font_scale, int* reduced_motion) {
+    sh_android_prefs_refresh((float)sapp_width(), (float)sapp_height());
+    *font_scale = sh_android_font_scale;
+    *reduced_motion = sh_android_reduced_motion;
+}
+#else
+// Desktops: no OS font scale / reduced-motion probe — the no-op keeps
+// RawInput.font_scale/reduced_motion unset so a manual Context setter
+// stays authoritative.
+void egui_cr_system_prefs(float* font_scale, int* reduced_motion) {
+    *font_scale = 1.0f;
+    *reduced_motion = 0;
+}
+#endif
+
 static void sh_event_cb(const sapp_event* ev) {
 #if defined(SH_IOS)
     if (ev->type >= SAPP_EVENTTYPE_TOUCHES_BEGAN &&

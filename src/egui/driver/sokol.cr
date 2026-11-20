@@ -187,6 +187,11 @@ lib LibEguiCr
   {% if flag?(:ios) || flag?(:android) %}
     fun safe_area = egui_cr_safe_area(top : Float32*, right : Float32*,
       bottom : Float32*, left : Float32*) : Void
+    # OS font scale + reduced-motion flag (Dynamic Type + Reduce Motion
+    # on iOS, Configuration.fontScale + animator_duration_scale on
+    # Android). Same prebuilt-library caveat as safe_area above.
+    fun system_prefs = egui_cr_system_prefs(font_scale : Float32*,
+      reduced_motion : Int32*) : Void
   {% end %}
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
@@ -1688,6 +1693,10 @@ module Egui
                 fb_h.to_f64 / @@pixels_per_point)),
             @@events, time)
           raw.safe_area = poll_safe_area
+          if (prefs = poll_system_prefs)
+            raw.font_scale = prefs[0]
+            raw.reduced_motion = prefs[1]
+          end
           @@events = [] of Egui::Event
 
           bt = Time.instant
@@ -2149,6 +2158,20 @@ module Egui
         {% end %}
       end
 
+      # OS accessibility prefs for this frame (backend/sokol_shim.c
+      # detector). nil on desktops: the no-op there leaves
+      # RawInput.font_scale/reduced_motion unset and a manual
+      # Context#font_scale= / #reduced_motion= stays authoritative.
+      private def self.poll_system_prefs : {Float64, Bool}?
+        {% if flag?(:ios) || flag?(:android) %}
+          s = uninitialized Float32; rm = uninitialized Int32
+          LibEguiCr.system_prefs(pointerof(s), pointerof(rm))
+          {s.to_f64, rm != 0}
+        {% else %}
+          nil
+        {% end %}
+      end
+
       protected def self.translate_event(type : Int32, mx : Float32,
                                          my : Float32, sx : Float32,
                                          sy : Float32, mods : UInt32,
@@ -2501,6 +2524,10 @@ module Egui
               fb_h.to_f64 / @@pixels_per_point)),
           @@events, time)
         raw.safe_area = poll_safe_area
+        if (prefs = poll_system_prefs)
+          raw.font_scale = prefs[0]
+          raw.reduced_motion = prefs[1]
+        end
         @@events = [] of Egui::Event
 
         bt = Time.instant

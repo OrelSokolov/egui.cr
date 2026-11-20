@@ -71,8 +71,10 @@ module Egui
 
     # The named kind from its ECSS spelling — kebab-case ("fly-right",
     # "slide-left") or Raven's PascalCase ("FlyRight") both parse;
-    # nil for "none" or an unknown name.
-    def self.kind?(name : String) : Symbol?
+    # nil for "none", an unknown name, or no value at all (the var is
+    # optional in the cascade).
+    def self.kind?(name : String?) : Symbol?
+      return nil unless name
       case name.downcase.delete("-_ ")
       when "none"       then nil
       when "fade"       then :fade

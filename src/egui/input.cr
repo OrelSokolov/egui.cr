@@ -233,11 +233,21 @@ module Egui
     # desktops — the no-op). When present, `Context#begin_frame`
     # applies them (overriding a manual `Context#safe_area=`).
     property safe_area : SafeArea?
+    # OS font scale (Dynamic Type / Configuration.fontScale; nil on
+    # desktops — the no-op shim). When present, `Context#begin_frame`
+    # applies it (overriding a manual `Context#font_scale=`).
+    property font_scale : Float64?
+    # OS reduced-motion flag (iOS Reduce Motion, Android
+    # animator_duration_scale == 0; nil on desktops). Same override
+    # semantics as `font_scale`.
+    property reduced_motion : Bool?
 
     def initialize(@screen_rect : Rect = Rect.zero,
                    @events : Array(Event) = [] of Event,
                    @time : Float64 = 0.0,
-                   @safe_area : SafeArea? = nil)
+                   @safe_area : SafeArea? = nil,
+                   @font_scale : Float64? = nil,
+                   @reduced_motion : Bool? = nil)
     end
   end
 

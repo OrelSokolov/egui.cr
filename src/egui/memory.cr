@@ -244,6 +244,26 @@ module Egui
     # highlight through the menu.
     @hover_top_z : Int32?
 
+    # Этап 6 (plans/responsive-mobile.md): the minimum finger-sized
+    # hit zone (44pt × font scale) — Context#begin_frame sets it while
+    # the pointer is coarse, 0 on a fine pointer. Applied at hit-test
+    # time to click/drag rects: the paint/layout rect stays untouched,
+    # only pointer containment widens (see #hit_rect).
+    property hit_floor : Float64 = 0.0
+
+    # The pointer-containment rect for a registered widget: the paint
+    # rect, grown symmetrically to the hit floor when the widget senses
+    # clicks or drags and the floor is armed. Clip containment is
+    # checked separately by every caller, so a floor-widened zone never
+    # reaches outside its container.
+    private def hit_rect(rect : Rect, sense : Sense) : Rect
+      return rect unless @hit_floor > 0.0 && (sense.click? || sense.drag?)
+      grow_x = {0.0, (@hit_floor - rect.width) / 2.0}.max
+      grow_y = {0.0, (@hit_floor - rect.height) / 2.0}.max
+      Rect.new(Pos2.new(rect.min.x - grow_x, rect.min.y - grow_y),
+        Pos2.new(rect.max.x + grow_x, rect.max.y + grow_y))
+    end
+
     # Modal state (egui `InteractionSnapshot` blocking): while a modal
     # is open, widgets on layers below Foreground get no interaction.
     # The flag is latched one frame (set during rendering, effective
@@ -396,7 +416,7 @@ module Egui
           next if sense.none?
           layer = @prv_layers[i]
           next if @modal_open && !layer.order.foreground?
-          rect = @prv_rects[i]
+          rect = hit_rect(@prv_rects[i], sense)
           if (hit = layer_rects[layer]?)
             layer_rects[layer] = hit.union(rect)
           else
@@ -600,7 +620,8 @@ module Egui
         return nil if @modal_open && !layer.order.foreground?
         if (@hover_top_z.nil? || layer.z >= @hover_top_z.not_nil!) &&
            !@prv_senses[i].none? &&
-           @prv_rects[i].contains?(p) && @prv_clips[i].contains?(p)
+           hit_rect(@prv_rects[i], @prv_senses[i]).contains?(p) &&
+           @prv_clips[i].contains?(p)
           return "hover"
         end
       end
@@ -719,7 +740,7 @@ module Egui
       hovered = false
       if (p = pos) && (@hover_top_z.nil? || layer.z >= @hover_top_z.not_nil!) &&
          !sense.none?
-        hovered = rect.contains?(p) && clip.contains?(p)
+        hovered = hit_rect(rect, sense).contains?(p) && clip.contains?(p)
       end
 
       clicked = sense.click? && @clicked_id == id
@@ -1132,7 +1153,7 @@ module Egui
       hit = nil
       hit_z = 0
       @prv_order.each do |i|
-        rect = @prv_rects[i]
+        rect = hit_rect(@prv_rects[i], @prv_senses[i])
         next unless rect.contains?(pos)
         next unless sense_filter.call(@prv_senses[i])
         clip = @prv_clips[i]
@@ -1155,10 +1176,10 @@ module Egui
         # Previous frame's geometry wins (like the hash model's
         # `prev || current`); stamps decide which is valid.
         if @prv_stamp[i] == @geo_gen - 1
-          rect = @prv_rects[i]
+          rect = hit_rect(@prv_rects[i], @prv_senses[i])
           clip = @prv_clips[i]
         elsif @cur_stamp[i] == @geo_gen
-          rect = @cur_rects[i]
+          rect = hit_rect(@cur_rects[i], @cur_senses[i])
           clip = @cur_clips[i]
         else
           return false

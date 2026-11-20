@@ -1,26 +1,34 @@
 # Responsive / мобильная зрелость стилей и лейаута
 
-> **Статус (2026-10): Этапы 1–3 РЕАЛИЗОВАНЫ** (спеки: `spec/
+> **Статус (2026-11): Этапы 1–6 РЕАЛИЗОВАНЫ** (спеки: `spec/
 > length_units_spec.cr`, `spec/widget_size_spec.cr`, `spec/
 > media_conditions_spec.cr`; `transition` из animations.md Ур.1 тоже
-> вошёл — `spec/style_transitions_spec.cr`). Из Этапов 4–6 готова
-> кристалльная часть (спека `spec/responsive_extras_spec.cr`):
-> Этап 4 — модель `SafeArea` + вырезание из корневого региона в
-> `begin_frame` + `env(safe-area-inset-*)`-единицы, ДЕТЕКТОР ГОТОВ:
+> вошёл — `spec/style_transitions_spec.cr`). Этап 4 — модель
+> `SafeArea` + вырезание из корневого региона в
+> `begin_frame` + `env(safe-area-inset-*)`-единицы, детектор
 > `egui_cr_safe_area` в `backend/sokol_shim.c` (UIKit safeAreaInsets
 > на iOS, WindowInsets через JNI на Android, desktop = no-op) →
 > `RawInput.safe_area` → `begin_frame` (backend-значение бьёт
-> ручной сеттер); проверено на iPhone 17 Pro-симуляторе; Этап 5 — `Context#font_scale=` → `rem`; Этап 6
-> (частично) — hover-правила читаются как base при `pointer: coarse`;
+> ручной сеттер); проверено на iPhone 17 Pro-симуляторе. Этап 5 —
+> `Context#font_scale=` → `rem` + ОС-детектор `egui_cr_system_prefs`
+> (Dynamic Type на iOS, `Configuration.fontScale` на Android) →
+> `RawInput.font_scale` (OS бьёт ручной сеттер, desktop = no-op);
+> reduced-motion из ОС — там же (`UIAccessibilityIsReduceMotionEnabled`
+> / `animator_duration_scale == 0`) → `RawInput.reduced_motion`.
+> Этап 6 — hover-правила читаются как base при `pointer: coarse`;
+> первый touch-событий флипает `pointer_coarse` sticky
+> (`begin_frame`); hit-target floor 44pt × font_scale при coarse —
+> расширяется ТОЛЬКО hit-зона (`Memory#hit_rect`, все точки
+> hit-test: hover/occlusion/topmost_at/rect_contains?/interaction_state),
+> не отрисовка (спека `spec/responsive_extras_spec.cr`); long-press
+> → контекстные меню (`Memory::LONG_PRESS_TIME`); мультитач — палец =
+> pointer, 2 пальца = pan+pinch (шимы + `InputState#zoom_delta`).
 > Этап 7 (частично) — перенос по переполнению: `#horizontal` и
 > горизонтальные strip-панели wrap по умолчанию (`flex-wrap: wrap`,
 > opt-out `wrap: false`), вложенный ряд в горизонтальном родителе —
 > блок с новой полной строки, лейбл в ряду переносится, когда шире
 > всей строки (спека `spec/row_wrap_spec.cr`).
-> Осталось: fontScale/reduced-motion из ОС (JNI/ObjC-шимы — safe-area
-> детектор того же класса уже есть как образец), hit-target floor
-> 44/48pt, мультитач (уже чей-то WIP в рабочей копии), Этап 7
-> (layout-проп row/column через media).
+> Осталось: Этап 7 (layout-проп row/column через media).
 
 Контекст: интерфейсы уже крутятся на мобильных экранах (Android/iOS-планы
 см. `ANDROID_SUPPORT_PLAN.md`, `plans/IOS_SUPPORT_PLAN.md`), а система

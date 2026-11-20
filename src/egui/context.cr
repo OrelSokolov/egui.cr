@@ -504,6 +504,24 @@ module Egui
       if (insets = raw.safe_area)
         @safe_area = insets
       end
+      # Same authority for the OS accessibility prefs (Этап 5/6): the
+      # backend detector's font scale (Dynamic Type / fontScale) and
+      # reduced-motion flag override the manual setters; on desktops
+      # RawInput carries nil and the manual value survives.
+      if (os_scale = raw.font_scale)
+        self.font_scale = os_scale
+      end
+      if (os_reduced = raw.reduced_motion)
+        self.reduced_motion = os_reduced
+      end
+      # Touch-first input (Этап 6): the first finger event flips the
+      # pointer to coarse — sticky, it never flips back (see
+      # StyleSheet#pointer_coarse=).
+      self.pointer_coarse = true if @input.touch_pointer?
+      # Hit-target floor follows the coarse flag and the font scale:
+      # 44pt (Apple HIG; Material's 48dp is the same idea) scaled by
+      # the Этап-5 multiplier, 0 on a fine pointer.
+      @memory.hit_floor = pointer_coarse? ? 44.0 * @font_scale : 0.0
       # The root region every panel bites out of: the screen minus the
       # safe-area insets ( notch/status bar/home indicator). Media
       # conditions keep matching against the FULL screen_rect below —
