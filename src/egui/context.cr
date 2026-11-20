@@ -1396,6 +1396,11 @@ module Egui
       end
       content_size = Vec2.new(size.x - 2 * pad.x, content_h)
 
+      # The window borrows the painter: save the caller's layer/clip and
+      # restore them on exit (see #popup) — content painted after the
+      # window in the same host keeps the host's state.
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = Order::Middle
       bg_index = @painter.add_noop
       @painter.clip = clip
@@ -1407,11 +1412,6 @@ module Egui
       # clip above); a fixed-size window clips to its rect on both axes.
       ui.clip = clip
       yield ui
-
-      # Content may leave the painter in another layer (a popup opened
-      # inside resets it to Background on exit) — re-establish this
-      # window's layer before the back-painted shell and title bar.
-      @painter.layer = Order::Middle
 
       outer = fixed ? Rect.from_min_size(pos, size) : Rect.new(
         pos,
@@ -1478,8 +1478,8 @@ module Egui
           Pos2.new(grip.max.x - 4.0, grip.max.y - o),
           2.0, style.visuals.separator_color)
       end
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
     end
 
     # egui `Area` (containers/area.rs) — an explicit positioned region
@@ -1565,7 +1565,6 @@ module Egui
         min_width)
       width = constrained.x
 
-      layer = LayerId.new(Order::Foreground, pop_id)
       pad ||= style.spacing.window_padding
 
       # The popup borrows the painter: save the caller's layer/clip and
@@ -1576,7 +1575,14 @@ module Egui
       # (shadows, overflow) paint past the host's viewport.
       prev_layer = @painter.layer
       prev_clip = @painter.clip
-      @painter.layer = Order::Foreground
+      # A nested popup rides one NOTCH above its opener: one opened from
+      # background/window content (z=0/50) stays at POPUP_LAYER_Z as
+      # before, one opened from a modal/embedded window (99) or from
+      # another popup lands at 100 — paint order AND hit-tests (they
+      # follow z, see Memory#interact) put it above the opener right
+      # away, with no insertion-order tricks.
+      z = {prev_layer + 1, POPUP_LAYER_Z}.max.clamp(0, MAX_LAYER_Z)
+      @painter.layer = z
       # The shadow slot goes under the frame slot: an outset box-shadow
       # paints beneath its box (CSS paint order).
       shadow_index = @painter.add_noop
@@ -1585,8 +1591,8 @@ module Egui
       ui = Ui.new(self, pop_id,
         Rect.from_min_size(anchor + Vec2.new(pad.x, pad.y),
           Vec2.new(width - 2 * pad.x, 1e6)))
-      ui.layer = layer
-      clip_from = {@painter.commands.size, Order::Foreground.z}
+      ui.layer = LayerId.new(Order::Foreground, pop_id, z)
+      clip_from = {@painter.commands.size, @painter.layer}
       yield ui
 
       outer = Rect.new(
@@ -1689,6 +1695,11 @@ module Egui
       # Never wider than the screen (upstream `Area` constrain).
       width = {width, screen.width}.min if screen.width > 0.0
 
+      # The modal borrows the painter: save the caller's layer/clip and
+      # restore them on exit (see #popup).
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
+
       # Dim everything below (theme-driven scrim — `Visuals#modal_dim`).
       @painter.layer = Order::Foreground
       @painter.clip = screen
@@ -1738,11 +1749,6 @@ module Egui
       @painter.clip = Rect.from_min_size(pos, Vec2.new(width, 1e6))
       yield ui
 
-      # Content may leave the painter in another layer (a popup opened
-      # inside resets it to Background on exit) — the footer band and
-      # buttons below must stay in the modal's Foreground layer.
-      @painter.layer = Order::Foreground
-
       # --- zone 2: the raised footer band with the buttons ------------
       clicked = nil
       outer_h = {ui.min_rect.bottom + pad.y - pos.y + footer_h,
@@ -1787,8 +1793,8 @@ module Egui
           Color32.rgba(v.window_stroke.r, v.window_stroke.g,
             v.window_stroke.b, 90),
           1.0))
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
       clicked
     end
 
@@ -1866,6 +1872,10 @@ module Egui
 
       # No scrim (unlike #modal): the background behind the window stays
       # fully visible and interactive-blocking comes from mark_modal.
+      # The window borrows the painter: save the caller's layer/clip and
+      # restore them on exit (see #popup).
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = Order::Foreground
       @painter.clip = screen
 
@@ -1976,11 +1986,6 @@ module Egui
       ui.clip = clip
       yield ui
 
-      # Content may leave the painter in another layer — a popup opened
-      # inside the dialog resets it to Background on exit — so this
-      # window's layer must be re-established before the trailing paints.
-      @painter.layer = Order::Foreground
-
       outer = Rect.new(
         pos,
         Pos2.new({ui.min_rect.right + pad.x, pos.x + size.x}.max,
@@ -2016,8 +2021,8 @@ module Egui
           RectCmd.new(outer, Rect.from_min_size(pos, Vec2.new(outer.width, title_h)),
             win11 ? 8.0 : v.window_rounding, band_fill, nil, 0.0))
       end
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
       close
     end
 
@@ -2173,7 +2178,11 @@ module Egui
       # Normally panels ride the Background layer under everything;
       # `layer` hoists a panel above it (the inspector panel rides a
       # dedicated z=98 layer above app windows — see inspector.cr) —
-      # paint AND interaction both follow the layer's z.
+      # paint AND interaction both follow the layer's z. The panel
+      # borrows the painter: the caller's layer/clip come back on exit
+      # (see #popup).
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = layer ? layer.z : Order::Background
       bg_index = @painter.add_noop
       @painter.clip = rect
@@ -2215,8 +2224,8 @@ module Egui
       end
       panel_resize_grip(Id.from("panel/#{id}"), rect, edge, size, layer) if resizable && edge
 
-      @painter.layer = Order::Background
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
     end
 
     # The stored panel size (the panel's `height:`/`width:` default

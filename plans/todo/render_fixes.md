@@ -1,6 +1,11 @@
 # Рендер: save/restore состояния художника и z вложенных попапов
 
-> **Статус: план** (не реализовано).
+> **Статус: сделано** (save/restore во всех контейнерных примитивах +
+> z-правило вложенных попапов; регрессия в `spec/popup_layer_restore_spec.cr`).
+> `#popup` и `#area` были переведены на save/restore раньше; в этом
+> проходе добавлены `#window`, `#modal`, `#embedded_window`, `panel_ui`,
+> `#menu_bar`, хелперы `Painter#with_layer`/`#layer_at` и z-правило
+> `{entry_z + 1, POPUP_LAYER_Z}.max` для `#popup`.
 
 ## 1. Проблема
 

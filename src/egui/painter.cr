@@ -1171,6 +1171,33 @@ module Egui
       @clip
     end
 
+    # Save the ambient layer/clip, install `z`/`clip` for the block and
+    # restore them on exit (egui `Painter::with_layer_id`): the
+    # container primitives (`#window`, `#modal`, `#embedded_window`,
+    # `panel_ui`, …) bracket their subtree with this instead of
+    # resetting to Background+infinite, so whatever the caller had —
+    # and whatever runs after them in the same host — keeps its own
+    # state. The restore chain naturally bottoms out at Background+
+    # infinite: a frame starts there (see #clear).
+    def with_layer(z : Int32, clip : Rect, &) : Nil
+      prev_layer = @layer
+      prev_clip = @clip
+      @layer = z
+      @clip = clip
+      begin
+        yield
+      ensure
+        @layer = prev_layer
+        @clip = prev_clip
+      end
+    end
+
+    # The z tag of command `index` — readable `@layers` for specs and
+    # regression asserts (which layer a given command painted at).
+    def layer_at(index : Int32) : Int32
+      @layers[index]
+    end
+
     # The clip box-shadows are baked with (see #box_shadow): the
     # intersection of the HARD clips only — scroll viewports
     # (ScrollArea) and overflow brackets (#clip_apply). Bounds-only

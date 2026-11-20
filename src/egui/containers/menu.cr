@@ -128,6 +128,11 @@ module Egui
       @available_rect = Rect.new(Pos2.new(outer.left, outer.bottom),
         @available_rect.max)
 
+      # The bar borrows the painter: save the caller's layer/clip and
+      # restore them on exit (see Context#popup) — the bar's strip must
+      # not demote whatever is painted after it.
+      prev_layer = @painter.layer
+      prev_clip = @painter.clip
       @painter.layer = Order::Background
       bg_index = @painter.add_noop
       @painter.clip = outer
@@ -145,7 +150,8 @@ module Egui
         Layout.left_to_right)
       yield ui
 
-      @painter.clip = Rect.new(Pos2.new(-1e9, -1e9), Pos2.new(1e9, 1e9))
+      @painter.layer = prev_layer
+      @painter.clip = prev_clip
 
       # Keep the hover-switch machinery ticking while a menu is open.
       request_repaint unless @memory.menu_open.nil?
