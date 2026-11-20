@@ -7697,6 +7697,14 @@ void egui_cr_drop_payload_free(void* payload) {
 // for A's real-size packet instead of presenting a stale-size frame.
 static double g_rsz_at = -1e9;
 
+// IDLE_NOT_FOCUSED.md: window focus/minimize state (R thread —
+// event_cb and frame_cb both run there). An unfocused or minimized
+// window replays its last packet at most once per second instead of
+// every vsync tick — ten idle windows must not fight for the GPU.
+static int g_win_focused = 1;   // optimistic default until the first event
+static int g_win_iconified = 0;
+static double g_rt_last_draw = -1e9;
+
 // Composited scroll (defined with the packet section below — needs
 // g_pkt_last): try to serve a wheel event on the render thread, and
 // advance live flings once per tick before the replay presents them.
@@ -7716,6 +7724,17 @@ static void sh_rt_event_cb(const sapp_event* ev) {
     // processing in the same tick, and sh_rt_frame uses the stamp to
     // wait for A's real-size packet — see the resize draw-sync there.
     if (ev->type == SAPP_EVENTTYPE_RESIZED) g_rsz_at = sh_now();
+    // Focus/minimize tracking for the 1 fps unfocused gate (see
+    // sh_rt_frame): sokol delivers these on all desktops — X11 core
+    // FocusIn/Out + _NET_WM_STATE, Win32 WM_ACTIVATE/WM_SIZE, macOS
+    // key-window + miniaturize notifications.
+    switch (ev->type) {
+        case SAPP_EVENTTYPE_FOCUSED:   g_win_focused = 1;   break;
+        case SAPP_EVENTTYPE_UNFOCUSED: g_win_focused = 0;   break;
+        case SAPP_EVENTTYPE_ICONIFIED: g_win_iconified = 1; break;
+        case SAPP_EVENTTYPE_RESTORED:  g_win_iconified = 0; break;
+        default: break;
+    }
     sh_event_rec_t rec;
     memset(&rec, 0, sizeof rec);
     rec.type = (int)ev->type;
@@ -9872,11 +9891,29 @@ static void sh_rt_frame(void) {
         fresh->post_n = 0;
     }
     if (g_pkt_last) {
-        double bt = sh_now();
-        sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
-        if (sh_b_on > 0) sh_b_rep_acc += sh_now() - bt;
-        sh_screenshot_try(g_pkt_last->fb_w, g_pkt_last->fb_h);
-        sh_shot(g_pkt_last);
+        // IDLE_NOT_FOCUSED.md: an unfocused or minimized window replays
+        // its last packet at most once per second. Draw immediately when
+        // a fresh packet arrives (event-driven catch-up frames — A
+        // throttles itself to the same 1 Hz cadence when unfocused, so
+        // an animating hidden window still lands on ~1 fps) or when
+        // composited scroll is live (wheels/flings set g_scroll_dirty on
+        // this thread — hover-scrolling an unfocused window keeps its
+        // smooth motion). Otherwise wait out the 1 s cadence: sokol
+        // swaps after this callback regardless, re-presenting the
+        // unchanged previous frame — a no-damage present, no render work.
+        double now = sh_now();
+        int unfocused = !g_win_focused || g_win_iconified;
+        int draw_now = !unfocused || fresh != NULL ||
+                       sh_ai_load(&g_scroll_dirty) != 0 ||
+                       (now - g_rt_last_draw) >= 1.0;
+        if (draw_now) {
+            double bt = sh_now();
+            sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
+            if (sh_b_on > 0) sh_b_rep_acc += sh_now() - bt;
+            g_rt_last_draw = now;
+            sh_screenshot_try(g_pkt_last->fb_w, g_pkt_last->fb_h);
+            sh_shot(g_pkt_last);
+        }
     } else {
         // No packet yet (before the first Crystal frame): present the
         // backdrop color each tick — the young window must not sit on an

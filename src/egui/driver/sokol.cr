@@ -423,6 +423,15 @@ module Egui
       @@natural_scheduler = false
       # True while on_frame runs (Driver::Base#gui_context? guard).
       @@in_frame = false
+      # Window focus/minimize state (IDLE_NOT_FOCUSED.md): FOCUSED/
+      # UNFOCUSED/ICONIFIED/RESTORED events from sokol. An unfocused or
+      # minimized window paints (and, detached, produces frames) at
+      # most 1 fps instead of every vsync tick.
+      @@focused = true # optimistic default until the first focus event
+      @@iconified = false
+      # Wall clock of the last actually-painted frame — the legacy loop's
+      # 1 fps unfocused gate (see on_frame). Nil until the first frame.
+      @@last_frame_done : Time::Instant? = nil
       # Driver::Base#run_on_main queue — drained at frame start, on the
       # drawing thread, before any pump.
       @@main_queue = [] of ->
@@ -433,6 +442,14 @@ module Egui
 
       def self.natural_scheduler? : Bool
         @@natural_scheduler
+      end
+
+      # The window is on-screen and key: the 1 fps idle gate
+      # (IDLE_NOT_FOCUSED.md) keys off this. Minimized implies unfocused
+      # in practice, but ICONIFIED also arrives while another window of
+      # the same app keeps focus — track it explicitly.
+      def self.window_focused? : Bool
+        @@focused && !@@iconified
       end
 
       # Driver::Base#run_on_main entry point (Handle#run_on_main): the
@@ -1089,6 +1106,8 @@ module Egui
       MOUSE_SCROLL  =  6
       MOUSE_MOVE    =  7
       RESIZED       = 14
+      ICONIFIED     = 15
+      RESTORED      = 16
       FOCUSED       = 17
       UNFOCUSED     = 18
       FILES_DROPPED = 23
@@ -1389,8 +1408,9 @@ module Egui
           # own swap). While a repaint run is active but acks starve
           # (swap stall, occluded window), a 60 Hz fallback keeps
           # app.update/PTY running; input doorbells always produce
-          # immediately.
-          fallback = 1.0 / 60.0
+          # immediately. The fallback drops to 1 Hz when the window is
+          # unfocused/minimized (IDLE_NOT_FOCUSED.md — recomputed per
+          # iteration inside the loop).
           last_produce = Time.instant - 1.second
           busy = false
           {% if flag?(:win32) %}
@@ -1434,6 +1454,10 @@ module Egui
           loop do
             # Wait for a doorbell: indefinitely when nothing is pending,
             # until the fallback deadline while a repaint run is active.
+            # IDLE_NOT_FOCUSED.md: the fallback itself drops to 1 Hz when
+            # the window is unfocused/minimized — a hidden window must
+            # not keep app.update + packet production at 60 Hz.
+            fallback = Egui::Driver::Sokol.window_focused? ? 1.0 / 60.0 : 1.0
             {% if flag?(:win32) %}
               fallback_mu.synchronize do
                 fallback_due = busy ? last_produce + fallback.seconds : nil
@@ -1454,15 +1478,25 @@ module Egui
             {% end %}
             # Keep doorbells from filling the pipe during busy runs.
             break if drain_doorbells_raw(handle, doorbell)
-            drain_events(records)
+            events_n = drain_events(records)
             if frame_pending?(app)
-              last_produce = Time.instant
-              begin
-                produce_frame
-              rescue ex : Exception
-                frame_crash(ex)
+              # Unfocused gate: real input (any event) produces a frame
+              # immediately — hover-wheel scroll must stay responsive;
+              # background repaint runs (animations) wait out the 1 Hz
+              # fallback cadence instead of running at 60 Hz.
+              due = Egui::Driver::Sokol.window_focused? || events_n > 0 ||
+                    (Time.instant - last_produce) >= fallback.seconds
+              if due
+                last_produce = Time.instant
+                begin
+                  produce_frame
+                rescue ex : Exception
+                  frame_crash(ex)
+                end
+                busy = app.ctx.needs_repaint?
+              else
+                busy = true # throttled — retry on the 1 Hz deadline
               end
-              busy = app.ctx.needs_repaint?
             else
               busy = false
               dbg_frame("idle", "moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?}")
@@ -1532,14 +1566,20 @@ module Egui
 
         # Pop the render thread's event ring into @@events through the
         # shared translation (same code the legacy callback used).
-        private def self.drain_events(records : Pointer(LibEguiCr::EventRecord)) : Nil
+        # Returns the number of events translated — the run loop's
+        # unfocused gate lets real input produce a frame immediately
+        # even while repaint runs are throttled to 1 Hz.
+        private def self.drain_events(records : Pointer(LibEguiCr::EventRecord)) : Int32
+          count = 0
           while (n = LibEguiCr.events_pop(records, 64)) > 0
             n.times do |i|
               r = records[i]
               translate_event(r.type, r.mx, r.my, r.sx, r.sy, r.mods,
                 r.mouse_button, r.key_code, r.char_code, r.payload)
+              count += 1
             end
           end
+          count
         end
 
         # #on_init minus the GL setup (the render thread's init callback
@@ -2174,8 +2214,11 @@ module Egui
           # frame; the event just marks the frame non-idle.
           @@events << Egui::Event.new(:window_resized)
         when FOCUSED
-          # no-op — the IME state was reset on the matching UNFOCUSED
+          @@focused = true
+          # no-op otherwise — the IME state was reset on the matching
+          # UNFOCUSED
         when UNFOCUSED
+          @@focused = false
           {% if flag?(:android) %}
             # The system hides the soft keyboard when the window loses
             # focus (app switch, home, a dialog on top) — reset the IME
@@ -2189,6 +2232,10 @@ module Egui
             LibEguiCr.android_ime_set_state(0, 0, 0)
             @@app.try &.ctx.memory.focus.clear
           {% end %}
+        when ICONIFIED
+          @@iconified = true
+        when RESTORED
+          @@iconified = false
         end
       end
 
@@ -2196,6 +2243,15 @@ module Egui
       # @@in_frame guard behind Driver::Base#gui_context? wraps the
       # whole frame, full or idle.
       protected def self.on_frame : Nil
+        # IDLE_NOT_FOCUSED.md: an unfocused or minimized window paints
+        # at most 1 fps. Skipped ticks do no egui work at all — sokol
+        # re-presents the unchanged previous buffer (AppKit still calls
+        # drawRect on its ~1 ms timer; the empty pass is its business).
+        # Regaining focus bypasses the gate on the next tick.
+        if @@app && !window_focused?
+          done = @@last_frame_done
+          return if done && (Time.instant - done) < 1.second
+        end
         @@in_frame = true
         begin
           # Texture bookkeeping first: the per-frame update set must be
@@ -2203,6 +2259,7 @@ module Egui
           # (sokol: one sg_update_image per image and frame).
           @@app.try(&.ctx.textures.begin_frame)
           on_frame_inner
+          @@last_frame_done = Time.instant
         rescue ex : Exception
           frame_crash(ex)
         ensure
