@@ -461,8 +461,16 @@ module Egui
           memory.data.set_f64(bar_id, grab)
         end
         if scrollable > 0.0
-          off = ((pointer.y - grab - track.top) * max_offset / scrollable)
-            .clamp(0.0, max_offset)
+          raw = (pointer.y - grab - track.top) * max_offset / scrollable
+          off = raw.clamp(0.0, max_offset)
+          if off != raw
+            # Pinned at an edge: re-anchor the grab point to the
+            # clamped offset — reversing the drag moves the thumb at
+            # once instead of waiting out the pixels the pointer ran
+            # past the end (a thumb never accumulates a dead run).
+            grab = pointer.y - track.top - off * scrollable / max_offset
+            memory.data.set_f64(bar_id, grab)
+          end
           memory.data.set_vec2(id, Vec2.new(offset.x, off))
         end
       else
@@ -523,8 +531,13 @@ module Egui
           memory.data.set_f64(bar_id, grab)
         end
         if scrollable > 0.0
-          off = ((pointer.x - grab - track.left) * max_offset / scrollable)
-            .clamp(0.0, max_offset)
+          raw = (pointer.x - grab - track.left) * max_offset / scrollable
+          off = raw.clamp(0.0, max_offset)
+          if off != raw
+            # Same edge re-anchor as the vertical bar (no dead run).
+            grab = pointer.x - track.left - off * scrollable / max_offset
+            memory.data.set_f64(bar_id, grab)
+          end
           memory.data.set_vec2(id, Vec2.new(off, offset.y))
         end
       else
@@ -634,7 +647,15 @@ module Egui
           memory.data.set_f64(bar_id, grab)
         end
         if !grab.nan? && scrollable > 0.0 && (ptr = pointer)
-          set_offset.call((ptr.y - grab - track.top) * max_offset / scrollable)
+          raw = (ptr.y - grab - track.top) * max_offset / scrollable
+          clamped = raw.clamp(0.0, max_offset)
+          set_offset.call(clamped)
+          if clamped != raw
+            # Edge re-anchor (overlay bar): no dead run back after the
+            # pointer ran past the end of the track.
+            grab = ptr.y - track.top - clamped * scrollable / max_offset
+            memory.data.set_f64(bar_id, grab)
+          end
           offset = memory.data.get_vec2(id, offset)
         end
       else
@@ -735,7 +756,14 @@ module Egui
           memory.data.set_f64(bar_id, grab)
         end
         if !grab.nan? && scrollable > 0.0 && (ptr = pointer)
-          set_offset.call((ptr.x - grab - track.left) * max_offset / scrollable)
+          raw = (ptr.x - grab - track.left) * max_offset / scrollable
+          clamped = raw.clamp(0.0, max_offset)
+          set_offset.call(clamped)
+          if clamped != raw
+            # Edge re-anchor (overlay bar): no dead run back.
+            grab = ptr.x - track.left - clamped * scrollable / max_offset
+            memory.data.set_f64(bar_id, grab)
+          end
           offset = memory.data.get_vec2(id, offset)
         end
       else

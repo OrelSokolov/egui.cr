@@ -32,8 +32,6 @@ class IosSettingsExmlApp < Egui::App
 
     # Стор — источник истины: разметка и теги читают/пишут напрямую.
     rt.strings["tab"] = "main"
-    rt.strings["wifi_value"] = "home-5G"
-    rt.strings["bt_value"] = "Вкл."
     rt.floats["brightness"] = 62.0
     rt.floats["appearance"] = 0.0
     rt.floats["text_size"] = 0.0
@@ -42,6 +40,23 @@ class IosSettingsExmlApp < Egui::App
     rt.bools["bt"] = true
     rt.bools["true_tone"] = true
     rt.bools["bold"] = false
+    # Все switch= слоты разметки инициализированы — «мёртвых тоглов»
+    # нет, линт (этап 0) чист.
+    rt.bools["wifi_notif"] = true
+    rt.bools["notif_mail"] = true
+    rt.bools["notif_msg"] = true
+    rt.bools["imsg"] = true
+    rt.bools["adblock"] = false
+
+    # Производные значения (этап 4): движок считает, зависимость —
+    # read-set первого вычисления. Ручные пуши
+    # `strings["wifi_value"] = …` в каждом кадре больше не нужны.
+    rt.computed "wifi_value" do |s|
+      s["wifi"] == "true" ? "home-5G" : "Выкл."
+    end
+    rt.computed "bt_value" do |s|
+      s["bt"] == "true" ? "Вкл." : "Выкл."
+    end
   end
 
   def update(ctx : Egui::Context) : Nil
@@ -58,9 +73,9 @@ class IosSettingsExmlApp < Egui::App
       @styled = true
     end
 
-    # Живые значения разметки (value="{wifi_value}" и т.п.).
-    rt.strings["wifi_value"] = rt.bools["wifi"] ? "home-5G" : "Выкл."
-    rt.strings["bt_value"] = rt.bools["bt"] ? "Вкл." : "Выкл."
+    # Живые значения ({wifi_value}/{bt_value}) — computed-слоты
+    # (этап 4): пересчитываются при записи в зависимый слот, ручные
+    # пуши каждый кадр не нужны.
 
     @exml.reload_if_changed
     @renderer.render_routes(ctx, @exml, rt)

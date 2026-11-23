@@ -366,3 +366,61 @@ describe "paint-in-place parts in the inspector" do
     rects.any? { |r| r.fill == red && r.rect == x_rect }.should be_true
   end
 end
+
+# ── the Store tab (velour-components.md, этап 7) ───────────────────────
+
+STORE_SCREEN = Egui::Rect.from_min_size(Egui::Pos2.zero,
+  Egui::Vec2.new(800.0, 600.0))
+
+def store_frame(ctx : Egui::Context) : Nil
+  ctx.begin_frame(Egui::RawInput.new(STORE_SCREEN, ([] of Egui::Event), 0.032))
+  ctx.inspector.before_update
+  ctx.window("w") { |ui| ui.label("app") }
+  ctx.end_frame
+end
+
+describe "inspector Store tab" do
+  it "lists slots with live editing (write lands in the store)" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    rt = Egui::Exml::Runtime.new
+    rt.strings["wifi_name"] = "home-5G"
+    rt.floats["brightness"] = 0.62
+    rt.bools["wifi"] = true
+    rt.computed "wifi_label" do |s|
+      s["wifi"] == "true" ? s["wifi_name"].to_s : "off"
+    end
+    insp = ctx.inspector
+    insp.store = rt
+    insp.open = true
+    insp.tab = :store
+    # the panel renders in after_update, after the app body
+    store_frame(ctx)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    text = texts.join("\n")
+    text.should contain("wifi_name")
+    text.should contain("brightness")
+    text.should contain("wifi")
+    text.should contain("computed")
+  end
+
+  it "no store attached — the tab says so" do
+    ctx = Egui::Context.new
+    ctx.inspector_enabled = true
+    insp = ctx.inspector
+    insp.store = nil
+    insp.open = true
+    insp.tab = :store
+    store_frame(ctx)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join("\n").should contain("not attached")
+  end
+
+  it "a slot edit through the tab bumps the version (auto-repaint sees it)" do
+    rt = Egui::Exml::Runtime.new
+    rt.strings["k"] = "v1"
+    before = rt.slot_version("k")
+    rt.strings["k"] = "v2" # the write-back path the text edit drives
+    rt.slot_version("k").should eq(before + 1)
+  end
+end

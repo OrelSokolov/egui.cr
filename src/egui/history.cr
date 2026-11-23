@@ -104,7 +104,16 @@ module Egui
     # Direct input this frame (wheel notch, scrollbar drag): apply now,
     # latch a sample for the release-velocity estimate. A lone sample
     # (one isolated notch) estimates nothing — no fling.
+    #
+    # Reversal (input against the latched velocity) starts a FRESH
+    # estimate: at a clamped edge the overscroll keeps adding flat
+    # samples, so the window still spans the pre-edge run and the old
+    # sign would survive for max_age seconds — glide frames between the
+    # notches would then fight the new direction (the scroll appears
+    # dead until the pre-edge gap "works off").
     def input(delta : Float64, time : Float64, max_offset : Float64) : Nil
+      @history.clear if !delta.zero? && !@velocity.zero? &&
+                        delta.sign != @velocity.sign
       @offset = (@offset + delta).clamp(0.0, max_offset)
       @history.add(time, @offset)
       @velocity = if @history.size >= 2

@@ -260,12 +260,13 @@ NOT in the subset (warned parse issues, the absence is explicit):
 `v-html` (no raw HTML), `v-else-if` (needs slot inversion; ONE
 `v-else-if` after `v-if` could ride `if= unless=` — kept out until a
 live port wants it), `v-once`/`v-memo`/`v-pre` (interpolation caching
-already exists), `v-slot`/`<slot>` (components take use-site props),
-`<script setup>` (logic is compiled Crystal — a feature, not a gap),
-non-key event modifiers (`@click.stop` and friends — a key NAME after
-`keyup`/`keydown` is the one accepted modifier form), `v-model.lazy`.
-JS expression values (space/operator/call syntax) are rejected
-everywhere — publish a store slot and name it.
+already exists), `<script setup>` (logic is compiled Crystal — a
+feature, not a gap), non-key event modifiers (`@click.stop` and
+friends — a key NAME after `keyup`/`keydown` is the one accepted
+modifier form), `v-model.lazy`. `v-slot`/`<slot>` IS in the subset
+now — component templates only (§9 named slots). JS expression values
+(space/operator/call syntax) are rejected everywhere — publish a store
+slot and name it.
 
 ## 8. Flexbox (`ui.flex` / `display: flex`)
 
@@ -331,3 +332,139 @@ Deviations (🔶):
 - In the html layer, `Grid`/`ScrollArea`-style `show` containers
   inside a flex div are not intercepted as items (widgets, `box` and
   `horizontal` are).
+
+## 9. exml store contract (velour-components)
+
+The reactive contract between markup, custom tags and the store. The
+store is one `Exml::Runtime` (component scopes are `ScopedRuntime`
+children — writes land locally, reads fall through to the parent).
+
+### 9.1 Store lint (`Exml.validate`)
+
+`validate(doc, known_custom, written:)` — `written` is the app's
+declaration of the slot names it seeds/writes (nil = the store lint is
+skipped; the vocabulary checks still run):
+
+- **unknown `{name}`** (not a slot, not a repeat variable/field of an
+  enclosing `<repeat>`, not a component prop) — **error**: not in
+  scope and nobody writes it.
+- **read nobody writes** — **warning**: a `bind=` key, a declared
+  custom-tag slot attr (see `slot_attr` below), an `if=`/`unless=`
+  name, an `:options=` list or a repeat `in=` rows slot with no
+  writer — the binding reads an empty default. This is the
+  «мёртвый тогл» shape: the write lands in a slot nobody declared
+  and the silence looks like working logic.
+- `Exml.slot_attr "ios-row", "switch"` — declares which attributes of
+  a custom tag are slot names the handler reads/writes; they lint like
+  `bind=`.
+- Component classes register under their element name (`macro
+  inherited`); a use site missing a REQUIRED prop (declared without a
+  default) is an **error**: `<tag> requires prop "x"`.
+- `Exml.validate_component(Comp)` — lints a component's own template
+  against its declared props/states (+ `written:`).
+- **Quote hygiene at parse**: an unbalanced quote cuts an attribute
+  value short; the fragment with the quotes used to drop as junk
+  SILENTLY. It is a parse-time error now — stderr + `Exml.warnings`
+  (the parse stays lenient; a half-saved hot-reloaded file never
+  crashes the frame loop).
+- The last run's issues live in `Exml.last_issues` (the inspector's
+  Store tab shows the lines mentioning a slot).
+
+### 9.2 Component declarations (`prop` / `state` / `bindable`)
+
+```crystal
+class Counter < Egui::Exml::Component
+  prop title, default: "Без имени"  # optional; seeded when the site omits it
+  prop badge                        # REQUIRED — lint errors when missing
+  state open, default: "0"          # a slot of the SITE scope, seeded at install
+  bindable :value, :bool            # two-way prop, see 9.3
+```
+
+- **props are live**: re-seeded from the use site every frame (values
+  interpolate against the enclosing store); a DECLARED default is
+  seeded only while the scope lacks the key — the component's local
+  write to its own slot wins.
+- **state** is per-use-site by construction (the scope already
+  namespaces it) — no manual key prefixes; `bind=`/`bind_*=` attrs are
+  structural and never become props.
+
+### 9.3 The `bind=` contract (modelValue/update:modelValue)
+
+Use site: `<tag bind="parent_slot" on_change="act"/>`.
+
+- **Component classes**: `bindable :value, :bool` — the parent slot
+  seeds the scope's `value` prop (strings/floats/bools by the DECLARED
+  flavor — the slot may not exist on the first frame, so there is
+  nothing to detect from). A write from the component's own actions
+  flows back to the parent slot at the end of the frame and fires
+  `on_change=`. An external parent write re-seeds the scope (props
+  down — the parent wins the frame); the scope's own pushed-back value
+  persists otherwise. The first declared bindable maps to `bind=`,
+  further ones ride `bind_<name>=`.
+- **Handler tags** (`Renderer#on`): the handler runs against a
+  `BoundRuntime` — the parent slot seeded as `"value"`
+  (`rt.bool("value")`…), every write echoed into the parent store
+  under the bound key (so the `strings["page"] = …` nav idiom keeps
+  landing globally), and `on_change=` fires when the parent slot's
+  VERSION moved during the handler. Fresh per frame; component-
+  registered tags skip the wrap (their contract is Component-owned).
+
+### 9.4 Auto-repaint on store writes
+
+`Runtime#total_writes` counts CHANGED writes (strings/floats/bools —
+a same-value write never bumps a version). `Renderer#render_routes`
+captures the counter at frame start and calls `ctx.request_repaint`
+when it moved — a write during the walk (handlers, bind write-back)
+schedules the next frame ITSELF; the app never remembers the repaint
+loop. Re-publishing identical rows/lists/values every frame does not
+loop.
+
+### 9.5 Computed slots
+
+```crystal
+rt.computed "wifi_label" do |s|
+  s["wifi_on"] == "true" ? s["wifi_name"] : "Not connected"
+end
+```
+
+Dependencies are NOT declared — the read-set of the first evaluation
+(the `s[...]` tracker) is the dep list; a write to any dependency
+re-computes lazily on the next read. String slots; resolvable through
+`{name}` interpolation and `rt.lookup`. Self-reading resolves to the
+stale value (no loop). There is still NO expression grammar in markup
+— the ternary lives in Crystal. Computed names belong in the lint's
+`written:` set (`rt.computed_names` lists them).
+
+### 9.6 Named slots + scoped template classes
+
+- `<slot name="x"/>` in a component template takes the use-site
+  children carrying `slot="x"`; children without the attr fill the
+  bare `<slot/>` (default). PARSE-TIME splicing with markers — after
+  the splice the tree is plain nodes; spliced children re-path under
+  the USE site (independent ids/scopes); a use-site slot name with no
+  marker is dropped with a warn-once; an unmatched marker renders
+  nothing (Vue semantics).
+- Template classes are NAMESPACED with the element name (`card` →
+  `counter__card`) — Vue-scoped semantics: a component's classes
+  cannot collide with, or be matched by, the app's same-named global
+  rules. `{…}` store-driven tokens are app-side names and stay
+  unprefixed. Opt out with `scoped="false"` on the template root.
+
+### 9.7 Page transitions (`Egui::Exml::Nav`)
+
+`Nav.new(rt, slot: "page")` + `nav.update(ctx)` each frame: a slot
+change seeds the spring (push: any value ≠ root; pop: back to root —
+both configurable), `offsets(width)` gives the pixel slides of the
+entering/leaving bodies, `transitioning?`/`settled?` tell the handler
+which pages to draw. Response/damping are the spring's (the ECSS
+`transition: spring(...)` vocabulary). The DEFAULT is no animation —
+the transition exists only where an app constructs a Nav (spec:
+spec/exml_nav_spec.cr).
+
+### 9.8 Inspector Store tab
+
+`ctx.inspector.store = rt` adds a Store tab: every slot with LIVE
+editing (a write bumps the version — 9.4 redraws the next frame; the
+«мёртвый тогл» debugger), computed slots read-only, and the first
+`Exml.last_issues` line mentioning each slot (who reads/writes it,
+per the 9.1 lint).

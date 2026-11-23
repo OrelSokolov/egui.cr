@@ -143,7 +143,14 @@ module Egui
     HIGHLIGHT_COLOR = Color32.rgb(255, 149, 0)
 
     getter selected : Id?
-    property tab : Symbol                 # :class | :element
+    property tab : Symbol                 # :class | :element | :store
+    # The exml store to expose on the Store tab (velour-components.md,
+    # этап 7): slots with live editing (a write bumps the slot version —
+    # the этап-3 auto-repaint shows the edit the next frame), computed
+    # slots read-only, and the last lint run's lines mentioning each
+    # slot (who reads/writes it). The app attaches its runtime:
+    # `ctx.inspector.store = rt`.
+    property store : Egui::Exml::Runtime? = nil
     property dock : Symbol                # :right | :bottom — where the panel lives
     property? open : Bool
     property? export_open : Bool
@@ -479,6 +486,8 @@ module Egui
       case @tab
       when :class    then render_class_tab(ui)
       when :element  then render_element_tab(ui)
+      when :store    then render_store_tab(ui)
+      else                render_class_tab(ui)
       end
     end
 
@@ -501,6 +510,10 @@ module Egui
         end
         if render_tab(row, "Element", @tab == :element)
           @tab = :element
+        end
+        # Store tab — only where an app attached an exml runtime
+        if @store && render_tab(row, "Store", @tab == :store)
+          @tab = :store
         end
         # Right-pinned cluster: the spacer eats the leftover width so
         # the cluster's LAST item (✕) ends flush at the panel's right
@@ -747,6 +760,97 @@ module Egui
     end
 
     # --- the "Element" tab: edits per-id overrides ----------------------------
+
+        # The Store tab (velour-components.md, этап 7): every exml store
+    # slot with live editing — a write lands in the slot, bumps its
+    # version and the этап-3 auto-repaint draws the new value the next
+    # frame (the «мёртвый тогл» debugger). Computed slots (этап 4) are
+    # read-only — the engine derives them. Under each slot with lint
+    # findings, the first issue line from the last `Exml.validate` run
+    # (who reads/writes it, per the этап-0 lint data).
+    private def render_store_tab(ui : Ui) : Nil
+      rt = @store
+      unless rt
+        ui.label("exml store is not attached — set Inspector#store = rt")
+        return
+      end
+      issues = Egui::Exml.last_issues
+      hint = ->(slot : String) do
+        issues.find { |i| i.includes?("\"#{slot}\"") || i.includes?("{#{slot}}") }
+      end
+
+      ui.horizontal do |row|
+        row.label("strings")
+        row.label("(#{rt.strings.size})")
+      end
+      rt.strings.to_a.sort_by(&.[0]).each do |k, v|
+        ui.horizontal do |row|
+          row.add_sized(Vec2.new(180.0, 18.0), Label.new(k))
+          row.text_edit_singleline(v) { |t| rt.strings[k] = t }
+        end
+        if (i = hint.call(k)) && !i.empty?
+          ui.add(Label.new(i).style do |st|
+            st.text_color = ui.style.visuals.fade_color(
+              ui.style.visuals.text_color)
+          end)
+        end
+      end
+
+      ui.horizontal do |row|
+        row.label("floats")
+        row.label("(#{rt.floats.size})")
+      end
+      rt.floats.to_a.sort_by(&.[0]).each do |k, v|
+        ui.horizontal do |row|
+          row.add_sized(Vec2.new(180.0, 18.0), Label.new(k))
+          row.text_edit_singleline(v.to_s) do |t|
+            if (f = t.to_f?)
+              rt.floats[k] = f
+            end
+          end
+        end
+        if (i = hint.call(k)) && !i.empty?
+          ui.add(Label.new(i).style do |st|
+            st.text_color = ui.style.visuals.fade_color(
+              ui.style.visuals.text_color)
+          end)
+        end
+      end
+
+      ui.horizontal do |row|
+        row.label("bools")
+        row.label("(#{rt.bools.size})")
+      end
+      rt.bools.to_a.sort_by(&.[0]).each do |k, v|
+        ui.horizontal do |row|
+          row.add_sized(Vec2.new(180.0, 18.0), Label.new(k))
+          row.checkbox(v, "", id: "insp_store_#{k}") { |b| rt.bools[k] = b }
+        end
+        if (i = hint.call(k)) && !i.empty?
+          ui.add(Label.new(i).style do |st|
+            st.text_color = ui.style.visuals.fade_color(
+              ui.style.visuals.text_color)
+          end)
+        end
+      end
+
+      names = rt.computed_names
+      unless names.empty?
+        ui.horizontal do |row|
+          row.label("computed")
+          row.label("(#{names.size}) — derived, read-only")
+        end
+        names.sort.each do |k|
+          ui.horizontal do |row|
+            row.add_sized(Vec2.new(180.0, 18.0), Label.new(k))
+            row.label(rt.lookup(k) || "")
+          end
+        end
+      end
+
+      ui.label("rows: #{rt.rows.size} · lists: #{rt.lists.size} · " \
+               "dicts: #{rt.dicts.size} · actions: #{rt.actions.size}")
+    end
 
     private def render_element_tab(ui : Ui) : Nil
       id = @selected

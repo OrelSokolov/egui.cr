@@ -494,6 +494,11 @@ module Egui
       s.split(delim).map(&.strip).reject(&.empty?)
     end
 
+    # The {name} placeholder regex — the SAME literal #interpolate
+    # and the subtree-key fold walk; name extraction must never
+    # diverge from resolution (the linter scans with it too).
+    INTERP_NAME = /\{([a-zA-Z_][\w.]*)\}/
+
     # An options= value of the single-slot form "{name}" — the
     # desugared `:options="name"` — BINDS a list slot (rt.lists)
     # instead of splitting a literal; nil for plain literal lists.
@@ -688,13 +693,16 @@ module Egui
     ATTR_VALUE_RE = Regex.new("(#{ATTR_NAME.source})\\s*=\\s*\"([^\"]*)\"")
     STRIP_ATTR_RE = Regex.new("\\s*(#{ATTR_NAME.source})\\s*=\\s*\"[^\"]*\"")
 
-    # `<name key="value" …>` → {downcased name, attrs}. Entity escapes
-    # are resolved in attribute values.
+    # `<name key="value" …>` → {downcased name, attrs, junk tail}.
+    # Entity escapes are resolved in attribute values. The junk tail —
+    # whatever the attr regexes could not consume — comes back for
+    # path-aware diagnostics (quote hygiene, see the caller).
     private def self.parse_tag(inner : String)
       parts = inner.split(/\s+/, 2)
       name = parts[0]?.try(&.downcase)
-      return {nil, nil} unless name
+      return {nil, nil, nil} unless name
       attrs = {} of String => String
+      stray : String? = nil
       if rest = parts[1]?
         # Attribute names: ATTR_NAME (canonical HTML names — `c1=`/
         # `s20=` are valid; a digit-less class silently dropped them as
@@ -713,9 +721,11 @@ module Egui
           attrs["multiple"] = "true"
           stray = stray.gsub(/\bmultiple\b/, "").strip
         end
-        STDERR.puts "exml: junk in <#{name}> tag: #{stray}" unless stray.empty?
+        unless stray.empty?
+          STDERR.puts "exml: junk in <#{name}> tag: #{stray}"
+        end
       end
-      {name, attrs}
+      {name, attrs, stray}
     end
 
     # ── Vue directive aliases (plans/vue-aliases.md) ──────────────────
@@ -1073,7 +1083,7 @@ module Egui
         else
           self_close = inner.ends_with?('/')
           inner = inner.rchop if self_close
-          name, attrs = parse_tag(inner)
+          name, attrs, junk = parse_tag(inner)
           next unless name
           # The child's path: parent prefix + this element's position
           # (children attach at close, so the sink's size IS this
@@ -1083,6 +1093,13 @@ module Egui
           id_tag = attrs.not_nil!["id"]? || attrs.not_nil!["ref"]?
           path = "#{parent[3]}/#{name}[#{parent[2].size}]" \
                  "#{id_tag ? ":#{id_tag}" : ""}"
+          # Quote hygiene (velour-components.md, этап 0): quotes in the
+          # unconsumed tail mean an unbalanced quote cut an attribute
+          # value short — a parse-time error, not a silent prefix.
+          if (j = junk) && j.includes?('"')
+            vue_warn(%(#{path}: junk "#{j}" in <#{name}> — an unbalanced ) \
+                     %(quote in an attribute value?))
+          end
           desugar_vue_attrs(attrs.not_nil!, path) if vue_attrs?(attrs.not_nil!)
           if self_close
             attach(stack, {name, attrs.not_nil!, [] of Node, path})
@@ -1166,6 +1183,32 @@ module Egui
       name, attrs, children, path = open
       kind = KIND_BY_NAME[name]? || Kind::Custom
       stack.last[2] << Node.new(kind, name, attrs, children, path)
+    end
+
+    # ── scoped classes (velour-components.md, этап 5) ──────────────────
+    #
+    # Prefix every literal class token of a Component template with
+    # the element name (`card` → `counter__card`) — Vue-scoped
+    # semantics: template classes cannot collide with, or be matched
+    # by, the app's same-named global rules. Tokens with {…} come from
+    # the store (app-side names) and stay unprefixed.
+    def self.scope_classes(nodes : Array(Node), prefix : String) : Array(Node)
+      nodes.map { |n| scope_classes_node(n, prefix) }
+    end
+
+    private def self.scope_classes_node(node : Node,
+                                        prefix : String) : Node
+      attrs = node.attrs
+      if cls = attrs["class"]?
+        # literal tokens get the prefix; {…} store-driven tokens are
+        # app-side names and stay as-is
+        attrs = attrs.dup
+        attrs["class"] = cls.split.map do |t|
+          t.includes?('{') ? t : "#{prefix}__#{t}"
+        end.join(" ")
+      end
+      Node.new(node.kind, node.name, attrs,
+        node.children.map { |c| scope_classes_node(c, prefix) }, node.path)
     end
 
     # ── document ───────────────────────────────────────────────────────
@@ -1285,7 +1328,104 @@ module Egui
     # never collide with the app's or another component's, and two
     # `<counter/>` sites keep independent state. `#rt` (and the rt the
     # hooks receive) IS the site's scope.
+    #
+    # DECLARATIONS (velour-components.md, этап 1): `prop` declares a
+    # use-site attribute with a DEFAULT (`prop title, default: "…"`) —
+    # seeded when the site omits the attribute; a declaration without a
+    # default is REQUIRED and the linter errors on a use site that
+    # doesn't pass it. `state` declares a LOCAL slot of the site scope
+    # (`state open, default: "0"`) — seeded once at install, written by
+    # the component's own actions; the scope already namespaces it per
+    # use site, so the code never prefixes store keys by hand. Both
+    # declarations double as WRITER knowledge for the store lint.
+    #
+    # The declarations live in the module-level registry
+    # (`component_prop_defs`, keyed by the subclass type): class-body
+    # code runs at program init, so every `prop`/`state` call
+    # registers itself before `main` — no lazy chaining needed.
     class Component
+      # A prop/state declaration: the default (nil = required prop).
+      record PropDef, default : String?
+
+      # The declarations of THIS class (empty when none). `self` here
+      # IS the class (a class method) — the registry is keyed by it.
+      def self.props : Hash(String, PropDef)
+        Exml.component_prop_defs[self]? || {} of String => PropDef
+      end
+
+      def self.states : Hash(String, PropDef)
+        Exml.component_state_defs[self]? || {} of String => PropDef
+      end
+
+      # Prop declaration: use-site attr with a default. The default is
+      # stringified (the store is string-based, like every interpolated
+      # attr value).
+      #
+      #   prop title, default: "Без имени"   # optional, defaulted
+      #   prop title                         # required — lint errors
+      macro prop(name, default = nil)
+        {% if default %}
+          ::Egui::Exml.declare_prop({{@type.id}}, {{name.id.stringify}},
+            {{default}})
+        {% else %}
+          ::Egui::Exml.declare_prop({{@type.id}}, {{name.id.stringify}}, nil)
+        {% end %}
+      end
+
+      # Local-state declaration: a slot of the SITE scope, seeded once
+      # at install (defaults included), written by the component's own
+      # actions. Non-nil by construction — the nil-silence class of
+      # bugs cannot start here.
+      macro state(name, default = nil)
+        {% if default %}
+          ::Egui::Exml.declare_state({{@type.id}}, {{name.id.stringify}},
+            {{default}})
+        {% else %}
+          ::Egui::Exml.declare_state({{@type.id}}, {{name.id.stringify}}, nil)
+        {% end %}
+      end
+
+      # Every Component subclass registers under its element name —
+      # the linter checks use sites against the declared props
+      # (required ones included) without needing a renderer instance.
+      macro inherited
+        ::Egui::Exml.component_types[{{@type.name.split("::").last.underscore}}] = {{@type.id}}
+      end
+
+      # ── the bind= contract (velour-components.md, этап 2) ──────────
+      #
+      # `bindable :value, :bool` declares a two-way prop: the use
+      # site's `bind="parent_slot"` feeds the parent slot INTO the
+      # scope (readable/writable as `{value}` — the modelValue
+      # convention), and a write from the component's own actions
+      # flows BACK to the parent slot at the end of the frame, firing
+      # `on_change=` — the update:modelValue half, engine-owned. No
+      # per-widget handler boilerplate; `on_change=` stays for side
+      # effects. The first declared bindable maps to `bind=`; further
+      # ones ride `bind_<name>=`. The FLAVOR names the parent store
+      # (strings by default; the slot may not exist on the first
+      # frame, so there is nothing to detect from).
+      macro bindable(name, flavor = :strings)
+        ::Egui::Exml.declare_bindable({{@type.id}}, {{name.id.stringify}},
+          {{flavor}})
+      end
+
+      # (name, flavor) in declaration order.
+      def self.bindables : Array(Tuple(String, Symbol))
+        Exml.component_bindables[self]? || [] of Tuple(String, Symbol)
+      end
+
+      # Per-site bind bookkeeping: the parent version last seeded and
+      # the value last synced. A moved parent version means an
+      # EXTERNAL write and re-seeds the scope (the parent wins the
+      # frame, Vue's props-down); otherwise the scope's value
+      # persists (the component's local write is not clobbered by
+      # the value it pushed back last frame). The synced value gates
+      # the write-back: a scope value differing from IT (not from the
+      # parent slot) is what fires on_change — the install frame
+      # (freshly seeded, nothing written) never writes back.
+      @bind_state = {} of String => {UInt64, String}
+
       getter rt : Runtime? = nil
       @nodes : Array(Node)? = nil
       @mtime : Time? = nil
@@ -1343,6 +1483,7 @@ module Egui
         scope = @scopes[node.path]? || begin
           fresh = ScopedRuntime.new(rt)
           seed_props(node, fresh, rt) # readable by setup on install
+          seed_state(fresh)
           @scopes[node.path] = fresh
           @rt = fresh
           setup(fresh)
@@ -1353,31 +1494,195 @@ module Egui
         # the enclosing store. Prop keys belong to the use site — a
         # write from setup/update is overwritten next frame.
         seed_props(node, scope, rt)
+        bind_seed(node, scope, rt)
         update(ctx, scope)
-        (@repathed[node.path] ||= nodes.map { |c| Exml.repath(c, node.path) })
+        (@repathed[node.path] ||= splice_slots(nodes, node))
           .each { |child| renderer.render(child, ui, ctx, scope) }
+        bind_writeback(node, scope, rt)
+      end
+
+      # ── named slots (velour-components.md, этап 5) ─────────────────
+      #
+      # Template `<slot name="x"/>` markers take the use-site children
+      # carrying `slot="x"`; children without the attr fill `<slot/>`
+      # (the default slot). PARSE-TIME splicing with markers (the
+      # better_components.md §7 second design): after the splice the
+      # tree is plain nodes — the renderer never learns about slots.
+      # Spliced children re-path under the USE site (two sites keep
+      # independent widget ids and store scopes); use-site children
+      # whose slot name has no marker in the template are dropped with
+      # a warn-once.
+      @warned_slot_misuse = Set(String).new
+
+      private def splice_slots(templates : Array(Node), site : Node) : Array(Node)
+        rooted = templates.map { |t| Exml.repath(t, site.path) }
+        groups = {} of String => Array(Node)
+        site.children.each do |c|
+          (groups[c.attrs["slot"]? || "default"] ||= [] of Node) << c
+        end
+        used = Set(String).new
+        out = rooted.map { |t| splice_node(t, site, groups, used) }
+        groups.each_key do |name|
+          next if used.includes?(name)
+          key = "#{self.class}:#{name}"
+          unless @warned_slot_misuse.includes?(key)
+            @warned_slot_misuse << key
+            STDERR.puts %(exml: <#{element_name}> — use-site slot ) \
+                         %("#{name}" has no <slot> marker in the template; dropped)
+          end
+        end
+        out
+      end
+
+      private def splice_node(node : Node, site : Node,
+                              groups : Hash(String, Array(Node)),
+                              used : Set(String)) : Node
+        if node.name == "slot"
+          name = node.attrs["name"]? || "default"
+          used << name
+          children = (groups[name]? || [] of Node)
+            .map { |c| Exml.repath(c, site.path) }
+          # the marker itself becomes an in-place column of the spliced
+          # children (empty marker → renders nothing, Vue semantics)
+          Node.new(Kind::Column, "slot", {} of String => String, children,
+            "#{node.path}/slot:#{name}")
+        else
+          Node.new(node.kind, node.name, node.attrs,
+            node.children.map { |c| splice_node(c, site, groups, used) },
+            node.path)
+        end
+      end
+
+      # ── the bind= contract (этап 2) ────────────────────────────────
+      #
+      # Read half: the parent slot seeds the scope's bound prop when
+      # the parent's version moved since last seed (an external write —
+      # props down) or the scope lacks the value (install frame). The
+      # scope's own value otherwise persists — it was the component
+      # that pushed it back last frame.
+      private def bind_seed(node : Node, scope : ScopedRuntime,
+                            rt : Runtime) : Nil
+        self.class.bindables.each_with_index do |(name, flavor), i|
+          key_attr = i.zero? ? "bind" : "bind_#{name}"
+          key = node.attrs[key_attr]?
+          next unless key && !key.empty?
+          pver = rt.slot_version(key)
+          state_key = "#{node.path}/#{name}"
+          if (st = @bind_state[state_key]?) && st[0] == pver &&
+             bind_has?(scope, flavor, name)
+            next
+          end
+          seeded = bind_get(rt, flavor, key) ||
+                   (flavor == :strings ? "" : (flavor == :bools ? "false" : "0"))
+          bind_put(scope, flavor, name, seeded)
+          @bind_state[state_key] = {pver, seeded}
+        end
+      end
+
+      # Write half: a scope value that differs from the value last
+      # SYNCED (seeded or pushed back) — i.e. the component's actions
+      # wrote during this frame's walk — flows back to the parent slot
+      # and fires the use-site's on_change=.
+      private def bind_writeback(node : Node, scope : ScopedRuntime,
+                                 rt : Runtime) : Nil
+        self.class.bindables.each_with_index do |(name, flavor), i|
+          key_attr = i.zero? ? "bind" : "bind_#{name}"
+          key = node.attrs[key_attr]?
+          next unless key && !key.empty?
+          state_key = "#{node.path}/#{name}"
+          st = @bind_state[state_key]?
+          next unless st
+          scope_v = bind_get(scope, flavor, name)
+          next unless (v = scope_v) && v != st[1]
+          bind_put(rt, flavor, key, v)
+          @bind_state[state_key] = {rt.slot_version(key), v}
+          if (act = node.attrs["on_change"]?) && !act.empty?
+            rt.fire(rt.interpolate(act))
+          end
+        end
+      end
+
+      private def bind_get(store : Runtime, flavor : Symbol,
+                           key : String) : String?
+        case flavor
+        when :floats then store.floats[key]?.try { |f| "%.2f" % f }
+        when :bools  then store.bools[key]?.try(&.to_s)
+        else              store.strings[key]?
+        end
+      end
+
+      private def bind_has?(store : Runtime, flavor : Symbol,
+                           key : String) : Bool
+        case flavor
+        when :floats then store.floats.has_key?(key)
+        when :bools  then store.bools.has_key?(key)
+        else              store.strings.has_key?(key)
+        end
+      end
+
+      # Put through the STRING form: "%.2f" formatting matches what
+      # interpolation shows; a float write-back parses it back. Bool
+      # write-backs parse "true"/"false".
+      private def bind_put(store : Runtime, flavor : Symbol, key : String,
+                           value : String?) : Nil
+        return unless value
+        case flavor
+        when :floats
+          if (f = value.to_f?)
+            store.floats[key] = f
+          end
+        when :bools
+          store.bools[key] = value == "true"
+        else
+          store.strings[key] = value
+        end
       end
 
       # The use-site attributes seed the scope — Vue's
       # `<Counter :start="5"/>`. Values interpolate against the
       # ENCLOSING store (so `label="{selected}"` is dynamic);
-      # structural attrs (if/unless/id) are not props.
-      # structural attrs (if/unless/id) are not props, and neither are
-      # the hotkey pair (window-global, not a per-widget value) or
-      # `props=` itself. `props="settings"` (`v-bind=`'s alias) seeds
-      # FIRST — the dict slot's fields spread as props (values
-      # verbatim: the app formatted them, like every other slot);
-      # explicit attrs below WIN over the spread (Vue 3 precedence).
-      # Props are live: re-seeded every frame.
+      # structural attrs (if/unless/id), the hotkey pair (window-
+      # global), `props=` itself and `bind=` (the stage-2 contract,
+      # handled by the engine) are not props. `props="settings"`
+      # (`v-bind=`'s alias) seeds FIRST — the dict slot's fields
+      # spread as props (values verbatim: the app formatted them,
+      # like every other slot); explicit attrs below WIN over the
+      # spread (Vue 3 precedence). Props are live: re-seeded every
+      # frame. Declared props (`prop name, default: …`) absent from
+      # the use site seed their DEFAULT — once at install, then only
+      # while the scope lacks the key: a component's local write to
+      # its own slot wins (the scope persists per site).
+      STRUCTURAL_PROPS = %w(if unless id hotkey on_keyup on_keydown props bind)
+
       private def seed_props(node : Node, scope : ScopedRuntime,
                              rt : Runtime) : Nil
         if (name = node.attrs["props"]?) && (d = rt.dict?(name))
           d.each { |k, v| scope.strings[k] = v }
         end
         node.attrs.each do |k, v|
-          next if {"if", "unless", "id", "hotkey", "on_keyup",
-                   "on_keydown", "props"}.includes?(k)
+          next if k == "bind" || k.starts_with?("bind_") ||
+                 STRUCTURAL_PROPS.includes?(k)
           scope.strings[k] = rt.interpolate(v)
+        end
+        self.class.props.each do |k, defn|
+          next if node.attrs.has_key?(k)
+          if (d = defn.default) && !scope.strings.has_key?(k)
+            scope.strings[k] = d
+          end
+        end
+      end
+
+      # Declared local state (`state name, default: …`): seeded once at
+      # install, BEFORE setup — the hooks see non-nil slots from their
+      # first line. Defaults are stringified (the store is
+      # string-based); typed slots (floats/bools) the component seeds
+      # itself in setup — the declaration still carries the lint
+      # writer-knowledge.
+      private def seed_state(scope : ScopedRuntime) : Nil
+        self.class.states.each do |k, defn|
+          if !scope.strings.has_key?(k) && (d = defn.default)
+            scope.strings[k] = d
+          end
         end
       end
 
@@ -1389,16 +1694,35 @@ module Egui
           begin
             fresh = Exml.parse_fragment(File.read(path))
             unless fresh.empty?
-              @nodes = fresh
+              @nodes = prepare_template(fresh)
               @repathed.clear # site subtrees embed the OLD tree
               @mtime = mtime
             end
           rescue File::Error | IO::Error
           end
         end
-        @nodes ||= begin
-          @mtime = template_path.try { |p| file_mtime(p) }
-          Exml.parse_fragment(template)
+        @nodes ||= prepare_template(Exml.parse_fragment(template))
+      end
+
+      # Template preparation (velour-components.md, этап 5): scoped
+      # classes + slot markers survive as-is (splicing happens per use
+      # site in #splice_slots). Classes inside the template are
+      # NAMESPACED with the element name (`card` → `counter__card`) —
+      # Vue-scoped semantics: a component's classes cannot collide
+      # with, or be reached by, the app's same-named global rules;
+      # app-side class NAMES arriving through props/use-site attrs are
+      # never touched (only literal tokens in the template are). Opt
+      # out with `scoped="false"` on the template's root element.
+      private def prepare_template(fresh : Array(Node)) : Array(Node)
+        root = fresh.first?
+        if root && root.attrs["scoped"]? == "false"
+          attrs = root.attrs.dup
+          attrs.delete("scoped")
+          root = Node.new(root.kind, root.name, attrs, root.children,
+            root.path)
+          [root] + fresh[1..]
+        else
+          Exml.scope_classes(fresh, element_name)
         end
       end
 
@@ -1483,8 +1807,19 @@ module Egui
     # The global `widget` registry counts as registered custom
     # elements — the linter mirrors what the dispatcher does
     # (instance `#on` first, then the registry).
+    #
+    # `written` — the app's declaration of the slot names it seeds or
+    # writes (setup/update/actions; nil = the store lint is skipped).
+    # With it, every slot the markup READS (`{name}` interpolation,
+    # `bind=`, `if=`/`unless=`, `:options=`, repeat `in=`) is checked
+    # against the writers — an unread/unwritten slot is the
+    # «мёртвый тогл» bug class: the markup renders an empty default
+    # and the silence looks like working logic. Unknown {name}
+    # placeholders (not a slot, not a repeat variable/field, not a
+    # component prop) are ERRORS; a read nobody writes is a WARNING.
     def self.validate(doc : Document,
-                      known_custom : Iterable(String) = [] of String) : Array(String)
+                      known_custom : Iterable(String) = [] of String,
+                      written : Iterable(String)? = nil) : Array(String)
       known = known_custom.to_a + widgets.keys
       issues = [] of String
       seen_pages = Set(String).new
@@ -1494,8 +1829,21 @@ module Egui
         end
         validate_node(page, known, issues)
       end
+      if declared_names = written
+        declared = Set(String).new(declared_names.to_a)
+        declared.add("_i") # repeat rows always carry the row index
+        doc.pages.each do |p|
+          lint_store_reads(p, Set(String).new, declared, issues)
+        end
+      end
+      @@last_issues = issues
       issues
     end
+
+    # The last `validate` run's issues — the inspector's Store tab
+    # shows the lines mentioning a slot (who reads/writes it, per the
+    # этап-0 lint data).
+    class_property last_issues = [] of String
 
     def self.validate_node(node : Node, known_custom : Enumerable(String),
                            issues : Array(String)) : Nil
@@ -1504,6 +1852,7 @@ module Egui
       # gives custom handlers priority over builtins; the linter
       # mirrors it): the handler owns the attrs, nothing builtin
       # to check.
+      check_component_props(node, issues)
       return if known_custom.includes?(node.name)
 
       case node.kind
@@ -1628,6 +1977,134 @@ module Egui
       end
     end
 
+    # Stage 1 lint: a use site of a declared Component must pass every
+    # required prop (`prop title` without a default). Defaults are
+    # seeded by the engine, so only no-default declarations are
+    # required.
+    private def self.check_component_props(node : Node, issues : Array(String)) : Nil
+      return unless (comp = component_types[node.name]?)
+      comp.props.each do |pname, defn|
+        next if defn.default || node.attrs.has_key?(pname)
+        issues << %(#{node.path}: error: <#{node.name}> requires prop ) \
+                 %("#{pname}" (declared without a default))
+      end
+    end
+
+    # Lint a Component CLASS's own template: `{name}`/`if=`/`unless=`
+    # reads must resolve to the component's declared props/states or
+    # the app's written slots. (The use-site check above covers the
+    # tag; this one covers the template markup itself.)
+    def self.validate_component(comp : Component.class,
+                                written : Iterable(String)? = nil) : Array(String)
+      issues = [] of String
+      declared = Set(String).new
+      comp.props.each { |k, _| declared.add(k) }
+      comp.states.each { |k, _| declared.add(k) }
+      declared.add("_i")
+      if names = written
+        names.to_a.each { |n| declared.add(n) }
+      end
+      nodes = begin
+        Exml.parse_fragment(comp.new.template)
+      rescue
+        [] of Node
+      end
+      nodes.each { |n| lint_store_reads(n, Set(String).new, declared, issues) }
+      issues
+    end
+
+    # ── lint: store readers/writers (velour-components.md, этап 0) ────    #
+    # Custom tags carry handler-defined attributes; the handler knows
+    # which of them name STORE SLOTS it reads/writes (ios-row's
+    # `switch="wifi"` is `rt.bools["wifi"]` behind the handler). The
+    # declaration wires those attributes into the same reader/writer
+    # lint as the built-in `bind=`: a slot read through a declared
+    # attr with no writer is the dead-toggle shape and warns.
+    class_property slot_attrs = {} of String => Array(String)
+
+    # Declare which attributes of a custom tag are slot names the
+    # handler reads/writes:
+    #   Exml.slot_attr "ios-row", "switch"   # + value, nav — below
+    def self.slot_attr(tag : String, *attrs : String) : Nil
+      list = (@@slot_attrs[tag] ||= [] of String)
+      attrs.each { |a| list << a unless list.includes?(a) }
+    end
+
+    # The reader/writer walk. A name is IN SCOPE when: the app writes
+    # it (`written`), it is a repeat variable of an enclosing
+    # `<repeat>` (`for=`, the `index=` alias, `_i`), or it is a FIELD
+    # of one (`doc.name` under repeat for="doc"). Unknown reads are
+    # errors; reads without any writer are warnings.
+    private def self.lint_store_reads(node : Node, scope : Set(String),
+                                      declared : Set(String),
+                                      issues : Array(String)) : Nil
+      in_scope = ->(n : String) do
+        declared.includes?(n) || scope.includes?(n) ||
+          (n.includes?('.') && scope.includes?(n.split('.', 2)[0]))
+      end
+      read_miss = ->(n : String, kind : String) do
+        unless in_scope.call(n)
+          if kind == "error"
+            issues << %(#{node.path}: error: {#{n}} is not in scope and ) \
+                     %(nobody writes it (not a slot, repeat var or prop))
+          else
+            issues << %(#{node.path}: warning: "#{n}" — nobody writes the ) \
+                     %(slot; it reads as an empty default (the dead-toggle shape))
+          end
+        end
+      end
+
+      # every {name} in any attribute value (text nodes included —
+      # they are plain text= attrs) is a read
+      node.attrs.each_value do |v|
+        next unless v.includes?('{')
+        v.scan(INTERP_NAME) { |m| read_miss.call(m[1], "error") }
+      end
+
+      # bind= — the widget reads it as its value and writes back on
+      # change; a missing writer means the binding starts from an
+      # empty default
+      if key = node.attrs["bind"]?
+        read_miss.call(key, "warning") unless in_scope.call(key)
+      end
+      %w(if unless).each do |cond|
+        if (v = node.attrs[cond]?) && !v.empty?
+          bare = v.starts_with?('{') && v.ends_with?('}') ? v[1..-2] : v
+          read_miss.call(bare, "error") if bare.matches?(/^[a-zA-Z_][\w.]*$/)
+        end
+      end
+      if (opt = node.attrs["options"]?) && (lref = slot_ref?(opt))
+        read_miss.call(lref, "error")
+      end
+
+      # declared slot attrs of the custom vocabulary (see slot_attr)
+      if (names = slot_attrs[node.name]?) && node.kind.custom?
+        names.each do |attr|
+          if (v = node.attrs[attr]?) && !v.empty? &&
+             v.matches?(/^[{]?[a-zA-Z_][\w.]*[}]?$/)
+            bare = v.starts_with?('{') ? v[1..-2] : v
+            read_miss.call(bare, "warning") unless in_scope.call(bare)
+          end
+        end
+      end
+
+      if node.kind.repeat?
+        if (over = node.attrs["in"]?) && !over.empty?
+          read_miss.call(over, "error") unless in_scope.call(over)
+        end
+        inner = scope.dup
+        inner.add(node.attrs["for"]? || "item")
+        inner.add("_i")
+        if (alias_name = node.attrs["index"]?) && !alias_name.empty?
+          inner.add(alias_name)
+        end
+        node.children.each { |c| lint_store_reads(c, inner, declared, issues) }
+        return
+      end
+
+      node.children.each { |c| lint_store_reads(c, scope, declared, issues) }
+    end
+
     # ── runtime ────────────────────────────────────────────────────────
 
     # The store the markup binds to: named string/float/bool slots the
@@ -1671,6 +2148,19 @@ module Egui
       # стороны видны). Читается мемоизацией ключей каждый кадр.
       def slot_version(name : String) : UInt64
         @slot_versions[name]? || 0u64
+      end
+
+      # Суммарный счётчик ИЗМЕНИВШИХСЯ записей (velour-components.md,
+      # этап 3): dirty-check рендерера — запись во время обхода кадра
+      # означает, что разметка читала устаревшие значения, и следующий
+      # кадр планируется сам (приложение не помнит о цикле
+      # перерисовки, ручные request_repaint не нужны). Считаются
+      # только value-диффящие сторы (strings/floats/bools — запись
+      # того же значения версии не поднимает): повторяющаяся
+      # идентичная публикация rows/lists каждый кадр не превращается
+      # в вечный цикл перерисовки.
+      def total_writes : UInt64
+        @slot_versions.values.sum
       end
 
       property strings : SlotHash(String, String)
@@ -1723,6 +2213,9 @@ module Egui
       # interpolation hook: ScopedRuntime overrides this for the
       # local-then-parent fallback.
       def lookup(key : String) : String?
+        if comp = @computeds[key]?
+          return computed_value(comp, key)
+        end
         if v = strings[key]?
           v
         elsif f = floats[key]?
@@ -1730,6 +2223,87 @@ module Egui
         elsif b = bools[key]?
           b.to_s
         end
+      end
+
+      # ── computed-слоты (velour-components.md, этап 4) ────────────────
+      #
+      # Производное значение объявляет ПРИЛОЖЕНИЕ, считает движок —
+      # грамматики выражений в разметке по-прежнему нет (тернарник
+      # живёт в Crystal):
+      #
+      #   rt.computed "wifi_label" do |s|
+      #     s["wifi_on"] == "1" ? s["wifi_name"] : "Not connected"
+      #   end
+      #
+      # Зависимости не объявляются вручную: read-set первого
+      # вычисления (s["name"] — трекер) и есть dep-список; запись в
+      # любую зависимую ячейку (её версия выросла) пересчитывает
+      # слот лениво — при следующем чтении. Промежуточных пушей
+      # (strings["wifi_value"] = … в каждом хендлере) больше нет.
+      class ComputedSlot
+        getter block : ReadTracker -> String
+        property deps : Array(String)
+        property dep_vers : Array(UInt64)
+        property value : String
+
+        def initialize(@block)
+          @deps = [] of String
+          @dep_vers = [] of UInt64
+          @value = ""
+        end
+      end
+
+      # The read-set tracker handed to a computed block: `s["name"]`
+      # resolves through the store AND records the name (in first-read
+      # order, unique).
+      class ReadTracker
+        def initialize(@rt : Runtime, @deps : Array(String))
+        end
+
+        def [](key : String) : String?
+          @deps << key unless @deps.includes?(key)
+          @rt.lookup(key)
+        end
+      end
+
+      @computeds = {} of String => ComputedSlot
+      # Recursion guard: a computed reading itself resolves to the
+      # stale value instead of looping.
+      @computing = Set(String).new
+
+      def computed(name : String, &block : ReadTracker -> String) : Nil
+        @computeds[name] = ComputedSlot.new(block)
+      end
+
+      # Declared computed names — the lint's writer knowledge (the
+      # app passes them in `written:`).
+      def computed_names : Array(String)
+        @computeds.keys
+      end
+
+      private def computed_value(comp : ComputedSlot, key : String) : String
+        unless comp.deps.empty? || @computing.includes?(key)
+          i = 0
+          moved = false
+          while i < comp.deps.size
+            if slot_version(comp.deps[i]) != comp.dep_vers[i]
+              moved = true
+              break
+            end
+            i += 1
+          end
+          return comp.value unless moved
+        end
+        if @computing.includes?(key)
+          return comp.value # recursion — stale value, no loop
+        end
+        deps = [] of String
+        @computing << key
+        comp.value = comp.block.call(ReadTracker.new(self, deps))
+        comp.deps = deps
+        comp.dep_vers = deps.map { |d| slot_version(d) }
+        @computing.delete(key)
+        comp.value
       end
 
       # "{name}" substitution from the store (dotted keys allowed —
@@ -1880,6 +2454,13 @@ module Egui
         super(name) &* 1_000_003u64 &+ @parent.slot_version(name)
       end
 
+      # The write counter is hierarchical too: the scope's own writes
+      # and the parent's (echoed bind writes included) both dirty the
+      # frame.
+      def total_writes : UInt64
+        super &+ @parent.total_writes
+      end
+
       def lookup(key : String) : String?
         super || @parent.lookup(key)
       end
@@ -1937,6 +2518,63 @@ module Egui
       end
     end
 
+    # A SlotHash whose writes ECHO into a parent store (the mirror's
+    # own SlotHash#[]= bumps the parent's versions — subtree keys and
+    # the repaint-dirty check see the write). `rename` maps the local
+    # prop name to the parent slot key ("value" → the bind= key);
+    # seeding happens BEFORE the mirror is attached, so engine-side
+    # seeding never echoes.
+    class ForwardSlotHash(K, V) < SlotHash(K, V)
+      @mirror : Hash(K, V)? = nil
+      @rename : Hash(K, K)? = nil
+
+      def mirror=(m : Hash(K, V)?) : Nil
+        @mirror = m
+      end
+
+      def rename=(r : Hash(K, K)?) : Nil
+        @rename = r
+      end
+
+      def []=(key : K, value : V) : V
+        @mirror.try do |m|
+          m[@rename.try(&.[key]?) || key] = value
+        end
+        super
+      end
+    end
+
+    # The bound scope of a CUSTOM TAG with `bind=` (the handler half of
+    # the stage-2 contract, for handlers that are not Component
+    # classes): the parent slot arrives seeded as "value" (readable via
+    # rt.bool("value") / .float / .string), every handler write echoes
+    # into the parent store (so `strings["page"] = …` — the nav= idiom
+    # — keeps working), and the renderer fires the use-site's
+    # `on_change=` when the parent slot's version moved during the
+    # handler (see Renderer#render_custom). Fresh per frame, like a
+    # repeat-row scope: nothing lives here between frames, everything
+    # durable lands in the parent.
+    class BoundRuntime < ScopedRuntime
+      def initialize(parent : Runtime, key : String)
+        super(parent)
+        strings_f = ForwardSlotHash(String, String).new(@slot_versions)
+        floats_f = ForwardSlotHash(String, Float64).new(@slot_versions)
+        bools_f = ForwardSlotHash(String, Bool).new(@slot_versions)
+        strings_f["value"] = parent.strings[key]? || ""
+        floats_f["value"] = parent.floats[key]? || 0.0
+        bools_f["value"] = parent.bools[key]? || false
+        @strings = strings_f
+        @floats = floats_f
+        @bools = bools_f
+        strings_f.mirror = parent.strings
+        floats_f.mirror = parent.floats
+        bools_f.mirror = parent.bools
+        strings_f.rename = {"value" => key} of String => String
+        floats_f.rename = {"value" => key} of String => String
+        bools_f.rename = {"value" => key} of String => String
+      end
+    end
+
     # ── renderer ───────────────────────────────────────────────────────
 
     # Walks the tree every frame, dispatching to the regular egui.cr
@@ -1956,6 +2594,10 @@ module Egui
 
       @custom = {} of String => CustomHandler
       @warned_custom = Set(String).new
+      # Tag names registered through `#component` — their handlers
+      # manage their own bind= contract (Component#bind_seed), so the
+      # generic BoundRuntime wrap in #render_custom skips them.
+      @component_tags = Set(String).new
       # Retained-subtree bookkeeping (see #subtree_generation): the
       # per-path appearance generation, the paths rendered LAST frame
       # and the ones rendered so far THIS frame (rotated in
@@ -2002,6 +2644,7 @@ module Egui
       # live values (`update`) and walks the component's template.
       #   renderer.component(Counter.new)
       def component(comp : Component) : Nil
+        @component_tags << comp.element_name
         on(comp.element_name) do |node, ui, ctx, rt, r|
           comp.render_with(node, ui, ctx, rt, r)
         end
@@ -2019,6 +2662,14 @@ module Egui
       private def render_routes_body(ctx : Context, doc : Document,
                                      rt : Runtime) : Nil
         @refs.clear # refs describe the frame being rendered
+        # Авто-repaint (velour-components.md, этап 3): записи в стор,
+        # сделанные во время обхода (хендлеры, bind write-back),
+        # означают, что разметка читала устаревшие значения — кадр
+        # планируется сам, без ручного request_repaint в приложении.
+        # Считаются только изменившиеся записи, так что стационарный
+        # кадр (тот же wifi_value публикуется каждый кадр) цикла не
+        # создаёт.
+        writes_before = rt.total_writes
         # rotate the presence sets: generations bump for nodes that
         # were absent last frame but are back now
         @subtree_last, @subtree_cur = @subtree_cur, @subtree_last
@@ -2056,6 +2707,7 @@ module Egui
             end
           end
         end
+        ctx.request_repaint if rt.total_writes != writes_before
       end
 
       # Page body: layout sections (menubar/central/statusbar) go to
@@ -2458,9 +3110,35 @@ module Egui
       # retained-subtree replay (a pure custom element replays its
       # whole span from the paint cache — layout, children and paint
       # skipped on a hit), else the plain handler call.
+      #
+      # The bind= contract (этап 2) for handler-based tags: a `bind=`
+      # use site runs the handler against a BoundRuntime — the parent
+      # slot seeded as "value", writes echoed into the parent — and
+      # the use-site's `on_change=` fires when the parent slot's
+      # version moved during the handler. Component-registered tags
+      # run their own contract (Component#bind_seed/#bind_writeback)
+      # and skip the wrap.
       private def render_custom(node : Node, ui : Ui, ctx : Context,
                                 rt : Runtime,
                                 handler : CustomHandler) : Nil
+        if !@component_tags.includes?(node.name) &&
+           (raw_key = node.attrs["bind"]?) && !(key = rt.interpolate(raw_key)).empty?
+          before = rt.slot_version(key)
+          bound = BoundRuntime.new(rt, key)
+          if (skey = custom_subtree_key(node, ui, ctx, rt))
+            if node.attrs["appear"]?
+              ctx.memory.use_id(Egui::Id.from("#{node.path}/appear"))
+            end
+            ui.cached_subtree(skey) { handler.call(node, ui, ctx, bound, self) }
+          else
+            handler.call(node, ui, ctx, bound, self)
+          end
+          if (act = node.attrs["on_change"]?) && !act.empty? &&
+             rt.slot_version(key) != before
+            rt.fire(rt.interpolate(act))
+          end
+          return
+        end
         if (skey = custom_subtree_key(node, ui, ctx, rt))
           # An appear run must survive end-frame pruning even on a
           # replay frame (the handler that drives it did not run):
@@ -2535,10 +3213,6 @@ module Egui
       @key_memo = {} of String => KeyMemo
       @key_names = {} of String => Array(String)
       @doc_version = 0u64
-
-      # The {name} placeholder regex — the SAME literal #interpolate
-      # walks; name extraction must never diverge from resolution.
-      INTERP_NAME = /\{([a-zA-Z_][\w.]*)\}/
 
       private def custom_subtree_key(node : Node, ui : Ui, ctx : Context,
                                      rt : Runtime) : UInt64?
@@ -3035,6 +3709,46 @@ module Egui
     # override, and registration order never matters (a widget may be
     # declared after the renderer exists).
     class_property widgets = {} of String => Renderer::CustomHandler
+
+    # Component subclasses by element name (`macro inherited` fills
+    # it) — the linter checks use sites against the declared props
+    # without a renderer instance (see Component's `prop` macro).
+    class_property component_types = {} of String => Component.class
+
+    # `bindable` declarations per subclass (see Component's bind=
+    # contract, этап 2): (name, flavor) in declaration order.
+    class_property component_bindables = {} of Component.class => Array(Tuple(String, Symbol))
+
+    def self.declare_bindable(t : Component.class, name : String,
+                              flavor : Symbol = :strings) : Nil
+      # accept the singular spellings (:bool/:float) too
+      case flavor
+      when :bool   then flavor = :bools
+      when :float  then flavor = :floats
+      when :string then flavor = :strings
+      end
+      list = (component_bindables[t] ||= [] of Tuple(String, Symbol))
+      list << {name, flavor} unless list.any? { |(n, _)| n == name }
+    end
+
+    # Prop/state declarations, keyed by the subclass type (`prop`/
+    # `state` fill them from class bodies at program init). A nil
+    # default is a REQUIRED prop — the linter errors when a use site
+    # omits it; defaults are seeded by the engine.
+    class_property component_prop_defs = {} of Component.class => Hash(String, Component::PropDef)
+    class_property component_state_defs = {} of Component.class => Hash(String, Component::PropDef)
+
+    def self.declare_prop(t : Component.class, name : String,
+                          default : String?) : Nil
+      (component_prop_defs[t] ||= {} of String => Component::PropDef)[name] =
+        Component::PropDef.new(default)
+    end
+
+    def self.declare_state(t : Component.class, name : String,
+                           default : String?) : Nil
+      (component_state_defs[t] ||= {} of String => Component::PropDef)[name] =
+        Component::PropDef.new(default)
+    end
 
     # Tags declared pure (the `cache: true` mark of the `widget`
     # sugar): candidates for Renderer's retained subtrees AND the only

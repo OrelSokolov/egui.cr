@@ -79,6 +79,10 @@ module IosTags
   end
 
   def self.install(r : Egui::Exml::Renderer) : Nil
+    # Линт этапа 0: switch= на ios-row — это слот bools, который
+    # хендлер читает и пишет; никто не инициализировал — «мёртвый
+    # тогл», линт предупреждает с путём use-сайта.
+    Egui::Exml.slot_attr("ios-row", "switch")
     r.on("ios-screen") { |node, ui, ctx, rt, ren| screen(node, ui, ctx, rt, ren) }
     r.on("ios-group") { |node, ui, ctx, rt, ren| group(node, ui, ctx, rt) }
     r.on("ios-card") { |node, ui, ctx, rt, ren| card(node, ui, ctx, rt, ren) }
@@ -183,10 +187,9 @@ module IosTags
     p.text(Egui::Pos2.new(30.0, y), "Настройки", 17.0, TINT)
     if resp.clicked?
       # Возврат на корневой таб: подстраница закрывается, tab не трогаем.
+      # Кадр перерисовывает авто-repaint движка (velour-components.md
+      # этап 3) — ручной request_repaint не нужен.
       rt.strings["page"] = "root"
-      # Кадр пишется ПОСЛЕ отрисовки тела: без явного перезапроса
-      # новый контент появился бы только со следующим событием.
-      ui.ctx.request_repaint
     end
 
     p.rect(Egui::Rect.from_min_size(
@@ -212,8 +215,9 @@ module IosTags
         Egui::Vec2.new(slot, 49.0))
       resp = ui.interact(cell, ui.next_widget_id, Egui::Sense.click)
       if resp.clicked?
+        # Кадр перерисовывает авто-repaint движка (этап 3) — без
+        # ручного request_repaint.
         rt.strings["tab"] = id
-        ui.ctx.request_repaint
       end
 
       color = tab == id ? TINT : TAB_INACT
@@ -304,8 +308,8 @@ module IosTags
     if (nav = a(node, rt, "nav"))
       # Тап по строке-переходу: открыть подстраницу (page=), накрыв
       # весь экран — таб-бар и родительский список уходят под неё.
+      # Репaint — авто (этап 3), ручной перезапрос не нужен.
       rt.strings["page"] = nav if resp.clicked?
-      ui.ctx.request_repaint if resp.clicked?
     end
     if (slot = a(node, rt, "switch"))
       strip = ui.child_ui(Egui::Rect.from_min_size(

@@ -1925,6 +1925,40 @@ describe "scroll area (phase 5)" do
     after.should be_close(dragged, 0.01)
   end
 
+  it "thumb drag past the track end reverses without a dead run back" do
+    ctx = Egui::Context.new
+    scroll_id = Egui::Id.from("spec").child(1)
+
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      raw_frame(ctx, events, time)
+      widget_ui(ctx).scroll_area(max_height: 100.0) do |s|
+        30.times { |i| s.label("row #{i}") }
+      end
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    viewport = ctx.memory.scroll_rects[scroll_id].not_nil!.rect
+
+    # Press the track near the bottom — the thumb centers on the
+    # pointer, the offset jumps near the end.
+    press = Egui::Pos2.new(viewport.right + 4.0, viewport.bottom - 10.0)
+    draw.call([Egui::Event.pointer_moved(press),
+      Egui::Event.pointer_pressed(press)], 0.032)
+
+    # Drag the pointer 150px ABOVE the track's top: the offset is
+    # pinned at 0 and the pointer has run 150px past the end.
+    over = Egui::Pos2.new(press.x, viewport.top - 150.0)
+    draw.call([Egui::Event.pointer_moved(over)], 0.048)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should eq(0.0)
+
+    # Reversing just 5px must scroll at once — no dead run back
+    # through the 150 overshot pixels.
+    back = Egui::Pos2.new(press.x, over.y + 5.0)
+    draw.call([Egui::Event.pointer_moved(back)], 0.064)
+    ctx.memory.data.get_vec2(scroll_id, Egui::Vec2.zero).y.should be > 0.0
+  end
+
   it "nested scroll areas: the inner one owns the scroll delta" do
     ctx = Egui::Context.new
     root = Egui::Id.from("spec")
@@ -5080,6 +5114,34 @@ describe "history (emath port, kinetic scrolling)" do
       Egui::History.new(2..128, 0.1))
     kin2.takeover
     kin2.velocity.should eq(0.0)
+  end
+
+  it "a reversal at a clamped edge starts a fresh estimate (no return lag)" do
+    ctx = Egui::Context.new
+    hist = Egui::History.new(2..128, 0.1)
+    kin = Egui::KineticScroller.new(200.0, 0.0, hist)
+
+    # Scroll up to the top edge, then keep notching past it: the offset
+    # is clamped at 0 and the flat overscroll samples dilute but do not
+    # flip the pre-edge run — the latched velocity stays "up".
+    kin.input(-100.0, 0.016, 500.0)
+    kin.input(-100.0, 0.032, 500.0)
+    kin.offset.should eq(0.0)
+    kin.velocity.should be < 0.0
+    kin.input(-100.0, 0.048, 500.0)
+    kin.velocity.should be < 0.0
+
+    # First notch against it: the stale estimate is dropped, the notch
+    # moves the offset and no glide pulls it back on the idle frames.
+    kin.input(20.0, 0.064, 500.0)
+    kin.offset.should eq(20.0)
+    kin.velocity.should eq(0.0)
+    kin.glide(0.016, 500.0, ctx)
+    kin.offset.should eq(20.0)
+
+    # The next notch rebuilds the estimate in the NEW direction only.
+    kin.input(20.0, 0.080, 500.0)
+    kin.velocity.should be > 0.0
   end
 end
 

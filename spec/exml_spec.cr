@@ -1144,3 +1144,519 @@ describe "exml #text nodes (bare text between tags)" do
     nodes.first.children.first.attrs["text"].should eq("a & b <c>")
   end
 end
+
+# ── lint: store readers/writers (plans/velour-components.md, этап 0) ──
+# Everything that used to fail silently: an unknown {name}, a binding
+# nobody seeds (the «мёртвый тогл»), a quote that survived into an
+# attribute value.
+
+describe "exml lint: store readers/writers" do
+  it "errors on a {name} placeholder that is not in scope" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><label text="{oops}"/></page>)
+    )
+    issues = Egui::Exml.validate(doc, written: %w(real))
+    issues.join("\n").should contain("error:")
+    issues.join("\n").should contain("{oops}")
+  end
+
+  it "warns on a bind= slot nobody writes (the dead-toggle shape)" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><checkbox bind="never_seeded" text="x"/></page>)
+    )
+    issues = Egui::Exml.validate(doc, written: %w(other))
+    issues.join("\n").should contain("warning:")
+    issues.join("\n").should contain("never_seeded")
+  end
+
+  it "accepts written slots and interpolated attrs" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><label text="wifi: {wifi}" if="shown"/> ) \
+      %(<checkbox bind="wifi" text="w"/></page>)
+    )
+    Egui::Exml.validate(doc, written: %w(wifi shown)).should be_empty
+  end
+
+  it "accepts repeat variables and their fields in scope" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <repeat for="doc" in="docs" index="i">
+          <label text="{doc.name} \#{i}/{_i}"/>
+        </repeat>
+      </page>
+    ))
+    Egui::Exml.validate(doc, written: %w(docs)).should be_empty
+  end
+
+  it "errors on a repeat in= rows slot nobody publishes" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><repeat in="ghost"><label text="x"/></repeat></page>
+    ))
+    issues = Egui::Exml.validate(doc, written: %w(real))
+    issues.join("\n").should contain("ghost")
+  end
+
+  it "checks if=/unless= and :options= readers" do
+    doc = Egui::Exml.parse(%(
+      <page id="p">
+        <label text="a" if="{flag}"/>
+        <label text="b" unless="off"/>
+        <combo bind="sel" options="{genres}"/>
+      </page>
+    ))
+    issues = Egui::Exml.validate(doc, written: %w(sel))
+    joined = issues.join("\n")
+    joined.should contain("flag")
+    joined.should contain("off")
+    joined.should contain("genres")
+  end
+
+  it "checks declared slot attrs of custom tags" do
+    Egui::Exml.slot_attr("spec-row", "switch")
+    doc = Egui::Exml.parse(%(
+      <page id="p"><spec-row title="r" switch="ghost_switch"/></page>
+    ))
+    issues = Egui::Exml.validate(doc, known_custom: %w(spec-row),
+      written: %w(real))
+    issues.join("\n").should contain("ghost_switch")
+  end
+
+  it "flags a quote that survived into a tag (parse time)" do
+    # an unbalanced quote cuts the value short; the fragment with the
+    # quotes lands in the tag's unconsumed tail — previously dropped
+    # as junk SILENTLY
+    Egui::Exml.warnings.clear
+    Egui::Exml.parse(
+      %(<page id="p"><label text="a "b" c"/></page>)
+    )
+    Egui::Exml.warnings.join("\n").should contain(
+      "an unbalanced quote in an attribute value")
+  end
+
+  it "ios_settings.exml: zero errors, warnings only for unseeded switches" do
+    Egui::Exml.slot_attr("ios-row", "switch")
+    doc = Egui::Exml::Document.load("assets/ios_settings.exml")
+    written = %w(tab page query wifi_value bt_value brightness appearance
+                 text_size airplane wifi bt true_tone bold)
+    issues = Egui::Exml.validate(doc,
+      known_custom: %w(ios-screen ios-body ios-group ios-row ios-card
+                       ios-search ios-segmented ios-slider),
+      written: written)
+    issues.each { |i| i.should contain("warning:") }
+    # the dead toggles of the original session — exactly the switch=
+    # slots the app never seeds
+    joined = issues.join("\n")
+    %w(wifi_notif notif_mail notif_msg imsg adblock).each do |slot|
+      joined.should contain(slot)
+    end
+  end
+end
+
+# ── props with defaults + local state (velour-components.md, этап 1) ──
+
+class PropComponent < Egui::Exml::Component
+  prop title, default: "Без имени"
+  prop badge
+
+  state open, default: "0"
+
+  def template : String
+    %(<label text="{title}: {badge} open={open}"/>)
+  end
+
+  def setup(rt : Egui::Exml::Runtime) : Nil
+    rt.actions["toggle"] = ->toggle
+  end
+
+  def toggle : Nil
+    rt.not_nil!.strings["open"] = rt.not_nil!.strings["open"] == "1" ? "0" : "1"
+  end
+end
+
+describe "exml component props/state (этап 1)" do
+  it "seeds a declared prop's default when the use site omits it" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(PropComponent.new)
+    nodes = Egui::Exml.parse_fragment(%(<prop_component/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join.should contain("Без имени")
+  end
+
+  it "keeps explicit use-site props winning over defaults" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(PropComponent.new)
+    nodes = Egui::Exml.parse_fragment(
+      %(<prop_component title="Свой" badge="3"/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join.should contain("Свой: 3")
+  end
+
+  it "seeds declared local state once at install, before setup" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(PropComponent.new)
+    nodes = Egui::Exml.parse_fragment(%(<prop_component title="a" badge="b"/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join.should contain("open=0")
+    # the state lives in the site scope, not the global store
+    rt.strings.has_key?("open").should be_false
+  end
+
+  it "two use sites keep independent local state" do
+    renderer = Egui::Exml::Renderer.new
+    comp = PropComponent.new
+    renderer.component(comp)
+    nodes = Egui::Exml.parse_fragment(%(
+      <prop_component title="a" badge="1" on_click="noop"/>
+    ))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    scope = comp.rt.not_nil!
+    scope.strings["open"] = "1"
+    # re-render: the second frame's seed_props must NOT clobber the
+    # local write (the default is seeded only while absent)
+    exml_frame(ctx, nodes, rt, renderer)
+    comp.rt.not_nil!.strings["open"].should eq("1")
+  end
+
+  it "lints a use site missing a required prop" do
+    doc = Egui::Exml.parse(%(
+      <page id="p"><prop_component title="x"/></page>
+    ))
+    issues = Egui::Exml.validate(doc)
+    issues.join("\n").should contain(%(requires prop "badge"))
+  end
+
+  it "lints the component template against its own declarations" do
+    Egui::Exml.validate_component(PropComponent).should be_empty
+  end
+end
+
+# ── the bind= contract (velour-components.md, этап 2) ─────────────────
+
+class BoundComp < Egui::Exml::Component
+  bindable :value, :bool
+
+  def template : String
+    %(<column><label text="v={value}"/><button text="flip" on_click="flip"/></column>)
+  end
+
+  def setup(rt : Egui::Exml::Runtime) : Nil
+    rt.actions["flip"] = ->flip
+  end
+
+  def flip : Nil
+    scope = rt.not_nil!
+    scope.bools["value"] = !scope.bool("value")
+  end
+end
+
+describe "exml bind= contract (этап 2)" do
+  it "component: parent slot seeds the scope's bound prop" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(BoundComp.new)
+    nodes = Egui::Exml.parse_fragment(%(<bound_comp bind="on"/>))
+    rt = Egui::Exml::Runtime.new
+    rt.bools["on"] = true
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join.should contain("v=true")
+  end
+
+  it "component: a scope write flows back to the parent + fires on_change" do
+    renderer = Egui::Exml::Renderer.new
+    comp = BoundComp.new
+    renderer.component(comp)
+    nodes = Egui::Exml.parse_fragment(%(<bound_comp bind="on" on_change="child_flipped"/>))
+    rt = Egui::Exml::Runtime.new
+    fired = 0
+    rt.actions["child_flipped"] = ->{ fired += 1 }
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    fired.should eq(0)
+    # the component's action wrote the scope (the flip half)
+    scope = comp.rt.not_nil!
+    scope.bools["value"] = true
+    exml_frame(ctx, nodes, rt, renderer)
+    # …and the engine wrote the parent slot + fired on_change
+    rt.bools["on"].should be_true
+    fired.should eq(1)
+  end
+
+  it "component: an external parent write wins the frame (props down)" do
+    renderer = Egui::Exml::Renderer.new
+    comp = BoundComp.new
+    renderer.component(comp)
+    nodes = Egui::Exml.parse_fragment(%(<bound_comp bind="on"/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    comp.rt.not_nil!.bools["value"].should be_false
+    # the app flips the parent slot directly
+    rt.bools["on"] = true
+    exml_frame(ctx, nodes, rt, renderer)
+    comp.rt.not_nil!.bools["value"].should be_true
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.join.should contain("v=true")
+  end
+
+  it "handler tag: bind= seeds 'value', writes echo to the parent, on_change fires" do
+    seen = {} of String => String
+    widget :spec_bound do |node, ui, ctx, rt, r|
+      seen["value"] = rt.bool("value").to_s
+      rt.bools["value"] = true # the write-back half
+      rt.strings["nav_target"] = "somewhere" # the nav= idiom still lands globally
+    end
+    doc = Egui::Exml.parse(
+      %(<page id="root/root"><spec_bound bind="bound_slot" on_change="pushed"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    fired = 0
+    rt.actions["pushed"] = ->{ fired += 1 }
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    frame = ->{
+      ctx.begin_frame(Egui::RawInput.new(EXML_SCREEN, [] of Egui::Event, 0.016))
+      renderer.render_routes(ctx, doc, rt)
+      ctx.end_frame
+    }
+    frame.call
+    seen["value"].should eq("false")     # seeded from the (unset) parent slot
+    rt.bools["bound_slot"].should be_true # echoed write-back
+    rt.strings["nav_target"].should eq("somewhere")
+    fired.should eq(1)                    # parent version moved → on_change
+    frame.call
+    fired.should eq(1)                    # same value again → no change, no fire
+  end
+
+  it "component tags skip the generic BoundRuntime wrap" do
+    # a component with a bindable must not double-wrap: its rt stays a
+    # plain (scoped) runtime, not BoundRuntime
+    renderer = Egui::Exml::Renderer.new
+    comp = BoundComp.new
+    renderer.component(comp)
+    nodes = Egui::Exml.parse_fragment(%(<bound_comp bind="on"/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    comp.rt.not_nil!.should_not be_nil
+    comp.rt.not_nil!.is_a?(Egui::Exml::BoundRuntime).should be_false
+  end
+end
+
+# ── auto-repaint on store writes (velour-components.md, этап 3) ───────
+
+describe "exml auto-repaint (этап 3)" do
+  it "a store write during the walk schedules the next frame without manual request_repaint" do
+    doc = Egui::Exml.parse(
+      %(<page id="root/root"><button text="go" on_click="nav"/><label text="x"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    rt.actions["nav"] = ->{ rt.strings["page"] = "sub" } # a handler write
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    frame = ->(events : Array(Egui::Event)) {
+      ctx.begin_frame(Egui::RawInput.new(EXML_SCREEN, events, 0.016))
+      renderer.render_routes(ctx, doc, rt)
+      ctx.end_frame
+    }
+    # a click fires the action → the write happens mid-frame
+    click = ->{ Egui::Event.new(:pointer_button_pressed,
+      pos: Egui::Pos2.new(10.0, 10.0)) }
+    frame.call([click.call] of Egui::Event)
+    ctx.needs_repaint?.should be_true # the dirty write bought a frame
+  end
+
+  it "steady state creates no repaint loop (same value → no version bump)" do
+    doc = Egui::Exml.parse(
+      %(<page id="root/root"><label text="{wifi_value}"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    frame = ->{
+      # the ios_settings idiom: the app publishes the SAME derived
+      # string every frame, BEFORE the walk — must not loop
+      rt.strings["wifi_value"] = "home-5G"
+      ctx.begin_frame(Egui::RawInput.new(EXML_SCREEN, [] of Egui::Event, 0.016))
+      renderer.render_routes(ctx, doc, rt)
+      ctx.end_frame
+    }
+    frame.call
+    ctx.needs_repaint?.should be_false # pre-frame write, not the walk's
+    frame.call
+    ctx.needs_repaint?.should be_false # same value → no version bump → no loop
+  end
+end
+
+# ── computed slots (velour-components.md, этап 4) ──────────────────────
+
+describe "exml computed slots (этап 4)" do
+  it "derives a slot from its tracked read-set, lazily invalidated" do
+    doc = Egui::Exml.parse(
+      %(<page id="p"><label text="{wifi_label}"/></page>)
+    )
+    rt = Egui::Exml::Runtime.new
+    rt.bools["wifi_on"] = true
+    rt.strings["wifi_name"] = "home-5G"
+    rt.computed "wifi_label" do |s|
+      s["wifi_on"] == "true" ? s["wifi_name"].to_s : "Not connected"
+    end
+    renderer = Egui::Exml::Renderer.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("home-5G")
+
+    # write to a dependency → the next read recomputes, no manual push
+    rt.bools["wifi_on"] = false
+    exml_frame(ctx, doc.pages.first.children, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Not connected")
+  end
+
+  it "tracks only the branches actually read (conditional deps)" do
+    rt = Egui::Exml::Runtime.new
+    rt.bools["on"] = true
+    rt.strings["a"] = "A"
+    rt.strings["b"] = "B"
+    rt.computed "c" do |s|
+      s["on"] == "true" ? s["a"].to_s : s["b"].to_s
+    end
+    rt.lookup("c").should eq("A")
+    # b is not a dependency of the current read-set — changing it
+    # does not invalidate the cached computation
+    rt.strings["b"] = "B2"
+    rt.lookup("c").should eq("A")
+    rt.bools["on"] = false
+    rt.lookup("c").should eq("B2") # recompute reads the NEW b
+  end
+
+  it "guards against self-reading computeds (stale value, no loop)" do
+    rt = Egui::Exml::Runtime.new
+    rt.strings["x"] = "base"
+    rt.computed "loop_slot" do |s|
+      (s["loop_slot"] || "") + s["x"].to_s
+    end
+    rt.lookup("loop_slot").should eq("base") # no hang, stale self read
+  end
+
+  it "computed names are visible for the lint's writer knowledge" do
+    rt = Egui::Exml::Runtime.new
+    rt.computed "wifi_label" do |s|
+      s["wifi_on"] == "true" ? s["wifi_name"].to_s : "off"
+    end
+    rt.computed_names.should eq(%w(wifi_label))
+  end
+end
+
+# ── named slots + scoped classes (velour-components.md, этап 5) ───────
+
+class Slotted < Egui::Exml::Component
+  prop title, default: "Компонент"
+
+  def template : String
+    %(
+      <column>
+        <label text="{title}"/>
+        <slot/>
+        <slot name="footer"/>
+      </column>
+    )
+  end
+end
+
+describe "exml named slots (этап 5)" do
+  it "splices use-site children into <slot> markers" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(Slotted.new)
+    nodes = Egui::Exml.parse_fragment(%(
+      <slotted>
+        <label text="тело" slot="footer"/>
+        <label text="по умолчанию"/>
+      </slotted>
+    ))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Компонент")
+    texts.should contain("по умолчанию")
+    texts.should contain("тело")
+  end
+
+  it "an empty slot marker renders nothing (Vue semantics)" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(Slotted.new)
+    nodes = Egui::Exml.parse_fragment(%(<slotted/>))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("Компонент") # the template chrome is there
+    texts.compact_map { |t| t == "w" ? nil : t }.size.should eq(1) # …and only it
+  end
+
+  it "spliced children interpolate against the COMPONENT scope" do
+    renderer = Egui::Exml::Renderer.new
+    renderer.component(Slotted.new)
+    nodes = Egui::Exml.parse_fragment(%(
+      <slotted title="Заголовок">
+        <label text="в скоупе: {title}"/>
+      </slotted>
+    ))
+    rt = Egui::Exml::Runtime.new
+    ctx = Egui::Context.new
+    exml_frame(ctx, nodes, rt, renderer)
+    texts = ctx.painter.commands.select(Egui::TextCmd).map(&.text)
+    texts.should contain("в скоупе: Заголовок")
+  end
+end
+
+class ScopedCls < Egui::Exml::Component
+  def template : String
+    %(<column class="card"><label text="x" class="title"/></column>)
+  end
+end
+
+class ScopedDyn < Egui::Exml::Component
+  def template : String
+    %(<column class="card {variant}"><label text="x"/></column>)
+  end
+end
+
+class ScopedOff < Egui::Exml::Component
+  def template : String
+    %(<column class="card" scoped="false"><label text="x"/></column>)
+  end
+end
+
+describe "exml scoped template classes (этап 5)" do
+  it "prefixes literal class tokens with the element name" do
+    nodes = ScopedCls.new.nodes
+    nodes.first.attrs["class"].should eq("scoped_cls__card")
+    label = nodes.first.children.first
+    label.attrs["class"].should eq("scoped_cls__title")
+  end
+
+  it "leaves store-driven class tokens (app-side names) unprefixed" do
+    nodes = ScopedDyn.new.nodes
+    nodes.first.attrs["class"].should eq("scoped_dyn__card {variant}")
+  end
+
+  it "scoped=false on the template root opts out" do
+    nodes = ScopedOff.new.nodes
+    nodes.first.attrs["class"].should eq("card")
+    nodes.first.attrs.has_key?("scoped").should be_false
+  end
+end
