@@ -110,6 +110,13 @@ The same rake targets work on Windows. Requirements:
   Crystal's msvc target links against the MSVC/Windows-SDK runtimes
 - Ruby + rake (`gem install rake`)
 
+The FFmpeg-dependent `video` example is skipped automatically on a clean
+install (no FFmpeg dev headers): `rake build:examples` builds everything
+else and prints a notice; an explicit `rake build:dev[video]` fails with
+instructions. To build it, install FFmpeg dev (`vcpkg install ffmpeg`)
+and set `FFMPEG_DIR` to the SDK root (the dir containing `include\` and
+`lib\`).
+
 ```bat
 rake spec             &:: headless core specs
 rake build:examples   &:: vendor C (cl.exe) + crystal build -> bin\

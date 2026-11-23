@@ -206,6 +206,22 @@ SHIM_HEADERS.each do |shim, headers|
   end
 end
 
+# FFmpeg dev headers (<libavutil/hwcontext.h>): the only consumers are
+# the video example and its C pool — everything else builds clean without
+# them, and a fresh Windows box has no FFmpeg at all. Probe order:
+# pkg-config (Linux/macOS), FFMPEG_DIR (SDK root or include dir) and the
+# default vcpkg tree (Windows). Returns the -I flag, or nil when absent.
+def ffmpeg_include_flag
+  inc = %x{pkg-config --cflags-only-I libavutil 2>/dev/null}.strip unless WINDOWS
+  return inc unless inc.nil? || inc.empty?
+  dirs = []
+  dirs.concat([ENV["FFMPEG_DIR"], File.join(ENV["FFMPEG_DIR"], "include")]) if ENV["FFMPEG_DIR"]
+  dirs.concat(%w[/opt/homebrew/include /usr/local/include /usr/include])
+  dirs.concat(Dir["C:/vcpkg/installed/*/include"]) if WINDOWS
+  dir = dirs.compact.find { |d| File.exist?(File.join(d, "libavutil", "hwcontext.h")) }
+  dir ? "-I#{dir}" : nil
+end
+
 # Video-pool helper archive (backend/video_pool.c): avutil-linked C kept
 # out of the core shim — only the video example links it (see the link
 # flags in #build_examples). The libva export/sync bodies are Linux-only
@@ -215,12 +231,7 @@ VIDEO_POOL_OBJ = "lib/video_pool#{OBJ_EXT}"
 VIDEO_POOL_LIB = WINDOWS ? "lib/libegui_video.lib" : "lib/libegui_video.a"
 file VIDEO_POOL_OBJ => ["backend/video_pool.c"] do
   FileUtils.mkdir_p("lib")
-  inc = %x{pkg-config --cflags-only-I libavutil 2>/dev/null}.strip
-  if inc.empty?
-    %w[/opt/homebrew/include /usr/local/include /usr/include].each do |dir|
-      break inc = "-I#{dir}" if File.exist?(File.join(dir, "libavutil", "hwcontext.h"))
-    end
-  end
+  inc = ffmpeg_include_flag || ""
   if WINDOWS
     msvc("cl /nologo /O2 /MD /std:c11 /c backend\\video_pool.c #{inc} " \
          "/Fo#{VIDEO_POOL_OBJ.tr('/', '\\')}")
@@ -475,7 +486,17 @@ def build_examples(names, opt_flags, label)
   lib_flag = "#{lib_flag} -lvulkan" if VULKAN
   # Capped at 8 to bound peak RAM (~1-2 GB per compiler); override with JOBS=.
   jobs = Integer(ENV.fetch("JOBS", [Etc.nprocessors, names.size, 8].min))
-  # the video example links the helper archive — build it first
+  # the video example links the helper archive — build it first. The pool
+  # compiles avutil-linked C, so without FFmpeg dev headers there is
+  # nothing to build against: a full-set build skips the example with a
+  # notice, an explicit `rake build:dev[video]` fails with instructions.
+  if names.include?("video") && ffmpeg_include_flag.nil?
+    msg = "no FFmpeg dev headers (libavutil/hwcontext.h) — install FFmpeg dev " \
+          "(Windows: vcpkg install ffmpeg, or point FFMPEG_DIR at the SDK root)"
+    raise "video example: #{msg}" if names == ["video"]
+    names -= ["video"]
+    puts "⚠ #{msg} — skipping the video example"
+  end
   Rake::Task[VIDEO_POOL_LIB].invoke if names.include?("video")
   warm_compiler_caches(jobs, opt_flags, lib_flag)
   queue = names.dup
@@ -498,7 +519,11 @@ def build_examples(names, opt_flags, label)
         # installed (Linux only; macOS/Windows bodies are #ifdef'd out)
         flags = lib_flag.dup
         if name == "video"
-          flags << " " << File.expand_path("lib/libegui_video.a")
+          # VIDEO_POOL_LIB: .lib on Windows (MSVC cannot consume a .a),
+          # .a elsewhere. FFMPEG_DIR also holds the avformat/avcodec/...
+          # import libs the ffmpeg.cr @[Link]s resolve against.
+          flags << " " << File.expand_path(VIDEO_POOL_LIB)
+          flags << " /LIBPATH:#{File.join(ENV.fetch('FFMPEG_DIR'), 'lib')}" if WINDOWS && ENV["FFMPEG_DIR"]
           flags << " -l:libva.so.2" unless WINDOWS || DARWIN
         end
         # search1m/logs_viewer run their ring filter as a parallel
