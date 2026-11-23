@@ -1122,7 +1122,14 @@ module Egui
     # explicit ids are the developer's addressing tool and must be
     # unique. Auto ids skip this (their collisions stay on the silent
     # `Memory` duplicate accounting).
+    #
+    # A flex measure pass runs its children BEFORE the real pass —
+    # the #interact measure branch already skips its bookkeeping for
+    # exactly this reason ("every flex child would look duplicated"),
+    # and the claim must too, or no flex block child could hold an
+    # explicit-id widget at all. The real pass claims each id once.
     def claim_widget_id(id : Id, name : String, kind : String) : Nil
+      return if measuring?
       if @claimed_ids.includes?(id)
         raise DuplicateWidgetIdError.new(
           "Duplicate widget id \"#{name}\" (#{kind}) — explicit ids must be unique")
@@ -1555,14 +1562,19 @@ module Egui
       # Snap to last frame's measured size (like #modal): menus size
       # themselves from their items' natural widths (via Ui#min_rect),
       # so frame one opens at `width`, later frames hug the content.
-      width = @memory.layer_sizes[pop_id]?.try(&.x) || width
+      measured = @memory.layer_sizes[pop_id]?
+      width = measured.try(&.x) || width
 
       # Keep inside the screen (upstream `Area` constrain): floor at the
       # parent widget's width (`min_width`, e.g. the ComboBox button) so
       # the popup is never narrower than what opened it, then shift the
-      # anchor left — a popup at the right edge opens fully visible.
-      anchor, constrained = constrain_floating(anchor, Vec2.new(width, 0.0),
-        min_width)
+      # anchor so the rect stays visible on BOTH axes — a popup at the
+      # right edge opens fully visible, and one measured taller than the
+      # window (frame two, once the height is known) parks at the
+      # window's top edge instead of painting past its bottom.
+      anchor, constrained = constrain_floating(anchor,
+        Vec2.new(width, measured.try(&.y) || 0.0), min_width,
+        constrain_y: true)
       width = constrained.x
 
       pad ||= style.spacing.window_padding
@@ -1598,7 +1610,15 @@ module Egui
       outer = Rect.new(
         anchor,
         Pos2.new(ui.min_rect.right + pad.x, ui.min_rect.bottom + pad.y))
+      # Memory keeps the NATURAL measured size: dropdown_anchor's
+      # above/below flip needs the unclamped height to pick the roomier
+      # side next frame. What gets painted and hit-tested is the frame
+      # clamped to the window — the engine-level overflow rule: a popup
+      # never paints past the window edge, the same two-axis clamp
+      # tooltips and modals already live under.
       @memory.layer_sizes[pop_id] = outer.size
+      screen = @input.screen_rect
+      outer = outer.intersect(screen) if screen.height > 0.0
       @memory.popup_rects[pop_id] = outer
       @painter.clip = outer
       # The frame: class-styled when `style_class` was given (each key
@@ -2038,7 +2058,7 @@ module Egui
 
     # The deferred central panel: {id, block, fill}, rendered in
     # #end_frame.
-    @central_block : {String, Proc(Ui, Nil), Color32?} | Nil = nil
+    @central_block : {String, Proc(Ui, Nil), Color32?, Bool} | Nil = nil
 
     # Panel resizing (egui `Panel::resizable`, default there too): a
 # drag grip on the panel's inner edge grows/shrinks it, persisted per
@@ -2140,10 +2160,16 @@ module Egui
     # its content). The return value is the remainder at CALL time —
     # exact when the central panel is declared last (the recommended
     # style), approximate if later panels still bite.
+    #
+    # `scroll: false` opts out of the panel's overflow-y auto-scroll
+    # (see #panel_ui): a scaffold panel that pins widgets to the
+    # region edges (a mobile screen's app bar / bottom nav / FAB)
+    # must not scroll — the app scrolls its own body instead.
     def central_panel(id : String = "central_panel",
-                      fill : Color32? = nil, &block : Ui ->) : Rect
+                      fill : Color32? = nil, scroll : Bool = true,
+                      &block : Ui ->) : Rect
       rect = @available_rect
-      @central_block = {id, block, fill}
+      @central_block = {id, block, fill, scroll}
       rect
     end
 
@@ -2157,7 +2183,7 @@ module Egui
       if (central = @central_block)
         @central_block = nil
         panel_ui(central[0], @available_rect, Layout.top_down,
-          central[2]) { |ui| central[1].call(ui) }
+          central[2], scroll: central[3]) { |ui| central[1].call(ui) }
       end
     end
 
@@ -2172,7 +2198,8 @@ module Egui
     private def panel_ui(id : String, rect : Rect, layout : Layout,
                          fill : Color32? = nil, resizable : Bool = false,
                          edge : Symbol? = nil, size : Float64 = 0.0,
-                         layer : LayerId? = nil, &block : Ui ->) : Nil
+                         layer : LayerId? = nil, scroll : Bool = true,
+                         &block : Ui ->) : Nil
       pad = style.spacing.window_padding
 
       # Normally panels ride the Background layer under everything;
@@ -2217,7 +2244,13 @@ module Egui
       # Horizontal top/bottom strips lay out a single row and keep
       # their old behavior (a panel that must scroll its body wraps
       # its own content in `ui.scroll_area` — see the Inspector).
-      if layout.horizontal?
+      # `scroll: false` opts out entirely: the scaffold panel (a mobile
+      # screen's central panel with a pinned app bar / bottom nav) must
+      # NOT scroll — inside a scroll viewport `max_rect` lives in
+      # content coordinates, so region-pinned widgets (BottomNav,
+      # Overlay, Snackbar) would ride the scroll. The app scrolls its
+      # own body instead (`ui.scroll_area` around the tab content).
+      if layout.horizontal? || !scroll
         block.call(ui)
       else
         ScrollArea.new.show(ui, &block)

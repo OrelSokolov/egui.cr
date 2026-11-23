@@ -1,0 +1,147 @@
+<!-- ios_settings.exml — «Настройки» iOS-лука целиком в разметке
+     (examples/ios_settings_exml.cr). Встроенные теги + кастомные из
+     examples/ios_components/ios_tags.cr; стили — assets/
+     ios_settings.ecss.
+     Навигация: strings["tab"] — корневой таб (таб-бар), strings["page"]
+     — подстраница ("root" = список настроек; подстраница накрывает
+     весь экран, включая таб-бар, как в iOS). Строки уходят на
+     подстраницы атрибутом nav="…". Живые значения ({wifi_value}/
+     {bt_value}) пушит приложение каждый кадр. -->
+<exml>
+  <page id="root/root">
+    <ios-screen>
+      <!-- ── корневой таб «Настройки» ─────────────────────────── -->
+      <ios-body show="main" title="Настройки">
+        <ios-search bind="query" hint="Поиск"/>
+        <ios-group>
+          <ios-row title="Авиарежим" icon="plane" tint="#FF9500" switch="airplane"/>
+          <ios-row title="Wi-Fi" icon="wifi" tint="#007AFF" value="{wifi_value}" nav="wifi"/>
+          <ios-row title="Bluetooth" icon="bluetooth" tint="#007AFF" value="{bt_value}" nav="bluetooth"/>
+          <ios-row title="Мобильная связь" icon="antenna" tint="#34C759" value="MTS"/>
+        </ios-group>
+        <ios-group>
+          <ios-row title="Уведомления" icon="bell" tint="#FF3B30" badge="1" nav="notifications"/>
+          <ios-row title="Звуки, тактильные сигналы" icon="volume-2" tint="#FF2D55"/>
+          <ios-row title="Не беспокоить" icon="moon" tint="#5E5CE6"/>
+          <ios-row title="Экранное время" icon="hourglass" tint="#5E5CE6"/>
+        </ios-group>
+        <ios-group>
+          <ios-row title="Основные" icon="settings" tint="#8E8E93"/>
+          <ios-row title="Пункт управления" icon="square-plus" tint="#007AFF"/>
+          <ios-row title="Экран и яркость" icon="sun" tint="#007AFF"/>
+          <ios-row title="Экран «Домой»" icon="grid-2x2" tint="#007AFF"/>
+          <ios-row title="Универсальный доступ" icon="circle-user-round" tint="#007AFF"/>
+          <ios-row title="Обои" icon="image" tint="#32ADE6"/>
+        </ios-group>
+        <ios-group>
+          <ios-row title="Siri" icon="sparkles" tint="#8E8E93"/>
+          <ios-row title="Face ID и код-пароль" icon="scan-face" tint="#34C759"/>
+          <ios-row title="Экстренный вызов — SOS" icon="phone" tint="#FF3B30"/>
+          <ios-row title="Аккумулятор" icon="battery-full" tint="#34C759"/>
+          <ios-row title="Конфиденциальность и безопасность" icon="shield" tint="#007AFF"/>
+        </ios-group>
+        <ios-group>
+          <ios-row title="Почта" icon="mail" tint="#007AFF" badge="12" nav="mail"/>
+          <ios-row title="Сообщения" icon="message-circle" tint="#34C759" badge="2" nav="messages"/>
+          <ios-row title="Браузер" icon="compass" tint="#32ADE6" badge="1" nav="browser"/>
+        </ios-group>
+      </ios-body>
+
+      <!-- ── корневые табы «Экран» и «Об устройстве» ──────────── -->
+      <ios-body show="screen" title="Экран и яркость" back="root">
+        <ios-card caption="ОФОРМЛЕНИЕ">
+          <ios-segmented bind="appearance" options="Светлая|Тёмная"/>
+        </ios-card>
+        <ios-card>
+          <ios-slider bind="brightness"/>
+        </ios-card>
+        <ios-group>
+          <ios-row title="True Tone" switch="true_tone" chevron="false"/>
+          <ios-row title="Night Shift" value="22:00 — 07:00"/>
+        </ios-group>
+        <ios-card caption="ТЕКСТ">
+          <ios-segmented bind="text_size" options="Мелкий|Крупный"/>
+          <ios-row title="Жирный текст" switch="bold" chevron="false"/>
+        </ios-card>
+      </ios-body>
+
+      <ios-body show="about" title="Об устройстве" back="root">
+        <ios-group>
+          <ios-row title="Имя" value="iPhone" chevron="false"/>
+          <ios-row title="Версия iOS" value="18.2" chevron="false"/>
+          <ios-row title="Название модели" value="iPhone 15 Pro" chevron="false"/>
+          <ios-row title="Номер модели" value="MU2Q3RU/A" chevron="false"/>
+          <ios-row title="Серийный номер" value="F2LXC8KQ1P" chevron="false"/>
+          <ios-row title="Емкость" value="256 ГБ" chevron="false"/>
+          <ios-row title="Доступная емкость" value="48,4 ГБ" chevron="false"/>
+        </ios-group>
+        <ios-group>
+          <ios-row title="Гарантия" value="Действует"/>
+        </ios-group>
+      </ios-body>
+
+      <!-- ── подстраница Wi-Fi ────────────────────────────────── -->
+      <ios-body show="wifi" title="Wi-Fi" back="root">
+        <ios-group>
+          <ios-row title="Wi-Fi" switch="wifi" chevron="false"/>
+          <ios-row title="Уведомления о сетях" switch="wifi_notif" chevron="false"/>
+        </ios-group>
+        <ios-card caption="МОЯ СЕТЬ">
+          <ios-row title="home-5G" icon="wifi" tint="#007AFF" chevron="false"/>
+        </ios-card>
+        <ios-card caption="ДРУГИЕ СЕТИ">
+          <ios-row title="home-2G" icon="wifi" tint="#8E8E93" chevron="false"/>
+          <ios-row title="Neighbours_5G" icon="wifi" tint="#8E8E93" chevron="false"/>
+          <ios-row title="TP-LINK_A24F" icon="wifi" tint="#8E8E93" chevron="false"/>
+          <ios-row title="MTS_Free" icon="wifi" tint="#8E8E93" chevron="false"/>
+        </ios-card>
+      </ios-body>
+
+      <!-- ── подстраница Bluetooth ────────────────────────────── -->
+      <ios-body show="bluetooth" title="Bluetooth" back="root">
+        <ios-group>
+          <ios-row title="Bluetooth" switch="bt" chevron="false"/>
+        </ios-group>
+        <ios-card caption="МОИ УСТРОЙСТВА">
+          <ios-row title="AirPods Pro" icon="headphones" tint="#007AFF" value="Подключены" chevron="false"/>
+          <ios-row title="Magic Keyboard" icon="keyboard" tint="#007AFF" value="Подключено" chevron="false"/>
+        </ios-card>
+      </ios-body>
+
+      <!-- ── подстраница Уведомления ──────────────────────────── -->
+      <ios-body show="notifications" title="Уведомления" back="root">
+        <ios-group>
+          <ios-row title="Почта" icon="mail" tint="#007AFF" badge="3" switch="notif_mail" chevron="false"/>
+          <ios-row title="Сообщения" icon="message-circle" tint="#34C759" badge="5" switch="notif_msg" chevron="false"/>
+          <ios-row title="Браузер" icon="compass" tint="#32ADE6" badge="1" switch="notif_web" chevron="false"/>
+        </ios-group>
+        <ios-card caption="ЭКРАН БЛОКИРОВКИ">
+          <ios-row title="Показывать превью" value="Всегда"/>
+        </ios-card>
+      </ios-body>
+
+      <!-- ── подстраницы приложений-заглушек ──────────────────── -->
+      <ios-body show="mail" title="Почта" back="root">
+        <ios-group>
+          <ios-row title="Аккаунты" value="1"/>
+          <ios-row title="Загрузка новых данных" value="Автоматически"/>
+          <ios-row title="Показывать" value="50 писем"/>
+        </ios-group>
+      </ios-body>
+      <ios-body show="messages" title="Сообщения" back="root">
+        <ios-group>
+          <ios-row title="iMessage" switch="imsg" chevron="false"/>
+          <ios-row title="Отправка SMS" value="Вкл."/>
+          <ios-row title="Сохранять историю" value="Навсегда"/>
+        </ios-group>
+      </ios-body>
+      <ios-body show="browser" title="Браузер" back="root">
+        <ios-group>
+          <ios-row title="Поисковая система" value="Яндекс"/>
+          <ios-row title="Блокировщик рекламы" switch="adblock" chevron="false"/>
+          <ios-row title="Очистить историю" value="Недавно"/>
+        </ios-group>
+      </ios-body>
+    </ios-screen>
+  </page>
+</exml>

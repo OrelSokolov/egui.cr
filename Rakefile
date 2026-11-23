@@ -50,7 +50,7 @@ BIN_APPS   = %w[
   crystal3d rounded_window tableview text_input ios_demo multitouch_demo
   responsive_demo camera device_api audio remote_image tray voice_echo
   wizard lottie_crystal hello_exml stress_scroll search1m crash_demo
-  logs_viewer
+  logs_viewer mobile_gallery mobile_gallery_exml ios_settings ios_settings_exml
 ]
 BIN_HTML   = %w[
   html_gallery html_positions box_shadow box_shadow_showcase
@@ -79,6 +79,9 @@ end
 EXML_APPS = {
   "music_gen" => ["assets/music.exml",
                   "examples/music_components/music_gen.cr", "MusicUi"],
+  "mobile_gallery_exml" => ["assets/mobile_gallery.exml",
+                            "examples/mobile_components/mobile_gallery_gen.cr",
+                            "MobileGalleryUi"],
 }
 
 def gen_exml!(names)

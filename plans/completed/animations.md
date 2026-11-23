@@ -1,15 +1,29 @@
 # Встроенные анимации UI — текущее состояние и дизайн
 
-> **Статус (2026-10): Уровни 1, 2 (частично) и 4 РЕАЛИЗОВАНЫ.**
+> **Статус (2026-11): Уровни 1, 2 и 4 РЕАЛИЗОВАНЫ; Ур.3 (exit)
+> попробован и ОТКАТЕН.**
 > Ур.1 — `transition` / `transition.<key>` (мс) в каскаде: цвета
 > через `background_color`/`transition_color`, объявленные размеры
 > через `styled_size` (менеджер `StyleAnimations`,
 > `src/egui/state.cr`; спека `spec/style_transitions_spec.cr`).
 > Ур.2 — именованные кривые (`easing`/`easing.<key>`, модуль
 > `Egui`: linear/ease/ease-in/out/in-out/smoothstep) +
-> `Context#reduced_motion=` (все переходы мгновенны). Ур.4 —
-> `Context#animate_color_with_time` / `#animate_vec2_with_time`.
-> Осталось Ур.2: чтение reduced-motion из ОС; Ур.3 — enter/exit.
+> `Context#reduced_motion=` (все переходы мгновенны); системный
+> `prefers-reduced-motion` читается с macOS через
+> `SystemPorts::Motion` + `Driver::DarwinMotion`
+> (NSWorkspace.accessibilityDisplayShouldReduceMotion, опрос раз
+> в кадр в обоих путях цикла `driver/sokol.cr`; остальные ОС —
+> no-op default). Ур.4 — `Context#animate_color_with_time` /
+> `#animate_vec2_with_time`.
+> Ур.3 — enter/exit попапов был реализован (exit-fade попапов,
+> `Context#closing?`, enter через `appear:` на классе попапа) и
+> **отклонён визуальной проверкой**: fade читался как глюк
+> (подсветка кнопки гаснет под ещё видимой выпадашкой, попап
+> висит после закрытия). Код откатен; попапы снова исчезают
+> мгновенно. Enter-анимации обычных боксов остаются через
+> `appear:` (`AppearAnims`, plans/NativeHTML.md §3.2).
+> Осталось (не блокирует): reduced-motion с Linux/Windows/Android
+> (GSettings / SPI_GETCLIENTAREAANIMATION / ANIMATOR_DURATION_SCALE).
 
 Связанные планы: `plans/responsive-mobile.md` (единицы длин — оттуда
 анимируемые значения ширины), `plans/0percent_cpu.md` (анимации vs

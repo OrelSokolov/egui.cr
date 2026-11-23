@@ -1735,7 +1735,8 @@ module Egui
       # "{name}" substitution from the store (dotted keys allowed —
       # the `<repeat>` scopes flatten row fields into "item.field").
       # Unknown names survive as-is (a spot of `{oops}` in the UI says
-      # more than a crash).
+      # more than a crash) AND warn once to stderr — a silent typo is
+      # a missing slot nobody sees (see #warn_slot_miss).
       #
       # Results are CACHED per raw text: the slot values a text reads
       # are compared on every call, so a frame in which nothing moved
@@ -1751,6 +1752,29 @@ module Egui
         true
       end
 
+      # One stderr line per unresolved {placeholder} name: an unknown
+      # slot renders as-is (the lenient contract), but SILENTLY it is
+      # a typo nobody sees. Root-owned set — scopes forward their
+      # misses (a repeat scope dies with its frame and would re-warn
+      # every frame otherwise).
+      @warned_slots = Set(String).new
+
+      protected def warn_slot_miss(key : String) : Nil
+        unless @warned_slots.includes?(key)
+          @warned_slots << key
+          STDERR.puts "exml: {#{key}} — no such slot; the placeholder " \
+                      "is rendered as-is (publish it via strings/" \
+                      "floats/bools)"
+        end
+      end
+
+      private def lookup_warned(key : String) : String?
+        lookup(key) || begin
+          warn_slot_miss(key)
+          nil
+        end
+      end
+
       def interpolate(text : String) : String
         return text unless text.includes?('{')
         return interpolate_uncached(text) unless cache_interpolations?
@@ -1758,7 +1782,7 @@ module Egui
           names, values, result = cached
           changed = false
           names.each_with_index do |name, i|
-            v = lookup(name) || "{#{name}}"
+            v = lookup_warned(name) || "{#{name}}"
             if v != values[i]
               values[i] = v
               changed = true
@@ -1788,7 +1812,7 @@ module Egui
       # row-scope path (a repeat scope dies with its frame).
       private def interpolate_uncached(text : String) : String
         text.gsub(/\{([a-zA-Z_][\w.]*)\}/) do
-          lookup($1) || "{#{$1}}"
+          lookup_warned($1) || "{#{$1}}"
         end
       end
 
@@ -1798,7 +1822,7 @@ module Egui
                                       values : Array(String)) : String
         text.gsub(/\{([a-zA-Z_][\w.]*)\}/) do
           names << $1
-          v = lookup($1) || "{#{$1}}"
+          v = lookup_warned($1) || "{#{$1}}"
           values << v
           v
         end
@@ -1858,6 +1882,12 @@ module Egui
 
       def lookup(key : String) : String?
         super || @parent.lookup(key)
+      end
+
+      # The root store owns the warn-once set: a scope (a repeat row
+      # lives one frame) must not re-warn a miss every frame.
+      protected def warn_slot_miss(key : String) : Nil
+        @parent.warn_slot_miss(key)
       end
 
       def rows?(key : String) : Array(Hash(String, String))?

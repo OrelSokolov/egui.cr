@@ -1,16 +1,16 @@
-# vue2velvet specs: the port tool's 1:1 half — a Vue SFC's
+# vue2velour specs: the port tool's 1:1 half — a Vue SFC's
 # template+style halves converted to .exml/.ecss, with the report
 # (slots/rows/actions) the Crystal Component half is written from.
 # The Vue directive aliases the output leans on are covered by
 # spec/vue_aliases_spec.cr.
 
 require "spec"
-require "../src/egui/vue2velvet"
+require "../src/egui/vue2velour"
 
 FIXTURE = File.read("#{__DIR__}/dataset/hello_card.vue")
 
-describe "vue2velvet template conversion" do
-  result = Egui::Vue2Velvet.convert(FIXTURE, "hello_card")
+describe "vue2velour template conversion" do
+  result = Egui::Vue2Velour.convert(FIXTURE, "hello_card")
 
   it "maps HTML elements onto the exml vocabulary" do
     result.exml.should contain(%(<box class="card.settings">))
@@ -67,9 +67,9 @@ describe "vue2velvet template conversion" do
   end
 end
 
-describe "vue2velvet report" do
+describe "vue2velour report" do
   it "names unmapped HTML and the port checklist" do
-    result = Egui::Vue2Velvet.convert(FIXTURE, "hello_card")
+    result = Egui::Vue2Velour.convert(FIXTURE, "hello_card")
     result.ok?.should be_true
     result.report.join("\n").should contain("unmapped HTML")
     result.report.join("\n").should contain("ul")
@@ -83,19 +83,19 @@ describe "vue2velvet report" do
 
   it "says the script half is never translated" do
     src = "<template><p>hi</p></template>\n<script>\nexport default {}\n</script>\n"
-    result = Egui::Vue2Velvet.convert(src, "x")
+    result = Egui::Vue2Velour.convert(src, "x")
     result.report.join("\n").should contain("script: skipped")
     result.report.join("\n").should contain("class X < Egui::Exml::Component")
   end
 
   it "notes scoped styles and passes CSS through verbatim" do
-    result = Egui::Vue2Velvet.convert(FIXTURE, "hello_card")
+    result = Egui::Vue2Velour.convert(FIXTURE, "hello_card")
     result.ecss.not_nil!.should contain(".card { background: #ffffff; }")
     result.report.join("\n").should contain("scoped ignored")
   end
 
   it "fails loudly (report) without a template block" do
-    result = Egui::Vue2Velvet.convert("<script>export default {}</script>", "x")
+    result = Egui::Vue2Velour.convert("<script>export default {}</script>", "x")
     result.ok?.should be_false
   end
 end

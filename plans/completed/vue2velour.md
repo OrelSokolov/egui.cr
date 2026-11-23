@@ -1,16 +1,17 @@
-# vue2velvet — конвертер Vue SFC → egui.cr
+# vue2velour — конвертер Vue SFC → egui.cr
 
 Решение 2026-11-11: конвертер **1 к 1 для html + css**. JS-код НЕ
 переносится вообще — ни сейчас, ни потом: script-половина
 портируемого компонента пишется вручную или нейронкой ПО ОТЧЁТУ
 конвертера (какие слоты/списки/экшены разметка ждёт от Crystal-класса).
-Формула порта: `vue2velvet Component.vue` → `Component.exml` +
+Формула порта: `vue2velour Component.vue` → `Component.exml` +
 `Component.ecss` + отчёт → нейронка пишет `class Component <
 Egui::Exml::Component` по отчёту.
 
-Имя: **vue2velvet** (пользовательское; «Velvet» — рабочее имя
-целевого фреймворка в разговоре, в коде/доках продукт остаётся
-egui.cr / NativeHTML до отдельного решения о переименовании).
+Имя: **vue2velour** (пользовательское; 2026-11-22 переименовано с
+vue2velvet — «Velour» — рабочее имя целевого фреймворка, в
+коде/доках продукт остаётся egui.cr / NativeHTML до отдельного
+решения о переименовании).
 
 ## Фундамент (уже сделано)
 
@@ -60,11 +61,11 @@ select → combo; hr → separator; progress → progress. Всё без
 
 | Файл | Роль |
 |---|---|
-| `src/egui/vue2velvet.cr` | модуль: SFC-сплит, мини-парсер шаблона (элементы/атрибуты/текст/комментарии, void-теги, толерантные закрывашки), сериализатор, отчёт |
-| `tools/vue2velvet.cr` | CLI: `vue2velvet Component.vue [-o DIR]` |
-| `spec/vue2velvet_spec.cr` + `spec/dataset/hello_card.vue` | сквозной тест на SFC без JS (v-if, v-for+(item,i), :key, v-model, {{ }}) |
+| `src/egui/vue2velour.cr` | модуль: SFC-сплит, мини-парсер шаблона (элементы/атрибуты/текст/комментарии, void-теги, толерантные закрывашки), сериализатор, отчёт |
+| `tools/vue2velour.cr` | CLI: `vue2velour Component.vue [-o DIR]` |
+| `spec/vue2velour_spec.cr` + `spec/dataset/hello_card.vue` | сквозной тест на SFC без JS (v-if, v-for+(item,i), :key, v-model, {{ }}) |
 | `spec/vue_aliases_spec.cr` | спеки фундамента (алиасы) |
-| shard.yml `binaries.vue2velvet` | поставка через carat |
+| shard.yml `binaries.vue2velour` | поставка через carat |
 
 ## Ограничения v1 (зафиксировано, не молчание)
 
@@ -83,4 +84,4 @@ select → combo; hr → separator; progress → progress. Всё без
 - Расширение TAG_MAP по мере роста словаря exml (ul/li, a/img —
   после появления соответствующих элементов, NativeHTML §5.3).
 - `--watch` (hot-reload конвертации) если понадобится.
-- Пакетная конвертация каталога (`vue2velvet src/`).
+- Пакетная конвертация каталога (`vue2velour src/`).

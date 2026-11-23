@@ -36,9 +36,14 @@ module Egui
         StyleProp.new("background", :color, states: true),
         StyleProp.new("background2", :color, states: true),
         StyleProp.new("stroke", :color, states: true),
+        # Container border width (0 = borderless, the iOS look).
+        StyleProp.new("stroke_width", :number, min: 0.0, fallback: 1.0),
         StyleProp.new("selection_fill", :color),
         StyleProp.new("selection_background2", :color),
         StyleProp.new("selection_text", :color),
+        StyleProp.new("shadow.color", :color, states: true),
+        StyleProp.new("shadow.blur", :number, min: 0.0),
+        StyleProp.new("shadow.y", :number),
       ]
     end
 
@@ -59,8 +64,13 @@ module Egui
       # The joined look: one cell per label, no gap between them, every
       # cell as wide as the widest label so segments are even.
       cell_w = sizes.map(&.x).max + pad.horizontal
+      natural_w = cell_w * @labels.size
+      # `width`/`height` overrides stretch the strip; the extra width
+      # distributes EVENLY over the cells (the iOS full-width segmented
+      # — cells stay equal, not packed left).
       rect = ui.allocate_at_least(
-        Vec2.new(cell_w * @labels.size, height))
+        styled_size(Vec2.new(natural_w, height), class_vars, ui, id))
+      cell_w = rect.width / @labels.size if rect.width > natural_w
       rounding = class_vars.rounding_px("rounding", rect, 6.0)
 
       # Linked-button mode: a `stroke` key means the class rule styles
@@ -71,10 +81,13 @@ module Egui
       unless cell_stroke
         # Container capsule behind the cells (macOS paints one bezel; a
         # plain panel-colored host leaves the unselected half invisible).
+        # The stroke width is stylable — `stroke_width: 0` gives the
+        # borderless iOS "strong" segmented.
         ui.painter.rect(rect, rounding,
           class_vars.color("background",
             visuals.button_fill(false, false)),
-          visuals.button_stroke, 1.0,
+          visuals.button_stroke,
+          class_vars.f64("stroke_width", 1.0),
           corners: class_vars.rounding_corners?("rounding", rect))
       end
 
@@ -128,13 +141,20 @@ module Egui
         elsif selected
           # Selected segment: accent-filled, inset a hair inside the
           # container so the capsule's outer rounding stays visible.
+          # `shadow.*` styles the pill (the iOS white-selected look is
+          # a raised white pill over the gray bezel).
           inset = 2.0
+          seg_rounding = {rounding - inset, 0.0}.max
           seg = Rect.from_min_size(
             Pos2.new(cell.left + (i == 0 ? inset : 0.0), cell.top + inset),
             Vec2.new(cell.width - (i == 0 ? inset : 0.0) -
                      (i == @labels.size - 1 ? inset : 0.0),
                      height - 2.0 * inset))
-          ui.painter.rect(seg, {rounding - inset, 0.0}.max,
+          if (s = class_vars.shadow?)
+            ui.painter.box_shadow(seg, s.color, s.blur, seg_rounding,
+              s.spread, s.offset)
+          end
+          ui.painter.rect(seg, seg_rounding,
             class_vars.color("selection_fill", visuals.selection_fill))
         elsif response.hovered?
           ui.painter.rect(cell, rounding,

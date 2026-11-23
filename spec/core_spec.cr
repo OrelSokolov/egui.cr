@@ -3941,7 +3941,10 @@ describe "CalendarPicker" do
     pop_id = Egui::Id.from("popup/calendar_picker/d")
     below = ctx.memory.popup_rects[pop_id].not_nil!
     below.top.should be_close(button.bottom, 0.01)
-    below.height.should be > SCREEN.bottom - button.bottom
+    # popup_rects is the window-clamped (visible) rect; the natural
+    # measured height that drives next frame's flip lives in layer_sizes.
+    natural = ctx.memory.layer_sizes[pop_id].not_nil!
+    natural.y.should be > SCREEN.bottom - button.bottom
 
     # next frame the calendar flips above the button, fully on screen
     draw.call([] of Egui::Event, 0.064)
@@ -4774,6 +4777,43 @@ describe "floating containers are constrained to the screen" do
     above = ctx.memory.popup_rects[Egui::Id.from("popup/cb")].not_nil!
     above.bottom.should be_close(button.top, 0.01)
     above.top.should be >= 0.0
+  end
+
+  it "a popup taller than the window stays inside it" do
+    ctx = Egui::Context.new
+    tiny = Egui::Rect.from_min_size(Egui::Pos2.zero, Egui::Vec2.new(200.0, 120.0))
+    pop_id = Egui::Id.from("popup/cb")
+
+    # a combo whose list is taller than the whole window and fits
+    # neither above nor below its button
+    draw = ->(events : Array(Egui::Event), time : Float64) do
+      ctx.begin_frame(Egui::RawInput.new(tiny, events, time))
+      ui = Egui::Ui.new(ctx, Egui::Id.from("spec"),
+        Egui::Rect.from_min_size(Egui::Pos2.new(10.0, 60.0),
+          Egui::Vec2.new(180.0, 24.0)))
+      Egui::ComboBox.new("cb", "sel",
+        ["a", "b", "c", "d", "e", "f", "g", "h"], 160.0).show(ui) { |_| }
+      ctx.end_frame
+    end
+
+    draw.call([] of Egui::Event, 0.016)
+    button = ctx.memory.widget_rects.values.first
+    center = button.center
+
+    draw.call([Egui::Event.pointer_moved(center),
+      Egui::Event.pointer_pressed(center)], 0.032)
+    draw.call([Egui::Event.pointer_released(center)], 0.048)
+
+    # once measured, the popup parks at the window's top edge — clamped
+    # on every side, never painting past the window
+    3.times { |i| draw.call([] of Egui::Event, 0.064 + i * 0.016) }
+    popup = ctx.memory.popup_rects[pop_id].not_nil!
+    popup.top.should be >= tiny.top
+    popup.bottom.should be <= tiny.bottom
+    popup.left.should be >= tiny.left
+    popup.right.should be <= tiny.right
+    # the unclamped measurement stays honest (it drives the flip logic)
+    ctx.memory.layer_sizes[pop_id].not_nil!.y.should be > tiny.height
   end
 
   it "a modal on a narrow screen is never wider than the screen" do

@@ -1,4 +1,4 @@
-# vue2velvet — the Vue SFC → egui.cr port tool (plans/vue2velvet.md).
+# vue2velour — the Vue SFC → egui.cr port tool (plans/completed/vue2velour.md).
 #
 # The 1:1 half of a Vue port: `<template>` → `.exml`, `<style>` →
 # `.ecss`. The `<script>` half is NEVER translated — by design, not
@@ -30,7 +30,7 @@
 require "../egui"
 
 module Egui
-  module Vue2Velvet
+  module Vue2Velour
     class Result
       getter base : String
       getter exml : String

@@ -47,6 +47,7 @@ require "../capybara/png" # --screenshot PNG encode
 {% if flag?(:darwin) && !flag?(:ios) %}
   require "./objc"
   require "./tray_darwin"
+  require "./motion_darwin"
 {% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
@@ -1237,6 +1238,11 @@ module Egui
                    vsync : Bool = true) : Nil
         # Android stage log: breadcrumbs for `adb logcat -s egui_cr`.
         {% if flag?(:android) %} egui_android_log("run: entered") {% end %}
+        # Device emulation (EGUI_DEVICE / EGUI_DEVICE_TYPE / EGUI_DPR /
+        # EGUI_RETINA / EGUI_ORIENTATION — see egui/display.cr): a mode
+        # forced through the environment overrides the run size below.
+        Egui::Display.load_env
+        width, height = Egui::Display.apply(width, height)
         @@app = app
         @@icon = icon
         @@transparent = transparent
@@ -1305,6 +1311,9 @@ module Egui
           # tray_linux.cr); other platforms keep the port's no-op
           # default.
           Egui::SystemPorts::Tray.use(Driver::DarwinTray.new)
+          # prefers-reduced-motion: NSWorkspace accessibility flag
+          # (driver/motion_darwin.cr) — polled per frame below.
+          Egui::SystemPorts::Motion.use(Driver::DarwinMotion.new)
         {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
         {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
@@ -1663,8 +1672,14 @@ module Egui
           frame_t0 = Time.instant if @@frame_debug
           bt0 = Time.instant # FrameBench "frame" span (see on_frame_inner)
 
-          ppp = dpi_scale.to_f64
+          # Device emulation (egui/display.cr): a forced DPR (EGUI_DPR /
+          # EGUI_RETINA / a device preset) overrides the host's scale.
+          ppp = Egui::Display.dpr || dpi_scale.to_f64
           @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+          # One-shot window snap: the startup size could only guess the
+          # HOST scale — now that sapp reports it, land the mode's
+          # exact pixel footprint (once; see Display#apply_window_size).
+          Egui::Display.apply_window_size if Egui::Display.forced?
           LibEguiCr.set_ppp(@@pixels_per_point.to_f32)
           set_stack_scales
           fb_w = LibEguiCr.sapp_width
@@ -1673,6 +1688,10 @@ module Egui
 
           app = @@app.not_nil!
           app.ctx.pixels_per_point = @@pixels_per_point
+          # prefers-reduced-motion: sync the OS accessibility flag every
+          # frame (SystemPorts::Motion, plans/animations.md Ур.2) — a
+          # mid-run System Settings toggle takes effect at once.
+          app.ctx.reduced_motion = Egui::SystemPorts::Motion.reduced?
           # Texture bookkeeping first (see on_frame): the per-frame
           # update set resets before update/paint can touch textures.
           app.ctx.textures.begin_frame
@@ -2330,8 +2349,12 @@ module Egui
         # at most 1 fps. Skipped ticks do no egui work at all — sokol
         # re-presents the unchanged previous buffer (AppKit still calls
         # drawRect on its ~1 ms timer; the empty pass is its business).
-        # Regaining focus bypasses the gate on the next tick.
-        if @@app && !window_focused?
+        # Regaining focus bypasses the gate on the next tick. Pending
+        # input bypasses it too — same rule as the detached run loop's
+        # `events_n > 0` (wheel-scroll over an unfocused window must
+        # paint immediately, not wait out the 1 Hz deadline; without
+        # this the scroll start stutters for up to a second).
+        if @@app && !window_focused? && @@events.empty?
           done = @@last_frame_done
           return if done && (Time.instant - done) < 1.second
         end
@@ -2465,8 +2488,14 @@ module Egui
           @@dbg_last_entry = now
         end
 
-        ppp = dpi_scale.to_f64
+        # Device emulation (egui/display.cr): a forced DPR (EGUI_DPR /
+        # EGUI_RETINA / a device preset) overrides the host's scale.
+        ppp = Egui::Display.dpr || dpi_scale.to_f64
         @@pixels_per_point = ppp > 0.0 ? ppp : 1.0
+        # One-shot window snap: the startup size could only guess the
+        # HOST scale — now that sapp reports it, land the mode's
+        # exact pixel footprint (once; see Display#apply_window_size).
+        Egui::Display.apply_window_size if Egui::Display.forced?
         set_stack_scales
         fb_w = LibEguiCr.sapp_width
         fb_h = LibEguiCr.sapp_height
@@ -2475,6 +2504,9 @@ module Egui
         # Raster caches (Svg textures — the font-atlas analogue) bake
         # at the physical pixel scale, like AtlasFonts#scale above.
         app.ctx.pixels_per_point = @@pixels_per_point
+        # prefers-reduced-motion: sync the OS accessibility flag every
+        # frame (SystemPorts::Motion, plans/animations.md Ур.2).
+        app.ctx.reduced_motion = Egui::SystemPorts::Motion.reduced?
 
         # On-demand repaint: sokol_app's loop swaps every vsync tick
         # regardless, but an idle frame (no events, no repaint request,

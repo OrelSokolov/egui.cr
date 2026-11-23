@@ -12,6 +12,7 @@ require "set"
 
 require "./egui/math"
 
+require "./egui/display"
 require "./egui/math3d"
 require "./egui/transform"
 require "./egui/driver/base"
@@ -137,6 +138,9 @@ require "./egui/terminal/backend"
 require "./egui/terminal/config"
 require "./egui/terminal/widget"
 require "./egui/ui"
+# Mobile widget set (plans/todo/mobile_widgets.md) — after `ui`: the
+# widget files reopen Egui::Ui for their sugar helpers.
+require "./egui/widgets/mobile"
 require "./egui/app"
 require "./egui/form"
 require "./egui/ecss"

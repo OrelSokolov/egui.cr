@@ -113,9 +113,11 @@ binaries:
   apps/stress_scroll:       {main: examples/stress_scroll.cr}
   apps/search1m:            {main: examples/search1m.cr}
   apps/logs_viewer:         {main: examples/logs_viewer.cr}
+  apps/mobile_gallery:      {main: examples/mobile_gallery.cr}
+  apps/mobile_gallery_exml: {main: examples/mobile_gallery_exml.cr}
 
-  # The Vue SFC port tool (plans/vue2velvet.md) — template+style →
-  # .exml/.ecss, the script half is a report for the Crystal
-  # Component. Text-only tool: needs no windowing, but the shared
-  # `all:` prebuild/link flags apply per the carat contract.
-  apps/vue2velvet:          {main: tools/vue2velvet.cr}
+  # The Vue SFC port tool (plans/completed/vue2velour.md) —
+  # template+style → .exml/.ecss, the script half is a report for the
+  # Crystal Component. Text-only tool: needs no windowing, but the
+  # shared `all:` prebuild/link flags apply per the carat contract.
+  apps/vue2velour:          {main: tools/vue2velour.cr}

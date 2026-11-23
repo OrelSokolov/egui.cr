@@ -607,18 +607,61 @@ module Egui
           Vec2.new(14.0, 14.0)))
     end
 
-    # The settings dropdown: where the panel lives. A check marks the
-    # current dock; picking one re-docks the panel on the next frame.
+    # The settings dropdown: where the panel lives — and the global
+    # device-emulation knobs (egui/display.cr). A check marks the
+    # current choice; picking re-docks the panel / re-fits the window
+    # on the next frame.
     private def render_dock_menu : Nil
       return unless @ctx.popup_open?(DOCK_MENU)
       anchor = @ctx.dropdown_anchor(DOCK_MENU, @dock_rect)
-      @ctx.popup(DOCK_MENU, anchor, width: 150.0) do |ui|
+      @ctx.popup(DOCK_MENU, anchor, width: 210.0) do |ui|
         ui.menu_popup_key = DOCK_MENU
         ui.menu_item("Right", icon: @dock == :right ? :check : nil) do
           @dock = :right
         end
         ui.menu_item("Bottom", icon: @dock == :bottom ? :check : nil) do
           @dock = :bottom
+        end
+        # Device emulation (see egui/display.cr): the EGUI_DEVICE /
+        # EGUI_DEVICE_TYPE / EGUI_DPR / EGUI_ORIENTATION knobs,
+        # editable at runtime — a pick stores the state and re-fits the
+        # live window (Window#set_size).
+        ui.separator
+        ui.label("Device:")
+        ui.menu_item("(none)", icon: Display.device ? nil : :check) do
+          Display.device = nil
+        end
+        Device::ALL.each do |d|
+          ui.menu_item(d.name, icon: Display.device == d ? :check : nil) do
+            Display.device = d
+          end
+        end
+        ui.label("Type:")
+        DeviceType.values.each do |t|
+          ui.menu_item(t.to_s,
+            icon: Display.device.nil? && Display.device_type == t ? :check : nil) do
+            Display.device_type = t
+          end
+        end
+        ui.label("DPR:")
+        ui.menu_item("Auto", icon: Display.dpr ? nil : :check) do
+          Display.dpr = nil
+        end
+        {1.0, 2.0, 3.0}.each do |d|
+          ui.menu_item(d.to_s, icon: Display.dpr == d ? :check : nil) do
+            Display.dpr = d
+          end
+        end
+        ui.label("Orientation:")
+        ui.menu_item("Auto",
+          icon: Display.orientation_override ? nil : :check) do
+          Display.orientation = nil
+        end
+        Orientation.values.each do |o|
+          ui.menu_item(o.to_s,
+            icon: Display.orientation_override == o ? :check : nil) do
+            Display.orientation = o
+          end
         end
       end
     end
