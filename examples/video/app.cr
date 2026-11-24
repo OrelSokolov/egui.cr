@@ -2,14 +2,16 @@
 # at the bottom — YouTube-style layout:
 #
 #   ──────────────── full-window-width seek strip ────────────────
-#   thumb · file name (elides) · Open…  ⇄  ⏪10 ⏯ ⏩10 ⏹  ⇄  codec info · time · volume
+#   thumb · Open…        ⇄   ⟳ ⏪10 ⏯ ⏩10 ⏹   ⇄        time · volume
+#   file name (elides) ······························ codec info (elides)
 #
 # The seek strip is a thin line along the top edge of the bar that
 # doubles its height and knob on hover; drag previews the position and
 # commits on release (continuous seeking would decode-forward on every
-# mouse move). The controls row shrinks only its flexible parts — the
-# file name on the left and the codec info on the right elide first,
-# then the volume slider, then the time — so the buttons never fall off
+# mouse move). The file name and the codec info live on their OWN line
+# at the very bottom of the bar — below every control. The rows shrink
+# only their flexible parts — the texts elide first, then the volume
+# slider, then the time — so the buttons never fall off
 # the window edge. Space toggles playback; files can be dropped onto
 # the window.
 
@@ -124,7 +126,7 @@ class VideoApp < Egui::App
 
     portrait = Egui::SystemPorts::Screen.orientation ==
                Egui::Orientation::Portrait
-    ctx.bottom_panel(height: portrait ? MOBILE_BAR_H : 88.0,
+    ctx.bottom_panel(height: portrait ? MOBILE_BAR_H : DESKTOP_BAR_H,
       resizable: false, fill: BAR_BG) do |ui|
       player_bar(ui, ctx, portrait)
     end
@@ -241,6 +243,10 @@ class VideoApp < Egui::App
 
   # высота интерактивной зоны seek-полосы (визуально тоньше)
   SEEK_STRIP_H = 18.0
+  # десктопный бар: seek-полоса + строка контролов + нижняя строка
+  # (имя файла слева, инфо о кодеке справа — ПОД всеми элементами)
+  DESKTOP_BAR_H = 104.0
+  DESK_ROW_H    = 56.0
 
   private def player_bar(ui : Egui::Ui, ctx : Egui::Context,
                          portrait : Bool) : Nil
@@ -308,10 +314,11 @@ class VideoApp < Egui::App
     # панели инсетят контент на window_padding — компенсируем, чтобы бар
     # жил на полном прямоугольнике панели (пиксель в пиксель с краем окна)
     pad = ui.style.spacing.window_padding
-    allocated = ui.allocate_space(Egui::Vec2.new(ui.available_width, 88.0))
+    allocated = ui.allocate_space(Egui::Vec2.new(ui.available_width,
+      DESKTOP_BAR_H))
     rect = Egui::Rect.from_min_size(
       Egui::Pos2.new(allocated.left - pad.x, allocated.top - pad.y),
-      Egui::Vec2.new(allocated.width + 2 * pad.x, 88.0))
+      Egui::Vec2.new(allocated.width + 2 * pad.x, DESKTOP_BAR_H))
     pa = ui.painter
     pa.rect(rect, 0.0, fill: BAR_BG)
 
@@ -327,21 +334,61 @@ class VideoApp < Egui::App
     begin
       row_rect = Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.left + 16.0, rect.top + SEEK_STRIP_H),
-        Egui::Vec2.new({rect.width - 32.0, 0.0}.max, 88.0 - SEEK_STRIP_H))
+        Egui::Vec2.new({rect.width - 32.0, 0.0}.max, DESK_ROW_H))
       row = ui.child_ui(row_rect, Egui::Id.from("vbar/row"),
         layout: Egui::Layout.left_to_right)
       row.wrap_x = false
       row.clip = row_rect.intersect(ui.clip)
       row.seed_row_height(row_rect.height)
       controls_row(row, ctx)
+
+      # нижняя строка ПОД всеми элементами: имя файла слева, инфо о
+      # кодеке справа
+      line_rect = Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.left + 16.0,
+          rect.top + SEEK_STRIP_H + DESK_ROW_H),
+        Egui::Vec2.new({rect.width - 32.0, 0.0}.max,
+          DESKTOP_BAR_H - SEEK_STRIP_H - DESK_ROW_H))
+      line = ui.child_ui(line_rect, Egui::Id.from("vbar/line"),
+        layout: Egui::Layout.left_to_right)
+      line.wrap_x = false
+      line.clip = line_rect.intersect(ui.clip)
+      line.seed_row_height(line_rect.height)
+      info_line(line)
     ensure
       spacing.item_spacing = saved_spacing
     end
   end
 
-  # Транспорт (общий для desktop и mobile): rewind play fwd rotate stop.
+  # Нижняя строка бара: имя файла слева, инфо о носителе справа. Каждой
+  # половине — своя ширина с элайдом; имени гарантированы 40% строки.
+  private def info_line(ui : Egui::Ui) : Nil
+    p = @player
+    ui.painter.clip = ui.clip
+    name = p.open? ? File.basename(p.path.to_s) : "No file"
+    info_txt = media_info
+    line_w = ui.available_width
+    info_w = ui.fonts.measure(info_txt, 12.0).x
+    name_w = {line_w - info_w - 16.0, line_w * 0.4}.max
+    info_w = {info_w, line_w - name_w - 16.0}.min.clamp(0.0, info_w)
+    t(ui, name, size: 15.0, w: name_w)
+    ui.allocate_space(Egui::Vec2.new({line_w - name_w - info_w, 0.0}.max, 0.0))
+    if info_w >= 1.0
+      t(ui, info_txt, size: 12.0, color: MUTED, w: info_w, align: "r")
+    end
+  end
+
+  # Транспорт (общий для desktop и mobile): слева от play — replay
+  # (поворот) и rewind, справа — forward и stop.
   private def transport(ui : Egui::Ui, ctx : Egui::Context) : Nil
     p = @player
+    # ручной поворот содержимого: цикл 0° → 90° → 180° → 270°
+    rot_name = {"rotate_cw", "rotate_ccw", "rotate_cw", "rotate_ccw"}[@rot % 2]
+    ibtn(ui, ctx, "vbar/rot", rot_name,
+      tint: @rot.zero? ? ICON_FG : ACCENT) do
+      @rot = (@rot + 1) % 4
+    end
+    gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/back", "rewind") do
       p.seek({p.position - 10.0, 0.0}.max) if p.open?
     end
@@ -352,98 +399,63 @@ class VideoApp < Egui::App
       p.seek({p.position + 10.0, p.duration}.min) if p.open? && p.duration > 0
     end
     gap(ui, 12.0)
-    # ручной поворот содержимого: цикл 0° → 90° → 180° → 270°
-    rot_name = {"rotate_cw", "rotate_ccw", "rotate_cw", "rotate_ccw"}[@rot % 2]
-    ibtn(ui, ctx, "vbar/rot", rot_name,
-      tint: @rot.zero? ? ICON_FG : ACCENT) do
-      @rot = (@rot + 1) % 4
-    end
-    gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/stop", "stop") do
       p.stop
       @status = "Stopped."
     end
   end
 
-  # Одна строка: слева миниатюра + имя файла + Open…, транспорт СТРОГО по
-  # центру окна, справа инфо о кодеке + время + громкость. Обе текстовые
-  # части получают по отдельной половине бара и клипятся гораздо позже;
-  # при сужении окна гибкие части уступают в порядке: имя → инфо (элайд)
-  # → громкость → время — кнопки и центровка транспорта не меняются.
+  # Средняя строка: слева миниатюра + Open…, транспорт СТРОГО по центру
+  # окна, справа время + громкость. Имя файла и инфо о кодеке живут в
+  # ОТДЕЛЬНОЙ нижней строке (#info_line) — под всеми элементами бара.
+  # При сужении окна уступают только гибкие части (громкость → время) —
+  # кнопки и центровка транспорта не меняются.
   private def controls_row(ui : Egui::Ui, ctx : Egui::Context) : Nil
     p = @player
     ui.painter.clip = ui.clip
 
     time_txt = "#{fmt_time(p.position)} / #{fmt_time(p.duration)}"
     time_w = ui.fonts.measure(time_txt, 12.0).x
-    info_txt = media_info
-    info_w = ui.fonts.measure(info_txt, 13.0).x
     transport_w = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0 + 12.0 + 34.0
     avail = ui.available_width
-    # центр playround-кнопки = центр окна (кластер несимметричен:
-    # слева от play 46px, справа 92px из-за stop)
-    t_start = avail / 2.0 - 66.0
+    # центр playround-кнопки = центр окна: слева от play 112px
+    # (replay 34 + gap + rewind 34 + gap), поэтому смещение 112 + 20
+    t_start = avail / 2.0 - 112.0
 
-    # левая группа не заходит за транспорт (запас 8px); слишком узкое
-    # имя прячем целиком
+    # левая группа (миниатюра + две кнопки) не заходит за транспорт
     budget = {t_start - 8.0, 24.0}.max
     thumb_w = {thumb_width, budget}.min
-    title_w = {budget - thumb_w - 12.0 - 12.0 - 34.0 - 34.0, 0.0}.max
-    title_w = 0.0 if title_w < 40.0
 
-    # правый кластер: если не влезает — инфо элайдится первыми, затем
-    # сжимается громкость, затем прячется время; совсем узкое инфо
-    # прячется целиком
+    # правый кластер: если не влезает — сжимаем громкость, потом прячем время
     vol_w = 120.0
     show_time = true
-    show_info = true
     max_right = avail - (t_start + transport_w + 8.0)
-    if 10.0 + info_w + 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
-      vol_w = {max_right - 10.0 - info_w - 10.0 - time_w - 8.0 - 34.0 - 4.0,
-               40.0}.max
+    if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+      vol_w = {max_right - 10.0 - time_w - 8.0 - 34.0 - 4.0, 40.0}.max
       vol_w = {vol_w, 120.0}.min
-      if 10.0 + info_w + 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+      if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
         show_time = false
-        vol_w = {max_right - 10.0 - info_w - 8.0 - 34.0 - 4.0, 40.0}.max
+        vol_w = {max_right - 8.0 - 34.0 - 4.0, 40.0}.max
         vol_w = {vol_w, 120.0}.min
-        if 10.0 + info_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
-          show_info = false
-        end
       end
     end
-    time_part = show_time ? 10.0 + time_w + 8.0 : 8.0
-    info_w = if show_info
-      {info_w, max_right - time_part - 34.0 - 4.0 - vol_w}.min.clamp(0.0, info_w)
-    else
-      0.0
-    end
-    right_w = (show_info ? info_w + time_part : time_part) + 34.0 + 4.0 + vol_w
+    right_w = (show_time ? 10.0 + time_w + 8.0 : 8.0) + 34.0 + 4.0 + vol_w
 
     thumb(ui, thumb_w)
-    gap(ui, 12.0)
-    if title_w >= 1.0
-      t(ui, p.open? ? File.basename(p.path.to_s) : "No file",
-        size: 15.0, w: title_w)
-    end
     gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
     ibtn(ui, ctx, "vbar/open_multi", "layers", tint: ICON_FG) { open_dialog_multiple }
 
     # пружина до строго центрального транспорта (кластер несимметричен:
-    # слева от play 46px, справа 126px — play остаётся в центре окна)
+    # слева от play 112px, справа 80px — play остаётся в центре окна)
     ui.allocate_space(Egui::Vec2.new(
-      {t_start - (thumb_w + 12.0 + title_w + 12.0 + 34.0 + 34.0), 0.0}.max,
-      0.0))
+      {t_start - (thumb_w + 12.0 + 34.0 + 34.0), 0.0}.max, 0.0))
     transport(ui, ctx)
 
     # правый кластер прижат к правому краю
     ui.allocate_space(Egui::Vec2.new(
       {avail - right_w - (t_start + transport_w), 0.0}.max, 0.0))
-    if show_info && info_w >= 1.0
-      t(ui, info_txt, size: 13.0, color: MUTED, w: info_w)
-    end
     if show_time
-      gap(ui, 10.0)
       t(ui, time_txt, size: 12.0, color: MUTED, w: time_w + 1.0, align: "r")
     end
     gap(ui, 8.0)
