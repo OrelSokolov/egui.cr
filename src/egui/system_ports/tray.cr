@@ -115,18 +115,40 @@ module Egui
         end
       end
 
+      # Clicks that arrived since the last take — zeroing read, safe
+      # from any thread. The driver's produce loop consumes this as
+      # "a tray click landed between frames, produce now": a tray
+      # click is user input, so it bypasses the unfocused idle gate
+      # (like any other input event). Zeroing semantics keep the loop
+      # honest for apps that never drain take_clicks.
+      def self.take_arrivals : Int32
+        @@lock.synchronize do
+          n = @@arrivals
+          @@arrivals = 0
+          n
+        end
+      end
+
       # Implementations report menu-item activations here (any thread).
+      # The enqueue also knocks on the backend doorbell: clicks arrive
+      # on the tray's own thread BETWEEN frames, and an unfocused or
+      # minimized window otherwise paints at its idle rate (1 fps) —
+      # the wake returns the produce loop from its blocking doorbell
+      # read; take_arrivals then marks the frame as due immediately.
       def self.enqueue_click(id : Int32) : Nil
         handler = @@lock.synchronize do
           @@pending << id
+          @@arrivals += 1
           @@handler
         end
         # Outside the lock: a handler that drains take_clicks would
         # otherwise deadlock against itself.
         handler.try(&.call(id))
+        Egui::Driver::Base.current.try &.wake
       end
 
       @@pending = [] of Int32
+      @@arrivals = 0
       @@handler : Proc(Int32, Nil)?
       @@lock = Thread::Mutex.new
 

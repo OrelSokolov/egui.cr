@@ -1,90 +1,89 @@
-# System tray example: NSStatusItem with a native menu (macOS),
-# Ayatana AppIndicator + GTK menu (Linux).
+# System tray demo — the SystemPorts::Tray port on every platform
+# where a backend wires it (macOS: NSStatusItem; Windows:
+# Shell_NotifyIconW; Linux: opt-in `require "egui/driver/tray_linux"`).
 #
-# The tray surface is created from `update` (the GUI thread) on the
-# first frame; menu clicks are drained through `take_clicks` — the
-# immediate-mode consumption style. The window mirrors the tray state:
-# clicking "Ping" bumps the counter, the checkable item toggles, the
-# submenu item reports which branch fired.
+# The tray icon is created from update (the GUI thread); every click
+# on the icon opens the menu, and item activations arrive between
+# frames through take_clicks (on Windows the menu runs on the tray's
+# own message-loop thread — same shape as the Linux GTK thread).
+#
+# Items to try: plain, checkable (model toggles, menu shows the new
+# state on the next open), a separator, a submenu (parent added
+# BEFORE its children), a dynamically re-titled item and Quit.
 
 require "../src/egui/driver_selector"
 
+# Linux's tray surface is opt-in (macOS/Windows are wired by sokol).
 {% if flag?(:linux) && !flag?(:android) %}
-  # Linux tray: Ayatana AppIndicator (SNI/D-Bus) + GTK menu — opt-in
-  # require, links GTK; other apps keep the headless no-op port.
   require "../src/egui/driver/tray_linux"
 {% end %}
 
 class TrayApp < Egui::App
-  ITEM_PING     = 1
-  ITEM_CHECK    = 2
-  ITEM_SUB_A    = 3
-  ITEM_SUB_B    = 4
-  SEP_MAIN      = 10
-  ITEM_QUIT     = 11
+  ID_SHOW    = 1
+  ID_TOGGLE  = 2
+  ID_SEP     = 3
+  ID_SUBMENU = 10
+  ID_SUB_A   = 11
+  ID_SUB_B   = 12
+  ID_RENAME  = 20
+  ID_QUIT    = 30
 
   @created = false
-  @checked = false
-  @pings = 0
-  @last : String? = nil
+  @last = "пока пусто"
+  @toggled = true
+  @rename_count = 0
 
   def update(ctx : Egui::Context) : Nil
     unless @created
       @created = true
       tray = Egui::SystemPorts::Tray
       if tray.supported?
-        icon = begin
-          Egui::SystemPorts::Tray::IconSource.png(File.read("assets/icon.png").to_slice)
-        rescue
-          nil
-        end
-        tray.create(icon: icon, tooltip: "egui.cr tray")
-        tray.add_item(ITEM_PING, "Ping")
-        tray.add_item(ITEM_CHECK, "Checkable", checkable: true)
-        tray.add_separator(SEP_MAIN)
-        # Submenu: parent_id nests the item under that menu item.
-        tray.add_item(ITEM_SUB_A, "Submenu A", parent_id: ITEM_PING)
-        tray.add_item(ITEM_SUB_B, "Submenu B", parent_id: ITEM_PING)
-        tray.add_item(ITEM_QUIT, "Quit")
+        bytes = File.read("#{__DIR__}/../assets/icon.png").to_slice
+        tray.create(Egui::SystemPorts::Tray::IconSource.png(bytes),
+          tooltip: "egui-cr tray demo")
+        tray.add_item(ID_SHOW, "Показать счётчик кликов")
+        tray.add_item(ID_TOGGLE, "Тумблер", checkable: true, checked: @toggled)
+        tray.add_separator(ID_SEP)
+        tray.add_item(ID_SUBMENU, "Подменю →")
+        tray.add_item(ID_SUB_A, "Внутри A", parent_id: ID_SUBMENU)
+        tray.add_item(ID_SUB_B, "Внутри B", parent_id: ID_SUBMENU)
+        tray.add_item(ID_RENAME, "Переименуй меня")
+        tray.add_separator(ID_SEP + 1)
+        tray.add_item(ID_QUIT, "Выход")
       end
     end
 
-    # Drain native menu clicks (they queued up between frames).
+    # Drain menu activations (they fire between frames, possibly on
+    # the tray thread — the queue is mutex-guarded).
     Egui::SystemPorts::Tray.take_clicks.each do |id|
       case id
-      when ITEM_PING  then @pings += 1; @last = "Ping"
-      when ITEM_CHECK then @checked = !@checked; @last = "Checkable = #{@checked}"
-      when ITEM_SUB_A then @last = "Submenu A"
-      when ITEM_SUB_B then @last = "Submenu B"
-      when ITEM_QUIT  then Egui::SystemPorts::Quit.quit!
+      when ID_SHOW    then @last = "клик: показать (#{@rename_count})"
+      when ID_TOGGLE  then @toggled = !@toggled
+      when ID_SUB_A   then @last = "клик: подменю A"
+      when ID_SUB_B   then @last = "клик: подменю B"
+      when ID_RENAME
+        @rename_count += 1
+        @last = "клик: переименован (#{@rename_count})"
+        # Mutating the model re-renders the menu on its next open.
+        Egui::SystemPorts::Tray.add_item(ID_RENAME,
+          "Переименуй меня ×#{@rename_count}")
+      when ID_QUIT    then Egui::SystemPorts::Quit.quit!
       end
     end
 
-    ctx.central_panel("demo") do |ui|
-      ui.heading("System tray")
-      unless Egui::SystemPorts::Tray.supported?
-        ui.label("Tray is not supported on this platform/backend.")
-        next
-      end
-      {% if flag?(:darwin) %}
-        ui.label("The menu lives in the macOS status bar — open it from there.")
-      {% else %}
-        ui.label("The menu lives in the system tray (StatusNotifier host: KDE/XFCE,")
-        ui.label("GNOME needs the AppIndicator extension).")
-      {% end %}
-      ui.separator
-      ui.label("Pings: #{@pings}")
-      ui.label("Checkable: #{@checked}")
-      ui.label("Last click: #{@last || "—"}")
-      ui.separator
-      if ui.button("Add one more Ping entry").clicked?
-        Egui::SystemPorts::Tray.add_item(ITEM_PING + 100, "Ping ##{@pings + 1}")
-      end
-      if ui.button("Quit from the window too").clicked?
-        Egui::SystemPorts::Quit.quit!
+    ctx.window("Tray", Egui::Pos2.new(40.0, 40.0), width: 420.0) do |ui|
+      if Egui::SystemPorts::Tray.supported?
+        ui.heading("Системный трей")
+        ui.label("иконка в трее — клик открывает меню")
+        ui.separator
+        ui.label("последнее действие: #{@last}")
+        ui.label("тумблер из меню: #{@toggled ? "вкл" : "выкл"}")
+      else
+        ui.heading("Трей не поддержан на этой платформе")
+        ui.label("(headless/no-op порт: supported? = false)")
       end
     end
   end
 end
 
-Egui.run(TrayApp.new, title: "egui-cr — tray", width: 420, height: 220)
+Egui.run(TrayApp.new, title: "egui-cr — tray", inspector: :hidden)

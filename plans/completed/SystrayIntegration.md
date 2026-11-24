@@ -3,8 +3,23 @@
 > **Статус: macOS сделан** (`src/egui/driver/tray_darwin.cr`, вшит в
 > драйвер). **Linux сделан** (`src/egui/driver/tray_linux.cr` — Ayatana
 > AppIndicator + GTK меню на выделенном pthread с gtk_main, opt-in
-> `require "egui/driver/tray_linux"`). Windows — не начат (донор:
-> `adapters/windows/tray.cr`). Источник — рабочая реализация в
+> `require "egui/driver/tray_linux"`). **Windows сделан**
+> (`src/egui/driver/tray_windows.cr` — Shell_NotifyIconW +
+> TrackPopupMenu, вшит в драйвер по `flag?(:win32)`); донор
+> `~/positron.cr/` удалён с диска — реализация с нуля против того же
+> Win32-набора (см. Фазу 3 и шапку файла драйвера). Отклонение от
+> плана: на отсоединённом цикле sokol качает `PeekMessage` на C
+> render-потоке, а `update` живёт на main-потоке Crystal — сообщения
+> окна достаются только создавшему его потоку, поэтому трей владеет
+> выделенным Crystal-потоком с `GetMessage` (форма tray_linux), а не
+> окном на sokol-потоке. Работает при обоих вариантах цикла
+> (`EGUI_RENDER_THREAD=0` и 1). Все три платформы: клик из потока
+> трея стучит в дверной колокольчик —
+> `SystemPorts::Tray.enqueue_click` вызывает
+> `Driver::Base.current.wake` (прецедент — `system_ports/dialog.cr`),
+> иначе unfocused-окно с idle-гейтом 1 fps не перерисовалось бы по
+> клику в трее.
+> Источник изначального плана — рабочая реализация в
 > `~/positron.cr/` (портирована с getlantern/systray и её форка
 > OrelSokolov/systray). Ниже — инвентаризация донора, целевой дизайн
 > под паттерн `SystemPorts` и фазами, с рисками по платформам.
