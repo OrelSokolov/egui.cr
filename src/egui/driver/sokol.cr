@@ -868,6 +868,9 @@ module Egui
       @@dbg_beat : Float64 = 0.0
       @@dbg_moves = 0
       @@dbg_last_entry : Float64 = 0.0
+      # EGUI_SCROLL_DEBUG: wall clock of the last MOUSE_SCROLL event
+      # (inter-event gap in the log lines).
+      @@scroll_dbg_last : Float64 = 0.0
 
       # Seconds on the debug clock (since @@dbg_t0).
       private def self.dbg_now : Float64
@@ -2371,6 +2374,14 @@ module Egui
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
           # is positive = content scrolls down → negate.
+          puts "SCROLL sy=#{sy} sx=#{sx}"
+          if ENV["EGUI_SCROLL_DEBUG"]?
+            now = dbg_now
+            gap = now - (@@scroll_dbg_last || 0.0)
+            STDERR.puts "[scroll] %8.3f sy=%+.4f sx=%+.4f gap=%.1fms" %
+              {now, sy, sx, gap * 1000.0}
+            @@scroll_dbg_last = now
+          end
           @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
         when PINCH
           # The shim's touch pinch mapping: mx/my = the two-finger

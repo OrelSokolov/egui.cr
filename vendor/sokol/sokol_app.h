@@ -1603,6 +1603,11 @@ enum {
     SAPP_MODIFIER_CTRL  = 0x2,      // left or right control key
     SAPP_MODIFIER_ALT   = 0x4,      // left or right alt key
     SAPP_MODIFIER_SUPER = 0x8,      // left or right 'super' key
+    // egui-cr patch: MOUSE_SCROLL came from a precise-delta source
+    // (macOS trackpad / touchpad) — fractional pixel deltas, the OS
+    // runs its own momentum. Consumed by the driver, never surfaced in
+    // the app-visible modifiers.
+    SAPP_MODIFIER_EGUI_PRECISE_SCROLL = 0x10,
     SAPP_MODIFIER_LMB   = 0x100,    // left mouse button
     SAPP_MODIFIER_RMB   = 0x200,    // right mouse button
     SAPP_MODIFIER_MMB   = 0x400,    // middle mouse button
@@ -6724,6 +6729,12 @@ static void _sapp_gl_make_current(void) {
         if ((_sapp_absf(dx) > 0.0f) || (_sapp_absf(dy) > 0.0f)) {
             _sapp_init_event(SAPP_EVENTTYPE_MOUSE_SCROLL);
             _sapp.event.modifiers = _sapp_macos_mods(event);
+            if (event.hasPreciseScrollingDeltas) {
+                // egui-cr patch: mark the event precise (fractional pixel
+                // deltas; the OS momentum drives this stream) so the
+                // driver/app can skip its own kinetic extrapolation.
+                _sapp.event.modifiers |= SAPP_MODIFIER_EGUI_PRECISE_SCROLL;
+            }
             _sapp.event.scroll_x = dx;
             _sapp.event.scroll_y = dy;
             _sapp_call_event(&_sapp.event);

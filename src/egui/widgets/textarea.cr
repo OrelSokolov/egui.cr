@@ -276,8 +276,14 @@ module Egui
         memory.data.get_f64(vel_id, 0.0),
         memory.scroll_history(scroll_id))
       if memory.active_scroll_area? == scroll_id && !input.scroll.y.zero?
-        kin.input(input.scroll.y * style.scroll_speed, input.time,
-          max_offset)
+        if input.scroll_precise?
+          # Trackpad precise stream: direct application, no kinetic
+          # extrapolation (see KineticScroller#direct).
+          kin.direct(input.scroll.y * style.scroll_speed, max_offset)
+        else
+          kin.input(input.scroll.y * style.scroll_speed, input.time,
+            max_offset)
+        end
       elsif input.touch_pointer? && !memory.long_press_active? &&
             response.dragged?
         # Finger drag = kinetic scroll (Android): the pointer follows
