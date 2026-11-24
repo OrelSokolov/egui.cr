@@ -6894,9 +6894,29 @@ void egui_cr_set_decorations(int decorated) {
     LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     style = decorated ? (style | chrome) : (style & ~chrome);
     SetWindowLongPtrW(hwnd, GWL_STYLE, style);
-    // SWP_FRAMECHANGED re-evaluates the non-client area; keep pos/size.
-    SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    // Re-fit the OUTER rect to the NEW styles while keeping the client
+    // size. A bare SWP_FRAMECHANGED style strip leaves the DWM redirect
+    // surface at the old decorated outer size (832x678 for an 816x639
+    // client): presents then map the surface's bottom GL rows into the
+    // client — the whole frame rides ~39px up (the exact caption height)
+    // and the caption itself lands off-window (invisible chrome, clicks
+    // offset by the same amount). An explicit FRAMECHANGED resize forces
+    // the surface to re-allocate at the client size. Skipped while
+    // zoomed: SetWindowPos sizing on a maximized window breaks the
+    // maximize state, and a maximized window owns its size anyway.
+    if (!IsZoomed(hwnd)) {
+        RECT wr;
+        GetClientRect(hwnd, &wr); // client size to preserve
+        AdjustWindowRectEx(&wr, (DWORD)style, FALSE,
+                           (DWORD)GetWindowLongPtrW(hwnd, GWL_EXSTYLE));
+        SetWindowPos(hwnd, NULL, 0, 0,
+                     wr.right - wr.left, wr.bottom - wr.top,
+                     SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    } else {
+        SetWindowPos(hwnd, NULL, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER |
+                     SWP_FRAMECHANGED);
+    }
 }
 
 #elif defined(__APPLE__) && !defined(SH_IOS)
