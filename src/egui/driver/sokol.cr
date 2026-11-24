@@ -1806,7 +1806,15 @@ module Egui
           return true unless @@events.empty?
           return true if app.ctx.needs_repaint?
           return true if app.ctx.textures.pending_destroys?
-          return true if Egui::SystemPorts::AsyncDialogs.take_delivered > 0
+          # Async completions between frames (dialogs, HTTP fetch
+          # fibers, MVC request fibers): their callbacks already ran
+          # and only bumped the delivered counters — the wake alone
+          # re-checks this predicate, the counters are what forces the
+          # produce. Same sum the legacy on_frame pump consumes (see
+          # on_frame_inner).
+          return true if Egui::SystemPorts::AsyncDialogs.take_delivered +
+                         Egui::Http.take_delivered +
+                         Egui::Mvc.take_delivered > 0
           # Undrained system events (rotation…) — the app drains them
           # from update, so the frame that follows their arrival must
           # be full.
