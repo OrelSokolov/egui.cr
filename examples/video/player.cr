@@ -196,8 +196,12 @@ class VideoPlayer
   private def audio_clock : Float64
     ring = @ring
     return @shown_pts unless ring
-    @a_base_pts +
-      (ring.consumed_frames - @a_base_consumed).to_f64 / @audio_rate
+    consumed = ring.consumed_frames
+    # A fresh ring (reopen) starts at 0 while the anchor still holds the
+    # previous session's count — the UInt64 delta would underflow. Clamp;
+    # #play re-anchors the clock before the device runs.
+    delta = consumed >= @a_base_consumed ? consumed - @a_base_consumed : 0_u64
+    @a_base_pts + delta.to_f64 / @audio_rate
   end
 
   # Current playback position in seconds (audio clock while playing with
@@ -604,6 +608,10 @@ class VideoPlayer
     @audio_rate = 0
     @audio_channels = 0
     @audio_codec = nil
+    # the clock anchor rides the ring — a fresh ring starts at 0, a stale
+    # anchor would underflow the consumed-frames delta (#audio_clock)
+    @a_base_pts = 0.0
+    @a_base_consumed = 0_u64
   end
 
   # Called every UI frame while a file is open. Audio mode: feed the

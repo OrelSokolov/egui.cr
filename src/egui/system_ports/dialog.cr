@@ -189,7 +189,14 @@ module Egui
           req.done = true
           @@pending.delete(req)
           @@delivered += 1
-          req.complete
+          begin
+            req.complete
+          rescue ex : Exception
+            # on_done runs app code (open → play …) — a crash here must
+            # reach the frame-path overlay (CrashReport), not die with a
+            # bare stderr line: fibers don't propagate to their spawner.
+            Egui::CrashReport.capture(ex)
+          end
           Egui::Driver::Base.current.try &.wake
         end
         req
@@ -212,7 +219,13 @@ module Egui
         req.done = true
         @@pending.delete(req)
         @@delivered += 1
-        req.complete
+        begin
+          req.complete
+        rescue ex : Exception
+          # Same contract as the worker fiber: on_done is app code, and
+          # the backend pumps run OUTSIDE the frame's update rescue.
+          Egui::CrashReport.capture(ex)
+        end
       end
 
       # Count an out-of-band port delivery — a completion that ran

@@ -5,9 +5,9 @@
 # backend/sokol_shim.c, which invoke static helpers on
 # com.eguicr.ime.EguiCrActivity. Results the OS delivers asynchronously on
 # the Java UI thread (SAF picker via onActivityResult, MessageBox confirm
-# buttons, clipboard changes) land in a mutex ring that #pump — wired into
-# Sokol#on_frame next to the IME drain — translates back into port
-# completions between frames.
+# buttons, clipboard changes, orientation changes) land in a mutex ring
+# that #pump — wired into Sokol#on_frame next to the IME drain —
+# translates back into port completions between frames.
 #
 # Headless/desktop builds compile the constants only: every port file
 # reaches this module behind `flag?(:android)` branches.
@@ -171,10 +171,11 @@ module Egui
           mimes.size == 1 ? mimes.first : "*/*"
         end
 
-        # Drain result records (SAF picks, confirm answers) queued by the
-        # Java UI thread. Called from Sokol#on_frame BEFORE the idle check
-        # so a completion always forces a full frame; the callbacks run
-        # between frames, like the async-dialog fiber deliveries.
+        # Drain result records (SAF picks, confirm answers, orientation
+        # changes) queued by the Java UI thread. Called from Sokol#on_frame
+        # BEFORE the idle check so a completion always forces a full frame;
+        # the callbacks run between frames, like the async-dialog fiber
+        # deliveries.
         def self.pump : Nil
           recs = Pointer(LibAndroidSys::SysRec).malloc(16)
           while (n = LibAndroidSys.sys_pop(recs, 16)) > 0
@@ -191,6 +192,14 @@ module Egui
                   @@confirm_cb = nil
                   AsyncDialogs.note_delivered
                   cb.call(r.value == 1)
+                end
+              when 3 # Screen orientation (onConfigurationChanged)
+                orientation = r.value == 2 ? Orientation::Landscape
+                                           : Orientation::Portrait
+                unless SystemPorts::Screen.orientation == orientation
+                  SystemPorts::Screen.orientation = orientation
+                  AsyncDialogs.note_delivered # force a frame to drain it
+                  Events.enqueue(Events::RotationChanged.new(orientation))
                 end
               end
             end

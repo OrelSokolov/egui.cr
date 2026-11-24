@@ -383,7 +383,7 @@ lib LibEguiCr
     cmat : Float32*, range : Float32*)
   fun pkt_video = egui_cr_pkt_video(x : Float32, y : Float32, w : Float32,
     h : Float32, cx : Float32, cy : Float32, cw : Float32, ch : Float32,
-    vid : UInt32)
+    vid : UInt32, rot : Int32)
   fun sgl_bind_texture = egui_cr_sgl_texture(view_id : UInt32)
   fun sgl_bind_texture_nearest = egui_cr_sgl_texture_nearest(view_id : UInt32)
   fun sgl_enable_texture = egui_cr_sgl_enable_texture
@@ -1068,6 +1068,17 @@ module Egui
         def dpi_scale : Float64
           Sokol.dpi_scale.to_f64
         end
+
+        # The window aspect as the orientation answer — the same
+        # derivation #sync_orientation records on every RESIZED (a
+        # mobile bridge's recorded report wins over this; see
+        # SystemPorts::Screen.orientation).
+        def orientation : Egui::Orientation?
+          w = LibEguiCr.sapp_width
+          h = LibEguiCr.sapp_height
+          return nil if w <= 0 || h <= 0
+          w >= h ? Egui::Orientation::Landscape : Egui::Orientation::Portrait
+        end
       end
 
       # System port Clipboard → sokol_app set/get clipboard string. The
@@ -1649,6 +1660,10 @@ module Egui
           return true if app.ctx.needs_repaint?
           return true if app.ctx.textures.pending_destroys?
           return true if Egui::SystemPorts::AsyncDialogs.take_delivered > 0
+          # Undrained system events (rotation…) — the app drains them
+          # from update, so the frame that follows their arrival must
+          # be full.
+          return true if Egui::SystemPorts::Events.pending?
           # Composited scroll: the render thread applied deltas A has
           # not adopted — produce a catch-up frame (clear-on-read).
           return true if @@composited && LibEguiCr.scroll_dirty != 0
@@ -2331,8 +2346,13 @@ module Egui
           end
         when RESIZED
           # screen_rect is rebuilt from sapp_width/height each active
-          # frame; the event just marks the frame non-idle.
+          # frame; the event just marks the frame non-idle. The aspect
+          # crossing (portrait ↔ landscape) is the desktop's rotation
+          # event — synthesized here so the Events port works on every
+          # platform; mobile bridges report the OS's exact value
+          # through their pumps instead.
           @@events << Egui::Event.new(:window_resized)
+          sync_orientation
         when FOCUSED
           @@focused = true
           # no-op otherwise — the IME state was reset on the matching
@@ -2357,6 +2377,21 @@ module Egui
         when RESTORED
           @@iconified = false
         end
+      end
+
+      # Re-derive the Screen orientation from the window aspect; the
+      # portrait ↔ landscape crossing enqueues a RotationChanged (the
+      # first report only records state — no event for "initial").
+      private def self.sync_orientation : Nil
+        w = LibEguiCr.sapp_width
+        h = LibEguiCr.sapp_height
+        return if w <= 0 || h <= 0
+        orientation = w >= h ? Egui::Orientation::Landscape
+                             : Egui::Orientation::Portrait
+        return if Egui::SystemPorts::Screen.orientation == orientation
+        Egui::SystemPorts::Screen.orientation = orientation
+        Egui::SystemPorts::Events.enqueue(
+          Egui::SystemPorts::Events::RotationChanged.new(orientation))
       end
 
       # Frame entry (sapp's frame_cb / the detached produce path): the
@@ -2550,7 +2585,9 @@ module Egui
           drain_android_ime
         {% end %}
         if (cache = @@last_commands) &&
-           delivered.zero? && @@events.empty? && !app.ctx.needs_repaint? &&
+           delivered.zero? && @@events.empty? &&
+           !Egui::SystemPorts::Events.pending? &&
+           !app.ctx.needs_repaint? &&
            !app.ctx.textures.pending_destroys? &&
            fb_w == @@last_fb_w && fb_h == @@last_fb_h
           dbg_frame("idle", "moves=#{@@dbg_moves} repaint=#{app.ctx.needs_repaint?}")
@@ -2591,6 +2628,10 @@ module Egui
         Egui::WindowFrame.show(app.ctx, @@title, @@chrome_style) if @@chrome_active
         bt = Time.instant
         run_update(app)
+        # Safety net: an app that never drains the Events port must not
+        # pin the idle gate (`pending?`) on forever — whatever it left
+        # unconsumed dies at the frame boundary, like `@@events`.
+        Egui::SystemPorts::Events.take
         FrameBench.span("update", bt)
         bt = Time.instant
         FrameBench.show(app.ctx)
@@ -3433,7 +3474,7 @@ module Egui
           r.width.to_f32, r.height.to_f32,
           c.min.x.to_f32, c.min.y.to_f32,
           c.width.to_f32, c.height.to_f32,
-          cmd.texture_id.to_u32!)
+          cmd.texture_id.to_u32!, cmd.rot)
       end
 
       # One batched 3D mesh (Viewport3D): clip to the widget's rect,

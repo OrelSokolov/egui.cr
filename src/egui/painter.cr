@@ -689,13 +689,18 @@ module Egui
     getter clip : Rect
     getter rect : Rect
     getter texture_id : UInt64
+    # Quarter-turns of the CONTENT clockwise (0..3). The quad stays the
+    # axis-aligned rect — the caller aspect-fits the swapped dims for
+    # 90/270 — only the uv corners rotate (see sh_draw_video).
+    getter rot : Int32
 
-    def initialize(@clip : Rect, @rect : Rect, @texture_id : UInt64)
+    def initialize(@clip : Rect, @rect : Rect, @texture_id : UInt64,
+                   @rot : Int32 = 0)
     end
 
     def with_clip(clip : Rect, clip_corners : CornerRadii?) : self
       # rounded clips on video are not wired (scissor only)
-      VideoCmd.new(clip, @rect, @texture_id)
+      VideoCmd.new(clip, @rect, @texture_id, @rot)
     end
   end
 
@@ -1023,7 +1028,7 @@ module Egui
           ImageCmd.new(cmd.clip, cmd.rect, cmd.uv, cmd.texture_id,
             fade(cmd.tint), cmd.nearest?, cmd.clip_corners, merged)
         when VideoCmd
-          VideoCmd.new(cmd.clip, cmd.rect, cmd.texture_id)
+          VideoCmd.new(cmd.clip, cmd.rect, cmd.texture_id, cmd.rot)
         when ShadowCmd
           ShadowCmd.new(cmd.clip, cmd.rect, cmd.rounding, cmd.blur,
             cmd.spread, cmd.offset, fade(cmd.color), cmd.inset?,
@@ -1081,7 +1086,7 @@ module Egui
           ImageCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.uv,
             cmd.texture_id, fade(cmd.tint), cmd.nearest?, cmd.clip_corners)
         when VideoCmd
-          VideoCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.texture_id)
+          VideoCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.texture_id, cmd.rot)
         when ShadowCmd
           ShadowCmd.new(cmd.clip, scale_rect(cmd.rect), cmd.rounding * k,
             cmd.blur * k, cmd.spread * k,
@@ -1812,9 +1817,11 @@ module Egui
     end
 
     # Zero-copy video quad (Vulkan video texture id from the driver —
-    # see VideoCmd). Aspect-fit the rect beforehand.
-    def video(rect : Rect, texture_id : UInt64) : Nil
-      add(VideoCmd.new(@clip, rect, texture_id))
+    # see VideoCmd). Aspect-fit the rect beforehand; `rot` quarter-turns
+    # the frame content clockwise (the caller swaps the fit dims for
+    # 90/270).
+    def video(rect : Rect, texture_id : UInt64, rot : Int32 = 0) : Nil
+      add(VideoCmd.new(@clip, rect, texture_id, rot))
     end
 
     # One batched 3D mesh — see `Mesh3DCmd`. `data` is packed SoA

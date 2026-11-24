@@ -27,6 +27,7 @@ import android.content.Context;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Configuration;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -235,6 +236,19 @@ public class EguiCrActivity extends NativeActivity {
                 }
             });
         } catch (Exception e) { /* no clipboard service */ }
+    }
+
+    // Screen rotation: with android:configChanges="orientation|screenSize"
+    // (AndroidManifest.xml) the system reports flips here INSTEAD of
+    // recreating the activity. Fires on this (UI) thread — push the value
+    // into the native ring (type 3), Sokol#on_frame turns it into
+    // SystemPorts::Events::RotationChanged. 1 portrait / 2 landscape
+    // (mirrors EGUI_SYS_ORIENT below).
+    @Override
+    public void onConfigurationChanged(Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        nativeOrientationChanged(newConfig.orientation ==
+            Configuration.ORIENTATION_LANDSCAPE ? 2 : 1);
     }
 
     // ---- System ports (ANDROID_SUPPORT_PLAN.md, phase 7) ------------------
@@ -796,4 +810,5 @@ public class EguiCrActivity extends NativeActivity {
     native static void nativeSafResult(int seq, int ok, String uri);
     native static void nativeMsgboxResult(int value);
     native static void nativeClipboardChanged(String text);
+    native static void nativeOrientationChanged(int orientation);
 }

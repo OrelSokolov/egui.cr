@@ -419,7 +419,7 @@ void egui_cr_android_ime_hide(void) { egui_cr_android_ime_set_state(0, 0, 0); }
 // clipboard can only be read on the UI thread — so the Java side owns
 // the text: an OnPrimaryClipChangedListener pushes every change here
 // (nativeClipboardChanged), and our own sets update the cache too.
-enum { EGUI_SYS_SAF = 1, EGUI_SYS_MSGBOX = 2 };
+enum { EGUI_SYS_SAF = 1, EGUI_SYS_MSGBOX = 2, EGUI_SYS_ORIENT = 3 };
 typedef struct {
     int type;        // EGUI_SYS_*
     int seq;         // SAF: request id (Crystal's registry key)
@@ -787,6 +787,20 @@ Java_com_eguicr_ime_EguiCrActivity_nativeMsgboxResult(JNIEnv* env, jclass cls,
     memset(&rec, 0, sizeof(rec));
     rec.type = EGUI_SYS_MSGBOX;
     rec.value = value ? 1 : 0;
+    sh_sys_push(&rec);
+}
+
+// Screen rotation (EguiCrActivity.onConfigurationChanged, UI thread):
+// value 1 portrait / 2 landscape — mirrors the Java constant mapping.
+JNIEXPORT void JNICALL
+Java_com_eguicr_ime_EguiCrActivity_nativeOrientationChanged(JNIEnv* env,
+                                                           jclass cls,
+                                                           jint value) {
+    (void)env; (void)cls;
+    egui_sys_rec_t rec;
+    memset(&rec, 0, sizeof(rec));
+    rec.type = EGUI_SYS_ORIENT;
+    rec.value = value == 2 ? 2 : 1;
     sh_sys_push(&rec);
 }
 
@@ -4975,6 +4989,7 @@ typedef struct {
     float rtl, rtr, rbr, rbl; // mask corner radii (POINTS)
     float ppp;       // px/point the mask geometry converts with
     uint32_t view;   // texture id for kind-0 batches (0 = white 1×1)
+    int rot;         // kind 3 (video): quarter-turns of the content, 0..3
 } sh_sdf_seg_t;
 static sh_sdf_seg_t g_sdf_segs[SH_SDF_MAX_SEGS];
 static int g_sdf_segs_n;
@@ -5123,6 +5138,17 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
         {{1.0f, 1.0f}, {1.0f, 1.0f}},
         {{1.0f, 0.0f}, {1.0f, 0.0f}},
     };
+    // rot: quarter-turns of the CONTENT clockwise. The quad stays the
+    // axis-aligned rect (the caller aspect-fits swapped dims for 90/270);
+    // only the uv corners rotate. uv mirrors pos at rot 0, so per turn:
+    // (u,v) → (v, 1-u).
+    for (int turn = 0; turn < s->rot; turn++) {
+        for (int i = 0; i < 6; i++) {
+            float u = verts[i].uv[0], v = verts[i].uv[1];
+            verts[i].uv[0] = v;
+            verts[i].uv[1] = 1.0f - u;
+        }
+    }
     sg_range vd = {.ptr = verts, .size = sizeof verts};
     int off = sg_append_buffer(g_video_vbuf, &vd);
     if (off < 0) return;
@@ -5186,7 +5212,7 @@ static void sh_video_vbuf_ensure(void) {
 // Geometry/clip in POINTS; bumps the layer like every raw draw.
 static void sh_video_stash(int apply_clip, float x, float y, float w,
                            float h, float cx, float cy, float cw,
-                           float ch, uint32_t vid) {
+                           float ch, uint32_t vid, int rot) {
     if (g_sdf_segs_n >= SH_SDF_MAX_SEGS) return;
     sh_sdf_seg_t* s = &g_sdf_segs[g_sdf_segs_n++];
     memset(s, 0, sizeof *s);
@@ -5196,6 +5222,7 @@ static void sh_video_stash(int apply_clip, float x, float y, float w,
     s->cx = cx; s->cy = cy; s->cw = cw; s->ch = ch;
     s->rtl = x; s->rtr = y; s->rbr = w; s->rbl = h;
     s->view = vid;
+    s->rot = rot & 3;
     sgl_layer(++g_sdf_layer);
 }
 #endif // SH_VIDEO
@@ -8436,17 +8463,18 @@ void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
 // nothing — the player never emits it there (video_supported() = 0).
 void egui_cr_pkt_video(float x, float y, float w, float h,
                        float cx, float cy, float cw, float ch,
-                       uint32_t vid) {
+                       uint32_t vid, int rot) {
 #if defined(SH_VIDEO_ZC)
-    uint32_t o[10] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
+    uint32_t o[11] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
                        sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
-                       sh_f2u(ch), vid };
-    sh_push_words(o, 10);
+                       sh_f2u(ch), vid, (uint32_t)rot };
+    sh_push_words(o, 11);
 #elif defined(SH_VIDEO_NV12) || defined(SH_VIDEO_MTL)
-    sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch, vid);
+    sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch, vid,
+                   rot);
 #else
     (void)x; (void)y; (void)w; (void)h;
-    (void)cx; (void)cy; (void)cw; (void)ch; (void)vid;
+    (void)cx; (void)cy; (void)cw; (void)ch; (void)vid; (void)rot;
 #endif
 }
 #if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // pkt builder continues
@@ -9671,7 +9699,8 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             float cx = sh_u2f(op[4]), cy = sh_u2f(op[5]);
             float cw = sh_u2f(op[6]), ch = sh_u2f(op[7]);
             uint32_t vid = op[8];
-            op += 9;
+            int rot = (int)op[9];
+            op += 10;
             if (scr_n > 0) { // composited scroll: translate like geometry
                 vx -= scr_dx; vy -= scr_dy;
                 cx -= scr_dx; cy -= scr_dy;
@@ -9680,9 +9709,9 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             int apply_clip = cw > 0.0f && ch > 0.0f;
 #if defined(SOKOL_VULKAN)
             sh_video_stash(apply_clip, vx, vy, vw2, vh2,
-                           cx, cy, cw, ch, vid);
+                           cx, cy, cw, ch, vid, rot);
 #else
-            (void)vid; (void)apply_clip;
+            (void)vid; (void)apply_clip; (void)rot;
 #endif
             break;
         }
@@ -10948,6 +10977,44 @@ int egui_cr_ios_msgbox_take(void) {
     int a = sh_msgbox_answer;
     if (a) sh_msgbox_answer = 0;
     return a;
+}
+
+// --- Screen orientation ------------------------------------------------
+// UIDeviceOrientationDidChangeNotification fires on the main run loop —
+// the same thread sokol's frame callback runs on. The observer only
+// records the new value in a static; egui_cr_ios_orientation_take
+// drains it between frames (same mailbox contract as sh_msgbox_answer)
+// and the Crystal side turns it into SystemPorts::Events::RotationChanged.
+static volatile int sh_orientation_new = 0; // 0 none, 1 portrait, 2 landscape
+
+void egui_cr_ios_orientation_watch(void) {
+    UIDevice* device = [UIDevice currentDevice];
+    [device beginGeneratingDeviceOrientationNotifications];
+    id token = [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIDeviceOrientationDidChangeNotification
+                    object:nil queue:nil
+        usingBlock:^(NSNotification* _unused) {
+            (void)_unused;
+            switch (device.orientation) {
+                case UIDeviceOrientationPortrait:
+                case UIDeviceOrientationPortraitUpsideDown:
+                    sh_orientation_new = 1;
+                    break;
+                case UIDeviceOrientationLandscapeLeft:
+                case UIDeviceOrientationLandscapeRight:
+                    sh_orientation_new = 2;
+                    break;
+                default:
+                    break; // FaceUp/Down/Unknown — keep the last value
+            }
+        }];
+    (void)token; // app lifetime; never removed
+}
+
+int egui_cr_ios_orientation_take(void) {
+    int v = sh_orientation_new;
+    if (v) sh_orientation_new = 0;
+    return v;
 }
 #endif // SH_IOS
 #endif

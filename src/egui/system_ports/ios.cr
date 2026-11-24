@@ -27,6 +27,8 @@ module Egui
           fun open_url = egui_cr_ios_open_url(url : UInt8*) : Int32
           fun msgbox = egui_cr_ios_msgbox(title : UInt8*, msg : UInt8*, confirm : Int32) : Void
           fun msgbox_take = egui_cr_ios_msgbox_take : Int32
+          fun orientation_watch = egui_cr_ios_orientation_watch : Void
+          fun orientation_take = egui_cr_ios_orientation_take : Int32
           fun docpick_start = egui_cr_docpick_start(mode : Int32, comma_exts : UInt8*, default_name : UInt8*) : Int32
           fun docpick_done = egui_cr_docpick_done : Int32
           fun docpick_take = egui_cr_docpick_take : UInt8*
@@ -101,10 +103,21 @@ module Egui
         end
 
         # Drain the MessageBox confirm answer queued by the UIKit run
-        # loop. Called from Sokol#on_frame BEFORE the idle check; the
-        # callback runs between frames, like the async-dialog fiber
-        # deliveries, and note_delivered forces a full frame for it.
+        # loop, plus the device-orientation reports (first call arms
+        # the UIDevice observer; both land on the main run loop — the
+        # frame thread). Called from Sokol#on_frame BEFORE the idle
+        # check; callbacks run between frames, like the async-dialog
+        # fiber deliveries, and note_delivered forces a full frame for
+        # them.
         def self.pump : Nil
+          unless @@watched
+            @@watched = true
+            LibIosSys.orientation_watch
+          end
+          case LibIosSys.orientation_take
+          when 1 then rotation(Egui::Orientation::Portrait)
+          when 2 then rotation(Egui::Orientation::Landscape)
+          end
           answer = LibIosSys.msgbox_take
           return if answer.zero?
           if (cb = @@confirm_cb)
@@ -113,6 +126,18 @@ module Egui
             cb.call(answer == 1)
           end
         end
+
+        # Record an orientation report and signal the change (the
+        # state wins in Screen.orientation until the driver's
+        # RESIZED-derived value agrees with it).
+        private def self.rotation(orientation : Egui::Orientation) : Nil
+          return if SystemPorts::Screen.orientation == orientation
+          SystemPorts::Screen.orientation = orientation
+          AsyncDialogs.note_delivered # force a full frame to drain it
+          Events.enqueue(Events::RotationChanged.new(orientation))
+        end
+
+        @@watched = false
       {% end %}
     end
   end

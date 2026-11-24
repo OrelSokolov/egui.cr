@@ -30,6 +30,10 @@ class VideoApp < Egui::App
   @seek_scratch = 0.0
   @volume = 0.8
   @muted = false
+  # Manual content rotation: quarter-turns clockwise (the rotate button
+  # cycles it). Device rotation is NOT this — it relayouts through the
+  # window size; this one turns the video inside the layout.
+  @rot = 0
 
   # YouTube-style center overlay: a click (or Space) toggles playback
   # and flashes the NEW state's big icon in the middle of the video —
@@ -96,6 +100,11 @@ class VideoApp < Egui::App
       open_video(drop)
     end
 
+    # System events (Events port): the device-rotation report just
+    # relayouts (this update runs on the resized window) — drain so the
+    # idle gate can go back to sleep. Manual rotation is the button.
+    Egui::SystemPorts::Events.take
+
     if @player.playing?
       @player.advance
       ctx.request_repaint # keep the vsync loop from idle-skipping
@@ -108,9 +117,11 @@ class VideoApp < Egui::App
       video_area(ui)
     end
 
-    ctx.bottom_panel(height: 88.0, resizable: false,
-      fill: BAR_BG) do |ui|
-      player_bar(ui, ctx)
+    portrait = Egui::SystemPorts::Screen.orientation ==
+               Egui::Orientation::Portrait
+    ctx.bottom_panel(height: portrait ? MOBILE_BAR_H : 88.0,
+      resizable: false, fill: BAR_BG) do |ui|
+      player_bar(ui, ctx, portrait)
     end
 
     VideoApp.add_update_ms((Time.instant - t0).total_milliseconds)
@@ -137,16 +148,20 @@ class VideoApp < Egui::App
       # Always FIT the area (aspect kept): the decode pipeline adapts
       # the texture size down (adaptive scale_vaapi), and a 1.0 cap on
       # the fit factor would show the shrunken texture at native pixels
-      # instead of filling the window — sampling cost is nil.
-      scale = {@player.width > 0 ? avail.x / @player.width : 0.0,
-               @player.height > 0 ? avail.y / @player.height : 0.0}.min
-      size = Egui::Vec2.new(@player.width * scale, @player.height * scale)
+      # instead of filling the window — sampling cost is nil. A manual
+      # rotation (odd quarter-turns) swaps the fitted dims.
+      rotated = @rot.odd?
+      vw = rotated ? @player.height : @player.width
+      vh = rotated ? @player.width : @player.height
+      scale = {vw > 0 ? avail.x / vw : 0.0,
+               vh > 0 ? avail.y / vh : 0.0}.min
+      size = Egui::Vec2.new(vw * scale, vh * scale)
       vrect = Egui::Rect.from_min_size(
         Egui::Pos2.new(rect.center.x - size.x / 2.0, rect.center.y - size.y / 2.0),
         size)
       ui.painter.clip = ui.clip
       if (vid = @player.video_texture_id) != 0
-        ui.painter.video(vrect, vid) # zero-copy: dmabuf planes + YUV shader
+        ui.painter.video(vrect, vid, rot: @rot) # zero-copy: dmabuf + YUV shader
       else
         ui.painter.image(vrect, @player.texture_id)
       end
@@ -222,7 +237,68 @@ class VideoApp < Egui::App
   # высота интерактивной зоны seek-полосы (визуально тоньше)
   SEEK_STRIP_H = 18.0
 
-  private def player_bar(ui : Egui::Ui, ctx : Egui::Context) : Nil
+  private def player_bar(ui : Egui::Ui, ctx : Egui::Context,
+                         portrait : Bool) : Nil
+    portrait ? mobile_bar(ui, ctx) : desktop_bar(ui, ctx)
+  end
+
+  # ── мобильная раскладка (portrait): seek сверху, имя+время, транспорт ──
+
+  MOBILE_BAR_H = 140.0
+  MOBILE_TOP_H = 34.0
+
+  private def mobile_bar(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    p = @player
+    pad = ui.style.spacing.window_padding
+    allocated = ui.allocate_space(
+      Egui::Vec2.new(ui.available_width, MOBILE_BAR_H))
+    rect = Egui::Rect.from_min_size(
+      Egui::Pos2.new(allocated.left - pad.x, allocated.top - pad.y),
+      Egui::Vec2.new(allocated.width + 2 * pad.x, MOBILE_BAR_H))
+    ui.painter.rect(rect, 0.0, fill: BAR_BG)
+    seek_strip(ui, ctx, rect)
+
+    spacing = ui.style.spacing
+    saved_spacing = spacing.item_spacing
+    spacing.item_spacing = Egui::Vec2.new(0.0, saved_spacing.y)
+    begin
+      # строка 1: имя файла (elide) слева, время справа
+      name = p.open? ? File.basename(p.path.to_s) : "No file"
+      time_txt = "#{fmt_time(p.position)} / #{fmt_time(p.duration)}"
+      time_w = ui.fonts.measure(time_txt, 13.0).x
+      r1 = Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.left + 16.0, rect.top + SEEK_STRIP_H),
+        Egui::Vec2.new(rect.width - 32.0, MOBILE_TOP_H))
+      row1 = ui.child_ui(r1, Egui::Id.from("vbar/m1"),
+        layout: Egui::Layout.left_to_right)
+      row1.clip = r1.intersect(ui.clip)
+      row1.seed_row_height(r1.height)
+      t(row1, name, size: 15.0,
+        w: {row1.available_width - time_w - 12.0, 40.0}.max)
+      row1.allocate_space(Egui::Vec2.new(
+        {row1.available_width - time_w, 0.0}.max, 0.0))
+      t(row1, time_txt, size: 13.0, color: MUTED)
+
+      # строка 2: транспорт строго по центру
+      transport_w = 34.0 * 4 + 40.0 + 12.0 * 4
+      r2 = Egui::Rect.from_min_size(
+        Egui::Pos2.new(rect.left + 16.0,
+          rect.top + SEEK_STRIP_H + MOBILE_TOP_H),
+        Egui::Vec2.new(rect.width - 32.0,
+          MOBILE_BAR_H - SEEK_STRIP_H - MOBILE_TOP_H))
+      row2 = ui.child_ui(r2, Egui::Id.from("vbar/m2"),
+        layout: Egui::Layout.left_to_right)
+      row2.clip = r2.intersect(ui.clip)
+      row2.seed_row_height(r2.height)
+      row2.allocate_space(Egui::Vec2.new(
+        {(r2.width - transport_w) / 2.0, 0.0}.max, 0.0))
+      transport(row2, ctx)
+    ensure
+      spacing.item_spacing = saved_spacing
+    end
+  end
+
+  private def desktop_bar(ui : Egui::Ui, ctx : Egui::Context) : Nil
     p = @player
     # панели инсетят контент на window_padding — компенсируем, чтобы бар
     # жил на полном прямоугольнике панели (пиксель в пиксель с краем окна)
@@ -258,6 +334,32 @@ class VideoApp < Egui::App
     end
   end
 
+  # Транспорт (общий для desktop и mobile): rewind play fwd rotate stop.
+  private def transport(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    p = @player
+    ibtn(ui, ctx, "vbar/back", "rewind") do
+      p.seek({p.position - 10.0, 0.0}.max) if p.open?
+    end
+    gap(ui, 12.0)
+    playround(ui, ctx, "vbar/play", p.playing? ? "pause" : "play") { p.toggle }
+    gap(ui, 12.0)
+    ibtn(ui, ctx, "vbar/fwd", "forward") do
+      p.seek({p.position + 10.0, p.duration}.min) if p.open? && p.duration > 0
+    end
+    gap(ui, 12.0)
+    # ручной поворот содержимого: цикл 0° → 90° → 180° → 270°
+    rot_name = {"rotate_cw", "rotate_ccw", "rotate_cw", "rotate_ccw"}[@rot % 2]
+    ibtn(ui, ctx, "vbar/rot", rot_name,
+      tint: @rot.zero? ? ICON_FG : ACCENT) do
+      @rot = (@rot + 1) % 4
+    end
+    gap(ui, 12.0)
+    ibtn(ui, ctx, "vbar/stop", "stop") do
+      p.stop
+      @status = "Stopped."
+    end
+  end
+
   # Одна строка: слева миниатюра + имя/инфо + Open…, транспорт СТРОГО по
   # центру окна, справа время + громкость. При сужении окна уступают
   # только гибкие части (текст → миниатюра → громкость → время) — кнопки
@@ -268,7 +370,7 @@ class VideoApp < Egui::App
 
     time_txt = "#{fmt_time(p.position)} / #{fmt_time(p.duration)}"
     time_w = ui.fonts.measure(time_txt, 12.0).x
-    transport_w = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0
+    transport_w = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0 + 12.0 + 34.0
     avail = ui.available_width
     # центр playround-кнопки = центр окна (кластер несимметричен:
     # слева от play 46px, справа 92px из-за stop)
@@ -309,23 +411,11 @@ class VideoApp < Egui::App
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
     ibtn(ui, ctx, "vbar/open_multi", "layers", tint: ICON_FG) { open_dialog_multiple }
 
-    # пружина до строго центрального транспорта
+    # пружина до строго центрального транспорта (кластер несимметричен:
+    # слева от play 46px, справа 126px — play остаётся в центре окна)
     ui.allocate_space(Egui::Vec2.new(
       {t_start - (thumb_w + 12.0 + text_w + 12.0 + 34.0), 0.0}.max, 0.0))
-    ibtn(ui, ctx, "vbar/back", "rewind") do
-      p.seek({p.position - 10.0, 0.0}.max) if p.open?
-    end
-    gap(ui, 12.0)
-    playround(ui, ctx, "vbar/play", p.playing? ? "pause" : "play") { p.toggle }
-    gap(ui, 12.0)
-    ibtn(ui, ctx, "vbar/fwd", "forward") do
-      p.seek({p.position + 10.0, p.duration}.min) if p.open? && p.duration > 0
-    end
-    gap(ui, 12.0)
-    ibtn(ui, ctx, "vbar/stop", "stop") do
-      p.stop
-      @status = "Stopped."
-    end
+    transport(ui, ctx)
 
     # правый кластер прижат к правому краю
     ui.allocate_space(Egui::Vec2.new(
@@ -576,6 +666,8 @@ class VideoApp < Egui::App
           when {:lucide, :volume_2}   then Egui::Icon.from_file(:lucide, :volume_2, tint: tint)
           when {:lucide, :volume_x}   then Egui::Icon.from_file(:lucide, :volume_x, tint: tint)
           when {:lucide, :volume_off} then Egui::Icon.from_file(:lucide, :volume_off, tint: tint)
+          when {:lucide, :rotate_cw}  then Egui::Icon.from_file(:lucide, :rotate_cw, tint: tint)
+          when {:lucide, :rotate_ccw} then Egui::Icon.from_file(:lucide, :rotate_ccw, tint: tint)
           when {:bootstrap, :rewind}  then Egui::Icon.from_file(:bootstrap, :rewind_fill, tint: tint)
           when {:bootstrap, :forward} then Egui::Icon.from_file(:bootstrap, :fast_forward_fill, tint: tint)
           when {:bootstrap, :stop}    then Egui::Icon.from_file(:bootstrap, :stop_fill, tint: tint)
@@ -670,6 +762,8 @@ class VideoApp < Egui::App
     when "volume_2"   then {:lucide, :volume_2}
     when "volume_x"   then {:lucide, :volume_x}
     when "volume_off" then {:lucide, :volume_off}
+    when "rotate_cw"  then {:lucide, :rotate_cw}
+    when "rotate_ccw" then {:lucide, :rotate_ccw}
     else                   {:lucide, :circle}
     end
   end

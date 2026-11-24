@@ -341,6 +341,41 @@ describe Egui::SystemPorts::Tray do
   end
 end
 
+describe Egui::SystemPorts::Events do
+  it "enqueue → take round-trips and drains" do
+    Egui::SystemPorts::Events.enqueue(
+      Egui::SystemPorts::Events::RotationChanged.new(Egui::Orientation::Landscape))
+    Egui::SystemPorts::Events.pending?.should be_true
+    Egui::SystemPorts::Events.take.should eq([
+      Egui::SystemPorts::Events::RotationChanged.new(Egui::Orientation::Landscape)])
+    Egui::SystemPorts::Events.pending?.should be_false
+    Egui::SystemPorts::Events.take.should be_empty # drained
+  end
+
+  it "on_event fires as the event arrives (outside the queue lock)" do
+    fired = [] of Egui::SystemPorts::Events::Event
+    Egui::SystemPorts::Events.on_event { |e| fired << e }
+    Egui::SystemPorts::Events.enqueue(
+      Egui::SystemPorts::Events::RotationChanged.new(Egui::Orientation::Portrait))
+    fired.size.should eq(1)
+    fired[0].orientation.should eq(Egui::Orientation::Portrait)
+    # the event is queued regardless — take is the primary contract
+    Egui::SystemPorts::Events.take.size.should eq(1)
+  ensure
+    Egui::SystemPorts::Events.on_event { }
+  end
+end
+
+describe Egui::SystemPorts::Screen do
+  it "orientation records the last report and answers it back" do
+    Egui::SystemPorts::Screen.orientation.should be_nil # headless default
+    Egui::SystemPorts::Screen.orientation = Egui::Orientation::Landscape
+    Egui::SystemPorts::Screen.orientation.should eq(Egui::Orientation::Landscape)
+  ensure
+    Egui::SystemPorts::Screen.orientation = Egui::Orientation::Portrait
+  end
+end
+
 describe Egui::SystemPorts::AsyncDialogs do
   it "OpenFileDialog.split_paths parses the newline-joined wire format" do
     Egui::SystemPorts::OpenFileDialog.split_paths("a.png\nb.png\nc.png")
