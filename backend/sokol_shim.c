@@ -7944,6 +7944,14 @@ static double g_rsz_at = -1e9;
 static int g_win_focused = 1;   // optimistic default until the first event
 static int g_win_iconified = 0;
 static double g_rt_last_draw = -1e9;
+// Swapchain refresh budget: a double-buffered swap alternates buffers,
+// so after a content change lands in ONE buffer the no-damage presents
+// of the other keep showing the PREVIOUS frame for a tick — visible as
+// old/new ghosting on an unfocused window (no replays in between). A
+// fresh packet buys one extra replay on the following tick, drawing the
+// second buffer too; both then hold the current content and the
+// no-damage presents are truly damage-free again.
+static int g_pkt_refresh = 0;
 
 // Composited scroll (defined with the packet section below — needs
 // g_pkt_last): try to serve a wheel event on the render thread, and
@@ -10145,12 +10153,22 @@ static void sh_rt_frame(void) {
         int unfocused = !g_win_focused || g_win_iconified;
         int draw_now = !unfocused || fresh != NULL ||
                        sh_ai_load(&g_scroll_dirty) != 0 ||
+                       g_pkt_refresh > 0 ||
                        (now - g_rt_last_draw) >= 1.0;
         if (draw_now) {
             double bt = sh_now();
             sh_replay(g_pkt_last); // replay every tick: sokol swaps after us
             if (sh_b_on > 0) sh_b_rep_acc += sh_now() - bt;
             g_rt_last_draw = now;
+            // A fresh packet bought this draw; the OTHER swapchain
+            // buffer still shows the previous frame — draw it next
+            // tick, or the no-damage presents alternate old/new (the
+            // unfocused ghosting).
+            if (fresh != NULL) {
+                g_pkt_refresh = 1;
+            } else if (g_pkt_refresh > 0) {
+                g_pkt_refresh = 0;
+            }
             sh_screenshot_try(g_pkt_last->fb_w, g_pkt_last->fb_h);
             sh_shot(g_pkt_last);
         }
@@ -10939,8 +10957,8 @@ int egui_cr_ios_msgbox_take(void) {
 // every platform with a native stack: AVFoundation on macOS AND iOS
 // (device = the phone's cameras; simulator = the virtual camera of e.g.
 // dautovri/SimulatorCamera injected via DYLD_INSERT_LIBRARIES — plain
-// AVFoundation either way), camera2 NDK on Android, V4L2 on Linux.
-// Windows keeps the core default "not implemented" answer.
+// AVFoundation either way), camera2 NDK on Android, V4L2 on Linux,
+// Media Foundation on Windows.
 // Frames arrive on the capture stack's OWN threads into a locked
 // latest-frame slot; egui_cr_cam_frame runs on sokol's frame thread,
 // converts to RGBA in place and hands Crystal a buffer owned by the
@@ -11991,6 +12009,573 @@ void egui_cr_cam_close(void* sp) {
     pthread_mutex_destroy(&s->lock);
     free(s->raw);
     free(s->rgba);
+    free(s);
+}
+
+const char* egui_cr_cam_last_error(void) { return sh_cam_err; }
+
+#elif defined(_WIN32)
+// Media Foundation webcams (the same frame-server stack every Windows
+// capture app uses, via the sync IMFSourceReader): device enumeration
+// through MFEnumDeviceSources, capture by a background thread pumping
+// ReadSample calls into a locked latest-frame slot — the shape of the
+// V4L2/AVFoundation sections above — while egui_cr_cam_frame converts
+// BGRA -> RGBA in place. The frame SIZE comes from the closest native
+// media type; the pixel format is always negotiated to RGB32 (the
+// reader's converter chain turns NV12/YUY2/MJPEG into it). Webcams
+// deliver upright frames, so only the USER rotation applies.
+//
+// MF loads at RUNTIME (LoadLibrary): this shim is linked into every egui
+// app on Windows, and mfplat.dll is absent on N editions — an import-lib
+// reference would kill all of them at process start, LoadLibrary keeps
+// the camera an opt-in, honestly-reported failure instead. Same for the
+// GUIDs: the SDK headers only declare them (mfuuid.lib carries the
+// definitions), so the handful needed here are pinned by value.
+// No runtime permission prompt: classic Win32 apps are not gated by the
+// camera privacy toggle (a packaged/UWP-app concept) — like Linux.
+#include <mfapi.h>
+#include <mfidl.h>
+#include <mfreadwrite.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// windows.h may have been pulled in LEAN_AND_MEAN (no objbase.h).
+#ifndef COINIT_MULTITHREADED
+#define COINIT_MULTITHREADED 0x0
+#endif
+
+static char sh_cam_err[256] = "";
+
+int egui_cr_cam_perm(void) { return 1; }
+void egui_cr_cam_perm_request(void) {}
+
+typedef HRESULT (WINAPI *PFN_CoInitializeEx)(void*, DWORD);
+typedef void (WINAPI *PFN_CoUninitialize)(void);
+typedef void (WINAPI *PFN_CoTaskMemFree)(void*);
+typedef HRESULT (WINAPI *PFN_MFStartup)(ULONG, DWORD);
+typedef HRESULT (WINAPI *PFN_MFShutdown)(void);
+typedef HRESULT (WINAPI *PFN_MFCreateAttributes)(IMFAttributes**, UINT32);
+typedef HRESULT (WINAPI *PFN_MFCreateMediaType)(IMFMediaType**);
+typedef HRESULT (WINAPI *PFN_MFEnumDeviceSources)(IMFAttributes*,
+                                                  IMFActivate***, UINT32*);
+typedef HRESULT (WINAPI *PFN_MFCreateDeviceSource)(IMFAttributes*,
+                                                   IMFMediaSource**);
+typedef HRESULT (WINAPI *PFN_MFCreateSourceReaderFromMediaSource)(
+    IMFMediaSource*, IMFAttributes*, IMFSourceReader**);
+
+static PFN_CoInitializeEx pCoInitializeEx;
+static PFN_CoUninitialize pCoUninitialize;
+static PFN_CoTaskMemFree pCoTaskMemFree;
+static PFN_MFStartup pMFStartup;
+static PFN_MFShutdown pMFShutdown;
+static PFN_MFCreateAttributes pMFCreateAttributes;
+static PFN_MFCreateMediaType pMFCreateMediaType;
+static PFN_MFEnumDeviceSources pMFEnumDeviceSources;
+static PFN_MFCreateDeviceSource pMFCreateDeviceSource;
+static PFN_MFCreateSourceReaderFromMediaSource pMFCreateSourceReader;
+
+// GUID values pinned from the SDK headers (mfapi.h / mfidl.h).
+static const GUID sh_guid_src_type =  // MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE
+    {0xc60ac5fe, 0x252a, 0x478f, {0xa0, 0xef, 0xbc, 0x8f, 0xa5, 0xf7, 0xca, 0xd3}};
+static const GUID sh_guid_vidcap =  // ..._SOURCE_TYPE_VIDCAP_GUID
+    {0x8ac3587a, 0x4ae7, 0x42d8, {0x99, 0xe0, 0x0a, 0x60, 0x13, 0xee, 0xf9, 0x0f}};
+static const GUID sh_guid_friendly =  // MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME
+    {0x60d0e559, 0x52f8, 0x4fa2, {0xbb, 0xce, 0xac, 0xdb, 0x34, 0xa8, 0xec, 0x01}};
+static const GUID sh_guid_symlink =  // ..._VIDCAP_SYMBOLIC_LINK (the device id)
+    {0x58f0aad8, 0x22bf, 0x4f8a, {0xbb, 0x3d, 0xd2, 0xc4, 0x97, 0x8c, 0x6e, 0x2f}};
+static const GUID sh_guid_frame_size =  // MF_MT_FRAME_SIZE
+    {0x1652c33d, 0xd6b2, 0x4012, {0xb8, 0x34, 0x72, 0x03, 0x08, 0x49, 0xa3, 0x7d}};
+static const GUID sh_guid_subtype =  // MF_MT_SUBTYPE
+    {0xf7e34c9a, 0x42e8, 0x4714, {0xb7, 0x4b, 0xcb, 0x29, 0xd7, 0x2c, 0x35, 0xe5}};
+static const GUID sh_guid_interlace =  // MF_MT_INTERLACE_MODE
+    {0xe2724bb8, 0xe676, 0x4806, {0xb4, 0xb2, 0xa8, 0xd6, 0xef, 0xb4, 0x4c, 0xcd}};
+static const GUID sh_guid_stride =  // MF_MT_DEFAULT_STRIDE
+    {0x644b4e48, 0x1e02, 0x4516, {0xb0, 0xeb, 0xc0, 0x1c, 0xa9, 0xd4, 0x9a, 0xc6}};
+static const GUID sh_guid_rgb32 =  // MFVideoFormat_RGB32 (D3DFMT_X8R8G8B8)
+    {0x00000016, 0x0000, 0x0010, {0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71}};
+static const GUID sh_guid_hw_xforms =  // MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS
+    {0xa634a91c, 0x822b, 0x41b9, {0xa4, 0x94, 0x4d, 0xe4, 0x64, 0x36, 0x12, 0xb0}};
+static const GUID sh_guid_adv_vp =  // MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSOR
+    {0x0f81da2c, 0xb537, 0x4672, {0xa8, 0xb2, 0xa6, 0x81, 0xb1, 0x73, 0x07, 0xa3}};
+
+static int sh_cam_mf_state = -1;  // -1 unprobed / 0 unavailable / 1 ready
+
+// One-time probe: resolve every entry point or record the honest reason.
+// Loaded modules stay for the process lifetime (a session's MFStartup /
+// CoInitialize state may reference them; system DLLs anyway).
+static int sh_cam_mf(void) {
+    if (sh_cam_mf_state >= 0) return sh_cam_mf_state;
+    HMODULE ole32 = LoadLibraryA("ole32.dll");
+    HMODULE mfplat = ole32 ? LoadLibraryA("mfplat.dll") : NULL;
+    HMODULE mf = mfplat ? LoadLibraryA("mf.dll") : NULL;
+    HMODULE mfread = mfplat ? LoadLibraryA("mfreadwrite.dll") : NULL;
+    if (ole32 && mfplat && mf && mfread) {
+#define SH_CAM_SYM(mod, pfn, name) \
+    ((*(void**)&(pfn) = (void*)GetProcAddress(mod, name)) != NULL)
+        int ok =
+            SH_CAM_SYM(ole32,  pCoInitializeEx,     "CoInitializeEx") &&
+            SH_CAM_SYM(ole32,  pCoUninitialize,     "CoUninitialize") &&
+            SH_CAM_SYM(ole32,  pCoTaskMemFree,      "CoTaskMemFree") &&
+            SH_CAM_SYM(mfplat, pMFStartup,          "MFStartup") &&
+            SH_CAM_SYM(mfplat, pMFShutdown,         "MFShutdown") &&
+            SH_CAM_SYM(mfplat, pMFCreateAttributes, "MFCreateAttributes") &&
+            SH_CAM_SYM(mfplat, pMFCreateMediaType,  "MFCreateMediaType") &&
+            SH_CAM_SYM(mf,     pMFEnumDeviceSources, "MFEnumDeviceSources") &&
+            SH_CAM_SYM(mf,     pMFCreateDeviceSource, "MFCreateDeviceSource") &&
+            SH_CAM_SYM(mfread, pMFCreateSourceReader,
+                       "MFCreateSourceReaderFromMediaSource");
+#undef SH_CAM_SYM
+        sh_cam_mf_state = ok;
+        if (!ok)
+            snprintf(sh_cam_err, sizeof sh_cam_err,
+                     "Media Foundation entry points are missing");
+    } else {
+        sh_cam_mf_state = 0;
+        snprintf(sh_cam_err, sizeof sh_cam_err,
+                 "Media Foundation is not available "
+                 "(Windows N — install the Media Feature Pack?)");
+    }
+    return sh_cam_mf_state;
+}
+
+// The availability probe behind NativeCam#available? on Windows (the
+// other platforms' capture stacks are link-time facts and hardcode true).
+int egui_cr_cam_available(void) { return sh_cam_mf(); }
+
+// Device list: static slots refreshed by egui_cr_cam_devices (read right
+// after it; the pointers stay valid until the next refresh). The
+// symbolic-link ids run longer than POSIX paths — a wider slot.
+#define SH_CAM_MAX 8
+static char sh_cam_ids[SH_CAM_MAX][256];
+static char sh_cam_names[SH_CAM_MAX][128];
+static int sh_cam_facing[SH_CAM_MAX];
+
+static int sh_cam_w2utf8(const wchar_t* w, char* out, int cap) {
+    out[0] = 0;
+    if (!w) return 0;
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, out, cap, NULL, NULL);
+    if (n <= 0) { out[0] = 0; return 0; }
+    out[cap - 1] = 0;
+    return n - 1;
+}
+
+// COM init is per-thread: MTA, and SUCCEEDED covers S_OK/S_FALSE;
+// RPC_E_CHANGED_MODE means the apartment belongs to someone else —
+// proceed, but do not pair a CoUninitialize for it.
+static int sh_cam_co_init(void) {
+    return SUCCEEDED(pCoInitializeEx(NULL, COINIT_MULTITHREADED));
+}
+
+int egui_cr_cam_devices(void) {
+    sh_cam_err[0] = 0;
+    if (!sh_cam_mf()) return 0;
+    int co_here = sh_cam_co_init();
+    int n = 0;
+    if (FAILED(pMFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "MFStartup failed");
+        if (co_here) pCoUninitialize();
+        return 0;
+    }
+    IMFAttributes* attrs = NULL;
+    if (SUCCEEDED(pMFCreateAttributes(&attrs, 1)) && attrs) {
+        attrs->lpVtbl->SetGUID(attrs, &sh_guid_src_type, &sh_guid_vidcap);
+        IMFActivate** acts = NULL;
+        UINT32 count = 0;
+        if (SUCCEEDED(pMFEnumDeviceSources(attrs, &acts, &count)) &&
+            acts && count) {
+            for (UINT32 i = 0; i < count && n < SH_CAM_MAX; i++) {
+                wchar_t wname[128] = L"";
+                wchar_t wlink[256] = L"";
+                UINT32 len = 0;
+                if (FAILED(acts[i]->lpVtbl->GetString(acts[i],
+                        &sh_guid_friendly, wname, 128, &len)))
+                    wname[0] = 0;
+                if (FAILED(acts[i]->lpVtbl->GetString(acts[i],
+                        &sh_guid_symlink, wlink, 256, &len)))
+                    wlink[0] = 0;
+                sh_cam_w2utf8(wlink, sh_cam_ids[n], 256);
+                sh_cam_w2utf8(wname, sh_cam_names[n], 128);
+                sh_cam_facing[n] = 0; // desktop webcams have no facing
+                n++;
+            }
+            for (UINT32 i = 0; i < count; i++)
+                acts[i]->lpVtbl->Release(acts[i]);
+            pCoTaskMemFree(acts);
+        }
+        attrs->lpVtbl->Release(attrs);
+    } else {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "MFCreateAttributes failed");
+    }
+    pMFShutdown();
+    if (co_here) pCoUninitialize();
+    return n;
+}
+const char* egui_cr_cam_dev_id(int i) { return sh_cam_ids[i]; }
+const char* egui_cr_cam_dev_name(int i) { return sh_cam_names[i]; }
+int egui_cr_cam_dev_facing(int i) { return sh_cam_facing[i]; }
+
+typedef struct {
+    CRITICAL_SECTION lock;
+    HANDLE th;
+    volatile int running;
+    int co_here;       // whether close() owes a CoUninitialize
+    IMFMediaSource* source;
+    IMFSourceReader* reader;
+    int cap_w, cap_h, stride; // RGB32 row bytes; sign = top-down/bottom-up
+    uint8_t* raw;             // latest frame copied out of its MF sample
+    int raw_len;
+    volatile int fresh;
+    uint8_t* rgba;            // w*h*4, written by egui_cr_cam_frame
+    int w, h;
+    int urot;                 // user rotation (the demo's Rotate button)
+} sh_cam_s;
+
+// Capture thread: sync ReadSample blocks until the next frame (webcam
+// cadence, ~16-33ms), copy it into the locked slot; exits on close
+// (running = 0 + source shutdown fails the in-flight call) or an error
+// (device unplugged: frame polls simply go quiet).
+static DWORD WINAPI sh_cam_thread(void* arg) {
+    sh_cam_s* s = (sh_cam_s*)arg;
+    int co_here = sh_cam_co_init();
+    while (s->running) {
+        IMFSample* sample = NULL;
+        DWORD stream = 0, flags = 0;
+        if (FAILED(s->reader->lpVtbl->ReadSample(
+                s->reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0,
+                &stream, &flags, NULL, &sample)) ||
+            (flags & MF_SOURCE_READERF_ERROR))
+            break;
+        if (sample) {
+            IMFMediaBuffer* buf = NULL;
+            if (SUCCEEDED(sample->lpVtbl->ConvertToContiguousBuffer(
+                    sample, &buf))) {
+                BYTE* p = NULL;
+                DWORD len = 0;
+                if (SUCCEEDED(buf->lpVtbl->Lock(buf, &p, NULL, &len)) &&
+                    p && len) {
+                    EnterCriticalSection(&s->lock);
+                    if ((int)len > s->raw_len) {
+                        uint8_t* grown = (uint8_t*)realloc(s->raw, len);
+                        if (grown) { s->raw = grown; s->raw_len = (int)len; }
+                    }
+                    if (s->raw && (int)len <= s->raw_len) {
+                        memcpy(s->raw, p, len);
+                        s->fresh = 1;
+                    }
+                    LeaveCriticalSection(&s->lock);
+                    buf->lpVtbl->Unlock(buf);
+                }
+                buf->lpVtbl->Release(buf);
+            }
+            sample->lpVtbl->Release(sample);
+        }
+    }
+    if (co_here) pCoUninitialize();
+    return 0;
+}
+
+// Subtype classifier for the format preference: video format GUIDs carry
+// the FOURCC (or D3DFMT) in Data1 (DEFINE_MEDIATYPE_GUID), so the family
+// is recognizable without pinning every value. Decodable = the subtypes
+// the stock source-reader converter chain turns into RGB32 with no
+// decoder MFT in the middle.
+static int sh_cam_sub_kind(const GUID* g) {
+    switch (g->Data1) {
+        case 0x3231564E: return 0;  // NV12
+        case 0x32595559: return 0;  // YUY2
+        case 0x30323449: return 0;  // I420
+        case 0x32315659: return 0;  // YV12
+        case 0x00000016: return 0;  // RGB32
+        case 0x00000014: return 0;  // RGB24
+        case 0x47504A4D: return 1;  // MJPG (needs a decoder MFT)
+        default:         return 99; // unknown — never picked
+    }
+}
+
+// Closest native format to the request: among the types we can convert
+// (decodable subtypes first, MJPG last — its decoder may not load in the
+// default reader), score by area distance (strict < keeps the first on
+// ties); then ask the reader's converter chain for RGB32 while KEEPING
+// the native frame size.
+static HRESULT sh_cam_pick(IMFSourceReader* reader, int want_w, int want_h) {
+    IMFMediaType* best = NULL;
+    long best_d = 0;
+    int best_rank = 99;
+    for (DWORD i = 0; i < 64; i++) {
+        IMFMediaType* t = NULL;
+        if (FAILED(reader->lpVtbl->GetNativeMediaType(
+                reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, i, &t)))
+            break; // MF_E_NO_MORE_TYPES
+        GUID sub = {0};
+        UINT64 fs = 0;
+        int w = 0, h = 0;
+        int kind = 99;
+        if (SUCCEEDED(t->lpVtbl->GetGUID(t, &sh_guid_subtype, &sub)))
+            kind = sh_cam_sub_kind(&sub);
+        if (SUCCEEDED(t->lpVtbl->GetUINT64(t, &sh_guid_frame_size, &fs))) {
+            w = (int)(fs >> 32);
+            h = (int)(fs & 0xffffffffu);
+        }
+        if (w <= 0 || h <= 0 || kind == 99) {
+            t->lpVtbl->Release(t);
+            continue;
+        }
+        int rank = kind; // 0 decodable / 1 MJPG
+        long d = labs((long)w * h - (long)want_w * want_h);
+        if (!best || rank < best_rank || (rank == best_rank && d < best_d)) {
+            if (best) best->lpVtbl->Release(best);
+            best = t; // reference kept (released below / on the next match)
+            best_rank = rank;
+            best_d = d;
+        } else {
+            t->lpVtbl->Release(t);
+        }
+    }
+    if (!best) return E_FAIL;
+    HRESULT hr;
+    IMFMediaType* mt = NULL;
+    if (FAILED(hr = pMFCreateMediaType(&mt)) || !mt) {
+        best->lpVtbl->Release(best);
+        return hr;
+    }
+    if (SUCCEEDED(hr = best->lpVtbl->CopyAllItems(best, (IMFAttributes*)mt)) &&
+        SUCCEEDED(hr = mt->lpVtbl->SetGUID(mt, &sh_guid_subtype, &sh_guid_rgb32)) &&
+        SUCCEEDED(hr = mt->lpVtbl->SetUINT32(mt, &sh_guid_interlace,
+                                             MFVideoInterlace_Progressive)))
+        hr = reader->lpVtbl->SetCurrentMediaType(
+            reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, mt);
+    best->lpVtbl->Release(best);
+    mt->lpVtbl->Release(mt);
+    return hr;
+}
+
+void* egui_cr_cam_open(const char* devid, int w, int h) {
+    sh_cam_err[0] = 0;
+    if (!sh_cam_mf()) return NULL;
+    char sym[256];
+    if (devid && devid[0]) {
+        strncpy(sym, devid, sizeof sym - 1);
+        sym[sizeof sym - 1] = 0;
+    } else {
+        int n = egui_cr_cam_devices();
+        if (n == 0) {
+            if (!sh_cam_err[0])
+                snprintf(sh_cam_err, sizeof sh_cam_err, "no camera device");
+            return NULL;
+        }
+        strncpy(sym, sh_cam_ids[0], sizeof sym - 1);
+        sym[sizeof sym - 1] = 0;
+    }
+    if (w <= 0) w = 1280;
+    if (h <= 0) h = 720;
+    wchar_t wsym[256];
+    if (MultiByteToWideChar(CP_UTF8, 0, sym, -1, wsym, 256) <= 0) {
+        snprintf(sh_cam_err, sizeof sh_cam_err, "bad device id");
+        return NULL;
+    }
+
+    int co_here = sh_cam_co_init();
+    void* result = NULL;
+    IMFAttributes* attrs = NULL;
+    IMFMediaSource* source = NULL;
+    IMFSourceReader* reader = NULL;
+    do {
+        if (FAILED(pMFStartup(MF_VERSION, MFSTARTUP_NOSOCKET))) {
+            snprintf(sh_cam_err, sizeof sh_cam_err, "MFStartup failed");
+            break;
+        }
+        if (FAILED(pMFCreateAttributes(&attrs, 2)) || !attrs ||
+            FAILED(attrs->lpVtbl->SetGUID(attrs, &sh_guid_src_type,
+                                          &sh_guid_vidcap)) ||
+            FAILED(attrs->lpVtbl->SetString(attrs, &sh_guid_symlink, wsym)) ||
+            FAILED(pMFCreateDeviceSource(attrs, &source)) || !source) {
+            snprintf(sh_cam_err, sizeof sh_cam_err,
+                     "open %s: MFCreateDeviceSource failed", sym);
+            break;
+        }
+        // Reader attributes: hardware transforms let async/hardware decoder
+        // MFTs (MJPEG among them) join the chain, advanced video processing
+        // allows the full YUV->RGB negotiation below.
+        IMFAttributes* rattrs = NULL;
+        if (FAILED(pMFCreateAttributes(&rattrs, 2)) || !rattrs ||
+            FAILED(rattrs->lpVtbl->SetUINT32(rattrs, &sh_guid_hw_xforms, 1)) ||
+            FAILED(rattrs->lpVtbl->SetUINT32(rattrs, &sh_guid_adv_vp, 1)) ||
+            FAILED(pMFCreateSourceReader(source, rattrs, &reader)) || !reader) {
+            snprintf(sh_cam_err, sizeof sh_cam_err,
+                     "create source reader failed");
+            if (rattrs) rattrs->lpVtbl->Release(rattrs);
+            break;
+        }
+        rattrs->lpVtbl->Release(rattrs);
+        HRESULT phr = sh_cam_pick(reader, w, h);
+        if (FAILED(phr)) {
+            snprintf(sh_cam_err, sizeof sh_cam_err,
+                     "%s: RGB32 negotiation failed (hr=0x%08lX)", sym,
+                     (unsigned long)phr);
+            break;
+        }
+        sh_cam_s* s = (sh_cam_s*)calloc(1, sizeof *s);
+        if (!s) break;
+        InitializeCriticalSection(&s->lock); // before anything below can fail
+        s->co_here = co_here;
+        s->source = source;
+        s->reader = reader;
+        s->cap_w = w;
+        s->cap_h = h;
+        s->stride = w * 4;
+        // The actual negotiation result: frame size (the native pick wins
+        // over the hint) and the converter's row stride.
+        IMFMediaType* cur = NULL;
+        if (SUCCEEDED(reader->lpVtbl->GetCurrentMediaType(
+                reader, MF_SOURCE_READER_FIRST_VIDEO_STREAM, &cur)) && cur) {
+            UINT64 fs = 0;
+            UINT32 stride = 0;
+            if (SUCCEEDED(cur->lpVtbl->GetUINT64(cur, &sh_guid_frame_size,
+                                                 &fs))) {
+                s->cap_w = (int)(fs >> 32);
+                s->cap_h = (int)(fs & 0xffffffffu);
+            }
+            if (SUCCEEDED(cur->lpVtbl->GetUINT32(cur, &sh_guid_stride,
+                                                 &stride)))
+                s->stride = (int)stride; // may be negative (bottom-up)
+            cur->lpVtbl->Release(cur);
+        }
+        int stride_abs = s->stride < 0 ? -s->stride : s->stride;
+        s->raw = (uint8_t*)malloc((size_t)stride_abs * (size_t)s->cap_h);
+        if (!s->raw) {
+            snprintf(sh_cam_err, sizeof sh_cam_err, "out of memory");
+            DeleteCriticalSection(&s->lock);
+            free(s);
+            break;
+        }
+        s->running = 1;
+        s->th = CreateThread(NULL, 0, sh_cam_thread, s, 0, NULL);
+        if (!s->th) {
+            snprintf(sh_cam_err, sizeof sh_cam_err, "capture thread failed");
+            free(s->raw);
+            DeleteCriticalSection(&s->lock);
+            free(s);
+            break;
+        }
+        result = s; // source/reader/COM+MF pairing now owned by the session
+    } while (0);
+    if (attrs) attrs->lpVtbl->Release(attrs);
+    if (!result) {
+        if (reader) reader->lpVtbl->Release(reader);
+        if (source) {
+            source->lpVtbl->Shutdown(source);
+            source->lpVtbl->Release(source);
+        }
+        pMFShutdown();
+        if (co_here) pCoUninitialize();
+    }
+    return result;
+}
+
+static int sh_cam_clip(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+int egui_cr_cam_frame(void* sp, const uint8_t** out, int* w, int* h) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s || !s->raw) return 0;
+    int got = 0;
+    EnterCriticalSection(&s->lock);
+    if (s->fresh) {
+        s->fresh = 0; // one poll per frame
+        const int cw = s->cap_w, ch = s->cap_h;
+        const int st = s->stride < 0 ? -s->stride : s->stride;
+        const int rot = ((s->urot % 360) + 360) % 360;
+        const int ow = (rot == 90 || rot == 270) ? ch : cw;
+        const int oh = (rot == 90 || rot == 270) ? cw : ch;
+        if (cw > 0 && ch > 0 && (size_t)st * ch <= (size_t)s->raw_len) {
+            if (ow != s->w || oh != s->h) {
+                free(s->rgba);
+                s->rgba = (uint8_t*)malloc((size_t)ow * oh * 4);
+                s->w = ow; s->h = oh;
+            }
+            if (s->rgba) {
+                for (int y = 0; y < ch; y++) {
+                    // bottom-up RGB rows arrive flipped in memory
+                    const int sy = s->stride < 0 ? ch - 1 - y : y;
+                    const uint8_t* row = s->raw + (size_t)sy * st;
+                    for (int x = 0; x < cw; x++) {
+                        const uint8_t* p = row + (size_t)x * 4;
+                        uint8_t px[4]; // BGRA -> RGBA
+                        px[0] = p[2]; px[1] = p[1]; px[2] = p[0];
+                        px[3] = 255;
+                        int ox, oy; // where (x,y) lands after the rotation
+                        switch (rot) {
+                            case 90:  ox = ch - 1 - y; oy = x;          break;
+                            case 180: ox = cw - 1 - x; oy = ch - 1 - y; break;
+                            case 270: ox = y;          oy = cw - 1 - x; break;
+                            default:  ox = x;          oy = y;          break;
+                        }
+                        uint8_t* o = s->rgba + ((size_t)oy * ow + ox) * 4;
+                        o[0] = px[0]; o[1] = px[1]; o[2] = px[2]; o[3] = px[3];
+                    }
+                }
+                *out = s->rgba; *w = ow; *h = oh;
+                got = 1;
+            }
+        }
+    }
+    LeaveCriticalSection(&s->lock);
+    return got;
+}
+
+// UI rotation on top of the (already upright) webcam frame, 90° steps.
+void egui_cr_cam_set_rotation(void* sp, int deg) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    int d = deg % 360;
+    if (d < 0) d += 360;
+    s->urot = d;
+}
+
+// Photo/Video mode is an Android camera2 concept; webcams have no such
+// switch — a no-op so the uniform C API links.
+void egui_cr_cam_set_mode(void* sp, int video) {
+    (void)sp; (void)video;
+}
+
+void egui_cr_cam_close(void* sp) {
+    sh_cam_s* s = (sh_cam_s*)sp;
+    if (!s) return;
+    s->running = 0;
+    // Healthy stop: the loop exits at the next frame boundary (~16-33ms).
+    // NEVER call IMFMediaSource::Shutdown while the capture thread may be
+    // inside ReadSample — Shutdown tears the event generator out from
+    // under the in-flight call, the sync ReadSample then never returns,
+    // and the UI thread hangs forever in the join below.
+    if (s->th && WaitForSingleObject(s->th, 1000) == WAIT_OBJECT_0) {
+        CloseHandle(s->th);
+        s->th = NULL;
+    }
+    if (s->th) {
+        // Wedged inside ReadSample (device stopped delivering): Flush is
+        // the documented way to cancel a pending synchronous call.
+        s->reader->lpVtbl->Flush(s->reader, MF_SOURCE_READER_ALL_STREAMS);
+        if (WaitForSingleObject(s->th, 1000) == WAIT_OBJECT_0) {
+            CloseHandle(s->th);
+            s->th = NULL;
+        }
+    }
+    if (s->th) {
+        // Still stuck: abandon the session (objects, thread, COM and MF
+        // state stay alive) rather than hang the UI thread — a bounded
+        // leak on a wedged device beats a frozen window.
+        snprintf(sh_cam_err, sizeof sh_cam_err,
+                 "camera stop timed out — session abandoned");
+        return;
+    }
+    s->reader->lpVtbl->Release(s->reader);
+    s->source->lpVtbl->Shutdown(s->source);
+    s->source->lpVtbl->Release(s->source);
+    DeleteCriticalSection(&s->lock);
+    free(s->raw);
+    free(s->rgba);
+    pMFShutdown();
+    if (s->co_here) pCoUninitialize();
     free(s);
 }
 

@@ -49,6 +49,11 @@ require "../capybara/png" # --screenshot PNG encode
   require "./tray_darwin"
   require "./motion_darwin"
 {% end %}
+# Windows: the system-tray adapter (Shell_NotifyIconW + TrackPopupMenu
+# on a dedicated message-loop thread).
+{% if flag?(:win32) %}
+  require "./tray_windows"
+{% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
 # bounds checks on every array access), while the C code is cc -O2
@@ -1315,11 +1320,17 @@ module Egui
           # (driver/motion_darwin.cr) — polled per frame below.
           Egui::SystemPorts::Motion.use(Driver::DarwinMotion.new)
         {% end %}
+        {% if flag?(:win32) %}
+          # System tray: Shell_NotifyIconW surface (driver/
+          # tray_windows.cr) — hidden window + GetMessage loop on a
+          # dedicated thread; clicks drain via take_clicks from update.
+          Egui::SystemPorts::Tray.use(Driver::WindowsTray.new)
+        {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
-        {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
+        {% if flag?(:darwin) || flag?(:android) || flag?(:linux) || flag?(:win32) %}
           # Native camera capture (AVFoundation on macOS and iOS,
-          # camera2 NDK / V4L2 — backend/camera.cr); Windows and the
-          # desktops without a shim keep the core default "not
+          # camera2 NDK / V4L2 / Media Foundation — backend/camera.cr);
+          # the desktops without a shim keep the core default "not
           # implemented" implementation.
           Egui::Camera.use(Driver::NativeCam.new)
         {% end %}
@@ -1553,12 +1564,19 @@ module Egui
             # Keep doorbells from filling the pipe during busy runs.
             break if drain_doorbells_raw(handle, doorbell)
             events_n = drain_events(records)
-            if frame_pending?(app)
+            # Tray clicks are user input arriving between frames (the
+            # tray's own thread posts the wake doorbell before this) —
+            # they produce immediately, bypassing the unfocused idle
+            # gate like any other input. Zeroing read, so apps that
+            # never drain take_clicks cannot spin the loop.
+            tray_input = Egui::SystemPorts::Tray.take_arrivals > 0
+            if tray_input || frame_pending?(app)
               # Unfocused gate: real input (any event) produces a frame
               # immediately — hover-wheel scroll must stay responsive;
               # background repaint runs (animations) wait out the 1 Hz
               # fallback cadence instead of running at 60 Hz.
               due = Egui::Driver::Sokol.window_focused? || events_n > 0 ||
+                    tray_input ||
                     (Time.instant - last_produce) >= fallback.seconds
               if due
                 last_produce = Time.instant

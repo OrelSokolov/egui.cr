@@ -2,13 +2,15 @@
 # macOS and iOS (in the Simulator the virtual camera of e.g.
 # dautovri/SimulatorCamera arrives through the same AVFoundation calls),
 # camera2 NDK on Android (backend/sokol_shim.c, camera capture
-# section), V4L2 on Linux — the stacks share one C API, so one
-# implementation class covers them; Windows keeps the core default
-# "not implemented" answer, and this file compiles to nothing there.
+# section), V4L2 on Linux, Media Foundation on Windows (LoadLibrary'd
+# at runtime — see the shim's _WIN32 branch) — the stacks share one
+# C API, so one implementation class covers them; platforms without a
+# branch keep the core default "not implemented" answer, and this file
+# compiles to nothing there.
 
 module Egui
   module Driver
-    {% if flag?(:darwin) || flag?(:android) || flag?(:linux) %}
+    {% if flag?(:darwin) || flag?(:android) || flag?(:linux) || flag?(:win32) %}
       # No @[Link("egui_cr_sokol")] — this file is only reachable via
       # driver/sokol.cr (require "./camera"), whose LibEguiCr already
       # puts -legui_cr_sokol on the linker command line for the whole
@@ -44,13 +46,33 @@ module Egui
         fun cam_set_mode = egui_cr_cam_set_mode(sess : Void*,
                                                 video : Int32) : Void
         fun last_error = egui_cr_cam_last_error : UInt8*
+        # Windows only: the Media Foundation probe (mfplat.dll is missing
+        # on Windows N — a runtime fact the other platforms don't have,
+        # their capture stacks are link-time facts and hardcode true).
+        {% if flag?(:win32) %}
+          fun cam_available = egui_cr_cam_available : Int32
+        {% end %}
       end
 
       # The shared implementation over the shim's uniform camera C API.
       class NativeCam < Camera::Implementation
-        def available? : Bool
-          true
-        end
+        {% if flag?(:win32) %}
+          # The shim's LoadLibrary probe: false on N editions without
+          # Media Foundation (mfplat.dll missing), true elsewhere.
+          def available? : Bool
+            LibEguiCam.cam_available == 1
+          end
+
+          # The probe's own message ("Media Foundation is not
+          # available…") beats the core's generic "not implemented".
+          def unavailable_reason : String?
+            last_error || "Camera capture is not available"
+          end
+        {% else %}
+          def available? : Bool
+            true
+          end
+        {% end %}
 
         def permission_granted? : Bool
           LibEguiCam.perm == 1
