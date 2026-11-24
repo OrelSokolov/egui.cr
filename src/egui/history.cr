@@ -145,6 +145,20 @@ module Egui
       end
     end
 
+    # PRECISE wheel input (macOS trackpad / touchpad — Event
+    # #scroll_precise?): apply directly, like the scrollbar thumb. The
+    # deltas arrive every frame and carry the FULL motion — including
+    # the OS's own momentum after the finger lifts — so the velocity
+    # estimate would only extrapolate stale averages between them
+    # (visible as 2:1 judder on a 120 Hz display: wheel events are 60 Hz
+    # and the glide frames in-between run at the window-average speed).
+    # The notch path (#input/#glide) stays for discrete wheels.
+    def direct(delta : Float64, max_offset : Float64) : Nil
+      @offset = (@offset + delta).clamp(0.0, max_offset)
+      @velocity = 0.0
+      @history.clear
+    end
+
     # The scrollbar thumb takes over: direct control, no inertia.
     def takeover : Nil
       @velocity = 0.0

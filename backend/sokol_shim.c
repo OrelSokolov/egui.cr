@@ -97,6 +97,14 @@ typedef void (*cr_event_cb)(int type, float mx, float my, float sx, float sy,
                             unsigned mods, unsigned mouse_button,
                             unsigned key_code, unsigned char_code);
 
+// Doorbell tags (the one-byte R→A wake channel, defined with the doorbell
+// section below). Up here because egui_cr_sapp_run's detached branch sends
+// SH_WAKE_QUIT and the early forward declarations reference them.
+#define SH_WAKE_EVENTS 1
+#define SH_WAKE_INIT   2
+#define SH_WAKE_QUIT   3
+#define SH_WAKE_PRESENT 4 // R completed a render tick (≈ one present)
+
 #if defined(__ANDROID__)
 // Implemented in Crystal (src/egui/backend/android_boot.cr); called from
 // sh_init_cb — the first code sokol runs on its event-loop thread.
@@ -1089,7 +1097,30 @@ void egui_cr_pkt_blocker(float x, float y, float w, float h, float z,
 int egui_cr_scroll_offsets(const uint64_t* ids, double* offs, int n);
 // Clear-on-read: R applied a scroll delta A has not adopted yet.
 int egui_cr_scroll_dirty(void);
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS)
+#if defined(_SAPP_MACOS)
+// macOS detached loop (inverted threads): AppKit keeps the main thread,
+// and its display-link tick plays the R role — the callbacks the render
+// thread installs on Linux/Win32 (defined near the end of this file) are
+// installed on the main thread instead (egui_cr_sapp_run's detached
+// branch). Forward decls so the branch above their definitions compiles;
+// sh_wake_a is the doorbell writer, sh_mac_pinch the detached-aware
+// trackpad-pinch emitter (both defined with the doorbell/ring section).
+static void sh_rt_init_cb(void);
+static void sh_rt_frame_cb(void);
+static void sh_rt_event_cb(const sapp_event* ev);
+static void sh_rt_cleanup_cb(void);
+static void sh_wake_a(unsigned char tag);
+static void sh_mac_pinch(float factor);
+// Detached state the sapp_run branch touches. The real definitions with
+// initializers live in the detached section below — same types on this
+// arm (sh_atom_i = _Atomic int), the later definitions supersede these
+// tentative ones.
+static int sh_detached(void);
+static void sh_ai_store(_Atomic int* v, int x);
+static _Atomic int g_app_dead;
+static _Thread_local int sh_on_render_thread;
+#endif
 // window-management forwarding (command mailbox wrappers, defined in the
 // detached section; called from the routing prologues below)
 static void sh_post_window_size(int w, int h);
@@ -1422,10 +1453,15 @@ static float sh_pinch_dist(const sapp_touchpoint* a, const sapp_touchpoint* b) {
 // event, so Crystal's fb-px→points division applies).
 static float g_mac_mx, g_mac_my; // last mouse pos (fb px)
 
+// Detached-aware emit (defined with the doorbell/ring section below):
+// legacy — straight into Crystal; the detached loop — into the event
+// ring (this responder runs on the AppKit main thread, A's worker
+// drains the ring).
+static void sh_mac_pinch(float factor);
+
 @implementation _sapp_macos_view (ShPinch)
 - (void)magnifyWithEvent:(NSEvent*)event {
-    g_event(SH_EVENT_PINCH, g_mac_mx, g_mac_my,
-            1.0f + (float)event.magnification, 0.0f, 0, 0, 0, 0);
+    sh_mac_pinch(1.0f + (float)event.magnification);
 }
 @end
 #endif
@@ -1932,6 +1968,44 @@ void egui_cr_sapp_run(cr_init_cb init, cr_frame_cb frame, cr_event_cb event,
     // zero. Uncapped goes through the layer's displaySyncEnabled instead.
     g_mtl_no_vsync = (swap_interval == 0);
     if (swap_interval < 1) swap_interval = 1;
+#endif
+#if defined(_SAPP_MACOS)
+    if (sh_detached()) {
+        // Detached macOS loop (inverted threads): the main thread plays
+        // the R role — sokol's display-link tick replays FramePackets
+        // and presents (sh_rt_frame_cb), events land in the ring for
+        // A's worker (sh_rt_event_cb, incl. the composited-scroll wheel
+        // interception). Crystal runs its produce loop on its worker
+        // thread and never touches sg/AppKit directly. Same desc shape
+        // as the legacy main loop below — only the callbacks differ.
+        sh_on_render_thread = 1; // mailbox calls in R role take the direct path
+        g_main_desc = (sapp_desc){
+            .init_cb = sh_rt_init_cb,
+            .frame_cb = sh_rt_frame_cb,
+            .event_cb = sh_rt_event_cb,
+            .cleanup_cb = sh_rt_cleanup_cb,
+            .width = width,
+            .height = height,
+            .window_title = title,
+            .high_dpi = true,
+            .sample_count = (transparent || g_msaa <= 1) ? 1 : g_msaa,
+            .depth_format = sh_depth_resolve(transparent),
+            .swap_interval = swap_interval,
+            #if defined(SOKOL_METAL)
+            .metal.disable_display_sync = g_mtl_no_vsync,
+            #endif
+            .enable_clipboard = true,
+            .enable_dragndrop = true,
+            .max_dropped_files = 8,
+            .max_dropped_file_path_length = 8192,
+            .logger.func = slog_func,
+        };
+        sh_env_divisor();
+        sapp_run(&g_main_desc);
+        sh_ai_store(&g_app_dead, 1);
+        sh_wake_a(SH_WAKE_QUIT);
+        return;
+    }
 #endif
 #if defined(_SAPP_LINUX)
     // XWayland DRI3 deadlock workaround. Under rapid input, sokol's X11
@@ -5819,7 +5893,7 @@ void egui_cr_sgl_disable_texture(void) {
 // detached path the per-frame setup (viewport/ortho/matrices) is done by
 // the replay and everything else becomes packet ops; on the legacy path
 // they are pass-throughs.
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS)
 void egui_cr_sgl_viewport(int x, int y, int w, int h, bool origin_top_left) {
     if (!sh_run_direct()) return; // set by the replay
     sgl_viewport(x, y, w, h, origin_top_left);
@@ -7644,7 +7718,7 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 // only on R). Legacy single-thread mode (macOS, or EGUI_RENDER_THREAD=0
 // on Linux/Win32) keeps the direct paths: every routed function checks
 // sh_detached() and falls through to the original body.
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32)
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS)
 
 // --- portable primitives (thread / sync / atomics / doorbell) -----------------
 //
@@ -7657,7 +7731,7 @@ void egui_cr_set_window_icon(const unsigned char* rgba, int w, int h) {
 // — anonymous pipes don't do overlapped IO, and Crystal's win32 scheduler
 // (IOCP) adopts existing sockets only when they were created with
 // WSA_FLAG_OVERLAPPED (see Socket's fd-constructor note in stdlib).
-#if defined(_SAPP_LINUX)
+#if defined(_SAPP_LINUX) || defined(_SAPP_MACOS)
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -7787,14 +7861,11 @@ static void sh_shot_legacy(void);
 
 // ---- wake doorbell (R → A for Crystal's scheduler) --------------------------
 // One byte per signal; tags distinguish init/quit from plain event
-// doorbells. Non-blocking writes: a full pipe/socket just means A is
-// behind and will drain everything in one read anyway.
-#define SH_WAKE_EVENTS 1
-#define SH_WAKE_INIT   2
-#define SH_WAKE_QUIT   3
-#define SH_WAKE_PRESENT 4 // R completed a render tick (≈ one present)
+// doorbells (SH_WAKE_* — defined near the top of the file). Non-blocking
+// writes: a full pipe/socket just means A is behind and will drain
+// everything in one read anyway.
 
-#if defined(_SAPP_LINUX)
+#if defined(_SAPP_LINUX) || defined(_SAPP_MACOS)
 static int g_a_pipe[2] = {-1, -1}; // [0] = A's read end, [1] = R's write
 static void sh_wake_a(unsigned char tag) {
     if (g_a_pipe[1] < 0) return;
@@ -7809,7 +7880,17 @@ void egui_cr_wake_main(void) { sh_wake_a(SH_WAKE_EVENTS); }
 // Open the doorbell. Returns A's end (a nonblocking pipe fd), -1 on
 // failure. R's write end lands in g_a_pipe[1].
 static intptr_t sh_doorbell_open(void) {
+#if defined(__APPLE__)
+    // macOS has no pipe2 — pipe() + the two flags by hand.
+    if (pipe(g_a_pipe) != 0) return -1;
+    for (int i = 0; i < 2; i++) {
+        int fl = fcntl(g_a_pipe[i], F_GETFL, 0);
+        if (fl >= 0) fcntl(g_a_pipe[i], F_SETFL, fl | O_NONBLOCK);
+        fcntl(g_a_pipe[i], F_SETFD, FD_CLOEXEC);
+    }
+#else
     if (pipe2(g_a_pipe, O_NONBLOCK | O_CLOEXEC) != 0) return -1;
+#endif
     return g_a_pipe[0];
 }
 static void sh_doorbell_close_a(intptr_t a_end) {
@@ -7979,6 +8060,26 @@ void egui_cr_drop_payload_free(void* payload) {
     sh_drop_payload_free((sh_drop_payload_t*)payload);
 }
 
+#if defined(__APPLE__) && !defined(SH_IOS)
+// The ShPinch category (top of file) emits the trackpad pinch here:
+// legacy — straight into Crystal's callback; detached — into the ring
+// (this runs on the AppKit main thread, A's worker drains the ring).
+static void sh_mac_pinch(float factor) {
+    if (sh_detached()) {
+        sh_event_rec_t rec;
+        memset(&rec, 0, sizeof rec);
+        rec.type = SH_EVENT_PINCH;
+        rec.mx = g_mac_mx;
+        rec.my = g_mac_my;
+        rec.sx = factor;
+        sh_ring_push(&rec);
+        sh_wake_a(SH_WAKE_EVENTS);
+        return;
+    }
+    g_event(SH_EVENT_PINCH, g_mac_mx, g_mac_my, factor, 0.0f, 0, 0, 0, 0);
+}
+#endif
+
 // Time of the last RESIZED event (R thread only — event_cb and
 // frame_cb both run there). While fresh, sh_rt_frame waits a few ms
 // for A's real-size packet instead of presenting a stale-size frame.
@@ -8030,6 +8131,13 @@ static void sh_rt_event_cb(const sapp_event* ev) {
         case SAPP_EVENTTYPE_RESTORED:  g_win_iconified = 0; break;
         default: break;
     }
+#if defined(__APPLE__) && !defined(SH_IOS)
+    // Last mouse position for the trackpad-pinch category (see the
+    // ShPinch block at the top of the file) — same contract as the
+    // legacy sh_event_cb.
+    g_mac_mx = ev->mouse_x;
+    g_mac_my = ev->mouse_y;
+#endif
     sh_event_rec_t rec;
     memset(&rec, 0, sizeof rec);
     rec.type = (int)ev->type;
@@ -8497,7 +8605,7 @@ void egui_cr_pkt_video(float x, float y, float w, float h,
     (void)cx; (void)cy; (void)cw; (void)ch; (void)vid; (void)rot;
 #endif
 }
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // pkt builder continues
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS) // pkt builder continues
 
 static void egui_cr_pkt_scissor(float x, float y, float w, float h) {
     uint32_t o[5] = { SH_OP_SCISSOR, sh_f2u(x), sh_f2u(y), sh_f2u(w), sh_f2u(h) };
@@ -9037,7 +9145,7 @@ static void sh_text_run(uint32_t view_id, const float* v, int count,
     sgl_pop_pipeline();
     sgl_disable_texture();
 }
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // pkt replay continues
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS) // pkt replay continues
 
 static void sh_tex_upload(sh_tex_t* t, const void* data, size_t size) {
     sg_image_data d;
@@ -9889,14 +9997,14 @@ static void sh_resize_dbg_check(sh_packet_t* pkt) {
 // screen grabber (XWayland windows can't be XGetImage'd). Thresholds
 // are present counts, not vsync ticks: an occluded XWayland window can
 // present as rarely as once a second.
-#if defined(SOKOL_VULKAN)
-// no GL entry points on the Vulkan backend — capture is debug tooling
+#if defined(SOKOL_VULKAN) || defined(SOKOL_METAL)
+// no GL entry points on the Vulkan/Metal backends — capture is debug tooling
 #else
 static int sh_shot_ticks[] = {3, 8, 20};
 #endif
 static void sh_shot(sh_packet_t* p) {
-#if defined(SOKOL_VULKAN)
-    (void)p; // no GL entry points on the Vulkan backend (debug tool only)
+#if defined(SOKOL_VULKAN) || defined(SOKOL_METAL)
+    (void)p; // no GL entry points on the Vulkan/Metal backends (debug tool only)
     return;
 #else
     static const char* dir;
@@ -9979,9 +10087,10 @@ static int g_post_pending_n;
 
 // The screenshot path is shared by every backend (Crystal calls
 // egui_cr_screenshot_request unconditionally), so it lives outside the
-// detached-mailbox guard. macOS — single-threaded direct rendering —
-// needs no atomics: plain loads/stores replace the ones above.
-#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32)
+// detached-mailbox guard. Platforms without the detached section (iOS,
+// Android) — single-threaded direct rendering — need no real atomics:
+// plain loads/stores replace the ones above.
+#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32) && !defined(_SAPP_MACOS)
 #include <time.h>
 typedef int sh_atom_i;
 static int sh_ai_load(sh_atom_i* v) { return *v; }
@@ -10079,7 +10188,7 @@ void egui_cr_screenshot_free(void) {}
 static void sh_screenshot_try(int w, int h) { (void)w; (void)h; }
 #endif
 
-#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) // detached mailbox continues
+#if defined(_SAPP_LINUX) || defined(_SAPP_WIN32) || defined(_SAPP_MACOS) // detached mailbox continues
 // Window position cache: R refreshes it every few ticks (on its own
 // connection / window thread) so A reads a slightly stale position
 // instead of a condvar roundtrip. Without the cache a per-frame position
@@ -10319,6 +10428,7 @@ static void sh_rt_cleanup_cb(void) {
 
 // ---- render thread entry / lifecycle -------------------------------------------
 
+#if !defined(_SAPP_MACOS)
 static char* g_rt_title;
 static sh_thread g_render_thread;
 static int g_rt_w, g_rt_h, g_rt_swap;
@@ -10356,6 +10466,7 @@ static void* sh_render_thread(void* unused) {
     sh_wake_a(SH_WAKE_QUIT);
     return NULL;
 }
+#endif // !_SAPP_MACOS
 
 // Spawn the render thread; returns A's doorbell end (-1 on failure).
 // Crystal registers it with its scheduler (an evented read blocks the
@@ -10367,6 +10478,16 @@ intptr_t egui_cr_start(const char* title, int width, int height, int borderless,
     g_borderless = borderless;
     g_transparent = transparent;
     g_msaa = sh_msaa_resolve(msaa);
+#if defined(_SAPP_MACOS)
+    // macOS inversion: AppKit owns the main thread, so there is no
+    // render thread to spawn. Crystal calls egui_cr_sapp_run itself on
+    // the main thread (the detached branch installs the R callbacks)
+    // and runs the A loop on its worker thread.
+    (void)title; (void)width; (void)height; (void)swap_interval;
+    sh_ai_store(&g_app_dead, 0);
+    sh_ai_store(&g_detached, 1);
+    return a_end;
+#else
     g_rt_w = width;
     g_rt_h = height;
     g_rt_swap = getenv("EGUI_NOVSYNC") ? 0 : swap_interval;
@@ -10387,11 +10508,14 @@ intptr_t egui_cr_start(const char* title, int width, int height, int borderless,
         return -1;
     }
     return a_end;
+#endif // _SAPP_MACOS
 }
 
 void egui_cr_join(void) {
     if (sh_ai_xchg(&g_detached, 0) != 0) {
+#if !defined(_SAPP_MACOS)
         sh_thread_join(g_render_thread);
+#endif
         sh_doorbell_close_a(-1); // close R's end; A's end is Crystal's IO
     }
 }
@@ -10606,10 +10730,10 @@ void egui_cr_request_quit(void) {
 
 #endif // _SAPP_LINUX || _SAPP_WIN32
 
-#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32)
+#if !defined(_SAPP_LINUX) && !defined(_SAPP_WIN32) && !defined(_SAPP_MACOS)
 // Legacy-path entry points that the detached section above defines for
-// Linux/Win32: on macOS everything runs on the one thread, so they are
-// plain sapp pass-throughs.
+// Linux/Win32/macOS: on iOS/Android everything runs on the one thread,
+// so they are plain sapp pass-throughs.
 #if defined(SH_IOS)
 #include <stdlib.h>
 #endif

@@ -183,8 +183,15 @@ module Egui
       elsif canvas_drag
         v_kin.input(-memory.canvas_drag_delta(id).y, input.time, max_v_prev)
       elsif active && !input.scroll.y.zero? && !to_h
-        v_kin.input(input.scroll.y * style.scroll_speed,
-          input.time, max_v_prev)
+        if input.scroll_precise?
+          # Trackpad precise stream: deltas carry the full motion
+          # (OS momentum included) — apply directly, no extrapolation
+          # between events (see KineticScroller#direct).
+          v_kin.direct(input.scroll.y * style.scroll_speed, max_v_prev)
+        else
+          v_kin.input(input.scroll.y * style.scroll_speed,
+            input.time, max_v_prev)
+        end
       else
         v_kin.glide(input.dt, max_v_prev, ui.ctx)
       end
@@ -200,7 +207,11 @@ module Egui
         if canvas_drag && @hbar
           hk.input(-memory.canvas_drag_delta(id).x, input.time, max_h_prev)
         elsif active && !dx.zero?
-          hk.input(dx * style.scroll_speed, input.time, max_h_prev)
+          if input.scroll_precise?
+            hk.direct(dx * style.scroll_speed, max_h_prev)
+          else
+            hk.input(dx * style.scroll_speed, input.time, max_h_prev)
+          end
         else
           hk.glide(input.dt, max_h_prev, ui.ctx)
         end

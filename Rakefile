@@ -530,7 +530,17 @@ def build_examples(names, opt_flags, label)
         # map over an ExecutionContext::Parallel pool — the flag
         # (Crystal 1.21) turns the spawns into real threads; other
         # examples keep the classic single-threaded build.
-        dflags = %w[search1m logs_viewer].include?(name) ? " -Dexecution_context " : ""
+        # macOS detached loop needs it too: the A loop runs on a worker
+        # thread (run_detached_mac) parked in AppKit on main — without
+        # EC the PTY/dialog/HTTP fibers would live on the parked main
+        # context and starve.
+        # macOS detached loop needs it too: the A loop runs on a worker
+        # thread (run_detached_mac) while main is parked in AppKit —
+        # without EC the PTY/dialog/HTTP fibers would live on the
+        # parked main context and starve. (iOS cross-builds don't go
+        # through build_examples.)
+        dflags = %w[search1m logs_viewer].include?(name) || DARWIN ?
+                 " -Dexecution_context " : ""
         cmd = "crystal build examples/#{name}.cr -o #{out} #{opt_flags}#{dflags}--link-flags \"#{flags}\""
         unless system(env, cmd)
           lock.synchronize { failures << name }

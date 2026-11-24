@@ -166,6 +166,11 @@ module Egui
     # gesture layer apply touch semantics — bigger tap slop,
     # drag-to-scroll in text fields — without touching the mouse path.
     getter? from_touch : Bool
+    # True when a SCROLL event carries precise (trackpad) pixel deltas:
+    # a continuous stream the OS runs its own momentum on. Scroll sinks
+    # apply such deltas directly — no kinetic extrapolation between
+    # events (see KineticScroller#direct).
+    getter? scroll_precise : Bool
 
     def initialize(@type : Type, @pos : Pos2? = nil,
                    @button : PointerButton = :primary,
@@ -175,7 +180,8 @@ module Egui
                    @modifiers : Modifiers = Modifiers.new,
                    @paths : Array(String) = [] of String,
                    @zoom : Float64 = 1.0,
-                   @from_touch : Bool = false)
+                   @from_touch : Bool = false,
+                   @scroll_precise : Bool = false)
     end
 
     def self.pointer_moved(pos : Pos2, from_touch : Bool = false) : Event
@@ -194,8 +200,8 @@ module Egui
         from_touch: from_touch)
     end
 
-    def self.scroll(delta : Vec2) : Event
-      new(:scroll, scroll: delta)
+    def self.scroll(delta : Vec2, precise : Bool = false) : Event
+      new(:scroll, scroll: delta, scroll_precise: precise)
     end
 
     def self.key_pressed(key : KeyCode,
@@ -302,6 +308,12 @@ module Egui
     # move/press clears it. Hybrid touch+mouse devices thus switch modes
     # on whichever was touched last.
     getter? touch_pointer : Bool
+    # True when this frame's wheel deltas are PRECISE (macOS trackpad /
+    # touchpad pixel deltas — Event#scroll_precise?): a continuous
+    # stream carrying the full motion, OS momentum included. Scroll
+    # sinks apply such deltas directly and must not extrapolate between
+    # them (KineticScroller#direct vs #input/#glide).
+    getter? scroll_precise : Bool
     # The idle counter: seconds elapsed since the last USER activity —
     # pointer move/press/release, key, wheel, pinch, text input (in
     # EITHER direction: a release counts, so does a key-up). Framework
@@ -331,7 +343,8 @@ module Egui
                    @zoom_delta : Float64 = 1.0,
                    @zoom_pos : Pos2? = nil,
                    @touch_pointer : Bool = false,
-                   @seconds_since_activity : Float64 = 0.0)
+                   @seconds_since_activity : Float64 = 0.0,
+                   @scroll_precise : Bool = false)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -411,6 +424,7 @@ module Egui
       zoom_delta = 1.0
       zoom_pos : Pos2? = nil
       touch_pointer = prev.try(&.touch_pointer?) || false
+      scroll_precise = false
       moved = false
 
       raw.events.each do |e|
@@ -444,6 +458,7 @@ module Egui
           end
         in .scroll?
           scroll = scroll + e.scroll
+          scroll_precise ||= e.scroll_precise?
         in .window_resized?
           # handled via screen_rect
         in .key_pressed?
@@ -495,7 +510,7 @@ module Egui
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
         extra1_pressed,
         dropped_files, zoom_delta, zoom_pos, touch_pointer,
-        seconds_since_activity)
+        seconds_since_activity, scroll_precise)
     end
   end
 end

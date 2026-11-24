@@ -118,12 +118,14 @@ lib LibEguiCr
   fun set_frame_divisor = egui_cr_set_frame_divisor(n : Int32)
   fun refresh_rate = egui_cr_refresh_rate : Int32
 
-  # detached render loop (shim, Linux + Win32): spawn the render thread
-  # and get the main-thread doorbell handle (a pipe fd on Linux, an
-  # overlapped socket on Win32); events arrive through a ring
-  # (#events_pop), frames leave through the packet builder
-  # (#begin_pass/#end_pass route there automatically).
-  {% if flag?(:linux) || flag?(:win32) %}
+  # detached render loop (shim, Linux + Win32 + macOS): the render
+  # thread (on Linux/Win32 a C pthread; on macOS the AppKit main thread
+  # in the inverted loop) presents FramePackets; the Crystal loop gets a
+  # doorbell handle (a pipe fd on Linux/macOS, an overlapped socket on
+  # Win32); events arrive through a ring (#events_pop), frames leave
+  # through the packet builder (#begin_pass/#end_pass route there
+  # automatically).
+  {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
     fun start = egui_cr_start(title : UInt8*, width : Int32, height : Int32,
                               borderless : Int32, transparent : Int32,
                               msaa : Int32, swap_interval : Int32) : Int64
@@ -489,10 +491,11 @@ module Egui
         end
 
         def wake : Nil
-          # The doorbell only exists in the detached-loop builds
-          # (Linux/Win32 — see run_detached); elsewhere the loop ticks
-          # every vsync on its own and wake is a no-op.
-          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
+          # The doorbell exists in the detached-loop builds (Linux/Win32
+          # and the inverted macOS loop — see run_detached); elsewhere
+          # the loop ticks every vsync on its own and wake is a no-op.
+          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) ||
+                (flag?(:darwin) && !flag?(:ios)) %}
             LibEguiCr.wake_main if Sokol.natural_scheduler?
           {% end %}
         end
@@ -511,12 +514,14 @@ module Egui
         end
 
         # Composited scroll (plans/COMPOSITED_SCROLL.md): the detached
-        # render thread can translate a scroll bracket at replay time.
-        # Off on the legacy loop (no render thread), under EGUI_SDF
-        # (SDF instances draw outside the modelview bracket) and via
-        # the EGUI_COMPOSITED_SCROLL=0 kill-switch.
+        # render thread (Linux/Win32 pthread, or the AppKit main thread
+        # in the inverted macOS loop) can translate a scroll bracket at
+        # replay time. Off on the legacy loop (no render thread), under
+        # EGUI_SDF (SDF instances draw outside the modelview bracket)
+        # and via the EGUI_COMPOSITED_SCROLL=0 kill-switch.
         def composited_scroll? : Bool
-          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
+          {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) ||
+                (flag?(:darwin) && !flag?(:ios)) %}
             return false if ENV["EGUI_COMPOSITED_SCROLL"]? == "0"
             Sokol.natural_scheduler? && !Sokol.sdf?
           {% else %}
@@ -843,6 +848,18 @@ module Egui
       {% if flag?(:win32) %}
         @@doorbell_peer : TCPSocket? = nil
       {% end %}
+      # Detached loop state shared between the setup (main thread) and
+      # the A loop (worker thread on the inverted macOS loop): the
+      # doorbell pair and the worker itself (joined after sapp_run
+      # returns).
+      {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
+        @@detached_pipe : {IO::FileDescriptor, Int64}? = nil
+      {% end %}
+      # The A loop's isolated context (inverted macOS loop only —
+      # Linux/Win32 run the A loop on the process main thread).
+      {% if flag?(:darwin) && !flag?(:ios) %}
+        @@detached_worker : Fiber::ExecutionContext::Isolated? = nil
+      {% end %}
       # Debug-clock epoch (Time::Instant — the monotonic clock has no
       # absolute seconds, only differences; #dbg_now spans from here).
       @@dbg_t0 = Time.instant
@@ -851,6 +868,9 @@ module Egui
       @@dbg_beat : Float64 = 0.0
       @@dbg_moves = 0
       @@dbg_last_entry : Float64 = 0.0
+      # EGUI_SCROLL_DEBUG: wall clock of the last MOUSE_SCROLL event
+      # (inter-event gap in the log lines).
+      @@scroll_dbg_last : Float64 = 0.0
 
       # Seconds on the debug clock (since @@dbg_t0).
       private def self.dbg_now : Float64
@@ -1421,20 +1441,27 @@ module Egui
         # Linux/Win32: the detached render loop (loop_redesign.md) —
         # sokol's window/GL/swap cycle runs on a C thread while THIS
         # thread keeps the Crystal scheduler, producing FramePackets.
+        # macOS (inverted): AppKit keeps the main thread (the C side
+        # replays packets in its display-link tick) while the Crystal
+        # A loop runs on a worker thread — run_detached_mac.
         # Disable with EGUI_RENDER_THREAD=0 (bisecting / regression
-        # hunting). macOS stays on the legacy loop: AppKit requires the
-        # process main thread, which is where the Crystal scheduler
-        # lives (see loop_redesign.md §8). Android also stays on the
-        # legacy path — sokol owns the event loop and called our
-        # sokol_main up the stack; note flag?(:linux) is true on the
-        # aarch64-linux-android target (the triple's vendor), so it must
-        # be excluded explicitly.
+        # hunting). Android also stays on the legacy path — sokol owns
+        # the event loop and called our sokol_main up the stack; note
+        # flag?(:linux) is true on the aarch64-linux-android target
+        # (the triple's vendor), so it must be excluded explicitly.
         {% if (flag?(:linux) && !flag?(:android)) || flag?(:win32) %}
           if ENV["EGUI_RENDER_THREAD"]? != "0"
             @@loop_started = true
             run_detached(title, width, height, decorations, transparent,
               msaa, vsync)
             return
+          end
+        {% elsif flag?(:darwin) && !flag?(:ios) %}
+          if ENV["EGUI_RENDER_THREAD"]? != "0"
+            @@loop_started = true
+            return if run_detached_mac(title, width, height, decorations,
+              transparent, msaa, vsync, init, frame, event, cleanup)
+            # start failed — fall through to the legacy loop below
           end
         {% end %}
 
@@ -1445,19 +1472,14 @@ module Egui
           msaa, vsync ? 1 : 0)
       end
 
-      {% if flag?(:linux) || flag?(:win32) %}
-        # The main-thread half of the detached loop: block on the
-        # doorbell (an evented read — the scheduler keeps serving PTY
-        # readers and dialog fibers while we wait), translate input from
-        # the event ring, and produce frames into the packet mailbox
-        # whenever input / repaint requests / texture evictions demand
-        # one. The render thread replays the last packet on its own, so
-        # idle frames need no work here at all.
-        private def self.run_detached(title : String, width : Int32,
-                                      height : Int32, decorations : Bool,
-                                      transparent : Bool, msaa : Int32,
-                                      vsync : Bool) : Nil
-          handle : Int64
+      {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
+        # Doorbell acquisition: Win32 needs a Crystal-made loopback pair
+        # (IOCP can't adopt a foreign socket), Linux/macOS take the fd
+        # the C side opens. Returns nil when #start failed.
+        private def self.detached_pipe(title : String, width : Int32,
+                                       height : Int32, decorations : Bool,
+                                       transparent : Bool, msaa : Int32,
+                                       vsync : Bool) : {IO::FileDescriptor, Int64}?
           {% if flag?(:win32) %}
             # Win32 doorbell: the C-made loopback pair's A end can't be
             # adopted by Crystal's IOCP scheduler — an evented read on it
@@ -1474,32 +1496,41 @@ module Egui
             handle = LibEguiCr.start(title.to_unsafe, width, height,
               decorations ? 0 : 1, transparent ? 1 : 0, msaa,
               vsync ? 1 : 0)
-            return if handle < 0
+            return nil if handle < 0
             # A's end for the C-side non-blocking drains (FIONREAD + recv).
             handle = pipe.fd.to_i64!
           {% else %}
             handle = LibEguiCr.start(title.to_unsafe, width, height,
               decorations ? 0 : 1, transparent ? 1 : 0, msaa,
               vsync ? 1 : 0)
-            return if handle < 0
+            return nil if handle < 0
             pipe = IO::FileDescriptor.new(handle.to_i32)
           {% end %}
-          # Detached loop: the Crystal scheduler runs naturally on this
-          # thread (the Driver::Base#wake doorbell forwards to the
-          # render-thread doorbell — see Handle#wake).
-          @@natural_scheduler = true
-          # Composited scroll is live (the Handle gate's hot-loop
-          # cache — see adopt_composited_offsets): the render thread
-          # can consume wheel events and the produce handshake runs.
-          @@composited = Egui::Driver::Base.current.try(&.composited_scroll?) || false
+          {pipe, handle}
+        end
+
+        # The A loop (the produce half of the detached cycle): block on
+        # the doorbell (an evented read — the scheduler keeps serving
+        # PTY readers and dialog fibers while we wait), translate input
+        # from the event ring, and produce frames into the packet
+        # mailbox whenever input / repaint requests / texture evictions
+        # demand one. The render side replays the last packet on its
+        # own, so idle frames need no work here at all. Returns on QUIT
+        # (or a dead doorbell); ends with #join.
+        private def self.a_loop : Nil
+          pipe, handle = @@detached_pipe.not_nil!
           doorbell = Bytes.new(256)
           records = Pointer(LibEguiCr::EventRecord).malloc(64)
 
-          # The render thread signals INIT once the window + GL context
+          # The render side signals INIT once the window + GL context
           # exist (the C-side init does sg/sgl setup — GL work belongs
-          # to R). Only then may Crystal build fonts and draw.
-          until drain_pipe_once(pipe, doorbell) == :init
-            # (blocks inside; a QUIT here means the window died at birth)
+          # to R). Only then may Crystal build fonts and draw. A QUIT
+          # (or a closed doorbell) here means the window died at birth
+          # — no INIT will ever come.
+          tag = drain_pipe_once(pipe, doorbell)
+          while tag != :init
+            return if tag.nil? || tag == :quit
+            tag = drain_pipe_once(pipe, doorbell)
           end
           on_init_detached
 
@@ -1616,6 +1647,58 @@ module Egui
             end
           end
           LibEguiCr.join
+        end
+
+        # Linux/Win32: THIS thread (the process main) runs the A loop;
+        # the render side is a C pthread inside the shim.
+        private def self.run_detached(title : String, width : Int32,
+                                      height : Int32, decorations : Bool,
+                                      transparent : Bool, msaa : Int32,
+                                      vsync : Bool) : Nil
+          return unless (pair = detached_pipe(title, width, height,
+            decorations, transparent, msaa, vsync))
+          @@detached_pipe = pair
+          detached_flags
+          a_loop
+        end
+
+        # The produce-side flags both loop flavors need before frames
+        # flow: the scheduler runs naturally between doorbell waits
+        # (the Driver::Base#wake doorbell forwards to the render-side
+        # one — see Handle#wake), and composited scroll is live (the
+        # Handle gate's hot-loop cache — see adopt_composited_offsets):
+        # the render side can consume wheel events and the produce
+        # handshake runs.
+        private def self.detached_flags : Nil
+          @@natural_scheduler = true
+          @@composited = Egui::Driver::Base.current.try(&.composited_scroll?) || false
+        end
+
+        # macOS, inverted threads: AppKit owns the main thread, so the
+        # C side replays packets in its display-link tick (the shim's
+        # egui_cr_sapp_run detached branch installs the R callbacks)
+        # while THIS worker thread runs the A loop. Returns true when
+        # the detached cycle ran (sapp_run returned = the app quit);
+        # false when #start failed — the caller falls back to the
+        # legacy loop.
+        private def self.run_detached_mac(title, width, height, decorations,
+                                          transparent, msaa, vsync,
+                                          init, frame, event, cleanup) : Bool
+          return false unless (pair = detached_pipe(title, width, height,
+            decorations, transparent, msaa, vsync))
+          @@detached_pipe = pair
+          detached_flags
+          # The A loop runs in an isolated execution context — its own
+          # thread AND its own event loop (a raw Thread has no execution
+          # context; its first evented pipe read dies with a
+          # NilAssertionError under the EC runtime). Blocking reads in
+          # the loop block only this dedicated thread.
+          @@detached_worker = Fiber::ExecutionContext::Isolated.new("egui-a") { a_loop }
+          LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
+            width, height, decorations ? 0 : 1, transparent ? 1 : 0,
+            msaa, vsync ? 1 : 0)
+          @@detached_worker.not_nil!.wait
+          true
         end
 
         # One blocking read of the doorbell; returns the highest tag seen
@@ -2291,6 +2374,14 @@ module Egui
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
           # is positive = content scrolls down → negate.
+          puts "SCROLL sy=#{sy} sx=#{sx}"
+          if ENV["EGUI_SCROLL_DEBUG"]?
+            now = dbg_now
+            gap = now - (@@scroll_dbg_last || 0.0)
+            STDERR.puts "[scroll] %8.3f sy=%+.4f sx=%+.4f gap=%.1fms" %
+              {now, sy, sx, gap * 1000.0}
+            @@scroll_dbg_last = now
+          end
           @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
         when PINCH
           # The shim's touch pinch mapping: mx/my = the two-finger
@@ -2341,7 +2432,7 @@ module Egui
               p ? String.new(p) : ""
             end
             @@events << Egui::Event.dropped_files(paths)
-            {% if flag?(:linux) || flag?(:win32) %}
+            {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
               LibEguiCr.drop_payload_free(payload)
             {% end %}
           else
