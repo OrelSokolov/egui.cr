@@ -2,13 +2,14 @@
 # at the bottom — YouTube-style layout:
 #
 #   ──────────────── full-window-width seek strip ────────────────
-#   thumb · file name/info (elides) · Open…   ⇄   ⏪10 ⏯ ⏩10 ⏹   ⇄   time · volume
+#   thumb · file name (elides) · Open…  ⇄  ⏪10 ⏯ ⏩10 ⏹  ⇄  codec info · time · volume
 #
 # The seek strip is a thin line along the top edge of the bar that
 # doubles its height and knob on hover; drag previews the position and
 # commits on release (continuous seeking would decode-forward on every
 # mouse move). The controls row shrinks only its flexible parts — the
-# text first, then the volume slider — so the buttons never fall off
+# file name on the left and the codec info on the right elide first,
+# then the volume slider, then the time — so the buttons never fall off
 # the window edge. Space toggles playback; files can be dropped onto
 # the window.
 
@@ -105,6 +106,10 @@ class VideoApp < Egui::App
     # idle gate can go back to sleep. Manual rotation is the button.
     Egui::SystemPorts::Events.take
 
+    # Media flag: bypasses the unfocused idle gate (IDLE_NOT_FOCUSED.md)
+    # — decode pump and audio feed live in #advance, a 1 fps gate would
+    # stall playback itself. Re-asserted every frame; clears on pause.
+    ctx.media_active = @player.playing?
     if @player.playing?
       @player.advance
       ctx.request_repaint # keep the vsync loop from idle-skipping
@@ -360,52 +365,65 @@ class VideoApp < Egui::App
     end
   end
 
-  # Одна строка: слева миниатюра + имя/инфо + Open…, транспорт СТРОГО по
-  # центру окна, справа время + громкость. При сужении окна уступают
-  # только гибкие части (текст → миниатюра → громкость → время) — кнопки
-  # и центровка транспорта не меняются.
+  # Одна строка: слева миниатюра + имя файла + Open…, транспорт СТРОГО по
+  # центру окна, справа инфо о кодеке + время + громкость. Обе текстовые
+  # части получают по отдельной половине бара и клипятся гораздо позже;
+  # при сужении окна гибкие части уступают в порядке: имя → инфо (элайд)
+  # → громкость → время — кнопки и центровка транспорта не меняются.
   private def controls_row(ui : Egui::Ui, ctx : Egui::Context) : Nil
     p = @player
     ui.painter.clip = ui.clip
 
     time_txt = "#{fmt_time(p.position)} / #{fmt_time(p.duration)}"
     time_w = ui.fonts.measure(time_txt, 12.0).x
+    info_txt = media_info
+    info_w = ui.fonts.measure(info_txt, 13.0).x
     transport_w = 34.0 + 12.0 + 40.0 + 12.0 + 34.0 + 12.0 + 34.0 + 12.0 + 34.0
     avail = ui.available_width
     # центр playround-кнопки = центр окна (кластер несимметричен:
     # слева от play 46px, справа 92px из-за stop)
     t_start = avail / 2.0 - 66.0
 
-    # левая группа не заходит за транспорт (запас 8px); слишком узкий
-    # текст прячем целиком
-    budget = {t_start - 8.0 - 12.0 - 12.0 - 34.0, 24.0}.max
+    # левая группа не заходит за транспорт (запас 8px); слишком узкое
+    # имя прячем целиком
+    budget = {t_start - 8.0, 24.0}.max
     thumb_w = {thumb_width, budget}.min
-    text_w = {budget - thumb_w, 0.0}.max
-    text_w = 0.0 if text_w < 40.0
+    title_w = {budget - thumb_w - 12.0 - 12.0 - 34.0 - 34.0, 0.0}.max
+    title_w = 0.0 if title_w < 40.0
 
-    # правый кластер: если не влезает — сжимаем громкость, потом прячем время
+    # правый кластер: если не влезает — инфо элайдится первыми, затем
+    # сжимается громкость, затем прячется время; совсем узкое инфо
+    # прячется целиком
     vol_w = 120.0
     show_time = true
+    show_info = true
     max_right = avail - (t_start + transport_w + 8.0)
-    if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
-      vol_w = {max_right - 10.0 - time_w - 8.0 - 34.0 - 4.0, 40.0}.max
-      if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+    if 10.0 + info_w + 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+      vol_w = {max_right - 10.0 - info_w - 10.0 - time_w - 8.0 - 34.0 - 4.0,
+               40.0}.max
+      vol_w = {vol_w, 120.0}.min
+      if 10.0 + info_w + 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
         show_time = false
-        vol_w = {max_right - 8.0 - 34.0 - 4.0, 40.0}.max
+        vol_w = {max_right - 10.0 - info_w - 8.0 - 34.0 - 4.0, 40.0}.max
         vol_w = {vol_w, 120.0}.min
+        if 10.0 + info_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+          show_info = false
+        end
       end
     end
-    right_w = (show_time ? 10.0 + time_w + 8.0 : 8.0) + 34.0 + 4.0 + vol_w
+    time_part = show_time ? 10.0 + time_w + 8.0 : 8.0
+    info_w = if show_info
+      {info_w, max_right - time_part - 34.0 - 4.0 - vol_w}.min.clamp(0.0, info_w)
+    else
+      0.0
+    end
+    right_w = (show_info ? info_w + time_part : time_part) + 34.0 + 4.0 + vol_w
 
     thumb(ui, thumb_w)
     gap(ui, 12.0)
-    if text_w >= 1.0
-      col(ui, "vbar/info", text_w, 15.0 * 1.35 + 3.0 + 13.0 * 1.35) do |cc|
-        t(cc, p.open? ? File.basename(p.path.to_s) : "No file",
-          size: 15.0, w: text_w)
-        gap(cc, 3.0)
-        t(cc, media_info, size: 13.0, color: MUTED, w: text_w)
-      end
+    if title_w >= 1.0
+      t(ui, p.open? ? File.basename(p.path.to_s) : "No file",
+        size: 15.0, w: title_w)
     end
     gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
@@ -414,13 +432,18 @@ class VideoApp < Egui::App
     # пружина до строго центрального транспорта (кластер несимметричен:
     # слева от play 46px, справа 126px — play остаётся в центре окна)
     ui.allocate_space(Egui::Vec2.new(
-      {t_start - (thumb_w + 12.0 + text_w + 12.0 + 34.0), 0.0}.max, 0.0))
+      {t_start - (thumb_w + 12.0 + title_w + 12.0 + 34.0 + 34.0), 0.0}.max,
+      0.0))
     transport(ui, ctx)
 
     # правый кластер прижат к правому краю
     ui.allocate_space(Egui::Vec2.new(
       {avail - right_w - (t_start + transport_w), 0.0}.max, 0.0))
+    if show_info && info_w >= 1.0
+      t(ui, info_txt, size: 13.0, color: MUTED, w: info_w)
+    end
     if show_time
+      gap(ui, 10.0)
       t(ui, time_txt, size: 12.0, color: MUTED, w: time_w + 1.0, align: "r")
     end
     gap(ui, 8.0)
@@ -539,9 +562,11 @@ class VideoApp < Egui::App
       Egui::Vec2.new(bar.width, SEEK_STRIP_H))
     wid = Egui::Id.from("vbar/seek")
     resp = ui.interact(strip, wid, Egui::Sense::Click | Egui::Sense::Drag)
+    hot = resp.hovered? || resp.dragged?
+    knob_r = ctx.animate_style_scalar(wid, "kr", hot ? 10.0 : 5.0, 100.0)
     if resp.drag_started? || (resp.clicked? && !resp.dragged?)
       ctx.input.pointer_pos.try do |ptr|
-        @seek_scratch = ((ptr.x - strip.left) / strip.width).clamp(0.0, 1.0)
+        @seek_scratch = frac_at(strip, ptr.x, knob_r)
         @seek_drag = resp.drag_started?
         unless @seek_drag # одиночный клик — сразу коммит
           commit_seek
@@ -550,7 +575,7 @@ class VideoApp < Egui::App
       end
     elsif resp.dragged?
       ctx.input.pointer_pos.try do |ptr|
-        @seek_scratch = ((ptr.x - strip.left) / strip.width).clamp(0.0, 1.0)
+        @seek_scratch = frac_at(strip, ptr.x, knob_r)
         ctx.request_repaint
       end
     elsif resp.drag_stopped?
@@ -563,7 +588,7 @@ class VideoApp < Egui::App
            else
              0.0
            end
-    paint_seek(ui, ctx, wid, strip, frac, resp.hovered? || resp.dragged?)
+    paint_seek(ui, ctx, wid, strip, frac, hot, knob_r)
   end
 
   private def commit_seek : Nil
@@ -580,13 +605,23 @@ class VideoApp < Egui::App
     wid = Egui::Id.from("vbar/vol")
     resp = ui.interact(Egui::Rect.from_min_size(rect.min,
       Egui::Vec2.new(w, 14.0)), wid, Egui::Sense::Click | Egui::Sense::Drag)
+    kw = ctx.animate_style_scalar(wid, "kw",
+      resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
     if (resp.dragged? || resp.clicked?) && (ptr = ctx.input.pointer_pos)
-      @volume = ((ptr.x - rect.left) / w).clamp(0.0, 1.0)
+      @volume = frac_at(rect, ptr.x, kw)
       @muted = false if @volume > 0.02
       apply_volume
       ctx.request_repaint
     end
-    paint_slider(ui, ctx, wid, rect, @muted ? 0.0 : @volume, resp)
+    paint_slider(ui, rect, @muted ? 0.0 : @volume, kw)
+  end
+
+  # Доля по x с половинкой ручки: центр ручки ходит от rect.left + r
+  # до rect.right - r, чтобы кружок не выходил за границы слайдера
+  # (клип строки/окна иначе режет его половинку по краю).
+  private def frac_at(rect : Egui::Rect, x : Float64, r : Float64) : Float64
+    span = rect.width - 2 * r
+    span > 0 ? ((x - rect.left - r) / span).clamp(0.0, 1.0) : 0.0
   end
 
   # Отрисовка seek-полосы: линия и ручка КОНЦЕНТРИЧНЫ — центр фиксирован
@@ -594,11 +629,11 @@ class VideoApp < Egui::App
   # удваиваются (3→6px, 5→10px), ничего не смещается. Заливка синяя.
   private def paint_seek(ui : Egui::Ui, ctx : Egui::Context,
                          wid : Egui::Id, strip : Egui::Rect,
-                         frac : Float64, hot : Bool) : Nil
+                         frac : Float64, hot : Bool,
+                         knob_r : Float64) : Nil
     p = ui.painter
     frac = frac.clamp(0.0, 1.0)
     track_h = ctx.animate_style_scalar(wid, "th", hot ? 6.0 : 3.0, 100.0)
-    knob_r = ctx.animate_style_scalar(wid, "kr", hot ? 10.0 : 5.0, 100.0)
     cy = strip.top + 10.0
     p.rect(Egui::Rect.from_min_size(
       Egui::Pos2.new(strip.left, cy - track_h / 2.0),
@@ -608,26 +643,27 @@ class VideoApp < Egui::App
       Egui::Pos2.new(strip.left, cy - track_h / 2.0),
       Egui::Vec2.new(strip.width * frac, track_h)), track_h / 2.0,
       fill: @player.downscaled? ? WARN : ACCENT)
-    p.circle_filled(Egui::Pos2.new(strip.left + strip.width * frac, cy),
+    p.circle_filled(Egui::Pos2.new(
+      strip.left + knob_r + frac * (strip.width - 2 * knob_r), cy),
       knob_r, WHITE)
   end
 
-  # Общая отрисовка слайдера: трек, заливка до frac, круглая ручка (с
-  # плавным ростом на hover/drag через animate_style_scalar).
-  private def paint_slider(ui : Egui::Ui, ctx : Egui::Context,
-                           wid : Egui::Id, rect : Egui::Rect, frac : Float64,
-                           resp : Egui::Response) : Nil
+  # Общая отрисовка слайдера: трек, заливка до frac, круглая ручка
+  # (радиус kw приходит извне — маппинг указателя и отрисовка должны
+  # ходить по одному диапазону). Центр ручки — с отступом на половинку
+  # круга, чтобы кружок не выходил за пределы слайдера.
+  private def paint_slider(ui : Egui::Ui, rect : Egui::Rect,
+                           frac : Float64, kw : Float64) : Nil
     p = ui.painter
     frac = frac.clamp(0.0, 1.0)
     cy = rect.center.y
-    kw = ctx.animate_style_scalar(wid, "kw",
-      resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(rect.width, 4.0)), 2.0,
       fill: Egui::Color32.rgba(255, 255, 255, 0x33))
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(rect.width * frac, 4.0)), 2.0, fill: ACCENT)
-    p.circle_filled(Egui::Pos2.new(rect.left + rect.width * frac, cy), kw, WHITE)
+    p.circle_filled(Egui::Pos2.new(
+      rect.left + kw + frac * (rect.width - 2 * kw), cy), kw, WHITE)
   end
 
   # ── примитивы (порты music_widgets_manual_app.cr, без зависимостей от Music) ──

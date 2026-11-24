@@ -879,21 +879,25 @@ class MusicWidgetsManualApp < Egui::App
     wid = Egui::Id.from(id)
     resp = ui.interact(Egui::Rect.from_min_size(rect.min,
       Egui::Vec2.new(w, 12.0)), wid, Egui::Sense::Click | Egui::Sense::Drag)
+    kw = MusicTags.glide(ctx, wid, "kw",
+      resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
     if (resp.dragged? || resp.clicked?) && (ptr = ctx.input.pointer_pos)
-      frac = ((ptr.x - rect.left) / w).clamp(0.0, 1.0)
+      span = w - 2 * kw
+      frac = span > 0 ? ((ptr.x - rect.left - kw) / span).clamp(0.0, 1.0) : 0.0
       on_change.call(frac)
       ctx.request_repaint
     end
     p = ui.painter
     cy = rect.center.y
-    kw = MusicTags.glide(ctx, wid, "kw",
-      resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(w, 4.0)), 2.0,
       fill: Egui::Color32.rgba(255, 255, 255, 0x33))
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: accent)
-    p.circle_filled(Egui::Pos2.new(rect.left + w * frac, cy), kw, MusicTags.strong)
+    # центр ручки — с отступом на половинку круга, чтобы кружок не
+    # выходил за границы слайдера и не резался клипом соседей
+    p.circle_filled(Egui::Pos2.new(
+      rect.left + kw + frac * (w - 2 * kw), cy), kw, MusicTags.strong)
   end
 
   # <searchinput bind= w=/> — поле поиска: клик — фокус, ввод — query
@@ -1891,7 +1895,8 @@ class MusicWidgetsManualApp
             Egui::Pos2.new(cl + 275.0 + i * 4.5, sy + 28.0 - bh),
             Egui::Vec2.new(2.5, bh)), 1.0, fill: accent)
         end
-        # мини-seek: .slider 180px (y 61..73)
+        # мини-seek: .slider 180px (y 61..73); ручка r=5 ходит с
+        # отступом на половинку круга, чтобы не резаться по краям
         seek_w = 180.0
         frac = p.seek_frac.clamp(0.0, 1.0)
         cy = ipanel.top + 67.0
@@ -1902,7 +1907,8 @@ class MusicWidgetsManualApp
         lp.rect(Egui::Rect.from_min_size(
           Egui::Pos2.new(cl, cy - 2.0),
           Egui::Vec2.new(seek_w * frac, 4.0)), 2.0, fill: accent)
-        lp.circle_filled(Egui::Pos2.new(cl + seek_w * frac, cy),
+        lp.circle_filled(Egui::Pos2.new(
+          cl + 5.0 + frac * (seek_w - 10.0), cy),
           5.0, MusicTags.strong)
         srect = Egui::Rect.from_min_size(
           Egui::Pos2.new(cl, cy - 7.0),
@@ -1911,7 +1917,7 @@ class MusicWidgetsManualApp
           Egui::Sense::Click | Egui::Sense::Drag,
           MusicTags.island_layer.not_nil!, srect)
         if (sresp.dragged? || sresp.clicked?) && (ptr = ctx.input.pointer_pos)
-          p.seek(((ptr.x - cl) / seek_w).clamp(0.0, 1.0))
+          p.seek(((ptr.x - cl - 5.0) / (seek_w - 10.0)).clamp(0.0, 1.0))
           ctx.request_repaint
         end
         lp.text(Egui::Pos2.new(cl, ipanel.top + 83.0),

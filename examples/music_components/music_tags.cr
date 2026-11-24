@@ -1697,8 +1697,13 @@ widget :oslider, cache: true do |node, ui, ctx, rt, r|
   resp = ui.interact(Egui::Rect.from_min_size(rect.min,
       Egui::Vec2.new(w, 12.0)), Egui::Id.from(node.path),
     Egui::Sense::Click | Egui::Sense::Drag)
+  # knob:hover scale(1.25) — transition .1s, радиус мягко растёт
+  kw = MusicTags.glide(ctx, Egui::Id.from(node.path), "kw",
+    resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
   if key && (resp.dragged? || resp.clicked?) && (ptr = ctx.input.pointer_pos)
-    rt.floats[key] = ((ptr.x - rect.left) / w).clamp(0.0, 1.0)
+    span = w - 2 * kw
+    rt.floats[key] = span > 0 ?
+      ((ptr.x - rect.left - kw) / span).clamp(0.0, 1.0) : 0.0
     frac = rt.float(key)
     if (act = MusicTags.a(node, rt, "on_change"))
       rt.fire(act)
@@ -1707,15 +1712,14 @@ widget :oslider, cache: true do |node, ui, ctx, rt, r|
   end
   p = ui.painter
   cy = rect.center.y
-  # knob:hover scale(1.25) — transition .1s, радиус мягко растёт
-  kw = MusicTags.glide(ctx, Egui::Id.from(node.path), "kw",
-    resp.hovered? || resp.dragged? ? 7.5 : 6.0, 100.0)
   p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
     Egui::Vec2.new(w, 4.0)), 2.0,
     fill: MusicTags.track)
   p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
     Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: MusicTags.accent(rt))
-  kx = rect.left + w * frac
+  # центр ручки — с отступом на половинку круга, чтобы кружок не
+  # выходил за границы слайдера и не резался клипом соседей
+  kx = rect.left + kw + frac * (w - 2 * kw)
   p.circle_filled(Egui::Pos2.new(kx, cy), kw, MusicTags.strong)
 end
 
@@ -1723,7 +1727,8 @@ end
 # названием и мини-визуализатором; overlay-слой фреймворка.
 widget :island do |node, ui, ctx, rt, r|
   ui.painter.clip = ui.clip
-  # мини-слайдер seek для развёрнутого острова
+  # мини-слайдер seek для развёрнутого острова; ручка r=5 ходит с
+  # отступом на половинку круга, чтобы не резаться по краям
   draw_seek = ->(area : Egui::Rect, key : String, w : Float64) {
     frac = rt.float(key).clamp(0.0, 1.0)
     cy = area.center.y
@@ -1733,14 +1738,16 @@ widget :island do |node, ui, ctx, rt, r|
       fill: MusicTags.track)
     lp.rect(Egui::Rect.from_min_size(Egui::Pos2.new(area.left, cy - 2.0),
       Egui::Vec2.new(w * frac, 4.0)), 2.0, fill: MusicTags.accent(rt))
-    lp.circle_filled(Egui::Pos2.new(area.left + w * frac, cy), 5.0,
-      MusicTags.strong)
+    lp.circle_filled(Egui::Pos2.new(area.left + 5.0 + frac * (w - 10.0), cy),
+      5.0, MusicTags.strong)
     srect = Egui::Rect.from_min_size(Egui::Pos2.new(area.left, cy - 7.0),
       Egui::Vec2.new(w, 14.0))
     sresp = ctx.interact(Egui::Id.from("#{node.path}/seek"), srect,
       Egui::Sense::Click | Egui::Sense::Drag, MusicTags.island_layer.not_nil!, srect)
     if (sresp.dragged? || sresp.clicked?) && (ptr = ctx.input.pointer_pos)
-      rt.floats[key] = ((ptr.x - area.left) / w).clamp(0.0, 1.0)
+      span = w - 10.0
+      rt.floats[key] = span > 0 ?
+        ((ptr.x - area.left - 5.0) / span).clamp(0.0, 1.0) : 0.0
       rt.fire("seek")
       ctx.request_repaint
     end
