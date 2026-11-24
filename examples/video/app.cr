@@ -444,7 +444,7 @@ class VideoApp < Egui::App
     thumb(ui, thumb_w)
     gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
-    ibtn(ui, ctx, "vbar/open_multi", "layers", tint: ICON_FG) { open_dialog_multiple }
+    ibtn(ui, ctx, "vbar/open_multi", "list_video", tint: ICON_FG) { open_dialog_multiple }
 
     # пружина до строго центрального транспорта (кластер несимметричен:
     # слева от play 112px, справа 80px — play остаётся в центре окна)
@@ -716,6 +716,7 @@ class VideoApp < Egui::App
           when {:lucide, :volume_off} then Egui::Icon.from_file(:lucide, :volume_off, tint: tint)
           when {:lucide, :rotate_cw}  then Egui::Icon.from_file(:lucide, :rotate_cw, tint: tint)
           when {:lucide, :rotate_ccw} then Egui::Icon.from_file(:lucide, :rotate_ccw, tint: tint)
+          when {:lucide, :list_video} then Egui::Icon.from_file(:lucide, :list_video, tint: tint)
           when {:bootstrap, :rewind}  then Egui::Icon.from_file(:bootstrap, :rewind_fill, tint: tint)
           when {:bootstrap, :forward} then Egui::Icon.from_file(:bootstrap, :fast_forward_fill, tint: tint)
           when {:bootstrap, :stop}    then Egui::Icon.from_file(:bootstrap, :stop_fill, tint: tint)
@@ -812,6 +813,7 @@ class VideoApp < Egui::App
     when "volume_off" then {:lucide, :volume_off}
     when "rotate_cw"  then {:lucide, :rotate_cw}
     when "rotate_ccw" then {:lucide, :rotate_ccw}
+    when "list_video" then {:lucide, :list_video}
     else                   {:lucide, :circle}
     end
   end
