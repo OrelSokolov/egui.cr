@@ -855,10 +855,10 @@ module Egui
       {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
         @@detached_pipe : {IO::FileDescriptor, Int64}? = nil
       {% end %}
-      # The A loop's isolated context (inverted macOS loop only —
+      # The A loop's execution context (inverted macOS loop only —
       # Linux/Win32 run the A loop on the process main thread).
       {% if flag?(:darwin) && !flag?(:ios) %}
-        @@detached_worker : Fiber::ExecutionContext::Isolated? = nil
+        @@detached_worker : Fiber::ExecutionContext? = nil
       {% end %}
       # Debug-clock epoch (Time::Instant — the monotonic clock has no
       # absolute seconds, only differences; #dbg_now spans from here).
@@ -871,6 +871,8 @@ module Egui
       # EGUI_SCROLL_DEBUG: wall clock of the last MOUSE_SCROLL event
       # (inter-event gap in the log lines).
       @@scroll_dbg_last : Float64 = 0.0
+      @@a_last_scroll : Float64 = -1e9
+      @@replay_pinned = false
 
       # Seconds on the debug clock (since @@dbg_t0).
       private def self.dbg_now : Float64
@@ -1604,6 +1606,11 @@ module Egui
               break if doorbell[0, n].includes?(3_u8)    # QUIT
             {% else %}
               wait = busy ? (last_produce + fallback.seconds - Time.instant) : 1.hour
+              # Replay schedule: wake exactly when the next injected
+              # event is due, even from a parked idle loop.
+              if (next_in = ScrollRecorder.replay_next_in)
+                wait = {wait, next_in.seconds + 1.millisecond}.min
+              end
               pipe.read_timeout = {wait, 1.millisecond}.max
               begin
                 n = pipe.read(doorbell)
@@ -1616,6 +1623,39 @@ module Egui
             # Keep doorbells from filling the pipe during busy runs.
             break if drain_doorbells_raw(handle, doorbell)
             events_n = drain_events(records)
+            # Scroll-oracle replay (scroll_recorder.cr): inject the
+            # loaded foreign recording's due events into the same bus
+            # real wheel input uses, so the egui offset response is
+            # recorded against an identical event sequence.
+            if (due_replay = ScrollRecorder.replay_due) && !due_replay.empty?
+              # Record the injection itself: the saved events channel
+              # must reflect the input egui actually received this run
+              # (the injected schedule, at injection time), so the
+              # offset curve has its input curve alongside.
+              due_replay.each do |ev|
+                ScrollRecorder.record_event(-ev.scroll.y, ev.scroll.x,
+                  ev.scroll_precise?, false, false, injected: true)
+              end
+              @@events.concat(due_replay)
+              events_n += due_replay.size
+            end
+            # Replay pointer pin: the wheel delta goes to the sink under
+            # the pointer, and during a replay the physical pointer
+            # usually sits on the toolbar — outside the oracle scroll
+            # area, so every injected delta would be dropped. Park the
+            # pointer at the window center (inside the area) for the
+            # duration, restoring live behavior when the replay ends.
+            if ScrollRecorder.replaying?
+              unless @@replay_pinned
+                @@replay_pinned = true
+                ppp = Egui::Display.dpr || dpi_scale.to_f64
+                @@events << Egui::Event.pointer_moved(Egui::Pos2.new(
+                  LibEguiCr.sapp_width.to_f64 / 2.0 / ppp,
+                  LibEguiCr.sapp_height.to_f64 / 2.0 / ppp))
+              end
+            else
+              @@replay_pinned = false
+            end
             # Tray clicks are user input arriving between frames (the
             # tray's own thread posts the wake doorbell before this) —
             # they produce immediately, bypassing the unfocused idle
@@ -1688,16 +1728,30 @@ module Egui
             decorations, transparent, msaa, vsync))
           @@detached_pipe = pair
           detached_flags
-          # The A loop runs in an isolated execution context — its own
-          # thread AND its own event loop (a raw Thread has no execution
-          # context; its first evented pipe read dies with a
-          # NilAssertionError under the EC runtime). Blocking reads in
-          # the loop block only this dedicated thread.
-          @@detached_worker = Fiber::ExecutionContext::Isolated.new("egui-a") { a_loop }
+          # The A loop runs in a CONCURRENT execution context — a worker
+          # thread with a cooperative fiber pool (a raw Thread has no
+          # execution context; its first evented pipe read dies with a
+          # NilAssertionError under the EC runtime). Concurrent, NOT
+          # Isolated: Isolated forwards ::spawn to the DEFAULT context,
+          # whose single worker is the main thread — parked inside
+          # AppKit's sapp_run for the whole app lifetime — so every
+          # worker fiber spawned from the A side (MVC transport
+          # requests, AsyncJob jobs, Http/PTY readers) would starve
+          # (observed as the system monitor's dead sampling auto-start).
+          # Concurrent keeps those spawns in THIS context: the doorbell
+          # read suspends the loop fiber and the scheduler services
+          # them between frames — the same cooperative contract the
+          # Linux detached loop gets by running A on the main thread.
+          quit = Channel(Nil).new
+          @@detached_worker = Fiber::ExecutionContext::Concurrent.new("egui-a")
+          @@detached_worker.not_nil!.spawn do
+            a_loop
+            quit.close
+          end
           LibEguiCr.sapp_run(init, frame, event, cleanup, title.to_unsafe,
             width, height, decorations ? 0 : 1, transparent ? 1 : 0,
             msaa, vsync ? 1 : 0)
-          @@detached_worker.not_nil!.wait
+          quit.receive # a_loop saw QUIT and finished — nothing left to do
           true
         end
 
@@ -1798,6 +1852,12 @@ module Egui
           frame_t0 = Time.instant if @@frame_debug
           bt0 = Time.instant # FrameBench "frame" span (see on_frame_inner)
 
+          # MVC-транспорт: доставки, припаркованные до старта петли
+          # (запросы из конструкторов приложений), переспавниваются
+          # здесь на живом контексте A-петли — аналог pump_pass в
+          # on_frame_inner (сам насос не нужен: между ожиданиями
+          # doorbell планировщик этого контекста крутится сам).
+          Egui::Mvc.unpark_requests
           # Device emulation (egui/display.cr): a forced DPR (EGUI_DPR /
           # EGUI_RETINA / a device preset) overrides the host's scale.
           ppp = Egui::Display.dpr || dpi_scale.to_f64
@@ -1875,9 +1935,25 @@ module Egui
           FrameBench.frame_done(commands.size)
 
           if (t0 = frame_t0) &&
-             (ms = (Time.instant - t0).total_milliseconds) > 100.0
+             (slow_ms = (Time.instant - t0).total_milliseconds) > 100.0
             STDERR.puts "[frame] %8.3f SLOW full frame: %.0fms" %
-              {dbg_now, ms}
+              {dbg_now, slow_ms}
+          elsif @@frame_debug && (t1 = frame_t0) &&
+                (wheel_ms = (Time.instant - t1).total_milliseconds) >= 2.0 &&
+                dbg_now - @@a_last_scroll < 0.5
+            # Every full-frame duration (A-side worker): the wheel path
+            # can only update content at 1/duration Hz, so anything
+            # over the vsync period shows up as scroll judder. Only
+            # wheel-driven frames log — mouse-move frames would flood.
+            # Over-budget frames print red (missed 60 Hz), near-budget
+            # yellow, so bad stretches are visible while scrolling.
+            if wheel_ms > 16.6
+              STDERR.puts "\e[31m[A-frame] %8.3f full: %.1fms\e[0m" % {dbg_now, wheel_ms}
+            elsif wheel_ms > 8.0
+              STDERR.puts "\e[33m[A-frame] %8.3f full: %.1fms\e[0m" % {dbg_now, wheel_ms}
+            else
+              STDERR.puts "[A-frame] %8.3f full: %.1fms" % {dbg_now, wheel_ms}
+            end
           end
         end
 
@@ -2373,16 +2449,32 @@ module Egui
             from_touch: from_touch)
         when MOUSE_SCROLL
           # sapp reports scroll_y > 0 for wheel-up; egui.cr's convention
-          # is positive = content scrolls down → negate.
-          puts "SCROLL sy=#{sy} sx=#{sx}"
+          # is positive = content scrolls down → negate. The shim marks
+          # precise deltas (0x10), the gesture phase (0x40) and the OS
+          # momentum tail (0x20). Every precise event — gesture or
+          # momentum — is applied 1:1 with no kinetic extrapolation:
+          # macOS already emits a complete, vsync-paced stream and
+          # cancels the tail itself on the next touch, so native-style
+          # inertia and instant reversals both come for free. Discrete
+          # notch wheels (Windows/Linux, USB mice) keep the kinetic
+          # path; EGUI_SCROLL_MOMENTUM=0 drops the tail for a
+          # stop-on-lift feel.
+          momentum = (mods & 0x20) != 0
+          gesture = (mods & 0x40) != 0
+          precise = (mods & 0x10) != 0
+          ScrollRecorder.record_event(sy, sx, precise, momentum, gesture)
+          @@a_last_scroll = dbg_now
           if ENV["EGUI_SCROLL_DEBUG"]?
+            marker = gesture ? " (phase)" : (momentum ? " (momentum)" : "")
+            puts "SCROLL sy=#{sy} sx=#{sx}#{marker}"
             now = dbg_now
             gap = now - (@@scroll_dbg_last || 0.0)
-            STDERR.puts "[scroll] %8.3f sy=%+.4f sx=%+.4f gap=%.1fms" %
-              {now, sy, sx, gap * 1000.0}
+            STDERR.puts "[scroll] %8.3f sy=%+.4f sx=%+.4f gap=%.1fms%s" %
+              {now, sy, sx, gap * 1000.0, marker}
             @@scroll_dbg_last = now
           end
-          @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy))
+          return if momentum && !gesture && ENV["EGUI_SCROLL_MOMENTUM"]? == "0"
+          @@events << Egui::Event.scroll(Egui::Vec2.new(sx, -sy), precise)
         when PINCH
           # The shim's touch pinch mapping: mx/my = the two-finger
           # centroid (fb px → points above), sx = the zoom factor.

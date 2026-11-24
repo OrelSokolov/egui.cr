@@ -295,7 +295,6 @@ module Egui
     @color_cache = {} of Color32 => Hsva
     @scroll_rects = {} of Id => ScrollSink
     @prev_scroll_rects = {} of Id => ScrollSink
-    @active_scroll = nil
     @canvas_drag_owner = nil
     @canvas_drag_delta = Vec2.zero
     # Offset histories feeding kinetic scrolling (see history.cr) —
@@ -370,22 +369,14 @@ module Egui
       @modal_next = false
       @popups_opened_this_frame.clear
 
-      # Rotate scroll viewports and decide who owns this frame's scroll
-      # delta: the top-most viewport containing the pointer (highest
-      # layer z; on a tie the last registered wins, like paint order).
-      # Scroll chaining: sinks that cannot serve the wheel's axis this
-      # frame (plain vertical wheel vs an hbar-only strip, content that
-      # fits) are skipped — the sink under them gets the delta.
+      # Rotate scroll viewports. The wheel OWNER is not decided here:
+      # #active_scroll_area? routes lazily at consume time (see there) —
+      # a begin_frame snapshot can diverge from the consumer's pipeline
+      # phase (the scroll oracle caught begin reading a sink map the
+      # same frame's render no longer saw, dropping live deltas).
       @prev_scroll_rects = @scroll_rects
       @scroll_rects = {} of Id => ScrollSink
-      @active_scroll = nil
-      if pos = input.pointer_pos
-        shift = input.modifiers.shift
-        wheel_v = input.scroll.y != 0.0 && !shift
-        wheel_h = input.scroll.x != 0.0 || (input.scroll.y != 0.0 && shift)
-        @active_scroll = topmost_scroll_at(pos,
-          require_v: wheel_v, require_h: wheel_h)
-      end
+      @last_input = input
       # Rotate last frame's geometry/sense/layer into the prev_* slots so
       # pointer events hit-test against stable, complete information.
       # SoA rotation: swap the array pairs and bump the generation —
@@ -657,9 +648,42 @@ module Egui
     end
 
     # The scroll area that owns this frame's scroll delta (nil = none).
+    # Routed LAZILY at consume time against the previous frame's sinks:
+    # consumers (ScrollArea, TextArea, wheel-spinning widgets) all read
+    # this during render, where `@prev_scroll_rects`, the pointer and
+    # the wheel are the same snapshot the verdict is computed over. A
+    # begin_frame-cached verdict once diverged from the consumer's
+    # pipeline phase and silently dropped wheel deltas (scroll oracle:
+    # hit=nil while the same frame's render saw a valid, containing,
+    # can_v sink under the pointer).
     def active_scroll_area? : Id?
-      @active_scroll
+      inp = @last_input || return nil
+      pos = inp.pointer_pos || return nil
+      shift = inp.modifiers.shift
+      # Dominant-axis routing: a wheel with a VERTICAL component routes
+      # to the vertical axis even when it carries a horizontal drift —
+      # trackpad gestures are never perfectly axis-aligned (native
+      # capture: most "vertical" events carry sx=±0.1..0.6 dust), and
+      # requiring can_h for such frames silently dropped them on
+      # v-only areas (the scroll oracle's frozen start). Horizontal
+      # routing stays for pure-horizontal wheels and shift+wheel.
+      wheel_v = !inp.scroll.y.zero? && !shift
+      wheel_h = !wheel_v &&
+        (!inp.scroll.x.zero? || (!inp.scroll.y.zero? && shift))
+      topmost_scroll_at(pos, require_v: wheel_v, require_h: wheel_h)
     end
+
+    # Last frame's registered sink for `id` — oracle diagnostics only
+    # (examples/egui_scroll.cr logs can_v/rect to explain dropped
+    # wheel frames; the hash rotates in #begin_frame).
+    def prev_scroll_sink(id : Id) : ScrollSink?
+      @prev_scroll_rects[id]?
+    end
+
+    # The frame's input state, stashed by #begin_frame — the lazy
+    # wheel routing in #active_scroll_area? reads pointer/wheel from
+    # it at consume time.
+    @last_input : InputState? = nil
 
     # Persistent offset history of a scrollable (kinetic scrolling).
     def scroll_history(id : Id) : History

@@ -51,6 +51,7 @@ BIN_APPS   = %w[
   responsive_demo camera device_api audio remote_image tray voice_echo
   wizard lottie_crystal hello_exml stress_scroll search1m crash_demo
   logs_viewer mobile_gallery mobile_gallery_exml ios_settings ios_settings_exml
+  egui_scroll
 ]
 BIN_HTML   = %w[
   html_gallery html_positions box_shadow box_shadow_showcase

@@ -67,6 +67,15 @@ module Egui
     # clear at the cap).
     VIRTUAL_MARGIN  = 128.0
     VIRTUAL_ROWS_MAX = 8192
+    # Precise trackpad deltas arrive sokol-scaled to 1/10 of a native
+    # point. The native sensitivity measured by the scroll oracle
+    # (tmp/native_scroll.m + scripts/compare_scroll.py) across two
+    # sessions is ~0.4–0.7 px per raw scrollingDelta unit — NSScrollView
+    # applies system trackpad scaling with speed-dependent
+    # acceleration, so a fixed multiplier is a compromise; ×7 (0.7 raw)
+    # matches the harder, more representative gesture session.
+    # scroll_speed (px per notch) stays a mouse-wheel-only knob.
+    PRECISE_SCALE = 7.0
 
     # `id:` pins the offset/content cells to a STABLE Id instead of the
     # hosting Ui's child counter — for hosts that need to reach the
@@ -186,8 +195,12 @@ module Egui
         if input.scroll_precise?
           # Trackpad precise stream: deltas carry the full motion
           # (OS momentum included) — apply directly, no extrapolation
-          # between events (see KineticScroller#direct).
-          v_kin.direct(input.scroll.y * style.scroll_speed, max_v_prev)
+          # between events (see KineticScroller#direct). Sokol hands
+          # them over divided by 10 (its "lines" convention) — undo
+          # that to native POINTS: a trackpad gesture must move the
+          # content 1:1 like NSScrollView does. scroll_speed is the
+          # per-NOTCH mouse-wheel knob and must not touch this path.
+          v_kin.direct(input.scroll.y * PRECISE_SCALE, max_v_prev)
         else
           v_kin.input(input.scroll.y * style.scroll_speed,
             input.time, max_v_prev)
@@ -208,7 +221,7 @@ module Egui
           hk.input(-memory.canvas_drag_delta(id).x, input.time, max_h_prev)
         elsif active && !dx.zero?
           if input.scroll_precise?
-            hk.direct(dx * style.scroll_speed, max_h_prev)
+            hk.direct(dx * PRECISE_SCALE, max_h_prev)
           else
             hk.input(dx * style.scroll_speed, input.time, max_h_prev)
           end
