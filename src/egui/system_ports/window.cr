@@ -45,9 +45,36 @@ module Egui
         implementation.toggle_fullscreen
       end
 
-      def self.fullscreen? : Bool
-        implementation.fullscreen?
+      # Enter/exit fullscreen EXPLICITLY (video-player idiom): no-op when
+      # the window already sits in the requested mode, so a stream of
+      # `set_fullscreen(true)` calls toggles exactly once. The default
+      # implementation forwards to #toggle_fullscreen when the mode
+      # differs.
+      def self.set_fullscreen(fullscreen : Bool) : Nil
+        implementation.set_fullscreen(fullscreen)
       end
+
+      # The window mode STATE — fullscreen or windowed (the app-facing
+      # half of the fullscreen contract). Like
+      # SystemPorts::Screen.orientation, the recorded report wins over
+      # the implementation's live answer; the backend keeps it current
+      # every frame (native toggles — Esc, a WM hotkey, the title-bar
+      # button — bypass the port entirely, so polling the live value is
+      # the only way to stay truthful). Before the first report the
+      # live implementation answers.
+      def self.fullscreen? : Bool
+        @@fullscreen || implementation.fullscreen?
+      end
+
+      # Record a fullscreen report (called by the backend: the sokol
+      # driver's per-frame sync). Reports carrying the recorded value
+      # are the "nothing changed" case — the driver filters them and
+      # raises Events::FullscreenChanged itself.
+      def self.fullscreen=(fullscreen : Bool) : Nil
+        @@fullscreen = fullscreen
+      end
+
+      @@fullscreen : Bool? = nil
 
       # Set the window icon from straight (non-premultiplied) RGBA8
       # pixels, row-major, `width`×`height`. Win32 only today — the
@@ -138,6 +165,10 @@ module Egui
         end
 
         def toggle_fullscreen : Nil
+        end
+
+        def set_fullscreen(fullscreen : Bool) : Nil
+          toggle_fullscreen unless fullscreen == fullscreen?
         end
 
         def fullscreen? : Bool

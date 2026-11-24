@@ -984,6 +984,12 @@ module Egui
           LibEguiCr.toggle_fullscreen
         end
 
+        # sokol exposes only a toggle; gate it on the live mode so
+        # #set_fullscreen is idempotent (a repeated `true` is a no-op).
+        def set_fullscreen(fullscreen : Bool) : Nil
+          LibEguiCr.toggle_fullscreen if fullscreen != (LibEguiCr.fullscreen_q != 0)
+        end
+
         def fullscreen? : Bool
           LibEguiCr.fullscreen_q != 0
         end
@@ -1552,8 +1558,12 @@ module Egui
             # until the fallback deadline while a repaint run is active.
             # IDLE_NOT_FOCUSED.md: the fallback itself drops to 1 Hz when
             # the window is unfocused/minimized — a hidden window must
-            # not keep app.update + packet production at 60 Hz.
-            fallback = Egui::Driver::Sokol.window_focused? ? 1.0 / 60.0 : 1.0
+            # not keep app.update + packet production at 60 Hz. Media
+            # playback keeps the full rate regardless of focus: the
+            # stream's decode pump and audio feed run inside
+            # app.update, throttling them stalls playback.
+            fallback = Egui::Driver::Sokol.window_focused? ||
+                       app.ctx.media_active? ? 1.0 / 60.0 : 1.0
             {% if flag?(:win32) %}
               fallback_mu.synchronize do
                 fallback_due = busy ? last_produce + fallback.seconds : nil
@@ -2394,6 +2404,24 @@ module Egui
           Egui::SystemPorts::Events::RotationChanged.new(orientation))
       end
 
+      # Poll the live fullscreen mode into the Window port's recorded
+      # state; the crossing enqueues a FullscreenChanged. Polled EVERY
+      # frame, not just on RESIZED: native toggles (Esc out of macOS
+      # fullscreen, a WM hotkey) bypass this port entirely, so the live
+      # answer is the only source of truth. Same first-report contract
+      # as #sync_orientation: the initial value records state only.
+      private def self.sync_fullscreen : Nil
+        fs = LibEguiCr.fullscreen_q != 0
+        return if @@last_fullscreen == fs
+        first = @@last_fullscreen.nil?
+        @@last_fullscreen = fs
+        Egui::SystemPorts::Window.fullscreen = fs
+        Egui::SystemPorts::Events.enqueue(
+          Egui::SystemPorts::Events::FullscreenChanged.new(fs)) unless first
+      end
+
+      @@last_fullscreen : Bool? = nil
+
       # Frame entry (sapp's frame_cb / the detached produce path): the
       # @@in_frame guard behind Driver::Base#gui_context? wraps the
       # whole frame, full or idle.
@@ -2407,7 +2435,11 @@ module Egui
         # `events_n > 0` (wheel-scroll over an unfocused window must
         # paint immediately, not wait out the 1 Hz deadline; without
         # this the scroll start stutters for up to a second).
-        if @@app && !window_focused? && @@events.empty?
+        # Media playback bypasses it entirely: the stream's decode
+        # pump and audio feed run inside app.update — a 1 fps gate
+        # would stall playback itself, not just the redraws.
+        if @@app && !window_focused? && @@events.empty? &&
+           !@@app.try(&.ctx.media_active?)
           done = @@last_frame_done
           return if done && (Time.instant - done) < 1.second
         end
@@ -2523,6 +2555,10 @@ module Egui
         # no-op) unless backend/pty was required, and a no-op under the
         # detached loop where the scheduler runs naturally.
         Egui::Driver::Base.frame_scheduler_pass.try &.call
+        # Fullscreen state sync — before begin_frame, so the frame the
+        # mode changed in already reads the new Window.fullscreen? and
+        # carries the FullscreenChanged event into update.
+        sync_fullscreen
         delivered = Egui::SystemPorts::AsyncDialogs.take_delivered +
                     Egui::Http.take_delivered +
                     Egui::Mvc.take_delivered

@@ -21,13 +21,21 @@ module Egui
   module SystemPorts
     module Events
       # Every system event kind. New kinds: a record + one more member.
-      alias Event = RotationChanged
+      alias Event = RotationChanged | FullscreenChanged
 
       # The window/device orientation changed (device rotation, a
       # foldable unfolding, the desktop window crossing the square
       # aspect). `orientation` is the NEW value — also readable as
       # state via SystemPorts::Screen.orientation.
       record RotationChanged, orientation : Egui::Orientation
+
+      # The window mode changed — fullscreen ↔ windowed (a video
+      # player's button/hotkey, Esc out of native fullscreen, a WM
+      # shortcut). `fullscreen` is the NEW value — also readable as
+      # state via SystemPorts::Window.fullscreen?. The backend raises
+      # it when its per-frame poll of the live mode first differs from
+      # the recorded one, whatever the trigger was.
+      record FullscreenChanged, fullscreen : Bool
 
       # Producer side — ANY thread. Native bridges (Android.pump,
       # Ios.pump, the sokol driver) report here; the optional handler

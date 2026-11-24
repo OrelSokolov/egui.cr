@@ -1,25 +1,35 @@
-# The video player egui app: a dark cinema area on top and a control bar
-# at the bottom — YouTube-style layout:
+# The video player egui app — TWO interface rendering modes:
 #
-#   ──────────────── full-window-width seek strip ────────────────
-#   thumb · Open…        ⇄   ⟳ ⏪10 ⏯ ⏩10 ⏹   ⇄        time · volume
-#   file name (elides) ······························ codec info (elides)
+#   EMBEDDED (windowed): the video is squeezed into the layout —
+#   glass info strip floating OVER the video along the top edge,
+#   control bar docked at the bottom, video in between.
+#
+#   OVERLAPPED (fullscreen, the SystemPorts::Window mode): the video
+#   owns the whole window; BOTH strips float ON TOP of the stream
+#   (position: fixed) and hide after OVERLAY_HIDE_AFTER seconds
+#   without ANY user activity — InputState#seconds_since_activity, the
+#   framework's idle counter; the next mouse move brings them back.
+#
+# The top info strip is ALWAYS an overlap in both modes; the strip
+# backgrounds are translucent glass (BAR_GLASS) — the video shows
+# through.
 #
 # The seek strip is a thin line along the top edge of the bar that
 # doubles its height and knob on hover; drag previews the position and
 # commits on release (continuous seeking would decode-forward on every
-# mouse move). The file name and the codec info live on their OWN line
-# at the very bottom of the bar — below every control. The rows shrink
-# only their flexible parts — the texts elide first, then the volume
-# slider, then the time — so the buttons never fall off
-# the window edge. Space toggles playback; files can be dropped onto
-# the window.
+# mouse move). Space toggles playback; F / F11 and the corner button
+# toggle fullscreen; double-click on the video does the same. Files can
+# be dropped onto the window.
 
 class VideoApp < Egui::App
   # ── theme (Raven Music tags: examples/music_components/music_tags.cr) ──
   BAR_BG   = Egui::Color32.rgb(0x05, 0x05, 0x08)
+  # стекло хрома: полосы-оверлеи поверх видео просвечивают
+  BAR_GLASS = Egui::Color32.rgba(0x05, 0x05, 0x08, 0xAA)
+  # трек слайдеров — НЕ прозрачный: сквозь стекло видео иначе
+  # просвечивает сквозь линию и рвёт её
+  TRACK     = Egui::Color32.rgb(0x3c, 0x3c, 0x46)
   VIDEO_BG = Egui::Color32.rgb(0x0a, 0x0a, 0x0f)
-  THUMB_BG = Egui::Color32.rgb(0x17, 0x17, 0x21)
   TEXT     = Egui::Color32.rgb(0xec, 0xec, 0xf2)
   MUTED    = Egui::Color32.rgb(0xa3, 0xa3, 0xb4)
   ICON_FG  = Egui::Color32.rgb(0xc4, 0xc4, 0xd2)
@@ -86,6 +96,16 @@ class VideoApp < Egui::App
       start_flash(@player.playing? ? :play : :pause)
     end
 
+    # F / F11 = fullscreen ↔ windowed — the SystemPorts::Window state
+    # port; the button and the video double-click land in the same
+    # #toggle_fullscreen.
+    if ctx.input.key_pressed?(Egui::KeyCode::F) ||
+       ctx.input.key_pressed?(Egui::KeyCode::F11)
+      ctx.input.consume_key(Egui::KeyCode::F)
+      ctx.input.consume_key(Egui::KeyCode::F11)
+      toggle_fullscreen
+    end
+
     # center flash lifetime: keep frames coming while it fades, then
     # one final flash-free frame (the clear happens before this
     # frame's paint, so nothing stale stays on screen)
@@ -120,15 +140,38 @@ class VideoApp < Egui::App
       ctx.request_repaint # debug only: keep the loop from idle-skipping
     end
 
-    ctx.central_panel(fill: VIDEO_BG) do |ui|
+    # ── два режима рендеринга интерфейса ──────────────────────────────
+    # OVERLAPPED (fullscreen): видео — на весь экран, обе полосы плавают
+    # поверх (position: fixed) и прячутся после OVERLAY_HIDE_AFTER
+    # секунд без всякой активности (счётчик простоя InputState —
+    # состояние фреймворка; следующее движение мыши возвращает полосы).
+    # EMBEDDED (windowed): видео вжато в вёрстку, бар контролов снизу —
+    # но верхняя инфо-полоса ВСЕГДА overlap поверх видео, в обоих
+    # режимах.
+    fullscreen = Egui::SystemPorts::Window.fullscreen?
+    # хром (обе полосы) в fullscreen прячется по счётчику простоя; в
+    # окне верхняя полоса видна всегда
+    chrome_visible = !fullscreen ||
+                     ctx.input.seconds_since_activity < OVERLAY_HIDE_AFTER
+    ctx.central_panel(fill: VIDEO_BG, scroll: false) do |ui|
       video_area(ui)
+      if chrome_visible
+        paint_top_overlay(ui)
+        if fullscreen
+          paint_bar_overlay(ui, ctx)
+          # момент скрытия должен наступить даже на паузе (idle-гейт
+          # иначе заморозит кадр до следующего движения мыши)
+          ctx.request_repaint
+        end
+      end
     end
-
-    portrait = Egui::SystemPorts::Screen.orientation ==
-               Egui::Orientation::Portrait
-    ctx.bottom_panel(height: portrait ? MOBILE_BAR_H : DESKTOP_BAR_H,
-      resizable: false, fill: BAR_BG) do |ui|
-      player_bar(ui, ctx, portrait)
+    unless fullscreen
+      portrait = Egui::SystemPorts::Screen.orientation ==
+                 Egui::Orientation::Portrait
+      ctx.bottom_panel(height: portrait ? MOBILE_BAR_H : DESKTOP_BAR_H,
+        resizable: false, fill: BAR_BG) do |ui|
+        player_bar(ui, ctx, portrait)
+      end
     end
 
     VideoApp.add_update_ms((Time.instant - t0).total_milliseconds)
@@ -136,9 +179,14 @@ class VideoApp < Egui::App
 
   # ── центр: видео с сохранением пропорций / заглушка ───────────────────
 
+  # Область — весь КЛИП панели, без инсетов window_padding: панель
+  # инсетит available-зону на padding со всех сторон, и вжатое туда
+  # видео не дотягивается до 100% ширины окна (те самые «рамки»).
+  # Клип — точная область окна, оставшаяся под остальными панелями.
   private def video_area(ui : Egui::Ui) : Nil
-    avail = Egui::Vec2.new(ui.available_width, ui.available_height)
-    rect = ui.allocate_space(avail)
+    screen = ui.clip
+    avail = Egui::Vec2.new(screen.width, screen.height)
+    rect = screen
     # YouTube-style click-to-toggle on the video surface (when a file
     # is open): play/pause + the center flash.
     if @player.open?
@@ -147,6 +195,13 @@ class VideoApp < Egui::App
       if resp.clicked?
         @player.toggle
         start_flash(@player.playing? ? :play : :pause)
+      end
+      if resp.double_clicked?
+        # the pair's second click already flipped playback above — undo
+        # that and flip the window mode instead (YouTube behavior)
+        @player.toggle
+        start_flash(@player.playing? ? :play : :pause)
+        toggle_fullscreen
       end
     end
     p = ui.painter
@@ -243,15 +298,7 @@ class VideoApp < Egui::App
 
   # высота интерактивной зоны seek-полосы (визуально тоньше)
   SEEK_STRIP_H = 18.0
-  # десктопный бар: seek-полоса + строка контролов + нижняя строка
-  # (имя файла слева, инфо о кодеке справа — ПОД всеми элементами)
-  DESKTOP_BAR_H = 104.0
-  DESK_ROW_H    = 56.0
-
-  private def player_bar(ui : Egui::Ui, ctx : Egui::Context,
-                         portrait : Bool) : Nil
-    portrait ? mobile_bar(ui, ctx) : desktop_bar(ui, ctx)
-  end
+  DESK_ROW_H   = 56.0
 
   # ── мобильная раскладка (portrait): seek сверху, имя+время, транспорт ──
 
@@ -309,9 +356,21 @@ class VideoApp < Egui::App
     end
   end
 
+  # десктопный бар: seek-полоса + строка контролов (инфа о видео
+  # переехала наверх, в рамку #info_panel)
+  DESKTOP_BAR_H = SEEK_STRIP_H + DESK_ROW_H
+  # высота верхней рамки с инфо о видео (embedded) и overlapped-полосы
+  INFO_BAR_H = 30.0
+  # overlapped mode: chrome прячется после стольких секунд простоя
+  OVERLAY_HIDE_AFTER = 3.0
+
+  private def player_bar(ui : Egui::Ui, ctx : Egui::Context,
+                         portrait : Bool) : Nil
+    portrait ? mobile_bar(ui, ctx) : desktop_bar(ui, ctx)
+  end
+
   private def desktop_bar(ui : Egui::Ui, ctx : Egui::Context) : Nil
-    p = @player
-    # панели инсетят контент на window_padding — компенсируем, чтобы бар
+    # панель инсетит контент на window_padding — компенсируем, чтобы бар
     # жил на полном прямоугольнике панели (пиксель в пиксель с краем окна)
     pad = ui.style.spacing.window_padding
     allocated = ui.allocate_space(Egui::Vec2.new(ui.available_width,
@@ -319,15 +378,48 @@ class VideoApp < Egui::App
     rect = Egui::Rect.from_min_size(
       Egui::Pos2.new(allocated.left - pad.x, allocated.top - pad.y),
       Egui::Vec2.new(allocated.width + 2 * pad.x, DESKTOP_BAR_H))
+    ui.painter.rect(rect, 0.0, fill: BAR_BG)
+    bar_body(ui, ctx, rect)
+  end
+
+  # Верхняя инфо-полоса — ВСЕГДА overlap (position: fixed) поверх видео,
+  # в обоих режимах рендеринга; стекло BAR_GLASS, видео просвечивает.
+  private def paint_top_overlay(ui : Egui::Ui) : Nil
+    screen = ui.clip
     pa = ui.painter
-    pa.rect(rect, 0.0, fill: BAR_BG)
+    pa.clip = ui.clip
+    top = Egui::Rect.from_min_size(screen.min,
+      Egui::Vec2.new(screen.width, INFO_BAR_H))
+    pa.rect(top, 0.0, fill: BAR_GLASS)
+    info_strip(ui, top)
+    # info_strip работала на child_ui — пейнтер общий, её клип остался
+    # в глобальном состоянии; вернули клип панели, иначе всё, что
+    # рисуется после, обрежется верхней полосой
+    pa.clip = ui.clip
+  end
 
-    # seek-полоса на всю ширину окна вдоль верхней кромки бара
+  # OVERLAPPED бар у нижней кромки: рисуется ПОСЛЕ видео, поэтому его
+  # hit-test'ы выигрывают у click-to-toggle поверхности под ним.
+  private def paint_bar_overlay(ui : Egui::Ui, ctx : Egui::Context) : Nil
+    screen = ui.clip
+    pa = ui.painter
+    pa.clip = ui.clip
+    bar = Egui::Rect.from_min_size(
+      Egui::Pos2.new(screen.left, screen.bottom - DESKTOP_BAR_H),
+      Egui::Vec2.new(screen.width, DESKTOP_BAR_H))
+    pa.rect(bar, 0.0, fill: BAR_GLASS)
+    bar_body(ui, ctx, bar)
+  end
+
+  # seek-полоса вдоль верхней кромки + строка контролов на явном
+  # прямоугольнике — общий рендер embedded-бара и overlapped-полосы;
+  # все позиции считаются в явных px (gap()/пружины) — неявный
+  # item_spacing глушится, иначе он сдвигает каждый элемент строки
+  private def bar_body(ui : Egui::Ui, ctx : Egui::Context,
+                       rect : Egui::Rect) : Nil
+    # пейнтер общий: клип мог остаться от чужой child_ui (см. оверлеи)
+    ui.painter.clip = ui.clip
     seek_strip(ui, ctx, rect)
-
-    # строка контролов на оставшейся высоте; все позиции считаются в
-    # явных px (gap()/пружины) — глушим неявный item_spacing, который
-    # иначе сдвигает каждый элемент строки
     spacing = ui.style.spacing
     saved_spacing = spacing.item_spacing
     spacing.item_spacing = Egui::Vec2.new(0.0, saved_spacing.y)
@@ -341,40 +433,33 @@ class VideoApp < Egui::App
       row.clip = row_rect.intersect(ui.clip)
       row.seed_row_height(row_rect.height)
       controls_row(row, ctx)
-
-      # нижняя строка ПОД всеми элементами: имя файла слева, инфо о
-      # кодеке справа
-      line_rect = Egui::Rect.from_min_size(
-        Egui::Pos2.new(rect.left + 16.0,
-          rect.top + SEEK_STRIP_H + DESK_ROW_H),
-        Egui::Vec2.new({rect.width - 32.0, 0.0}.max,
-          DESKTOP_BAR_H - SEEK_STRIP_H - DESK_ROW_H))
-      line = ui.child_ui(line_rect, Egui::Id.from("vbar/line"),
-        layout: Egui::Layout.left_to_right)
-      line.wrap_x = false
-      line.clip = line_rect.intersect(ui.clip)
-      line.seed_row_height(line_rect.height)
-      info_line(line)
     ensure
       spacing.item_spacing = saved_spacing
     end
   end
 
-  # Нижняя строка бара: имя файла слева, инфо о носителе справа. Каждой
+  # Инфо-полоса: имя файла слева, инфо о носителе справа. Каждой
   # половине — своя ширина с элайдом; имени гарантированы 40% строки.
-  private def info_line(ui : Egui::Ui) : Nil
+  private def info_strip(ui : Egui::Ui, rect : Egui::Rect) : Nil
     p = @player
     ui.painter.clip = ui.clip
     name = p.open? ? File.basename(p.path.to_s) : "No file"
     info_txt = media_info
-    line_w = ui.available_width
-    info_w = ui.fonts.measure(info_txt, 12.0).x
+    line_w = rect.width - 32.0
+    line = ui.child_ui(Egui::Rect.from_min_size(
+      Egui::Pos2.new(rect.left + 16.0, rect.top),
+      Egui::Vec2.new({line_w, 0.0}.max, rect.height)),
+      Egui::Id.from("vinfo/line"), layout: Egui::Layout.left_to_right)
+    line.wrap_x = false
+    line.clip = rect.intersect(ui.clip)
+    line.seed_row_height(rect.height)
+    info_w = line.fonts.measure(info_txt, 12.0).x
     name_w = {line_w - info_w - 16.0, line_w * 0.4}.max
     info_w = {info_w, line_w - name_w - 16.0}.min.clamp(0.0, info_w)
-    t(ui, name, size: 15.0, w: name_w)
-    ui.allocate_space(Egui::Vec2.new({line_w - name_w - info_w, 0.0}.max, 0.0))
+    t(line, name, size: 15.0, w: name_w)
+    line.allocate_space(Egui::Vec2.new({line_w - name_w - info_w, 0.0}.max, 0.0))
     if info_w >= 1.0
-      t(ui, info_txt, size: 12.0, color: MUTED, w: info_w, align: "r")
+      t(line, info_txt, size: 12.0, color: MUTED, w: info_w, align: "r")
     end
   end
 
@@ -422,34 +507,34 @@ class VideoApp < Egui::App
     # (replay 34 + gap + rewind 34 + gap), поэтому смещение 112 + 20
     t_start = avail / 2.0 - 112.0
 
-    # левая группа (миниатюра + две кнопки) не заходит за транспорт
-    budget = {t_start - 8.0, 24.0}.max
-    thumb_w = {thumb_width, budget}.min
+    # левая группа — две кнопки (миниатюра убрана: дублировала кадр) —
+    # не заходит за транспорт
 
     # правый кластер: если не влезает — сжимаем громкость, потом прячем время
     vol_w = 120.0
     show_time = true
     max_right = avail - (t_start + transport_w + 8.0)
-    if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
-      vol_w = {max_right - 10.0 - time_w - 8.0 - 34.0 - 4.0, 40.0}.max
+    # хвост кластера: mute 34 + 4 + громкость + 8 + fullscreen 34
+    tail_fixed = 34.0 + 4.0 + 8.0 + 34.0
+    if 10.0 + time_w + 8.0 + tail_fixed + vol_w > max_right
+      vol_w = {max_right - 10.0 - time_w - 8.0 - tail_fixed, 40.0}.max
       vol_w = {vol_w, 120.0}.min
-      if 10.0 + time_w + 8.0 + 34.0 + 4.0 + vol_w > max_right
+      if 10.0 + time_w + 8.0 + tail_fixed + vol_w > max_right
         show_time = false
-        vol_w = {max_right - 8.0 - 34.0 - 4.0, 40.0}.max
+        vol_w = {max_right - 8.0 - tail_fixed, 40.0}.max
         vol_w = {vol_w, 120.0}.min
       end
     end
-    right_w = (show_time ? 10.0 + time_w + 8.0 : 8.0) + 34.0 + 4.0 + vol_w
+    right_w = (show_time ? 10.0 + time_w + 8.0 : 8.0) + tail_fixed + vol_w
 
-    thumb(ui, thumb_w)
-    gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open", "folder", tint: ICON_FG) { open_dialog }
+    gap(ui, 12.0)
     ibtn(ui, ctx, "vbar/open_multi", "list_video", tint: ICON_FG) { open_dialog_multiple }
 
     # пружина до строго центрального транспорта (кластер несимметричен:
     # слева от play 112px, справа 80px — play остаётся в центре окна)
     ui.allocate_space(Egui::Vec2.new(
-      {t_start - (thumb_w + 12.0 + 34.0 + 34.0), 0.0}.max, 0.0))
+      {t_start - (34.0 + 12.0 + 34.0), 0.0}.max, 0.0))
     transport(ui, ctx)
 
     # правый кластер прижат к правому краю
@@ -477,43 +562,20 @@ class VideoApp < Egui::App
     end
     gap(ui, 4.0)
     volume_slider(ui, ctx, vol_w)
+    gap(ui, 8.0)
+    fs = Egui::SystemPorts::Window.fullscreen?
+    ibtn(ui, ctx, "vbar/fullscreen", fs ? "minimize" : "maximize",
+      btn: 34.0, tint: fs ? ACCENT : ICON_FG) { toggle_fullscreen }
   end
 
-  # Миниатюра слева: живой кадр видео (с сохранением пропорций, ширина
-  # ограничена max_w при узком окне) или плейсхолдер с иконкой плёнки.
-  private def thumb(ui : Egui::Ui, max_w : Float64 = 160.0) : Nil
-    p = @player
-    if p.open? && p.height > 0 &&
-       (!p.texture_id.zero? || p.video_texture_id != 0)
-      w = {58.0 * p.width / p.height, max_w}.min
-      w = {w, 0.5}.max
-      h = {w * p.height / p.width, 58.0}.min
-      rect = ui.allocate_space(Egui::Vec2.new(w, h))
-      ui.painter.clip = ui.clip
-      if (vid = p.video_texture_id) != 0
-        ui.painter.video(rect, vid)
-      else
-        ui.painter.image(rect, p.texture_id)
-      end
-    else
-      s = {58.0, max_w}.min
-      rect = ui.allocate_space(Egui::Vec2.new(s, s))
-      ui.painter.clip = ui.clip
-      ui.painter.rect(rect, 6.0, fill: THUMB_BG)
-      paint_icon(ui, :lucide, :film, MUTED, Egui::Rect.from_min_size(
-        Egui::Pos2.new(rect.center.x - s * 0.24, rect.center.y - s * 0.24),
-        Egui::Vec2.new(s * 0.48, s * 0.48)))
-    end
+  # fullscreen ↔ windowed через порт состояния Window; один путь входа —
+  # для кнопки, хоткея и double-click по видео.
+  private def toggle_fullscreen : Nil
+    Egui::SystemPorts::Window.set_fullscreen(
+      !Egui::SystemPorts::Window.fullscreen?)
   end
 
-  # полная (нежатая) ширина миниатюры — для расчёта строка контролов
-  private def thumb_width : Float64
-    p = @player
-    return 58.0 unless p.open? && p.height > 0
-    {58.0 * p.width / p.height, 160.0}.min
-  end
-
-  # одна строка инфо о носителе под именем файла
+  # одна строка инфо о носителе (верхняя рамка)
   private def media_info : String
     p = @player
     return @status unless p.open?
@@ -649,8 +711,7 @@ class VideoApp < Egui::App
     cy = strip.top + 10.0
     p.rect(Egui::Rect.from_min_size(
       Egui::Pos2.new(strip.left, cy - track_h / 2.0),
-      Egui::Vec2.new(strip.width, track_h)), track_h / 2.0,
-      fill: Egui::Color32.rgba(255, 255, 255, 0x33))
+      Egui::Vec2.new(strip.width, track_h)), track_h / 2.0, fill: TRACK)
     p.rect(Egui::Rect.from_min_size(
       Egui::Pos2.new(strip.left, cy - track_h / 2.0),
       Egui::Vec2.new(strip.width * frac, track_h)), track_h / 2.0,
@@ -670,8 +731,7 @@ class VideoApp < Egui::App
     frac = frac.clamp(0.0, 1.0)
     cy = rect.center.y
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
-      Egui::Vec2.new(rect.width, 4.0)), 2.0,
-      fill: Egui::Color32.rgba(255, 255, 255, 0x33))
+      Egui::Vec2.new(rect.width, 4.0)), 2.0, fill: TRACK)
     p.rect(Egui::Rect.from_min_size(Egui::Pos2.new(rect.left, cy - 2.0),
       Egui::Vec2.new(rect.width * frac, 4.0)), 2.0, fill: ACCENT)
     p.circle_filled(Egui::Pos2.new(
@@ -716,6 +776,8 @@ class VideoApp < Egui::App
           when {:lucide, :volume_off} then Egui::Icon.from_file(:lucide, :volume_off, tint: tint)
           when {:lucide, :rotate_cw}  then Egui::Icon.from_file(:lucide, :rotate_cw, tint: tint)
           when {:lucide, :rotate_ccw} then Egui::Icon.from_file(:lucide, :rotate_ccw, tint: tint)
+          when {:lucide, :maximize}   then Egui::Icon.from_file(:lucide, :maximize, tint: tint)
+          when {:lucide, :minimize}   then Egui::Icon.from_file(:lucide, :minimize, tint: tint)
           when {:lucide, :list_video} then Egui::Icon.from_file(:lucide, :list_video, tint: tint)
           when {:bootstrap, :rewind}  then Egui::Icon.from_file(:bootstrap, :rewind_fill, tint: tint)
           when {:bootstrap, :forward} then Egui::Icon.from_file(:bootstrap, :fast_forward_fill, tint: tint)
@@ -813,6 +875,8 @@ class VideoApp < Egui::App
     when "volume_off" then {:lucide, :volume_off}
     when "rotate_cw"  then {:lucide, :rotate_cw}
     when "rotate_ccw" then {:lucide, :rotate_ccw}
+    when "maximize"   then {:lucide, :maximize}
+    when "minimize"   then {:lucide, :minimize}
     when "list_video" then {:lucide, :list_video}
     else                   {:lucide, :circle}
     end

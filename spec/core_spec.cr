@@ -5784,3 +5784,29 @@ describe "text edit on multibyte text (character-index state)" do
 
   end
 end
+
+describe "InputState#seconds_since_activity" do
+  it "grows on idle frames and resets on any user activity" do
+    ctx = Egui::Context.new
+    raw_frame(ctx, time: 1.0)
+    # first frame (no prev): the counter starts at ~dt
+    ctx.input.seconds_since_activity.should be_close(0.016, 1e-9)
+
+    # idle frames accumulate dt (clamped at 1 s per frame, like dt
+    # everywhere in InputState)
+    raw_frame(ctx, time: 4.0)
+    ctx.input.seconds_since_activity.should be_close(1.016, 1e-9)
+
+    # a pointer move resets to zero
+    raw_frame(ctx, [Egui::Event.pointer_moved(Egui::Pos2.new(10.0, 10.0))], 4.5)
+    ctx.input.seconds_since_activity.should eq(0.0)
+
+    # growth resumes from zero (dt clamp caps this 1.5 s gap at 1.0)
+    raw_frame(ctx, time: 6.0)
+    ctx.input.seconds_since_activity.should eq(1.0)
+
+    # a key press resets too
+    raw_frame(ctx, [Egui::Event.key_pressed(Egui::KeyCode::Space)], 6.25)
+    ctx.input.seconds_since_activity.should eq(0.0)
+  end
+end

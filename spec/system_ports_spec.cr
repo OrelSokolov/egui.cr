@@ -81,6 +81,26 @@ describe Egui::SystemPorts do
     Egui::SystemPorts::Window.fullscreen?.should be_false
   end
 
+  it "set_fullscreen is idempotent and fullscreen? reads recorded state" do
+    Egui::SystemPorts::Window.set_fullscreen(true)
+    Egui::SystemPorts::Window.fullscreen?.should be_false # headless: no-op
+    Egui::SystemPorts::Window.fullscreen = true
+    Egui::SystemPorts::Window.fullscreen?.should be_true
+    Egui::SystemPorts::Window.set_fullscreen(false) # must not raise
+  ensure
+    Egui::SystemPorts::Window.fullscreen = false # recorded, == headless
+  end
+
+  it "FullscreenChanged drains through Events.take" do
+    Egui::SystemPorts::Events.enqueue(
+      Egui::SystemPorts::Events::FullscreenChanged.new(true))
+    events = Egui::SystemPorts::Events.take
+    found = events.any? do |e|
+      e.is_a?(Egui::SystemPorts::Events::FullscreenChanged) && e.fullscreen
+    end
+    found.should be_true
+  end
+
   it "default Screen implementation is headless" do
     Egui::SystemPorts::Screen.size.should be_nil
     Egui::SystemPorts::Screen.dpi_scale.should eq(1.0)
@@ -358,7 +378,10 @@ describe Egui::SystemPorts::Events do
     Egui::SystemPorts::Events.enqueue(
       Egui::SystemPorts::Events::RotationChanged.new(Egui::Orientation::Portrait))
     fired.size.should eq(1)
-    fired[0].orientation.should eq(Egui::Orientation::Portrait)
+    rot = fired[0]
+    rot.should be_a(Egui::SystemPorts::Events::RotationChanged)
+    rot.as(Egui::SystemPorts::Events::RotationChanged).orientation
+      .should eq(Egui::Orientation::Portrait)
     # the event is queued regardless — take is the primary contract
     Egui::SystemPorts::Events.take.size.should eq(1)
   ensure

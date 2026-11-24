@@ -302,6 +302,14 @@ module Egui
     # move/press clears it. Hybrid touch+mouse devices thus switch modes
     # on whichever was touched last.
     getter? touch_pointer : Bool
+    # The idle counter: seconds elapsed since the last USER activity —
+    # pointer move/press/release, key, wheel, pinch, text input (in
+    # EITHER direction: a release counts, so does a key-up). Framework
+    # STATE, carried across frames on prev like the pointer state; any
+    # activity resets it to 0, idle frames grow it by dt. The video
+    # player's chrome auto-hide reads this: overlay off after N idle
+    # seconds, back on the next mouse move.
+    getter seconds_since_activity : Float64
 
     def initialize(@screen_rect : Rect, @pointer_pos : Pos2?, @pointer_down : Bool,
                    @pointer_pressed : Bool, @pointer_released : Bool, @scroll : Vec2,
@@ -322,7 +330,8 @@ module Egui
                    @dropped_files : Array(String) = [] of String,
                    @zoom_delta : Float64 = 1.0,
                    @zoom_pos : Pos2? = nil,
-                   @touch_pointer : Bool = false)
+                   @touch_pointer : Bool = false,
+                   @seconds_since_activity : Float64 = 0.0)
       @consumed_keys = Set(KeyCode).new
     end
 
@@ -402,12 +411,14 @@ module Egui
       zoom_delta = 1.0
       zoom_pos : Pos2? = nil
       touch_pointer = prev.try(&.touch_pointer?) || false
+      moved = false
 
       raw.events.each do |e|
         case e.type
         in .pointer_moved?
           pos = e.pos unless e.pos.nil?
           touch_pointer = e.from_touch?
+          moved = true
         in .pointer_button_pressed?
           touch_pointer = e.from_touch?
           if e.button.primary?
@@ -465,12 +476,26 @@ module Egui
         velocity = prev.pointer_velocity * 0.8 + v_inst * 0.2
       end
 
+      # The idle counter: any user activity resets to 0, idle frames
+      # grow by dt (see the #seconds_since_activity getter). Neither
+      # window resize nor file drops count — those are not chrome-
+      # revealing gestures. A POINTER_MOVED EVENT is the activity
+      # signal — not the pos-vs-prev delta, which is zero for the very
+      # first move of a session (no prev position yet).
+      age = prev.try(&.seconds_since_activity) || 0.0
+      active = moved || pressed || released ||
+               secondary_pressed || secondary_released || extra1_pressed ||
+               scroll != Vec2.zero || !keys_pressed.empty? ||
+               !keys_released.empty? || !text.empty? || zoom_delta != 1.0
+      seconds_since_activity = active ? 0.0 : age + dt
+
       new(raw.screen_rect, pos, down, pressed, released, scroll, raw.time, dt,
         delta, velocity, keys_down, keys_pressed, keys_released,
         key_press_counts, text, modifiers,
         secondary_pressed, secondary_pos, secondary_down, secondary_released,
         extra1_pressed,
-        dropped_files, zoom_delta, zoom_pos, touch_pointer)
+        dropped_files, zoom_delta, zoom_pos, touch_pointer,
+        seconds_since_activity)
     end
   end
 end
