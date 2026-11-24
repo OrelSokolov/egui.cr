@@ -11909,6 +11909,16 @@ _SOKOL_PRIVATE sg_resource_state _sg_gl_create_view(_sg_view_t* view, const sg_v
             const _sg_image_t* img = _sg_image_ref_ptr(&view->cmn.img.ref);
             for (int slot = 0; slot < img->cmn.num_slots; slot++) {
                 SOKOL_ASSERT(img->gl.tex[slot] != 0);
+                if (img->gl.injected) {
+                    // Injected textures (WGL_NV_DX_interop2 interop) must
+                    // not be aliased: glTextureView over a D3D-shared
+                    // texture raises GL_INVALID_OPERATION. The view
+                    // samples the texture itself — ownership stays with
+                    // the image (discard must not delete it, see
+                    // _sg_gl_discard_view).
+                    view->gl.tex_view[slot] = img->gl.tex[slot];
+                    continue;
+                }
                 const GLuint min_level = (GLuint)view->cmn.img.mip_level;
                 const GLuint num_levels = (GLuint)view->cmn.img.mip_level_count;
                 const GLuint min_layer = (GLuint)view->cmn.img.slice;
@@ -11960,7 +11970,13 @@ _SOKOL_PRIVATE void _sg_gl_discard_view(_sg_view_t* view) {
             // GL texture view support, in that case the view's texture object
             // will simply remain bound until the sg_image object is discarded
             _sg_gl_cache_invalidate_texture_sampler(view->gl.tex_view[slot], 0);
-            glDeleteTextures(1, &view->gl.tex_view[slot]);
+            const _sg_image_t* img = _sg_image_ref_ptr(&view->cmn.img.ref);
+            if (!(img && img->gl.injected)) {
+                // injected textures (WGL_NV_DX_interop2 interop) are owned
+                // by the image — the view sampled them directly (see
+                // _sg_gl_create_view), so they must not be deleted here
+                glDeleteTextures(1, &view->gl.tex_view[slot]);
+            }
         }
     }
     if (view->gl.msaa_render_buffer) {

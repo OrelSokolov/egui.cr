@@ -249,8 +249,16 @@ lib LibFF
   # ffmpeg's VA→DRM export never closes the per-map dmabuf fd (verified:
   # +1 open fd per frame, userspace dups all accounted) — the player
   # takes the close over after queueing its own dup of the descriptor.
+  # POSIX fd calls; ucrt (Windows) names the same CRT calls with a
+  # leading underscore — nothing here runs on Windows (the VAAPI
+  # zero-copy path is Linux-only), but the example must link everywhere
+  {% if flag?(:windows) %}
+  fun close = _close(fd : Int32) : Int32
+  fun dup_fd = _dup(fd : Int32) : Int32
+  {% else %}
   fun close = close(fd : Int32) : Int32
   fun dup_fd = dup(fd : Int32) : Int32
+  {% end %}
   fun av_hwframe_get_buffer = av_hwframe_get_buffer(hw_frames_ctx : UInt8*,
                                                     frame : AVFrame*,
                                                     flags : Int32) : Int32

@@ -202,6 +202,10 @@ lib LibEguiCr
       reduced_motion : Int32*) : Void
   {% end %}
   fun fullscreen_q = egui_cr_fullscreen_q : Int32
+  # R-local read (no roundtrip) — sync_fullscreen polls it every frame
+  # from inside the frame callback, where a roundtrip self-deadlocks to
+  # its 2 s deadline (see egui_cr_fullscreen_q_rt in the shim).
+  fun fullscreen_q_rt = egui_cr_fullscreen_q_rt : Int32
   fun toggle_fullscreen = egui_cr_toggle_fullscreen
   fun set_window_title = egui_cr_set_window_title(title : UInt8*)
   fun clipboard_set = egui_cr_clipboard_set(str : UInt8*)
@@ -383,6 +387,10 @@ lib LibEguiCr
   fun video_frame_cvpixelbuffer = egui_cr_video_frame_cvpixelbuffer(
     id : UInt32, cvb : Void*, w : Int32, h : Int32, tenbit : Int32,
     cmat : Float32*, range : Float32*)
+  # Windows fast path (DXZC shim section): the VP output ring slot's
+  # shared D3D11 texture pointer → GL samples it via WGL_NV_DX_interop2
+  fun video_frame_dx = egui_cr_video_frame_dx(id : UInt32, tex : Void*,
+                                              w : Int32, h : Int32)
   fun pkt_video = egui_cr_pkt_video(x : Float32, y : Float32, w : Float32,
     h : Float32, cx : Float32, cy : Float32, cw : Float32, ch : Float32,
     vid : UInt32, rot : Int32)
@@ -2502,7 +2510,7 @@ module Egui
       # answer is the only source of truth. Same first-report contract
       # as #sync_orientation: the initial value records state only.
       private def self.sync_fullscreen : Nil
-        fs = LibEguiCr.fullscreen_q != 0
+        fs = LibEguiCr.fullscreen_q_rt != 0
         return if @@last_fullscreen == fs
         first = @@last_fullscreen.nil?
         @@last_fullscreen = fs

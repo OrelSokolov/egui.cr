@@ -80,6 +80,16 @@ module Egui
     getter theme : Theme
     property fonts : Fonts
 
+    # Media playback is active (the app's decode/audio pumps run inside
+    # its own #update, not on a driver timer): drivers consult this to
+    # bypass idle throttling (the 1 fps focus gate) that would stall the
+    # pumps themselves. The player app sets it while playback runs.
+    property media_active : Bool = false
+
+    def media_active? : Bool
+      @media_active
+    end
+
     def fonts=(fonts : Fonts)
       # Renderer selection (EGUI_NOFONTS=1): the NOOP stack overrides
       # whatever the app/backend installs — the global

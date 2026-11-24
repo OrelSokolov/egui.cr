@@ -113,9 +113,11 @@ The same rake targets work on Windows. Requirements:
 The FFmpeg-dependent `video` example is skipped automatically on a clean
 install (no FFmpeg dev headers): `rake build:examples` builds everything
 else and prints a notice; an explicit `rake build:dev[video]` fails with
-instructions. To build it, install FFmpeg dev (`vcpkg install ffmpeg`)
-and set `FFMPEG_DIR` to the SDK root (the dir containing `include\` and
-`lib\`).
+instructions. To build it, vendor the pinned FFmpeg 7.1 dev SDK
+(`rake download:ffmpeg` — win64 shared, lands in `vendor\ffmpeg`, DLLs
+copied next to `bin\apps\video`), or install FFmpeg dev
+(`vcpkg install ffmpeg`) and set `FFMPEG_DIR` to the SDK root (the dir
+containing `include\` and `lib\`).
 
 ```bat
 rake spec             &:: headless core specs

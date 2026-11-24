@@ -20,6 +20,15 @@ lib LibVideoPool
   # decode-write barrier (what av_hwframe_map did implicitly)
   fun sync_surface = egui_video_sync_surface(device_ref : UInt8*,
                                              surface_id : UInt32) : Int32
+  # Windows D3D11VA zero-copy (see backend/video_pool.c): the D3D11VA
+  # device ref over the shim's shared D3D11 device; one frame → VP
+  # NV12/P010→RGBA into the ring slot, EVENT-fenced (out: [0] texture
+  # pointer, [1] w, [2] h); pipeline teardown for #close
+  fun dx_device_create = egui_video_dx_device_create : UInt8*
+  fun dx_frame = egui_video_dx_frame(device_ref : UInt8*,
+                                     frame : Void*, bt709 : Int32,
+                                     full : Int32, out : Int64*) : Int32
+  fun dx_pipeline_free = egui_video_dx_pipeline_free
 end
 
 class VideoPlayer
@@ -266,13 +275,23 @@ class VideoPlayer
       cctx.value.thread_count = 1
       cctx.value.thread_type = 0
     else
-      cctx.value.thread_count = 0
-      # FF_THREAD_FRAME (1): what mpv/ffplay use — H264/HEVC decode
-      # scales near-linearly with cores. Slice threading (2) splits ONE
-      # frame and stalls at 2-3× on big resolutions; frame threading
-      # decodes several frames at once, which is what heavy 4K/6K files
-      # need to keep up with realtime.
-      cctx.value.thread_type = 1
+      if {{ flag?(:windows) }}
+        # D3D11VA + frame threading corrupts the hw frame buffer list
+        # (flaky C0000005 inside av_frame_replace / av_hwframe_get_buffer
+        # once ~16 workers race the shared-device VP blit) — single
+        # thread is stable and plenty for hw decode (the GPU does the
+        # heavy lifting; EGUI_VIDEO_THREADS=t:type overrides).
+        cctx.value.thread_count = 1
+        cctx.value.thread_type = 0
+      else
+        cctx.value.thread_count = 0
+        # FF_THREAD_FRAME (1): what mpv/ffplay use — H264/HEVC decode
+        # scales near-linearly with cores. Slice threading (2) splits ONE
+        # frame and stalls at 2-3× on big resolutions; frame threading
+        # decodes several frames at once, which is what heavy 4K/6K files
+        # need to keep up with realtime.
+        cctx.value.thread_type = 1
+      end
     end
     if (t = ENV["EGUI_VIDEO_THREADS"]?)
       count, _, ttype = t.partition(':')
@@ -302,6 +321,34 @@ class VideoPlayer
         end
         @video_id = LibEguiCr.video_create
         @video_texture_id = @video_id.to_u64
+      elsif {{ flag?(:windows) }} && (dev = @hw_device)
+        # Windows zero-copy: D3D11VA decodes into the fixed pool (one
+        # array texture), each frame runs through the hardware
+        # VideoProcessor into a small RGBA ring, and GL samples the ring
+        # through WGL_NV_DX_interop2 — no pixel crosses to the CPU (see
+        # #dx_frame). The pool must match what the DECODER will output:
+        # the probe is the same one the Linux zc path runs.
+        sw_fmt, pw, ph = probe_hw_params(path, codec) ||
+                         {par.format == 62 ? 158 : 23, # P010LE / NV12
+                          @width > 0 ? @width : par.width,
+                          @height > 0 ? @height : par.height}
+        unless (fref = LibVideoPool.pool_create(dev, @@hw_pix_fmt,
+                 sw_fmt, pw, ph, 34)).null?
+          # GStreamer-style FIXED surface pool (gstvaallocator) — the
+          # same reasoning as the VAAPI one below; one Texture2D ARRAY
+          # (34 slices) with BIND_DECODER|SHADER_RESOURCE (set in C).
+          cctx.value.hw_frames_ctx = LibFF.av_buffer_ref(fref)
+          cctx.value.extra_hw_frames = 8
+          @zc_frames = fref
+          # the get_format callback re-attaches this ref on the decoding
+          # context (ffmpeg strips the pre-open2 attach — see HW_GET_FORMAT)
+          @@hw_pool_ref = fref
+          @zc = true
+          @dx = true
+          @video_id = LibEguiCr.video_create
+          @video_texture_id = @video_id.to_u64
+          STDERR.puts("video: zero-copy path (D3D11VA + VP), fixed pool") if ENV["EGUI_VIDEO_DEBUG"]?
+        end
       elsif (dev = @hw_device)
         # The pool must match what the DECODER will output: probe it by
         # decoding one frame (see #probe_hw_params) — a wrong sw_format
@@ -517,6 +564,7 @@ class VideoPlayer
 
   # Release everything and go back to the placeholder state.
   def close : Nil
+    @ctx.media_active = false # drivers resume their idle gates
     close_audio
     zc_disable
     nv12_disable
@@ -629,6 +677,9 @@ class VideoPlayer
   @zc_reopen : String?
 
   def advance : Nil
+    # keep the driver's media-bypass flag in sync with the state (the
+    # 1 fps focus gate would stall the decode/audio pumps)
+    @ctx.media_active = @state == State::Playing
     if (rp = @zc_reopen)
       @zc_reopen = nil
       @error = "zero-copy import failed — reopen the file (copy-back)"
@@ -897,6 +948,9 @@ class VideoPlayer
   # hw pix fmt comes from the decoder's hw config — ffmpeg's pix-fmt
   # name table has no "videotoolbox" entry on this build).
   # Linux: VAAPI through the DRM render node.
+  # Windows: D3D11VA on the shim's shared D3D11 device (egui_cr_dx_device
+  # — the ONE device GL samples through WGL_NV_DX_interop2; no
+  # cross-device sharing, no keyed mutexes, see backend/video_pool.c).
   private def setup_hw(cctx : LibFF::AVCodecContext*, codec : Void*) : Bool
     return false if ENV["EGUI_VIDEO_HW"]? == "0"
     if {{ flag?(:darwin) }}
@@ -923,6 +977,21 @@ class VideoPlayer
       cctx.value.hw_device_ctx = dev
       cctx.value.get_format = HW_GET_FORMAT
       STDERR.puts("video: hw decode via videotoolbox (pix fmt #{hwfmt})") if ENV["EGUI_VIDEO_DEBUG"]?
+      return true
+    end
+    if {{ flag?(:windows) }}
+      hwfmt = LibFF.av_get_pix_fmt("d3d11".to_unsafe)
+      return false if hwfmt < 0
+      # the interop device ref (AVBufferRef*, caller owns): 0 = no
+      # interop / no D3D11 — the copy-back stays software
+      dev = LibVideoPool.dx_device_create
+      return false if dev.null?
+      @@hw_pix_fmt = hwfmt
+      @hw_device = dev
+      @hw_transfer = true
+      cctx.value.hw_device_ctx = dev
+      cctx.value.get_format = HW_GET_FORMAT
+      STDERR.puts("video: hw decode via D3D11VA (shared interop device)") if ENV["EGUI_VIDEO_DEBUG"]?
       return true
     end
     dev_path = ENV["EGUI_VIDEO_HW_DEVICE"]? || "/dev/dri/renderD128"
@@ -1210,6 +1279,10 @@ class VideoPlayer
   # the copy-back pipeline stays as the fallback (GL backends, import
   # failures).
   @zc : Bool = false
+  # Windows sub-flavor of @zc (D3D11VA + VideoProcessor on the shared
+  # device, GL samples the ring via WGL_NV_DX_interop2): routes the
+  # frame path to #dx_frame and the teardown to dx_pipeline_free
+  @dx : Bool = false
   @nv12 : Bool = false          # macOS fast path (VideoToolbox + GPU YUV)
   @mtl_zc : Bool = false        # macOS Metal: CVPixelBuffer zero-copy wrap
   @video_id : UInt32 = 0_u32
@@ -1427,10 +1500,72 @@ class VideoPlayer
     true
   end
 
+  # One hw frame → D3D11 VideoProcessor NV12/P010→RGBA, zero-copy
+  # (Windows fast path). The C side (backend/video_pool.c) blits into a
+  # small shared RGBA ring and fences the GPU queue (the vaSyncSurface
+  # twin) before returning; the slot's texture pointer rides the op to
+  # the render thread, which samples it as a plain RGB GL texture
+  # (WGL_NV_DX_interop2). No avfilter graph: the VP does the ≤2560
+  # downscale too. False = failure (the caller latches to copy-back).
+  private def dx_frame(frame : LibFF::AVFrame*) : Bool
+    if LibEguiCr.video_failed != 0 && !@zc_reopen
+      # import pipeline dead — the blit cannot run (device removed,
+      # interop lost): a clean reopen in copy-back mode is the only
+      # working fallback (same contract as the Linux #zc_frame)
+      @zc_reopen = @path
+      zc_disable_quiet
+      LibFF.av_frame_unref(frame)
+      return false
+    end
+
+    # pts BEFORE any unref — the frame dies on both paths below
+    pts0 = frame.value.pts
+    pts0 = frame.value.best_effort_timestamp if pts0 == LibFF::NOPTS || pts0 < 0
+    cctx = @codec_ctx.not_nil!
+    bt709 = cctx.value.colorspace != 5 # 5 = bt470bg (601); 0/unspec → 709
+    full = cctx.value.color_range == 2
+    # pool identity diagnostics (the same ref->data compare as the
+    # Linux zc: a frame's hw_frames_ctx is a per-checkout AVBufferRef
+    # WRAPPER — compare the ->data both refs point at)
+    frame_ctx = LibVideoPool.ref_data(frame.value.hw_frames_ctx)
+    ours_ctx = LibVideoPool.ref_data(@zc_frames.not_nil!)
+    @zc_pool_match = frame_ctx == ours_ctx
+
+    xfer = StaticArray(Int64, 4).new(0_i64)
+    if LibVideoPool.dx_frame(@hw_device.not_nil!, frame,
+        bt709 ? 1 : 0, full ? 1 : 0, xfer.to_unsafe) != 0
+      @error = "zc: dx vpblit failed"
+      LibFF.av_frame_unref(frame)
+      return false
+    end
+    LibFF.av_frame_unref(frame) # fence ran inside — surface free to recycle
+
+    tex = Pointer(Void).new(xfer[0].to_u64!)
+    w = xfer[1].to_i32
+    h = xfer[2].to_i32
+    LibEguiCr.video_frame_dx(@video_id, tex, w, h)
+
+    @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
+    @display_pts = @shown_pts
+    @next_pts = @shown_pts + @frame_dur
+    @width = w
+    @height = h
+    @frame_count += 1
+    @fps_frames += 1
+    if @fps_frames == 1
+      @fps_wall = now_sec
+    elsif (dt = now_sec - @fps_wall) >= 1.0
+      @decode_fps = @fps_frames / dt
+      @fps_frames = 0
+    end
+    true
+  end
+
   # Release zero-copy resources WITHOUT the copy-back ladder surgery —
   # used by the reopen fallback (close/open rebuilds everything).
   private def zc_disable_quiet : Nil
     @zc = false
+    @dx = false
     @video_texture_id = 0_u64
     unless @video_id.zero?
       LibEguiCr.video_destroy(@video_id)
@@ -1443,8 +1578,9 @@ class VideoPlayer
     end
     # the export cache pins one fd per pool surface — release them (the
     # R side holds its own refs where it still samples the import)
-    @zc_exports.each_value { |e| LibC.close(e.fd) }
+    @zc_exports.each_value { |e| LibFF.close(e.fd) }
     @zc_exports.clear
+    LibVideoPool.dx_pipeline_free if {{ flag?(:windows) }}
   end
 
   # Drop the zero-copy path mid-play: back to copy-back (GL / import
@@ -1626,8 +1762,10 @@ class VideoPlayer
     return frame unless @hw_transfer
     # the scale_vaapi graph is VAAPI-only (Linux); VideoToolbox frames
     # always take the direct full-res transfer — macOS needs no scaling
-    # hop, the upload path pays no per-pixel CPU cost
-    graph_capable = !{{ flag?(:darwin) }}
+    # hop, the upload path pays no per-pixel CPU cost. Windows too: the
+    # zero-copy path scales inside the VideoProcessor, and a copy-back
+    # fallback would find no avfilter hw filter for d3d11 anyway
+    graph_capable = !{{ flag?(:darwin) }} && !{{ flag?(:windows) }}
     if graph_capable && frame.value.format == @@hw_pix_fmt &&
        hw_graph_ensure(frame) &&
        (src = @buffersrc) && (sink = @buffersink)
@@ -1698,7 +1836,8 @@ class VideoPlayer
       if code == 0
         t0 = Time.instant
         if (@zc || @nv12 || @mtl_zc) && @hw_transfer && frame.value.format == @@hw_pix_fmt
-          ok = @zc ? zc_frame(frame) : @mtl_zc ? vt_zc_frame(frame) : vt_frame(frame)
+          ok = @zc ? (@dx ? dx_frame(frame) : zc_frame(frame))
+              : @mtl_zc ? vt_zc_frame(frame) : vt_frame(frame)
           if !ok && LibEguiCr.video_failed != 0
             zc_disable if @zc
             nv12_disable if @nv12

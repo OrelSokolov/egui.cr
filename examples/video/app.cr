@@ -173,7 +173,6 @@ class VideoApp < Egui::App
         player_bar(ui, ctx, portrait)
       end
     end
-
     VideoApp.add_update_ms((Time.instant - t0).total_milliseconds)
   end
 

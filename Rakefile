@@ -211,12 +211,21 @@ end
 # them, and a fresh Windows box has no FFmpeg at all. Probe order:
 # pkg-config (Linux/macOS), FFMPEG_DIR (SDK root or include dir) and the
 # default vcpkg tree (Windows). Returns the -I flag, or nil when absent.
+# Vendored FFmpeg dev SDK (vendor/ffmpeg — win64 shared, populated by
+# `rake download:ffmpeg`): an FFMPEG_DIR-shaped SDK root whose ABI matches
+# examples/video/ffmpeg.cr's hand-rolled struct offsets (libavformat 61 /
+# libavcodec 61 / libavutil 59 — FFmpeg 7.1.x; never point these probes
+# at 8.x+). Also holds the avformat/avcodec/... import libs the video
+# example's @[Link]s resolve against, and the runtime DLLs.
+VENDORED_FFMPEG_SDK = "vendor/ffmpeg"
+
 def ffmpeg_include_flag
   inc = %x{pkg-config --cflags-only-I libavutil 2>/dev/null}.strip unless WINDOWS
   return inc unless inc.nil? || inc.empty?
   dirs = []
   dirs.concat([ENV["FFMPEG_DIR"], File.join(ENV["FFMPEG_DIR"], "include")]) if ENV["FFMPEG_DIR"]
   dirs.concat(%w[/opt/homebrew/include /usr/local/include /usr/include])
+  dirs.concat([VENDORED_FFMPEG_SDK, File.join(VENDORED_FFMPEG_SDK, "include")]) if WINDOWS
   dirs.concat(Dir["C:/vcpkg/installed/*/include"]) if WINDOWS
   dir = dirs.compact.find { |d| File.exist?(File.join(d, "libavutil", "hwcontext.h")) }
   dir ? "-I#{dir}" : nil
@@ -228,7 +237,10 @@ end
 # (#ifdef'd in the source); on macOS/Windows the generic hwcontext pool
 # helpers remain and the VAAPI entry points answer -1.
 VIDEO_POOL_OBJ = "lib/video_pool#{OBJ_EXT}"
-VIDEO_POOL_LIB = WINDOWS ? "lib/libegui_video.lib" : "lib/libegui_video.a"
+# MSVC finds <name>.lib only (no lib-prefix fallback — unlike the
+# POSIX ld -l form below), and Crystal's .lib locate check matches:
+# drop the prefix like the other Windows archives (egui_cr_sokol.lib).
+VIDEO_POOL_LIB = WINDOWS ? "lib/egui_video.lib" : "lib/libegui_video.a"
 file VIDEO_POOL_OBJ => ["backend/video_pool.c"] do
   FileUtils.mkdir_p("lib")
   inc = ffmpeg_include_flag || ""
@@ -492,7 +504,8 @@ def build_examples(names, opt_flags, label)
   # notice, an explicit `rake build:dev[video]` fails with instructions.
   if names.include?("video") && ffmpeg_include_flag.nil?
     msg = "no FFmpeg dev headers (libavutil/hwcontext.h) — install FFmpeg dev " \
-          "(Windows: vcpkg install ffmpeg, or point FFMPEG_DIR at the SDK root)"
+          "(Windows: rake download:ffmpeg, vcpkg install ffmpeg, or point " \
+          "FFMPEG_DIR at the SDK root)"
     raise "video example: #{msg}" if names == ["video"]
     names -= ["video"]
     puts "⚠ #{msg} — skipping the video example"
@@ -524,6 +537,13 @@ def build_examples(names, opt_flags, label)
           # import libs the ffmpeg.cr @[Link]s resolve against.
           flags << " " << File.expand_path(VIDEO_POOL_LIB)
           flags << " /LIBPATH:#{File.join(ENV.fetch('FFMPEG_DIR'), 'lib')}" if WINDOWS && ENV["FFMPEG_DIR"]
+          # the Windows zero-copy path (DXZC) allocates GL texture names
+          # (glGenTextures — an opengl32.dll export; sokol itself loads
+          # GL dynamically and never imports it)
+          flags << " opengl32.lib" if WINDOWS
+          if WINDOWS && Dir.exist?(File.join(VENDORED_FFMPEG_SDK, "lib"))
+            flags << " /LIBPATH:#{File.expand_path(File.join(VENDORED_FFMPEG_SDK, 'lib'))}"
+          end
           flags << " -l:libva.so.2" unless WINDOWS || DARWIN
         end
         # search1m/logs_viewer run their ring filter as a parallel
@@ -734,6 +754,42 @@ task "download:rlottie" do
      LICENSE README.md]
     .each { |e| p = File.join(src, e); FileUtils.cp_r(p, dest) if File.exist?(p) }
   puts "vendor/rlottie: populated @ ea06d2f (MIT)"
+end
+
+# The video example's FFmpeg dev SDK on Windows: pinned BtbN win64 shared
+# autobuild — FFmpeg 7.1.5, i.e. libavformat 61 / libavcodec 61 /
+# libavutil 59, the exact ABI examples/video/ffmpeg.cr probes its struct
+# offsets against (8.x/9.x shift them). Unpacked as an SDK root
+# (include/, lib/ import libs, bin/ runtime DLLs) that ffmpeg_include_flag
+# accepts; the DLLs the example pulls in land in bin/apps/ next to it.
+FFMPEG_SDK_URL = "https://github.com/FFmpeg-Builds/FFmpeg-Builds/releases" \
+                 "/download/autobuild-2026-06-30-13-34/" \
+                 "ffmpeg-n7.1.5-1-g7d0e842004-win64-gpl-shared-7.1.zip"
+
+desc "Vendor FFmpeg 7.1 dev SDK (win64 shared) into vendor/ffmpeg — video example, Windows"
+task "download:ffmpeg" do
+  raise "the vendored SDK is a win64 build — POSIX boxes use their package manager" unless WINDOWS
+  zip = "tmp/ffmpeg-sdk.zip"
+  FileUtils.mkdir_p("tmp")
+  system("curl", "-L", "-o", zip, FFMPEG_SDK_URL) or abort "download failed"
+  stage = "tmp/ffmpeg-sdk"
+  FileUtils.rm_rf(stage)
+  # Expand-Archive: the bundled PowerShell zip extractor, no unzip dep
+  system("powershell", "-NoProfile", "-Command",
+    "Expand-Archive -Path '#{zip}' -DestinationPath '#{stage}' -Force") or abort "unzip failed"
+  inner = Dir[File.join(stage, "*")].find { |p| File.directory?(p) }
+  raise "unexpected zip layout" unless inner
+  FileUtils.rm_rf(VENDORED_FFMPEG_SDK)
+  FileUtils.mkdir_p(File.dirname(VENDORED_FFMPEG_SDK))
+  FileUtils.mv(inner, VENDORED_FFMPEG_SDK)
+  FileUtils.rm_rf(stage)
+  # runtime DLLs next to the built video.exe
+  dlls = Dir[File.join(VENDORED_FFMPEG_SDK, "bin", "*.dll")].select do |d|
+    File.basename(d) =~ /\A(avcodec|avformat|avutil|avfilter|swscale|swresample)-/
+  end
+  FileUtils.mkdir_p("bin/apps")
+  FileUtils.cp_r(dlls, "bin/apps")
+  puts "vendor/ffmpeg: FFmpeg 7.1.5 win64 shared SDK (license: vendor/ffmpeg/LICENSE.txt)"
 end
 
 desc "Run the spec suite (headless — no GPU needed)"

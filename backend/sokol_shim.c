@@ -49,9 +49,26 @@
 #define SH_VIDEO_MTL 1
 #elif defined(SOKOL_GLCORE) && defined(__APPLE__)
 #define SH_VIDEO_NV12 1
+#elif defined(_WIN32)
+// Windows zero-copy: D3D11VA decodes on the ONE D3D11 device the GL
+// context reaches through WGL_NV_DX_interop2; the ID3D11VideoProcessor
+// converts/scales NV12/P010 → RGBA and GL samples the VP output
+// textures directly (see the DXZC section at the video plumbing).
+#define SH_VIDEO_DXZC 1
 #endif
-#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_MTL) || defined(SH_VIDEO_NV12)
+#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_MTL) || \
+    defined(SH_VIDEO_NV12) || defined(SH_VIDEO_DXZC)
 #define SH_VIDEO 1
+#endif
+#if defined(SH_VIDEO)
+// MSVC's C mode has no _Atomic without /experimental:c11atomics — a
+// volatile int covers the video latches/handshakes (aligned single-word
+// loads/stores are atomic on x64; volatile bars caching across calls).
+#if defined(_MSC_VER) && !defined(__clang__)
+typedef int volatile SH_ATOMIC_INT;
+#else
+typedef _Atomic int SH_ATOMIC_INT;
+#endif
 #endif
 #if defined(SH_VIDEO_NV12) || defined(SH_VIDEO_MTL)
 #define SH_VIDEO_UPLOAD 1 // CPU NV12/P010 plane upload fallback
@@ -1015,7 +1032,8 @@ static sapp_pixel_format sh_depth_resolve(int transparent) {
 // detached ones (macOS) sh_run_direct() always succeeds so the stubs
 // at the bottom of this block are never reached.
 typedef enum {
-    SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY, SH_TEX_VIDEOFRAME
+    SH_TEX_CREATE, SH_TEX_UPDATE, SH_TEX_DESTROY, SH_TEX_VIDEOFRAME,
+    SH_TEX_VIDEODX
 } sh_texop_kind;
 static int sh_run_direct(void);
 // SDF deferred-interleave state (defined with the SDF section below;
@@ -1046,6 +1064,12 @@ static void egui_cr_pkt_xform_pop(void);
 static void sh_texop_queue(sh_texop_kind kind, uint32_t id, int w, int h,
                            int stream, const void* data, size_t size,
                            int r8);
+#if defined(SH_VIDEO_DXZC)
+// D3D11 + WGL_NV_DX_interop2 probe (render thread; defined with the
+// video section) — sh_init_cb probes before any A-side open can ask.
+static void sh_dxi_ensure(void);
+static int sh_dxi_wait_probe(void);
+#endif
 static uint32_t sh_tex_make_detached(int w, int h, const void* rgba8,
                                      int stream, int r8);
 // packet builder API (see the detached section)
@@ -1294,6 +1318,12 @@ static void sh_init_cb(void) {
     if (g_transparent) egui_cr_set_transparent();
 #if defined(_SAPP_LINUX)
     sh_x11_sync_request_init();
+#endif
+#if defined(SH_VIDEO_DXZC)
+    // Render-thread probe: create the shared D3D11 device and open the
+    // interop while the GL context is current — before any A-side open
+    // can ask for the device (egui_cr_dx_device waits on this).
+    sh_dxi_ensure();
 #endif
     g_init();
 }
@@ -4037,6 +4067,17 @@ static const char SH_VIDEO_FS[] =
     "    vec3 rgb = cmat * vec3(y, uv.x, uv.y);\n"
     "    frag_color = vec4(clamp(rgb, 0.0, 1.0), 1.0);\n"
     "}\n";
+#if defined(SH_VIDEO_DXZC)
+// Windows zero-copy twin: the D3D11 VideoProcessor already did
+// NV12/P010→RGB (colorimetry + range inside VideoProcessorSetOutput
+// ColorSpace1), so the FS is a plain fetch of the shared RGBA texture.
+static const char SH_VIDEO_FS_RGB[] =
+    "#version 410\n"
+    "uniform sampler2D rgb_smp;\n"
+    "layout(location = 0) in vec2 v_uv;\n"
+    "layout(location = 0) out vec4 frag_color;\n"
+    "void main() { frag_color = texture(rgb_smp, v_uv); }\n";
+#endif
 #endif // !SOKOL_VULKAN
 
 // Create shader + pipeline. Thread-safe via the SDF lazy lock (same
@@ -4053,6 +4094,10 @@ static void sh_video_pipeline_ensure(void) {
     sd.uniform_blocks[0].spirv_set0_binding_n = 0;
     sd.uniform_blocks[0].glsl_uniforms[0].glsl_name = "mvp";
     sd.uniform_blocks[0].glsl_uniforms[0].type = SG_UNIFORMTYPE_MAT4;
+#if defined(SH_VIDEO_DXZC)
+    // RGB fetch — no colorimetry block, one texture/sampler pair
+    int n_views = 1;
+#else
     sd.uniform_blocks[1].stage = SG_SHADERSTAGE_FRAGMENT;
     sd.uniform_blocks[1].size = 64; // mat3 48 + vec4 16, std140 layout
     sd.uniform_blocks[1].spirv_set0_binding_n = 1;
@@ -4067,7 +4112,9 @@ static void sh_video_pipeline_ensure(void) {
     sd.uniform_blocks[1].glsl_uniforms[2].type = SG_UNIFORMTYPE_FLOAT4;
     sd.uniform_blocks[1].glsl_uniforms[3].glsl_name = "range";
     sd.uniform_blocks[1].glsl_uniforms[3].type = SG_UNIFORMTYPE_FLOAT4;
-    for (int i = 0; i < 2; i++) {
+    int n_views = 2;
+#endif
+    for (int i = 0; i < n_views; i++) {
         sd.views[i].texture.stage = SG_SHADERSTAGE_FRAGMENT;
         sd.views[i].texture.image_type = SG_IMAGETYPE_2D;
         sd.views[i].texture.sample_type = SG_IMAGESAMPLETYPE_FLOAT;
@@ -4081,7 +4128,7 @@ static void sh_video_pipeline_ensure(void) {
         sd.texture_sampler_pairs[i].view_slot = i;
         sd.texture_sampler_pairs[i].sampler_slot = i;
         sd.texture_sampler_pairs[i].glsl_name =
-            i == 0 ? "y_smp" : "uv_smp";
+            i == 0 ? (n_views == 1 ? "rgb_smp" : "y_smp") : "uv_smp";
     }
 #if defined(SH_VIDEO_MTL)
     // MSL bind slots (see SH_VIDEO_VS_MTL/FS_MTL): VS block at buffer(0),
@@ -4097,6 +4144,9 @@ static void sh_video_pipeline_ensure(void) {
 #elif defined(SH_VIDEO_MTL)
     sd.vertex_func.source = SH_VIDEO_VS_MTL;
     sd.fragment_func.source = SH_VIDEO_FS_MTL;
+#elif defined(SH_VIDEO_DXZC)
+    sd.vertex_func.source = SH_VIDEO_VS;
+    sd.fragment_func.source = SH_VIDEO_FS_RGB;
 #else
     sd.vertex_func.source = SH_VIDEO_VS;
     sd.fragment_func.source = SH_VIDEO_FS;
@@ -4205,6 +4255,77 @@ typedef struct {
 } sh_video_import_t;
 #endif
 
+#if defined(SH_VIDEO_DXZC)
+// Windows zero-copy plumbing (the VideoToolbox/Metal and the Linux
+// Vulkan dmabuf twins, D3D11 edition):
+// - ONE ID3D11Device, created on the render thread next to the GL
+//   context; WGL_NV_DX_interop2 (sh_dxi_ensure) opens the interop
+//   against it. ffmpeg's D3D11VA (video_pool.c) decodes on the SAME
+//   device (ID3D11Multithread-protected, lock/unlock callbacks below)
+//   — no cross-device sharing, no keyed mutexes.
+// - The A side runs an ID3D11VideoProcessor NV12/P010→RGBA pass per
+//   frame (colorimetry + downscale ≤2560 in hardware), fences it with
+//   an EVENT query (the vaSyncSurface twin), and ships the OUTPUT
+//   texture's pointer over the opstream.
+// - The R side registers each ring texture ONCE (wglDXRegisterObjectNV
+//   → GL texture name → injected sg_image) and draws it through an RGB
+//   video quad. wglDXLockObjectsNV/UnlockObjectsNV bracket every
+//   sampling draw.
+// Fallback: any failure sets g_video_fail and the player relatches to
+// the sws copy-back pipeline (see player.cr #zc_disable).
+#include <initguid.h> // IID_* definitions land in this TU (no uuid.lib)
+#include <d3d11.h>
+#include <d3d11_1.h>
+
+// WGL_NV_DX_interop2 — no standard header; loaded via wglGetProcAddress.
+typedef HANDLE (WINAPI *sh_dxi_open_t)(void* dx_device);
+typedef BOOL (WINAPI *sh_dxi_close_t)(HANDLE h);
+typedef HANDLE (WINAPI *sh_dxi_register_t)(HANDLE h, void* dx_resource,
+                                           unsigned name, unsigned type,
+                                           unsigned access);
+typedef BOOL (WINAPI *sh_dxi_unregister_t)(HANDLE h, HANDLE object);
+// wglDXLockObjectsNV/UnlockObjectsNV lock a registered object (array form)
+typedef BOOL (WINAPI *sh_dxi_lock_t)(HANDLE h, int count, void** objects);
+static sh_dxi_open_t sh_wgl_dx_open;
+static sh_dxi_close_t sh_wgl_dx_close;
+static sh_dxi_register_t sh_wgl_dx_register;
+static sh_dxi_unregister_t sh_wgl_dx_unregister;
+static sh_dxi_lock_t sh_wgl_dx_lock, sh_wgl_dx_unlock;
+#define SH_DX_GL_TEXTURE_2D 0x0DE1
+#define SH_DX_ACCESS_READ_ONLY 0x0000 // WGL_ACCESS_READ_ONLY_NV
+
+// The shared device + interop handle (R thread owns the lifetime).
+static ID3D11Device* g_dx_dev;
+static ID3D11DeviceContext* g_dx_ctx;
+static ID3D11VideoDevice* g_dx_vdev;
+static ID3D11VideoContext* g_dx_vctx;
+static HANDLE g_dx_hdx;
+// Serializes ffmpeg's decoder/transfer calls (its lock/unlock callbacks)
+// against the A-side VideoProcessor work — D3D11's SetMultithreadProtected
+// handles the raw API concurrency, this CS the ffmpeg-internal ordering.
+static CRITICAL_SECTION g_dx_mx;
+// Probe state: 0 = pending (R thread has not run yet), 1 = ok, -1 = dead.
+// The A side waits (bounded) on 0 before asking for the device.
+static SH_ATOMIC_INT g_dx_probe;
+// The probe runs LAZILY: the A side raises this when it actually wants
+// the device (dx_device_create for a video open), and the R thread
+// services it on the next frame. A D3D11 device created unconditionally
+// in every window (hello, notepad…) proved fatal — the mere existence of
+// the interop handle kills non-video apps on this driver.
+static SH_ATOMIC_INT g_dx_probe_req;
+
+// Registered VP-output ring entry: the D3D texture is the A-side slot's
+// identity (the ring cycles the same ~6 pointers), obj is the interop
+// handle the GL name rides on. Registration is cached per pointer.
+#define SH_DX_CACHE 8
+typedef struct {
+    void* tex;      // ID3D11Texture2D*, 0 = empty slot
+    HANDLE obj;     // interop object handle (unregister key)
+    unsigned name;  // GL texture name (our alloc, deleted at destroy)
+    sg_image sg;    // injected wrapper — sokol keeps the name, not owns it
+} sh_dx_wrap_t;
+#endif // SH_VIDEO_DXZC
+
 #ifdef SH_VIDEO
 typedef struct {
     uint32_t id;
@@ -4225,6 +4346,9 @@ typedef struct {
     sg_image y, uv;           // CPU-uploaded planes (R8/RG8, R16/RG16)
     int tenbit;
     sh_video_nv12_t* pend;    // newest not-yet-uploaded frame
+    #elif defined(SH_VIDEO_DXZC)
+    sh_dx_wrap_t cache[SH_DX_CACHE]; // registered VP ring textures
+    sh_dx_wrap_t cur;         // what the draw samples right now
     #else
     sg_image y, uv;           // CPU-uploaded planes (R8/RG8, R16/RG16)
     int tenbit;
@@ -4234,7 +4358,7 @@ typedef struct {
     float range[4];
 } sh_video_t;
 static sh_video_t g_video_tab[SH_VIDEO_MAX];
-static _Atomic int g_video_fail; // 1 after any import failure → fallback
+static SH_ATOMIC_INT g_video_fail; // 1 after any import failure → fallback
 
 static sh_video_t* sh_video_find(uint32_t id) {
     for (int i = 0; i < SH_VIDEO_MAX; i++)
@@ -4246,6 +4370,239 @@ static sh_video_t* sh_video_find(uint32_t id) {
 static sg_buffer g_video_vbuf;
 static void sh_video_vbuf_ensure(void);
 #endif // SH_VIDEO
+
+#if defined(SH_VIDEO_DXZC)
+// Render-thread probe: WGL_NV_DX_interop2 + the shared D3D11 device.
+// Runs once from sh_init_cb with the GL context current; the A side
+// waits on the probe state (bounded — a dead render thread must not
+// hang an open() forever). On failure everything partial is released
+// and the state lands at -1: the player keeps the sws copy-back path.
+static void sh_dxi_fail(const char* what) {
+    if (getenv("EGUI_VIDEO_DEBUG"))
+        fprintf(stderr, "[dxzc] probe failed at %s (err %lu)\n", what,
+                GetLastError());
+    if (g_dx_hdx) { sh_wgl_dx_close(g_dx_hdx); g_dx_hdx = NULL; }
+    if (g_dx_vctx) { g_dx_vctx->lpVtbl->Release(g_dx_vctx); g_dx_vctx = NULL; }
+    if (g_dx_vdev) { g_dx_vdev->lpVtbl->Release(g_dx_vdev); g_dx_vdev = NULL; }
+    if (g_dx_ctx) { g_dx_ctx->lpVtbl->Release(g_dx_ctx); g_dx_ctx = NULL; }
+    if (g_dx_dev) { g_dx_dev->lpVtbl->Release(g_dx_dev); g_dx_dev = NULL; }
+    g_dx_probe = -1; // volatile write — visible to the A side's wait
+}
+
+static void sh_dxi_ensure(void) {
+    if ((int)g_dx_probe != 0) return; // done (ok or dead)
+    typedef const char* (WINAPI *sh_wgl_extstr_t)(HDC);
+    typedef HRESULT (WINAPI *sh_d3d11_create_t)(IDXGIAdapter*, D3D_DRIVER_TYPE,
+        HMODULE, UINT, const D3D_FEATURE_LEVEL*, UINT, UINT,
+        ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
+    // ARB takes an HDC; some drivers only ship the EXT form (no arg).
+    sh_wgl_extstr_t extarb = (sh_wgl_extstr_t)(void*)
+        wglGetProcAddress("wglGetExtensionsStringARB");
+    const char* (WINAPI *extext)(void) = (const char* (WINAPI*)(void))
+        wglGetProcAddress("wglGetExtensionsStringEXT");
+    const char* exts = extarb ? extarb(wglGetCurrentDC())
+                              : (extext ? extext() : NULL);
+    if (getenv("EGUI_VIDEO_DEBUG") && exts)
+        fprintf(stderr, "[dxzc] WGL exts: %s\n", exts);
+    if (!exts || !strstr(exts, "WGL_NV_DX_interop2")) {
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[dxzc] no WGL_NV_DX_interop2 in the "
+                    "extension string\n");
+        sh_dxi_fail("WGL_NV_DX_interop2");
+        return;
+    }
+    // NOTE: no glGetString here — calling it in this spot crashes on this
+    // machine (driver-dependent no-current-context behavior); the dx:*
+    // results below are the signal we actually need.
+    sh_wgl_dx_open = (sh_dxi_open_t)(void*)wglGetProcAddress("wglDXOpenDeviceNV");
+    sh_wgl_dx_close = (sh_dxi_close_t)(void*)wglGetProcAddress("wglDXCloseDeviceNV");
+    sh_wgl_dx_register = (sh_dxi_register_t)(void*)
+        wglGetProcAddress("wglDXRegisterObjectNV");
+    sh_wgl_dx_unregister = (sh_dxi_unregister_t)(void*)
+        wglGetProcAddress("wglDXUnregisterObjectNV");
+    sh_wgl_dx_lock = (sh_dxi_lock_t)(void*)wglGetProcAddress("wglDXLockObjectsNV");
+    sh_wgl_dx_unlock = (sh_dxi_lock_t)(void*)wglGetProcAddress("wglDXUnlockObjectsNV");
+    if (getenv("EGUI_VIDEO_DEBUG")) {
+        fprintf(stderr,
+            "[dxzc] dx: open=%d close=%d reg=%d unreg=%d lock=%d unlock=%d\n",
+            !!sh_wgl_dx_open, !!sh_wgl_dx_close, !!sh_wgl_dx_register,
+            !!sh_wgl_dx_unregister, !!sh_wgl_dx_lock, !!sh_wgl_dx_unlock);
+        fflush(stderr);
+    }
+    if (!sh_wgl_dx_open || !sh_wgl_dx_close || !sh_wgl_dx_register ||
+        !sh_wgl_dx_unregister || !sh_wgl_dx_lock || !sh_wgl_dx_unlock) {
+        sh_dxi_fail("wglDX* entry points");
+        return;
+    }
+    HMODULE d3d = LoadLibraryW(L"d3d11.dll");
+    if (!d3d) { sh_dxi_fail("d3d11.dll"); return; }
+    sh_d3d11_create_t create = (sh_d3d11_create_t)(void*)
+        GetProcAddress(d3d, "D3D11CreateDevice");
+    if (!create) { sh_dxi_fail("D3D11CreateDevice"); return; }
+    // VIDEO_SUPPORT: VP + decode; BGRA_SUPPORT: the RGBA8 output ring;
+    // the default feature levels include 11_0 — enough for VP + D3D11VA.
+    HRESULT hr = create(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL,
+        D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+        NULL, 0, D3D11_SDK_VERSION, &g_dx_dev, NULL, &g_dx_ctx);
+    if (FAILED(hr)) { sh_dxi_fail("D3D11CreateDevice call"); return; }
+    hr = g_dx_dev->lpVtbl->QueryInterface(g_dx_dev,
+        &IID_ID3D11VideoDevice, (void**)&g_dx_vdev);
+    if (FAILED(hr)) { sh_dxi_fail("QueryInterface VideoDevice"); return; }
+    hr = g_dx_ctx->lpVtbl->QueryInterface(g_dx_ctx,
+        &IID_ID3D11VideoContext, (void**)&g_dx_vctx);
+    if (FAILED(hr)) { sh_dxi_fail("QueryInterface VideoContext"); return; }
+    // The device works from TWO threads (A: ffmpeg decode + VP; R: the
+    // interop driver layer) — this is what makes that legal. NOTE: the
+    // d3d11.h that lands in this TU has no ID3D11Multithread; the D3D10
+    // alias interface (same vtable shape, its own IID) is what ffmpeg's
+    // d3d11va context setup uses too.
+    ID3D10Multithread* mt = NULL;
+    hr = g_dx_ctx->lpVtbl->QueryInterface(g_dx_ctx,
+        &IID_ID3D10Multithread, (void**)&mt);
+    // SetMultithreadProtected returns FALSE while the device lock is
+    // momentarily held (seen on this Intel box with no other user at
+    // all); ffmpeg's d3d11va ignores the return value too. Retry
+    // briefly, and a persistent FALSE is non-fatal — the A/R mutual
+    // exclusion is otherwise covered (g_dx_mx + the interop object
+    // lock around the sampling draw).
+    int mt_ok = 0, mt_get = 0;
+    if (SUCCEEDED(hr) && mt) {
+        for (int i = 0; i < 50 && !mt_ok; i++) {
+            mt_ok = mt->lpVtbl->SetMultithreadProtected(mt, TRUE);
+            if (!mt_ok) Sleep(2);
+        }
+        mt_get = mt->lpVtbl->GetMultithreadProtected(mt); // did it stick?
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[dxzc] MT: set=%d get=%d\n", mt_ok, mt_get);
+    }
+    if (mt) mt->lpVtbl->Release(mt);
+    if (FAILED(hr) || !mt) { sh_dxi_fail("MT QueryInterface"); return; }
+    // a spurious set=FALSE with get=TRUE is seen on this Intel driver —
+    // Get decides; when the flag did NOT stick, every device user is
+    // still serialized below (g_dx_mx) so we keep going either way
+    (void)mt_ok;
+    g_dx_hdx = sh_wgl_dx_open(g_dx_dev);
+    if (!g_dx_hdx) { sh_dxi_fail("wglDXOpenDeviceNV"); return; }
+    InitializeCriticalSection(&g_dx_mx);
+    g_dx_probe = 1;
+    if (getenv("EGUI_VIDEO_DEBUG"))
+        fprintf(stderr, "[dxzc] interop ready (shared D3D11 device)\n");
+}
+
+// A-side bounded wait for the render-thread probe. Returns 1 = ok.
+static int sh_dxi_wait_probe(void) {
+    for (int i = 0; i < 1000; i++) { // ~2 s cap
+        int st = (int)g_dx_probe;
+        if (st != 0) return st == 1;
+        Sleep(2);
+    }
+    return 0;
+}
+
+// Device accessors for backend/video_pool.c (the ffmpeg D3D11VA side).
+// Each one first raises the lazy-probe request (the R thread services it
+// on its next frame), then waits (bounded ~2 s): an open() racing the
+// render thread's probe must see the real answer, not a not-yet-created
+// device (which would lock the session into software decode).
+void* egui_cr_dx_device(void) {
+    g_dx_probe_req = 1;
+    return sh_dxi_wait_probe() ? g_dx_dev : NULL;
+}
+void* egui_cr_dx_context(void) {
+    g_dx_probe_req = 1;
+    return sh_dxi_wait_probe() ? g_dx_ctx : NULL;
+}
+void* egui_cr_dx_video_device(void) {
+    g_dx_probe_req = 1;
+    return sh_dxi_wait_probe() ? g_dx_vdev : NULL;
+}
+void* egui_cr_dx_video_context(void) {
+    g_dx_probe_req = 1;
+    return sh_dxi_wait_probe() ? g_dx_vctx : NULL;
+}
+void egui_cr_dx_lock(void* ctx) {
+    (void)ctx; // ffmpeg's AVD3D11VADeviceContext.lock signature
+    EnterCriticalSection(&g_dx_mx);
+}
+void egui_cr_dx_unlock(void* ctx) {
+    (void)ctx;
+    LeaveCriticalSection(&g_dx_mx);
+}
+
+// Register one VP-output ring texture for GL sampling (R thread, texop
+// run): GL name + injected sg image, cached by the texture pointer (the
+// ring cycles the same ~6 slots — six registrations per session).
+static sh_dx_wrap_t* sh_dx_wrap(sh_video_t* v, void* tex, int w, int h) {
+    for (int i = 0; i < SH_DX_CACHE; i++)
+        if (v->cache[i].tex == tex) return &v->cache[i];
+    unsigned name = 0;
+    glGenTextures(1, &name);
+    if (!name) return NULL;
+    HANDLE obj = sh_wgl_dx_register(g_dx_hdx, tex, name,
+        SH_DX_GL_TEXTURE_2D, SH_DX_ACCESS_READ_ONLY);
+    if (!obj) {
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[dxzc] wglDXRegisterObjectNV failed\n");
+        glDeleteTextures(1, &name);
+        return NULL;
+    }
+    // injected-image wrapper: sokol binds the name, ownership (the
+    // interop handle + the delete) stays ours — see entry destroy
+    sg_image_desc d;
+    memset(&d, 0, sizeof d);
+    d.width = w;
+    d.height = h;
+    d.pixel_format = SG_PIXELFORMAT_RGBA8;
+    d.gl_textures[0] = name;
+    d.label = "egui-cr-video-dx";
+    sg_image img = sg_make_image(&d);
+    if (!img.id) {
+        if (getenv("EGUI_VIDEO_DEBUG"))
+            fprintf(stderr, "[dxzc] sg inject failed %dx%d\n", w, h);
+        sh_wgl_dx_unregister(g_dx_hdx, obj);
+        glDeleteTextures(1, &name);
+        return NULL;
+    }
+    // slot: first free, else round-robin — never the sampled one
+    sh_dx_wrap_t* slot = NULL;
+    for (int i = 0; i < SH_DX_CACHE; i++) {
+        if (!v->cache[i].tex) { slot = &v->cache[i]; break; }
+    }
+    while (!slot) {
+        sh_dx_wrap_t* cand = &v->cache[g_sdf_ring_next % SH_DX_CACHE];
+        g_sdf_ring_next++;
+        if (!cand->tex) { slot = cand; break; }
+        if (cand->tex == v->cur.tex) continue; // live on screen
+        if (cand->sg.id) sg_destroy_image(cand->sg);
+        sh_wgl_dx_unregister(g_dx_hdx, cand->obj);
+        glDeleteTextures(1, &cand->name);
+        memset(cand, 0, sizeof *cand);
+        slot = cand;
+        break;
+    }
+    slot->tex = tex;
+    slot->obj = obj;
+    slot->name = name;
+    slot->sg = img;
+    return slot;
+}
+
+// Teardown (R thread, SH_TEX_DESTROY op): unregister + delete the GL
+// names. Registration holds the D3D resource alive while GL reads it —
+// an A-side close (VP ring Release) that races this cannot fault.
+static void sh_video_entry_destroy(sh_video_t* v) {
+    for (int i = 0; i < SH_DX_CACHE; i++) {
+        sh_dx_wrap_t* c = &v->cache[i];
+        if (!c->tex) continue;
+        if (c->sg.id) sg_destroy_image(c->sg);
+        if (sh_wgl_dx_unregister) sh_wgl_dx_unregister(g_dx_hdx, c->obj);
+        glDeleteTextures(1, &c->name);
+        memset(c, 0, sizeof *c);
+    }
+    memset(&v->cur, 0, sizeof v->cur);
+    v->id = 0;
+}
+#endif // SH_VIDEO_DXZC
 
 #if defined(SOKOL_VULKAN)
 
@@ -5173,6 +5530,8 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     // the draw to the upload planes (see the bindings below)
     if (!v) return;
     if (!v->cur.y_sg.id && (!v->y.id || !v->uv.id)) return;
+#elif defined(SH_VIDEO_DXZC)
+    if (!v || !v->cur.sg.id) return;
 #else
     if (!v || !v->y.id || !v->uv.id) return;
 #endif
@@ -5227,12 +5586,14 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     int off = sg_append_buffer(g_video_vbuf, &vd);
     if (off < 0) return;
     sg_range u0 = {.ptr = mvp, .size = sizeof mvp};
+#if !defined(SH_VIDEO_DXZC)
     // std140: mat3 = 3 columns × vec4 (48 B), range at offset 48
     struct { float cmat[12]; float range[4]; } fsu;
     memset(&fsu, 0, sizeof fsu);
     memcpy(fsu.cmat, v->cmat, sizeof fsu.cmat);
     memcpy(fsu.range, v->range, sizeof fsu.range);
     sg_range u1 = {.ptr = &fsu, .size = sizeof fsu};
+#endif
     sg_bindings b;
     memset(&b, 0, sizeof b);
     b.vertex_buffers[0] = g_video_vbuf;
@@ -5257,6 +5618,33 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
         b.views[1] = sg_make_view(&(sg_view_desc){
             .texture = {.image = v->uv}, .label = "egui-cr-video-uv-view"});
     }
+#elif defined(SH_VIDEO_DXZC)
+    // the first VIDEODX texop lags the first draw by one tick — until
+    // the R side registers the ring texture there is nothing to sample
+    if (!v || !v->cur.sg.id) return;
+    b.views[0] = sg_make_view(&(sg_view_desc){
+        .texture = {.image = v->cur.sg}, .label = "egui-cr-video-rgb-view"});
+    b.samplers[0] = g_linear_sampler;
+    // the GL-vs-D3D mutual exclusion the interop spec asks for: hold
+    // the lock while the registered resource is sampled, release after.
+    // LockObjectsNV fails while D3D is mid-access to the resource —
+    // retry briefly, and SKIP the draw on persistent failure (sampling
+    // an unlocked interop object is undefined and crashes the driver).
+    int locked = 0;
+    if (g_dx_hdx && sh_wgl_dx_lock && v->cur.obj) {
+        for (int i = 0; i < 8 && !locked; i++)
+            locked = sh_wgl_dx_lock(g_dx_hdx, 1, (void**)&v->cur.obj);
+    }
+    if (locked) {
+        sg_apply_pipeline(g_video_pip);
+        sg_apply_uniforms(0, &u0);
+        sg_apply_bindings(&b);
+        sg_draw(0, 6, 1);
+        if (sh_wgl_dx_unlock)
+            sh_wgl_dx_unlock(g_dx_hdx, 1, (void**)&v->cur.obj);
+    }
+    sg_destroy_view(b.views[0]); // views are per-draw; images persist
+    return;
 #else
     b.views[0] = sg_make_view(&(sg_view_desc){
         .texture = {.image = v->y}, .label = "egui-cr-video-y-view"});
@@ -5267,7 +5655,9 @@ static void sh_draw_video(const sh_sdf_seg_t* s, float w_pts, float h_pts) {
     b.samplers[1] = g_linear_sampler;
     sg_apply_pipeline(g_video_pip);
     sg_apply_uniforms(0, &u0);
+#if !defined(SH_VIDEO_DXZC) // no colorimetry block in the RGB fetch
     sg_apply_uniforms(1, &u1);
+#endif
     sg_apply_bindings(&b);
     sg_draw(0, 6, 1);
     sg_destroy_view(b.views[0]); // views are per-draw; images persist
@@ -5321,6 +5711,12 @@ int egui_cr_video_supported(void) {
     return 1; // CVMetalTextureCache wrap works wherever Metal does
 #elif defined(SH_VIDEO_NV12)
     return 1; // plane upload works everywhere GL does
+#elif defined(SH_VIDEO_DXZC)
+    // the render-thread probe (sh_init_cb) decides: interop + D3D11
+    // device alive, or the sws copy-back path stays. Bounded wait — an
+    // open() racing the first frame must not misread "not probed yet"
+    // and lock the session into software decode.
+    return sh_dxi_wait_probe();
 #else
     return 0;
 #endif
@@ -5330,8 +5726,14 @@ int egui_cr_video_supported(void) {
 // texture ids — the texop coalescing is keyed by id.
 uint32_t egui_cr_video_create(void) {
 #if defined(SH_VIDEO)
+    // 0x40000000+ so video ids never collide with packet texture ids
+    #if defined(_MSC_VER) && !defined(__clang__)
+    static volatile long next_id = 0x40000001;
+    return (uint32_t)InterlockedIncrement(&next_id);
+    #else
     static _Atomic uint32_t next_id = 0x40000001;
     return next_id++;
+    #endif
 #else
     return 0;
 #endif
@@ -5374,7 +5776,13 @@ void egui_cr_video_frame(uint32_t id, int fd, int size, int w, int h,
         return; // the queue malloc'd its own copy; our fd is that copy's
     }
 #endif
-    if (fd >= 0) close(fd); // unsupported / direct: hand the fd back
+    if (fd >= 0) {
+#if defined(_WIN32)
+        _close(fd); // unsupported / direct: hand the fd back
+#else
+        close(fd);
+#endif
+    }
 }
 
 int egui_cr_video_last_fd(void) {
@@ -5393,12 +5801,35 @@ int egui_cr_video_failed(void) {
 #endif
 }
 
-// Destroy a video texture (frame release/close). Detached (Vulkan):
+// Queue one decoded Windows zero-copy frame (A thread): `tex` is the
+// VP OUTPUT ring slot's ID3D11Texture2D (the A side fences its content
+// BEFORE calling — the op only carries the pointer), w/h the blit's
+// output size. The R side registers the texture once and samples it as
+// a plain RGB GL texture (see sh_dx_wrap).
+typedef struct {
+    const void* tex;
+    int w, h;
+} sh_dx_frame_t;
+void egui_cr_video_frame_dx(uint32_t id, const void* tex, int w, int h) {
+#if defined(SH_VIDEO_DXZC)
+    if (!tex || w <= 0 || h <= 0) return;
+    if (!sh_run_direct()) {
+        sh_dx_frame_t f = {tex, w, h};
+        sh_texop_queue(SH_TEX_VIDEODX, id, w, h, 0, &f, sizeof f, 0);
+        return;
+    }
+#else
+    (void)id;
+#endif
+    (void)tex; (void)w; (void)h;
+}
+
+// Destroy a video texture (frame release/close). Detached (Vulkan/DXZC):
 // post-pass — the frame being presented may still sample it. Direct
 // (macOS): the paint list no longer references the id and the previous
 // frame is fully presented — tear down immediately.
 void egui_cr_video_destroy(uint32_t id) {
-#if defined(SH_VIDEO_ZC)
+#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_DXZC)
     if (!sh_run_direct())
         sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
 #elif defined(SH_VIDEO_UPLOAD)
@@ -8592,7 +9023,7 @@ void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
 void egui_cr_pkt_video(float x, float y, float w, float h,
                        float cx, float cy, float cw, float ch,
                        uint32_t vid, int rot) {
-#if defined(SH_VIDEO_ZC)
+#if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_DXZC)
     uint32_t o[11] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
                        sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
                        sh_f2u(ch), vid, (uint32_t)rot };
@@ -9212,7 +9643,7 @@ static void sh_tex_run(const sh_texop_t* op) {
         else if (data) sh_tex_upload(t, data, size);
         break;
     case SH_TEX_DESTROY:
-#if defined(SOKOL_VULKAN)
+#if defined(SOKOL_VULKAN) || defined(SH_VIDEO_DXZC)
         if (!t) { // video texture? its objects live in the video registry
             sh_video_t* v = sh_video_find(op->id);
             if (v) sh_video_entry_destroy(v);
@@ -9238,6 +9669,35 @@ static void sh_tex_run(const sh_texop_t* op) {
             v->id = op->id;
         }
         sh_video_import(v, (sh_video_frame_t*)op->data);
+        break;
+    }
+#endif
+#if defined(SH_VIDEO_DXZC)
+    case SH_TEX_VIDEODX: {
+        sh_video_t* v = sh_video_find(op->id);
+        if (!v) {
+            for (int i = 0; i < SH_VIDEO_MAX; i++) {
+                if (g_video_tab[i].id == 0) { v = &g_video_tab[i]; break; }
+            }
+            if (!v) { g_video_fail = 1; break; }
+            memset(v, 0, sizeof *v);
+            v->id = op->id;
+        }
+        sh_dx_frame_t* f = (sh_dx_frame_t*)op->data;
+        // registration touches the D3D resource through the interop —
+        // hold the same CS the A side's decode/VP work holds (the MT
+        // protection flag is not guaranteed to have stuck, see the probe)
+        EnterCriticalSection(&g_dx_mx);
+        sh_dx_wrap_t* wr = sh_dx_wrap(v, (void*)f->tex, f->w, f->h);
+        LeaveCriticalSection(&g_dx_mx);
+        if (!wr) {
+            if (getenv("EGUI_VIDEO_DEBUG"))
+                fprintf(stderr, "[dxzc] VIDEODX wrap FAIL\n");
+            g_video_fail = 1; break;
+        }
+        v->cur = *wr; // struct copy — the draw samples these
+        v->w = f->w;
+        v->h = f->h;
         break;
     }
 #endif
@@ -9835,7 +10295,7 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             }
             // clip semantics: 0×0 = ambient (full pass)
             int apply_clip = cw > 0.0f && ch > 0.0f;
-#if defined(SOKOL_VULKAN)
+#if defined(SOKOL_VULKAN) || defined(SH_VIDEO_DXZC)
             sh_video_stash(apply_clip, vx, vy, vw2, vh2,
                            cx, cy, cw, ch, vid, rot);
 #else
@@ -10197,9 +10657,20 @@ static void sh_screenshot_try(int w, int h) { (void)w; (void)h; }
 // the full roundtrip timeout, 2 s per frame.
 static sh_atom_i sh_pos_x, sh_pos_y;
 static sh_atom_i sh_pos_valid;
+// Fullscreen cache for A, same contract: Window.fullscreen? is polled per
+// frame by the video player (status chrome), and its sync roundtrip
+// (SH_CMD_IS_FULLSCREEN) never wakes the waiter — sh_cmds_run replies to
+// its memcpy'd batch copy, not to the poster's condvar — so every query
+// burned the full 2 s deadline (two per frame = ~4 s stalls, 0.5 fps).
+static sh_atom_i sh_fs_valid;
+static sh_atom_i sh_fs_state;
 
 static void sh_rt_frame(void) {
     sh_cmds_run(); // A→R window commands, on R's connection
+
+    // Fullscreen cache refresh: cheap sapp read, every tick.
+    sh_ai_store(&sh_fs_state, sapp_is_fullscreen());
+    sh_ai_store(&sh_fs_valid, 1);
 
     // Position cache for A: refresh every ~15 ticks (~250 ms at 60 Hz)
     // — a single roundtrip, amortized. First success flips sh_pos_valid
@@ -10356,6 +10827,17 @@ static void sh_rt_init_cb(void) {
 }
 
 static void sh_rt_frame_cb(void) {
+#if defined(SH_VIDEO_DXZC)
+    // DX interop probe on the first frame that WANTS it: the A side
+    // raises g_dx_probe_req when a video open asks for the device, and
+    // the next tick services it (the GL context is current here, and
+    // on_init is long done — a probe in init_cb crashed the GC's first
+    // stop-world collection; an unconditional probe killed non-video
+    // apps on this driver). sh_dxi_ensure self-guards to once; the A
+    // side's sh_dxi_wait_probe (bounded ~2 s) covers the one-vsync
+    // latency.
+    if (g_dx_probe_req) sh_dxi_ensure();
+#endif
     // EGUI_BENCH: open this tick's slot (gap vs the previous entry,
     // last tick's accumulated tex/rep samples); the in-callback time
     // lands in the same slot after the work below.
@@ -10716,11 +11198,23 @@ void egui_cr_toggle_fullscreen(void) {
 
 int egui_cr_fullscreen_q(void) {
     if (sh_run_direct()) return sapp_is_fullscreen();
-    sh_cmd_t cmd;
-    memset(&cmd, 0, sizeof cmd);
-    cmd.kind = SH_CMD_IS_FULLSCREEN;
-    if (sh_cmd_roundtrip(&cmd) != 0) return 0;
-    return cmd.r_int;
+    // R publishes the live mode into these atoms every tick (sh_rt_frame)
+    // — the sync roundtrip below is dead weight: its reply goes to
+    // sh_cmds_run's memcpy'd batch copy, so the poster waits out the full
+    // 2 s deadline every query (SH_CMD_IS_FULLSCREEN was kind=20 in the
+    // cmd trace, twice per player frame).
+    if (sh_ai_load(&sh_fs_valid)) return (int)sh_ai_load(&sh_fs_state);
+    return 0; // pre-first-tick default: windowed
+}
+
+// R-local fullscreen read: sapp state is valid on the render thread.
+// sync_fullscreen polls this EVERY frame from inside the frame callback,
+// where a roundtrip self-deadlocks — the command queue drains at the
+// START of the NEXT frame (sh_rt_frame), so the reply would only arrive
+// after the full 2 s deadline, stalling every frame by that much (the
+// video player ran at ~0.5 fps with 4-5 s frames because of this).
+int egui_cr_fullscreen_q_rt(void) {
+    return sapp_is_fullscreen();
 }
 
 void egui_cr_request_quit(void) {
@@ -12910,6 +13404,16 @@ int egui_cr_badge_supported(void) { return 1; }
 
 #elif defined(_WIN32)
 
+// COM + the taskbar umbrella for the badge below (LEAN_AND_MEAN keeps
+// them out of windows.h; mingw ships the pre-split shobjidl.h, MSVC
+// the _core one — same pair as the file-dialog section).
+#ifndef __MINGW32__
+#include <shobjidl_core.h>
+#else
+#include <shobjidl.h>
+#endif
+#include <objbase.h>
+
 // ES_CONTINUOUS must be set both to arm and to clear the state.
 int egui_cr_wakelock_acquire(const char* reason) {
     (void)reason;
@@ -12922,11 +13426,109 @@ void egui_cr_wakelock_release(void) {
     SetThreadExecutionState(ES_CONTINUOUS);
 }
 
-// No dock badge concept on Windows — the taskbar overlay needs
-// ITaskbarList3 + an icon handle; deliberately unimplemented (the
-// Crystal port reports unsupported).
-void egui_cr_badge_set(int count) { (void)count; }
-int egui_cr_badge_supported(void) { return 0; }
+// Badge: the taskbar button overlay (ITaskbarList3::SetOverlayIcon,
+// Win7+). Windows draws whatever HICON it is handed — the count is
+// rendered onto a small icon here: a red disc with white digits, GDI
+// on a 32-bpp DIB. GDI cannot write the alpha byte, so the badge
+// palette deliberately avoids pure black: untouched pixels (the
+// background fill) stay alpha 0, everything GDI painted goes opaque
+// in the scan below. GUIDs pinned by value (uuid.lib is not on the
+// linker line — same as the file-dialog section above).
+static const CLSID sh_CLSID_TaskbarList =
+    {0x56FDF344,0xFD6D,0x11d0,{0x95,0x8A,0x00,0x60,0x97,0xC9,0xA0,0x90}};
+static const IID sh_IID_ITaskbarList3 =
+    {0xEA1AFB91,0x9E28,0x4B86,{0x90,0xE9,0x9E,0x9F,0x8A,0x5E,0xEF,0xAF}};
+
+static HICON sh_badge_hicon = NULL; // retained — SetOverlayIcon reads it
+static int sh_badge_count = -1;     // last applied count, -1 = none yet
+
+static HICON sh_badge_render(int count) {
+    int w = GetSystemMetrics(SM_CXSMICON);
+    int h = GetSystemMetrics(SM_CYSMICON);
+    if (w < 8) w = 16;
+    if (h < 8) h = 16;
+    BITMAPINFO bi;
+    memset(&bi, 0, sizeof(bi));
+    bi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bi.bmiHeader.biWidth = w;
+    bi.bmiHeader.biHeight = -h; // top-down rows
+    bi.bmiHeader.biPlanes = 1;
+    bi.bmiHeader.biBitCount = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void* bits = NULL;
+    HDC sdc = GetDC(NULL);
+    HBITMAP color = CreateDIBSection(sdc, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    HDC dc = color ? CreateCompatibleDC(sdc) : NULL;
+    ReleaseDC(NULL, sdc);
+    if (!dc) { if (color) DeleteObject(color); return NULL; }
+    HGDIOBJ old_bmp = SelectObject(dc, color);
+    RECT rc = {0, 0, w, h};
+    FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+    // Disc over the full square; NULL_PEN so no outline eats the pixels.
+    HBRUSH disc = CreateSolidBrush(RGB(196, 43, 28)); // the Win11 badge red
+    HGDIOBJ old_brush = SelectObject(dc, disc);
+    HGDIOBJ old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+    Ellipse(dc, 0, 0, w + 1, h + 1);
+    wchar_t txt[8];
+    wsprintfW(txt, count > 99 ? L"99+" : L"%d", count);
+    int fh = -(h * (lstrlenW(txt) > 2 ? 5 : 8) / 12); // shrink for 3 glyphs
+    HFONT font = CreateFontW(fh, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                             CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY,
+                             DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HGDIOBJ old_font = SelectObject(dc, font);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(255, 255, 255));
+    DrawTextW(dc, txt, -1, &rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(dc, old_font);
+    SelectObject(dc, old_brush);
+    SelectObject(dc, old_pen);
+    SelectObject(dc, old_bmp);
+    DeleteObject(font);
+    DeleteObject(disc);
+    DeleteDC(dc);
+    // Alpha pass: pure black = untouched background → transparent.
+    DWORD* px = (DWORD*)bits;
+    for (int i = 0; i < w * h; i++)
+        if (px[i] & 0x00FFFFFF) px[i] |= 0xFF000000;
+    HBITMAP mask = CreateBitmap(w, h, 1, 1, NULL);
+    ICONINFO ii;
+    memset(&ii, 0, sizeof(ii));
+    ii.fIcon = TRUE;
+    ii.hbmColor = color;
+    ii.hbmMask = mask;
+    HICON icon = CreateIconIndirect(&ii);
+    DeleteObject(color);
+    DeleteObject(mask);
+    return icon;
+}
+
+void egui_cr_badge_set(int count) {
+    if (count == sh_badge_count) return; // idempotent like the macOS port
+    HWND hwnd = (HWND)sapp_win32_get_hwnd();
+    if (!hwnd) return; // no window yet — nothing to overlay onto
+    HRESULT hr_init = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr_init) && hr_init != RPC_E_CHANGED_MODE) return;
+    ITaskbarList3* tbl = NULL;
+    if (FAILED(CoCreateInstance(&sh_CLSID_TaskbarList, NULL,
+                                CLSCTX_INPROC_SERVER, &sh_IID_ITaskbarList3,
+                                (void**)&tbl)) || !tbl)
+        return;
+    HICON icon = NULL;
+    if (count > 0) {
+        icon = sh_badge_render(count);
+        if (!icon) { tbl->lpVtbl->Release(tbl); return; }
+    }
+    tbl->lpVtbl->SetOverlayIcon(tbl, hwnd, icon,
+                                count > 0 ? L"Notifications" : L"");
+    tbl->lpVtbl->Release(tbl);
+    if (sh_badge_hicon) DestroyIcon(sh_badge_hicon);
+    sh_badge_hicon = icon; // stay alive — explorer may re-read the handle
+    sh_badge_count = count <= 0 ? 0 : count;
+}
+
+int egui_cr_badge_supported(void) { return 1; }
 
 #else
 
