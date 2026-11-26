@@ -50,9 +50,11 @@ require "../capybara/png" # --screenshot PNG encode
   require "./motion_darwin"
 {% end %}
 # Windows: the system-tray adapter (Shell_NotifyIconW + TrackPopupMenu
-# on a dedicated message-loop thread).
+# on a dedicated message-loop thread) and the Motion port (the system
+# "show animations" accessibility switch — driver/motion_windows.cr).
 {% if flag?(:win32) %}
   require "./tray_windows"
+  require "./motion_windows"
 {% end %}
 # DEV-build bake accelerators (fonts + SVG): without --release the
 # Crystal port's hot loops run 10-100x slower (no regalloc/inlining,
@@ -861,7 +863,7 @@ module Egui
       # doorbell pair and the worker itself (joined after sapp_run
       # returns).
       {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
-        @@detached_pipe : {IO::FileDescriptor, Int64}? = nil
+        @@detached_pipe : {TCPSocket | IO::FileDescriptor, Int64}? = nil
       {% end %}
       # The A loop's isolated context (inverted macOS loop only —
       # Linux/Win32 run the A loop on the process main thread).
@@ -1370,6 +1372,10 @@ module Egui
           # tray_windows.cr) — hidden window + GetMessage loop on a
           # dedicated thread; clicks drain via take_clicks from update.
           Egui::SystemPorts::Tray.use(Driver::WindowsTray.new)
+          # prefers-reduced-motion: the system "show animations"
+          # accessibility switch (driver/motion_windows.cr) — polled
+          # per frame below.
+          Egui::SystemPorts::Motion.use(Driver::WindowsMotion.new)
         {% end %}
         Egui::ImageCodec.use(StbImageCodec.new)
         {% if flag?(:darwin) || flag?(:android) || flag?(:linux) || flag?(:win32) %}
@@ -1381,9 +1387,9 @@ module Egui
         {% end %}
         {% if (flag?(:darwin) && !flag?(:ios)) || flag?(:win32) %}
           # Desktop native WakeLock/Badge (IOPMAssertion +
-          # SetThreadExecutionState / dockTile; the shim's desktop
-          # system-ports section). Linux keeps the port's D-Bus
-          # fallback — its shim stubs report unsupported.
+          # SetThreadExecutionState / dockTile / taskbar overlay; the
+          # shim's desktop system-ports section). Linux keeps the
+          # port's D-Bus fallback — its shim stubs report unsupported.
           Egui::SystemPorts::WakeLock.use_runner(
             ->(reason : String) {
               LibEguiCr.wakelock_acquire(reason.to_unsafe) == 1
@@ -1483,11 +1489,13 @@ module Egui
       {% if flag?(:linux) || flag?(:win32) || (flag?(:darwin) && !flag?(:ios)) %}
         # Doorbell acquisition: Win32 needs a Crystal-made loopback pair
         # (IOCP can't adopt a foreign socket), Linux/macOS take the fd
-        # the C side opens. Returns nil when #start failed.
+        # the C side opens. Returns nil when #start failed. The reader
+        # end is a TCPSocket on Win32 (Socket no longer inherits
+        # IO::FileDescriptor), a plain FileDescriptor elsewhere.
         private def self.detached_pipe(title : String, width : Int32,
                                        height : Int32, decorations : Bool,
                                        transparent : Bool, msaa : Int32,
-                                       vsync : Bool) : {IO::FileDescriptor, Int64}?
+                                       vsync : Bool) : {TCPSocket | IO::FileDescriptor, Int64}?
           {% if flag?(:win32) %}
             # Win32 doorbell: the C-made loopback pair's A end can't be
             # adopted by Crystal's IOCP scheduler — an evented read on it

@@ -1,11 +1,12 @@
 # System port Badge: the app icon's notification count — the dock tile
-# number on macOS, the home-screen icon number on iOS. Windows and
-# Linux have no equivalent surface (the taskbar overlay needs
-# ITaskbarList3 + an icon handle; launcher badges are OEM-specific),
-# and Android's launcher badges are driven by notification channels,
+# number on macOS, the home-screen icon number on iOS, the taskbar
+# button overlay icon on Windows (ITaskbarList3::SetOverlayIcon; the
+# shim renders the count onto the overlay icon itself). Linux has no
+# equivalent surface (launcher badges are desktop-specific), and
+# Android's launcher badges are driven by notification channels,
 # not apps — those platforms report unsupported and are a no-op.
 #
-# The macOS/iOS native side lives in the sokol shim (egui_cr_badge_set
+# The native side lives in the sokol shim (egui_cr_badge_set
 # / egui_cr_ios_badge_set); installed as a runner by backend/sokol.cr.
 
 module Egui
