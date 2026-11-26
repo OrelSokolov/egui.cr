@@ -524,7 +524,10 @@ def build_examples(names, opt_flags, label)
         name = queue.synchronize { queue.empty? ? nil : queue.shift }
         break unless name
         out = "bin/#{BIN_DIR.fetch(name)}/#{name}"
-        puts "▶ crystal build #{name} → #{out}#{label.empty? ? "" : " (#{label})"}"
+        # display only: on Windows show the native form bin\apps\name.exe
+        # (the -o path above keeps forward slashes — crystal accepts them)
+        disp = WINDOWS ? out.tr("/", "\\") + ".exe" : out
+        puts "▶ crystal build #{name} → #{disp}#{label.empty? ? "" : " (#{label})"}"
         # video-pool helper archive (backend/video_pool.c, avutil-linked
         # C kept out of the core shim) — only the video example pulls it.
         # libva: egui_video_sync_surface (the per-frame vaSyncSurface
