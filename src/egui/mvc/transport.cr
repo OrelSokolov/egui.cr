@@ -31,11 +31,23 @@ module Egui
 
       def call(request : Request, &on_done : Response ->) : Nil
         Mvc.request_started
-        spawn do
+        delivery = ->do
           response = @router.handle(request)
           Mvc.request_finished
           on_done.call(response)
           Egui::Driver::Base.current.try &.wake
+        end
+        # Запрос из конструктора приложения прилетает ДО рамочной петли:
+        # спавн лёг бы на контекст вызвавшего (main), а под инвертированным
+        # macOS-циклом main отдан AppKit и его планировщик больше не
+        # крутится — файбер умер бы в очереди (наблюдалось как «то ядра,
+        # то нету» у system_monitor: авто-старт выборки не исполнялся).
+        # Паркуем доставку: первый кадровый проход (#unpark_requests из
+        # обеих рамочных точек драйвера) переспавнит её на живом контексте.
+        if Mvc.frame_loop_live?
+          spawn &delivery
+        else
+          Mvc.park_request &delivery
         end
       end
     end
@@ -56,7 +68,6 @@ module Egui
 
     @@inflight = 0
     @@delivered = 0
-
     # Worker-fiber bookkeeping (InProcessTransport today; a scripted
     # test transport may reuse the same counters).
     def self.request_started : Nil
@@ -73,11 +84,41 @@ module Egui
       @@inflight > 0
     end
 
+    # Deliveries parked before the frame loop existed (requests fired
+    # from app constructors — see InProcessTransport#call) and the flag
+    # marking the loop alive.
+    @@parked = [] of Proc(Nil)
+    @@frame_loop_live = false
+
+    def self.frame_loop_live? : Bool
+      @@frame_loop_live
+    end
+
+    def self.park_request(&delivery : Proc(Nil)) : Nil
+      @@parked << delivery
+    end
+
+    # Re-spawn parked request deliveries on the CALLING context — both
+    # driver frame entries (the legacy on_frame pump and the detached
+    # produce loop) call this once per frame, so the context here is
+    # always a live one. First call also marks the loop alive: requests
+    # arriving after it spawn directly, as before.
+    def self.unpark_requests : Nil
+      @@frame_loop_live = true
+      return if @@parked.empty?
+      parked = @@parked
+      @@parked = [] of Proc(Nil)
+      parked.each { |delivery| spawn &delivery }
+    end
+
     # Legacy backend crutch (Egui::Http.pump_pass contract): one
     # bounded scheduler pass per frame so worker fibers advance inside
-    # sapp_run's blocking C loop. The detached backend never calls
-    # this — its fibers run between frames on their own.
+    # sapp_run's blocking C loop (macOS/Linux legacy, Android, iOS).
+    # The detached produce loop never sleeps here — it only drains the
+    # parked requests (#unpark_requests); its fibers run between
+    # frames on their own.
     def self.pump_pass : Nil
+      unpark_requests
       if @@inflight > 0
         select
         when timeout(1.milliseconds)

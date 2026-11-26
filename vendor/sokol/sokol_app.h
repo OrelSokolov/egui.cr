@@ -1608,6 +1608,18 @@ enum {
     // runs its own momentum. Consumed by the driver, never surfaced in
     // the app-visible modifiers.
     SAPP_MODIFIER_EGUI_PRECISE_SCROLL = 0x10,
+    // egui-cr patch: MOUSE_SCROLL belongs to the OS MOMENTUM phase
+    // (NSEvent.momentumPhase != 0) — deltas keep arriving ~1 s after
+    // the fingers lift. The driver drops these by default (Windows-
+    // like stop-on-lift); EGUI_SCROLL_MOMENTUM=1 restores them.
+    SAPP_MODIFIER_EGUI_MOMENTUM_SCROLL = 0x20,
+    // egui-cr patch: MOUSE_SCROLL belongs to the finger GESTURE
+    // (NSEvent.phase != 0 — began/changed/ended/cancelled/may-begin).
+    // Some macOS builds report a non-zero momentumPhase on gesture
+    // events too, so "momentum" alone is not a reliable tail test:
+    // the driver drops a delta only when momentum is set AND the
+    // gesture phase is empty.
+    SAPP_MODIFIER_EGUI_PHASE_SCROLL = 0x40,
     SAPP_MODIFIER_LMB   = 0x100,    // left mouse button
     SAPP_MODIFIER_RMB   = 0x200,    // right mouse button
     SAPP_MODIFIER_MMB   = 0x400,    // middle mouse button
@@ -6734,6 +6746,16 @@ static void _sapp_gl_make_current(void) {
                 // deltas; the OS momentum drives this stream) so the
                 // driver/app can skip its own kinetic extrapolation.
                 _sapp.event.modifiers |= SAPP_MODIFIER_EGUI_PRECISE_SCROLL;
+            }
+            if (event.momentumPhase != NSEventPhaseNone) {
+                // egui-cr patch: OS momentum phase — deltas keep arriving
+                // ~1 s after the fingers lift (see the modifier above).
+                _sapp.event.modifiers |= SAPP_MODIFIER_EGUI_MOMENTUM_SCROLL;
+            }
+            if (event.phase != NSEventPhaseNone) {
+                // egui-cr patch: finger-gesture phase — pairs with the
+                // momentum bit above (drop only momentum AND no-phase).
+                _sapp.event.modifiers |= SAPP_MODIFIER_EGUI_PHASE_SCROLL;
             }
             _sapp.event.scroll_x = dx;
             _sapp.event.scroll_y = dy;

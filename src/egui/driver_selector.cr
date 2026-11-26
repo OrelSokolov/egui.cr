@@ -11,6 +11,7 @@
 # The headless core (`require "egui"`) stays driver-free: specs and
 # library consumers never pull native code through this file.
 
+require "./driver/scroll_recorder"
 require "./driver/sokol"
 
 module Egui

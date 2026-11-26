@@ -80,16 +80,6 @@ module Egui
     getter theme : Theme
     property fonts : Fonts
 
-    # Media playback is active (the app's decode/audio pumps run inside
-    # its own #update, not on a driver timer): drivers consult this to
-    # bypass idle throttling (the 1 fps focus gate) that would stall the
-    # pumps themselves. The player app sets it while playback runs.
-    property media_active : Bool = false
-
-    def media_active? : Bool
-      @media_active
-    end
-
     def fonts=(fonts : Fonts)
       # Renderer selection (EGUI_NOFONTS=1): the NOOP stack overrides
       # whatever the app/backend installs — the global
@@ -377,6 +367,7 @@ module Egui
 
     @prev_time : Float64?
     @repaint_outstanding : Int32
+    @media_active : Bool = false
     @frame_cache : Hash(String, IdTypeMap::Cell)
     @fired_actions : Array(HotkeyAction)
     @hotkey_capture : Bool
@@ -1108,6 +1099,22 @@ module Egui
 
     def needs_repaint? : Bool
       @repaint_outstanding > 0
+    end
+
+    # Media playback flag (video/camera — anything realtime). The
+    # backend's idle gate (IDLE_NOT_FOCUSED.md) throttles UNFOCUSED
+    # windows to 1 fps; a playing stream must NOT be throttled — its
+    # decode pump and audio feed live in app.update, so starving the
+    # frame pipeline starves playback itself. The app asserts the
+    # flag every frame (idempotent, crash-safe: no begin/end pairs to
+    # leak). Animations keep the old 1 Hz treatment — this flag is for
+    # streams only.
+    def media_active=(v : Bool) : Nil
+      @media_active = v
+    end
+
+    def media_active? : Bool
+      @media_active
     end
 
     # The keyboard focus sits on a text-input widget (Memory registers

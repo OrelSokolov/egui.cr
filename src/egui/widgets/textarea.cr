@@ -278,8 +278,9 @@ module Egui
       if memory.active_scroll_area? == scroll_id && !input.scroll.y.zero?
         if input.scroll_precise?
           # Trackpad precise stream: direct application, no kinetic
-          # extrapolation (see KineticScroller#direct).
-          kin.direct(input.scroll.y * style.scroll_speed, max_offset)
+          # extrapolation (see KineticScroller#direct). ×PRECISE_SCALE
+          # undoes sokol's ÷10 — native points, 1:1 like NSScrollView.
+          kin.direct(input.scroll.y * ScrollArea::PRECISE_SCALE, max_offset)
         else
           kin.input(input.scroll.y * style.scroll_speed, input.time,
             max_offset)
