@@ -574,4 +574,17 @@ void egui_video_dx_pipeline_free(void) {
     memset(&g_dx, 0, sizeof g_dx);
     egui_cr_dx_unlock(NULL);
 }
+#else
+// Non-Windows stubs: the D3D11VA zero-copy path is Windows-only, but
+// the player's LibVideoPool bindings reference these symbols on every
+// platform — the Crystal side never calls them unless the DX pipeline
+// engaged (win32-only at runtime); the linker just needs them to
+// exist.
+void* egui_video_dx_device_create(void) { return NULL; }
+int egui_video_dx_frame(void* device_ref, void* frame,
+                        int bt709, int full, long long* out) {
+    (void)device_ref; (void)frame; (void)bt709; (void)full; (void)out;
+    return -1;
+}
+void egui_video_dx_pipeline_free(void) {}
 #endif // _WIN32

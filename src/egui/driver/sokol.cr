@@ -1619,9 +1619,15 @@ module Egui
               if (next_in = ScrollRecorder.replay_next_in)
                 wait = {wait, next_in.seconds + 1.millisecond}.min
               end
-              pipe.read_timeout = {wait, 1.millisecond}.max
+              # The doorbell's static type through the class-var union
+              # widens to IO+ (the tuple's first element unions with
+              # win32's TCPSocket) and IO itself has no read_timeout —
+              # pin the concrete flavor this platform actually builds
+              # (non-win32 doorbells are always pipe FileDescriptors).
+              fd = pipe.as(IO::FileDescriptor)
+              fd.read_timeout = {wait, 1.millisecond}.max
               begin
-                n = pipe.read(doorbell)
+                n = fd.read(doorbell)
                 break if n.zero?                          # R died
                 break if doorbell[0, n].includes?(3_u8)    # QUIT
               rescue IO::TimeoutError
