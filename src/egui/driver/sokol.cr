@@ -1920,6 +1920,14 @@ module Egui
           end
           @@events = [] of Egui::Event
 
+          # Fullscreen state sync — same slot as in #on_frame_inner: before
+          # begin_frame, so the frame the mode changed in already reads the
+          # new Window.fullscreen? and carries the FullscreenChanged event
+          # into update. Without this the DETACHED loop (macOS run loop)
+          # never polls the mode: the legacy path's per-frame sync is the
+          # only wiring, and it doesn't run here.
+          sync_fullscreen
+
           bt = Time.instant
           app.ctx.begin_frame(raw)
           FrameBench.span("begin_frame", bt)
@@ -2615,8 +2623,16 @@ module Egui
         first = @@last_fullscreen.nil?
         @@last_fullscreen = fs
         Egui::SystemPorts::Window.fullscreen = fs
-        Egui::SystemPorts::Events.enqueue(
-          Egui::SystemPorts::Events::FullscreenChanged.new(fs)) unless first
+        unless first
+          Egui::SystemPorts::Events.enqueue(
+            Egui::SystemPorts::Events::FullscreenChanged.new(fs))
+          # The crossing needs one more frame even when no further native
+          # events arrive (macOS can fire the last RESIZED of the
+          # animation before windowDidEnterFullScreen flips the flag) —
+          # otherwise the UI keeps the pre-toggle label until the next
+          # input wakes the loop.
+          @@app.try(&.ctx.request_repaint)
+        end
       end
 
       @@last_fullscreen : Bool? = nil

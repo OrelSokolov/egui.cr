@@ -504,7 +504,7 @@ module Egui
       # Run the dialog tool; nil unless it exited 0 with output.
       def self.run(name : String, args : Array(String)) : String?
         output = IO::Memory.new
-        status = Process.run(name, args, output: output, error: IO::Memory.new)
+        status = run_tool(name, args, output)
         return nil unless status.success?
         result = output.to_s.strip
         result.empty? ? nil : result
@@ -512,9 +512,51 @@ module Egui
 
       # Run a tool and report only whether it exited 0 (cancel → false).
       def self.run?(name : String, args : Array(String)) : Bool
-        Process.run(name, args, output: IO::Memory.new,
-          error: IO::Memory.new).success?
+        run_tool(name, args, IO::Memory.new).success?
       end
+
+      {% if flag?(:darwin) %}
+        # Spawn a dialog tool and wait WITHOUT the stdlib's signal-based
+        # wake. Process#wait parks the calling fiber on a channel only
+        # Crystal::System::SignalChildHandler.call delivers — from the
+        # "signal-loop" fiber living in the DEFAULT execution context.
+        # On the inverted macOS loop (driver/sokol.cr run_detached_mac)
+        # the default context's only worker is the main thread, parked
+        # inside AppKit's sapp_run for the whole app lifetime: the
+        # signal loop never runs, the channel is never sent, and every
+        # dialog worker fiber (AsyncDialogs → osascript here) sleeps
+        # forever — the picker opens, the chosen path never arrives.
+        # Pump the reaper ourselves: #call is a public stdlib seam that
+        # waitpid(WNOHANG)-reaps exited children and delivers their exit
+        # codes; once the child is gone, #wait collects the already-
+        # delivered status. Harmless when the signal loop IS alive
+        # (legacy loop, EGUI_RENDER_THREAD=0): waitpid is thread-safe,
+        # one of the racing reapers wins, the map updates are
+        # mutex-guarded inside #call.
+        private def self.run_tool(name : String, args : Array(String),
+                                  output : IO) : Process::Status
+          proc = Process.new(name, args, output: output,
+            error: IO::Memory.new)
+          until proc.terminated?
+            begin
+              Crystal::System::SignalChildHandler.call
+            rescue
+              # raced a live signal loop's own reap — retry next tick
+            end
+            sleep 15.milliseconds unless proc.terminated?
+          end
+          proc.wait
+        end
+      {% else %}
+        # Non-darwin: the detached loops run the A side on the main
+        # thread (default context alive → signal loop alive), the
+        # legacy loops pump the scheduler every frame — the stdlib's
+        # blocking wait wakes fine as-is.
+        private def self.run_tool(name : String, args : Array(String),
+                                  output : IO) : Process::Status
+          Process.run(name, args, output: output, error: IO::Memory.new)
+        end
+      {% end %}
 
       # Fire-and-forget process: launch without waiting and report only
       # whether it started. For launchers whose exit code means nothing

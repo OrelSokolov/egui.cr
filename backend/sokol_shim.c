@@ -5824,15 +5824,23 @@ void egui_cr_video_frame_dx(uint32_t id, const void* tex, int w, int h) {
     (void)tex; (void)w; (void)h;
 }
 
-// Destroy a video texture (frame release/close). Detached (Vulkan/DXZC):
-// post-pass — the frame being presented may still sample it. Direct
-// (macOS): the paint list no longer references the id and the previous
-// frame is fully presented — tear down immediately.
+// Destroy a video texture (frame release/close). Detached: sg image
+// teardown is only legal on the render thread, and the replay may
+// still be drawing a packet whose ops reference this quad — the
+// destroy rides the packet as a POST op (sh_tex_run's SH_TEX_DESTROY
+// falls through to the video registry) and runs on R when the next
+// packet swaps in. Direct (macOS legacy): the paint list no longer
+// references the id and the previous frame is fully presented — tear
+// down immediately.
 void egui_cr_video_destroy(uint32_t id) {
 #if defined(SH_VIDEO_ZC) || defined(SH_VIDEO_DXZC)
     if (!sh_run_direct())
         sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
 #elif defined(SH_VIDEO_UPLOAD)
+    if (!sh_run_direct()) {
+        sh_texop_queue(SH_TEX_DESTROY, id, 0, 0, 0, NULL, 0, 0);
+        return;
+    }
     sh_video_t* v = sh_video_find(id);
     if (v) sh_video_entry_destroy(v);
 #endif
@@ -8192,8 +8200,11 @@ typedef pthread_mutex_t sh_mutex;
 typedef pthread_cond_t sh_cond;
 static void sh_mx_lock(sh_mutex* m)   { pthread_mutex_lock(m); }
 static void sh_mx_unlock(sh_mutex* m) { pthread_mutex_unlock(m); }
+static void sh_mx_init(sh_mutex* m)   { pthread_mutex_init(m, NULL); }
+static void sh_mx_destroy(sh_mutex* m) { pthread_mutex_destroy(m); }
 static void sh_cv_init(sh_cond* c)    { pthread_cond_init(c, NULL); }
 static void sh_cv_signal(sh_cond* c)  { pthread_cond_signal(c); }
+static void sh_cv_destroy(sh_cond* c) { pthread_cond_destroy(c); }
 static double sh_now(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -8241,8 +8252,11 @@ typedef SRWLOCK sh_mutex;
 typedef CONDITION_VARIABLE sh_cond;
 static void sh_mx_lock(sh_mutex* m)   { AcquireSRWLockExclusive(m); }
 static void sh_mx_unlock(sh_mutex* m) { ReleaseSRWLockExclusive(m); }
+static void sh_mx_init(sh_mutex* m)   { InitializeSRWLock(m); }
+static void sh_mx_destroy(sh_mutex* m) { (void)m; }
 static void sh_cv_init(sh_cond* c)    { InitializeConditionVariable(c); }
 static void sh_cv_signal(sh_cond* c)  { WakeConditionVariable(c); }
+static void sh_cv_destroy(sh_cond* c) { (void)c; }
 static double sh_now(void) {
     LARGE_INTEGER f, c;
     QueryPerformanceFrequency(&f);
@@ -8623,6 +8637,11 @@ typedef struct {
     // sync reply (filled by R)
     int sync;
     int done;
+    // waiter handoff handshake (all under c->mx — see sh_cmd_roundtrip):
+    // handoff = the waiter is done with the cmd (success or timeout);
+    // r_checked = R's drain already looked, so the waiter frees instead.
+    int handoff;
+    int r_checked;
     int r_int, r_a, r_b;
     char* r_str;    // strdup'd; the caller frees with egui_cr_mem_free
     sh_mutex mx;
@@ -8630,7 +8649,13 @@ typedef struct {
 } sh_cmd_t;
 
 #define SH_CMD_CAP 128
-static sh_cmd_t g_cmds[SH_CMD_CAP];
+// The queue stores POINTERS to heap commands: a sync waiter parks on the
+// cmd's own mx/cv, so R's reply must signal THAT object. (The old by-
+// value queue copied the struct — the reply woke a copy's condvar and
+// the waiter's uninitialized-by-Darwin zeroed mutex made the wait fail
+// outright on macOS: every egui_cr_fullscreen_q roundtrip returned 0,
+// so the engine never learned the window went fullscreen.)
+static sh_cmd_t* g_cmds[SH_CMD_CAP];
 static int g_cmd_n = 0;
 static sh_mutex g_cmd_mx = SH_MUTEX_STATIC_INIT;
 
@@ -8642,13 +8667,14 @@ static void sh_cmd_free(sh_cmd_t* c) {
 // Post an async command; takes ownership of `ptr`.
 static void sh_cmd_post_async(sh_cmd_kind kind, int a, int b, int c, int d,
                               float f, void* ptr, size_t size) {
-    sh_cmd_t cmd;
-    memset(&cmd, 0, sizeof cmd);
-    cmd.kind = kind; cmd.a = a; cmd.b = b; cmd.c = c; cmd.d = d;
-    cmd.f = f; cmd.ptr = ptr; cmd.size = size;
+    sh_cmd_t* cmd = (sh_cmd_t*)calloc(1, sizeof *cmd);
+    if (!cmd) { free(ptr); return; } // OOM: drop the request
+    cmd->kind = kind; cmd->a = a; cmd->b = b; cmd->c = c; cmd->d = d;
+    cmd->f = f; cmd->ptr = ptr; cmd->size = size;
     sh_mx_lock(&g_cmd_mx);
     if (g_cmd_n >= SH_CMD_CAP) { // queue full: drop the request
-        sh_cmd_free(&cmd);
+        sh_cmd_free(cmd);
+        free(cmd);
     } else {
         g_cmds[g_cmd_n++] = cmd;
     }
@@ -8658,30 +8684,59 @@ static void sh_cmd_post_async(sh_cmd_kind kind, int a, int b, int c, int d,
 static char* sh_strdup_n(const char* s) { return s ? strdup(s) : NULL; }
 
 // Sync command round trip. Returns 0 on success, -1 on timeout / dead R
-// (the reply stays zeroed — callers treat that as failure).
+// (the reply stays zeroed — callers treat that as failure). The caller's
+// struct is copied into a HEAP cmd (sync cmds carry no `ptr` payload —
+// only r_* results, copied back on success); the queue holds the
+// pointer, so R's #sh_cmd_reply signals the very mx/cv the waiter below
+// parks on.
+//
+// Ownership handoff (all decisions under c->mx, so exactly one side
+// frees): the waiter sets `handoff` when it is done with the cmd —
+// success or timeout — and frees it itself only if R already ran its
+// post-exec check (`r_checked`); otherwise R's drain sees `handoff` and
+// frees. Dead R (process going down): leaks with the queue.
 static int sh_cmd_roundtrip(sh_cmd_t* cmd) {
-    cmd->sync = 1;
-    sh_cv_init(&cmd->cv);
+    sh_cmd_t* c = (sh_cmd_t*)calloc(1, sizeof *c);
+    if (!c) return -1;
+    *c = *cmd;
+    c->sync = 1;
+    sh_mx_init(&c->mx);
+    sh_cv_init(&c->cv);
     sh_mx_lock(&g_cmd_mx);
     if (g_cmd_n >= SH_CMD_CAP) {
         sh_mx_unlock(&g_cmd_mx);
-        sh_cmd_free(cmd);
+        sh_cv_destroy(&c->cv);
+        sh_mx_destroy(&c->mx);
+        free(c);
         return -1;
     }
-    g_cmds[g_cmd_n++] = *cmd;
+    g_cmds[g_cmd_n++] = c;
     sh_mx_unlock(&g_cmd_mx);
 
     double deadline = sh_now() + 2.0; // a healthy tick is ~16 ms; 2 s covers a stall
     int ok = -1;
-    sh_mx_lock(&cmd->mx);
-    while (!cmd->done && sh_ai_load(&g_app_dead) == 0) {
-        if (sh_cv_wait_until(&cmd->cv, &cmd->mx, deadline) != 0) break;
+    int free_self = 0;
+    sh_mx_lock(&c->mx);
+    while (!c->done && sh_ai_load(&g_app_dead) == 0) {
+        if (sh_cv_wait_until(&c->cv, &c->mx, deadline) != 0) break;
     }
-    if (cmd->done) ok = 0;
-    sh_mx_unlock(&cmd->mx);
-    // On timeout the command may still sit in the queue / be in flight on
-    // R — its reply memory is intentionally leaked (catastrophic path).
-    if (ok == 0) sh_cmd_free(cmd);
+    if (c->done) {
+        ok = 0;
+        // results back to the caller before giving up ownership
+        cmd->r_int = c->r_int;
+        cmd->r_a = c->r_a;
+        cmd->r_b = c->r_b;
+        cmd->r_str = c->r_str;
+        c->r_str = NULL;
+    }
+    c->handoff = 1;
+    free_self = c->r_checked;
+    sh_mx_unlock(&c->mx);
+    if (free_self) {
+        sh_cv_destroy(&c->cv);
+        sh_mx_destroy(&c->mx);
+        free(c);
+    }
     return ok;
 }
 
@@ -8747,19 +8802,43 @@ static void sh_cmd_exec(sh_cmd_t* c) {
         sh_cmd_reply(c);
         return;
     }
-    sh_cmd_free(c);
+    sh_cmd_free(c); // async payload: freed here, the struct by the drain
     if (c->sync) sh_cmd_reply(c); // unreachable for the async set
 }
 
+// R's queue drain: exec each HEAP cmd in order. Sync cmds are replied
+// inside exec; ownership is settled under c->mx (see sh_cmd_roundtrip) —
+// freed here once the waiter handed off, marked r_checked otherwise so
+// the waiter frees itself. Async cmds are freed here.
 static void sh_cmds_run(void) {
-    sh_cmd_t batch[SH_CMD_CAP];
+    sh_cmd_t* batch[SH_CMD_CAP];
     int n;
     sh_mx_lock(&g_cmd_mx);
     n = g_cmd_n;
-    memcpy(batch, g_cmds, sizeof(sh_cmd_t) * (size_t)n);
+    memcpy(batch, g_cmds, sizeof(sh_cmd_t*) * (size_t)n);
     g_cmd_n = 0;
     sh_mx_unlock(&g_cmd_mx);
-    for (int i = 0; i < n; i++) sh_cmd_exec(&batch[i]);
+    for (int i = 0; i < n; i++) {
+        sh_cmd_t* c = batch[i];
+        sh_cmd_exec(c);
+        if (!c->sync) {
+            free(c);
+            continue;
+        }
+        // sync: free only when the waiter already handed off; else the
+        // waiter frees itself (r_checked) once it wakes / times out
+        int drop = 0;
+        sh_mx_lock(&c->mx);
+        if (c->handoff) drop = 1;
+        else c->r_checked = 1;
+        sh_mx_unlock(&c->mx);
+        if (drop) {
+            sh_cv_destroy(&c->cv);
+            sh_mx_destroy(&c->mx);
+            sh_cmd_free(c);
+            free(c);
+        }
+    }
 }
 
 // ---- FramePacket: flat draw list + texture deltas ----------------------------
@@ -9016,10 +9095,16 @@ void egui_cr_set_ppp(float ppp) { g_pkt_ppp = ppp; }
 
 // Video quad op: rect + ambient clip (POINTS), id from
 // egui_cr_video_create. Vulkan rides the opstream to the render
-// thread; macOS renders DIRECT (no mailbox) — the paint call IS the
-// render thread, so the quad stashes right here (kind-3 segment,
-// drawn at end_pass like the SDF batches). Other builds record
-// nothing — the player never emits it there (video_supported() = 0).
+// thread; macOS legacy renders DIRECT (no mailbox) — the paint call IS
+// the render thread, so the quad stashes right here (kind-3 segment,
+// drawn at end_pass like the SDF batches). macOS inverted (detached)
+// loop: the paint call is the A worker — stashing here would mutate
+// R-owned sgl/SDF state from another thread while the replay walks it
+// (the reset at sh_replay's top dropped every stash and the layer
+// counter raced — the video never drew and the window flickered), so
+// the quad rides the opstream like Vulkan and sh_replay_pass stashes
+// it on R. Other builds record nothing — the player never emits it
+// there (video_supported() = 0).
 void egui_cr_pkt_video(float x, float y, float w, float h,
                        float cx, float cy, float cw, float ch,
                        uint32_t vid, int rot) {
@@ -9029,8 +9114,15 @@ void egui_cr_pkt_video(float x, float y, float w, float h,
                        sh_f2u(ch), vid, (uint32_t)rot };
     sh_push_words(o, 11);
 #elif defined(SH_VIDEO_NV12) || defined(SH_VIDEO_MTL)
-    sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch, vid,
-                   rot);
+    if (sh_run_direct()) {
+        sh_video_stash(cw > 0.0f && ch > 0.0f, x, y, w, h, cx, cy, cw, ch,
+                       vid, rot);
+    } else {
+        uint32_t o[11] = { SH_OP_VIDEO, sh_f2u(x), sh_f2u(y), sh_f2u(w),
+                           sh_f2u(h), sh_f2u(cx), sh_f2u(cy), sh_f2u(cw),
+                           sh_f2u(ch), vid, (uint32_t)rot };
+        sh_push_words(o, 11);
+    }
 #else
     (void)x; (void)y; (void)w; (void)h;
     (void)cx; (void)cy; (void)cw; (void)ch; (void)vid; (void)rot;
@@ -9643,8 +9735,13 @@ static void sh_tex_run(const sh_texop_t* op) {
         else if (data) sh_tex_upload(t, data, size);
         break;
     case SH_TEX_DESTROY:
-#if defined(SOKOL_VULKAN) || defined(SH_VIDEO_DXZC)
-        if (!t) { // video texture? its objects live in the video registry
+#if defined(SH_VIDEO)
+        // A video texture id (0x40000000+)? its objects live in the
+        // video registry, not the tex table — Vulkan/DXZC always ride
+        // destroys as post-ops, the macOS detached loop queues them
+        // since egui_cr_video_destroy (both flavors of the same
+        // routing — see there)
+        if (!t) {
             sh_video_t* v = sh_video_find(op->id);
             if (v) sh_video_entry_destroy(v);
             break;
@@ -10295,7 +10392,11 @@ static void sh_replay_pass(sh_packet_t* p, int vp_w, int vp_h, int strip) {
             }
             // clip semantics: 0×0 = ambient (full pass)
             int apply_clip = cw > 0.0f && ch > 0.0f;
-#if defined(SOKOL_VULKAN) || defined(SH_VIDEO_DXZC)
+#if defined(SH_VIDEO)
+            // ZC (Vulkan/DXZC) and the macOS detached loop both ride the
+            // quad in the opstream — stash it on the replay thread. The
+            // macOS legacy loop never emits the op (it stashes at paint
+            // time, on this very thread — see egui_cr_pkt_video).
             sh_video_stash(apply_clip, vx, vy, vw2, vh2,
                            cx, cy, cw, ch, vid, rot);
 #else
@@ -10356,6 +10457,20 @@ static void sh_replay(sh_packet_t* p) {
     sh_sampler_ensure();
     sh_white_tex_ensure();
     sh_sdf_reset(); // stashed batches never survive a tick
+#if defined(SH_VIDEO_UPLOAD)
+    // VideoToolbox plane upload / Metal zero-copy wrap — between passes,
+    // newest pending frame per tick (VALIDATE_UPDIMG_ONCE). On the
+    // DIRECT path this flush runs from egui_cr_begin_pass (the paint
+    // call IS the render thread there); on the DETACHED path begin_pass
+    // early-returns into the packet builder on the A thread, so nothing
+    // ever ran it: the pending NV12/CVPixelBuffer frames piled up, the
+    // Y/UV images never materialized, and sh_draw_video bailed every
+    // tick — audio and decode ran but the window showed no picture
+    // (the inverted-macOS-loop regression). Drain here instead, same
+    // coalescing contract, on the thread that owns the GL/Metal
+    // context.
+    sh_video_flush();
+#endif
     // EGUI_BENCH: time the whole sokol_gfx frame on the GPU (query
     // result retires on a later tick — see sh_gpu_poll) and make sure
     // the legend's baked font atlas exists (outside the pass).
@@ -10657,11 +10772,15 @@ static void sh_screenshot_try(int w, int h) { (void)w; (void)h; }
 // the full roundtrip timeout, 2 s per frame.
 static sh_atom_i sh_pos_x, sh_pos_y;
 static sh_atom_i sh_pos_valid;
-// Fullscreen cache for A, same contract: Window.fullscreen? is polled per
-// frame by the video player (status chrome), and its sync roundtrip
-// (SH_CMD_IS_FULLSCREEN) never wakes the waiter — sh_cmds_run replies to
-// its memcpy'd batch copy, not to the poster's condvar — so every query
-// burned the full 2 s deadline (two per frame = ~4 s stalls, 0.5 fps).
+// Fullscreen cache for A, same contract: Window.fullscreen? is polled
+// per frame by the video player (status chrome), and its sync
+// roundtrip (SH_CMD_IS_FULLSCREEN) never wakes the waiter —
+// sh_cmds_run replies to its memcpy'd batch copy, not to the poster's
+// condvar — so every query burned the full 2 s deadline (two per
+// frame = ~4 s stalls, 0.5 fps). Even with the heap-cmd queue fixed,
+// the roundtrip parks A until R's NEXT drain (~a vsync tick) —
+// sync_fullscreen plus the app's fullscreen? polls made that three
+// roundtrips per frame, capping the produce loop at ~18 fps.
 static sh_atom_i sh_fs_valid;
 static sh_atom_i sh_fs_state;
 
@@ -11200,9 +11319,11 @@ int egui_cr_fullscreen_q(void) {
     if (sh_run_direct()) return sapp_is_fullscreen();
     // R publishes the live mode into these atoms every tick (sh_rt_frame)
     // — the sync roundtrip below is dead weight: its reply goes to
-    // sh_cmds_run's memcpy'd batch copy, so the poster waits out the full
-    // 2 s deadline every query (SH_CMD_IS_FULLSCREEN was kind=20 in the
-    // cmd trace, twice per player frame).
+    // sh_cmds_run's batch, and even with the heap-cmd queue working it
+    // parks A until R's NEXT drain (~a vsync tick). One tick of
+    // staleness is the same freshness the roundtrip had. The mode only
+    // changes through a toggle command, which R applies on its own
+    // thread before the next store.
     if (sh_ai_load(&sh_fs_valid)) return (int)sh_ai_load(&sh_fs_state);
     return 0; // pre-first-tick default: windowed
 }

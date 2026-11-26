@@ -63,7 +63,20 @@ module Egui
       # the only way to stay truthful). Before the first report the
       # live implementation answers.
       def self.fullscreen? : Bool
-        @@fullscreen || implementation.fullscreen?
+        # The recorded report WINS — including a recorded `false`:
+        # `@@fullscreen || …` reads a windowed report as "no report"
+        # and falls through to the live query on every call, and on
+        # the detached loops that query is a blocking roundtrip to the
+        # render thread's next command drain (~a vsync tick each — the
+        # video app polls twice per update, which cost ~33 ms/frame
+        # and capped playback at ~18 fps). The backend refreshes the
+        # record every frame (#sync_fullscreen), so it is never stale
+        # by more than a tick.
+        if (fs = @@fullscreen).nil?
+          implementation.fullscreen?
+        else
+          fs
+        end
       end
 
       # Record a fullscreen report (called by the backend: the sokol
