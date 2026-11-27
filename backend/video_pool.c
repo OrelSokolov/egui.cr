@@ -3,7 +3,10 @@
 // decoder forever; the dynamic per-frame pool was the churn behind the
 // ~700-frame degradation). Compiled into its own archive — only the
 // video example links it (avutil deps stay out of the core shim).
+#include <math.h>
+#include <libavformat/avformat.h>
 #include <libavutil/hwcontext.h>
+#include <libavutil/display.h>
 #if defined(_WIN32)
 #include <initguid.h> // IID_* definitions land in this TU (no uuid.lib)
 #include <libavutil/hwcontext_d3d11va.h>
@@ -47,6 +50,58 @@ void* egui_video_pool_create(void* device_ref, int format, int sw_format,
 // frames flow from OUR pool or the decoder made its own.
 void* egui_video_ref_data(void* ref) {
     return ref ? ((AVBufferRef*)ref)->data : 0;
+}
+
+// Display (anamorphic) size of a decoded frame — the same math the
+// Windows dx_blit bakes into its ring slots: crop_* trims decode
+// surfaces that are aligned larger than the visible picture, and SAR!=1
+// unsqueezes anamorphic storage to square pixels. Compiled against the
+// SAME libavutil headers the app links, so the AVFrame field offsets
+// are always right (the Crystal-side struct is hand-rolled for one ABI).
+// The Windows VP path must NOT call this — its slot w/h are already
+// display-sized.
+void egui_video_frame_disp(const void* frame, int* dw, int* dh) {
+    const AVFrame* f = (const AVFrame*)frame;
+    int vw = f->width - (int)f->crop_left - (int)f->crop_right;
+    int vh = f->height - (int)f->crop_top - (int)f->crop_bottom;
+    if (vw <= 0 || vh <= 0) { vw = f->width; vh = f->height; }
+    if (f->sample_aspect_ratio.num > 0 && f->sample_aspect_ratio.den > 0)
+        vw = (int)((long long)vw * f->sample_aspect_ratio.num /
+                   f->sample_aspect_ratio.den);
+    *dw = vw;
+    *dh = vh;
+}
+
+// Container rotation (mp4/mov tkhd display matrix, mkv projection
+// header): quarter-turns the content must be rotated CLOCKWISE, 0..3 —
+// the "shot vertically" flag phone cameras leave in the file. Must be
+// C: av_stream_get_side_data is header-inline since ffmpeg 6.1 and the
+// side-data field offsets in AVStream/AVCodecParameters drift between
+// ABI versions.
+int egui_video_stream_rotation(const void* stream) {
+    const AVStream* st = (const AVStream*)stream;
+    const uint8_t* sd = NULL;
+    int size = 0;
+#if LIBAVCODEC_VERSION_MAJOR >= 61
+    // n6.1+ moved the stream side data to codecpar->coded_side_data (the
+    // old av_stream_get_side_data became an inline and was later removed)
+    const AVCodecParameters* cp = st->codecpar;
+    const AVPacketSideData* asd = av_packet_side_data_get(
+        cp->coded_side_data, cp->nb_coded_side_data,
+        AV_PKT_DATA_DISPLAYMATRIX);
+    if (asd) { sd = asd->data; size = asd->size; }
+#else
+    sd = av_stream_get_side_data((AVStream*)st,
+        AV_PKT_DATA_DISPLAYMATRIX, &size);
+#endif
+    if (!sd || size < 9 * (int)sizeof(int32_t)) return 0;
+    // av_display_rotation_get counts COUNTERclockwise — negate, then
+    // snap the [-180..180] range to quarter turns (phones write exact
+    // 90/180/270; lround tolerates off-by-a-tenth matrices)
+    double theta = -av_display_rotation_get((const int32_t*)sd);
+    int q = (int)lround(theta / 90.0);
+    if (q < 0) q += 4;
+    return q & 3;
 }
 
 #if defined(__linux__)

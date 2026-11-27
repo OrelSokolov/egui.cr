@@ -29,6 +29,13 @@ lib LibVideoPool
                                      frame : Void*, bt709 : Int32,
                                      full : Int32, out : Int64*) : Int32
   fun dx_pipeline_free = egui_video_dx_pipeline_free
+  # Display (anamorphic) size of a decoded frame — crop + SAR, computed
+  # against the linked libavutil ABI (see backend/video_pool.c)
+  fun frame_disp = egui_video_frame_disp(frame : Void*,
+                                         dw : Int32*, dh : Int32*)
+  # Container rotation (display matrix): quarter-turns CW, 0..3 — the
+  # "shot vertically" flag phone cameras write into the file
+  fun stream_rotation = egui_video_stream_rotation(stream : Void*) : Int32
 end
 
 class VideoPlayer
@@ -88,6 +95,42 @@ class VideoPlayer
   getter state : State = State::Closed
   getter width : Int32 = 0
   getter height : Int32 = 0
+  # display (anamorphic) dims — visible pixels unsqueezed to square
+  # pixels (crop + SAR); what the app must FIT to. 0 = not decoded yet
+  # (readers fall back to the storage #width/#height)
+  @disp_w : Int32 = 0
+  @disp_h : Int32 = 0
+  # container rotation: quarter-turns CW (0..3), read at #open from the
+  # display-matrix side data — phone "vertical video" files are
+  # landscape storage + 90/270 here
+  getter rotation : Int32 = 0
+  # the app's fit dims: display size once a frame set it, storage before
+  def disp_w : Int32
+    @disp_w > 0 ? @disp_w : @width
+  end
+
+  def disp_h : Int32
+    @disp_h > 0 ? @disp_h : @height
+  end
+
+  # "shot vertically": the DISPLAYED picture is portrait — odd rotation
+  # swaps the display dims
+  def vertical? : Bool
+    rotation.odd? ? disp_w > disp_h : disp_h > disp_w
+  end
+
+  # refresh @disp_w/@disp_h from a decoded frame (crop + SAR — the
+  # C helper is compiled against the linked libavutil, so the AVFrame
+  # offsets are ABI-correct). Call BEFORE av_frame_unref: it resets
+  # crop/SAR.
+  private def update_display_dims(frame : LibFF::AVFrame*) : Nil
+    dw = 0
+    dh = 0
+    LibVideoPool.frame_disp(frame, pointerof(dw), pointerof(dh))
+    @disp_w = dw
+    @disp_h = dh
+  end
+
   getter duration : Float64 = 0.0
   getter texture_id : UInt64 = 0_u64
   getter error : String? = nil
@@ -248,6 +291,7 @@ class VideoPlayer
     par = st.value.codecpar.value
     @stream_index = st.value.index
     @time_base = st.value.time_base
+    @rotation = LibVideoPool.stream_rotation(st)
     @video_codec = FF.codec_name(par.codec_id)
     st_start = st.value.start_time
     if st_start != LibFF::NOPTS && st_start > 0
@@ -614,6 +658,8 @@ class VideoPlayer
     @path = nil
     @shown_pts = @display_pts = @next_pts = 0.0
     @frame_count = 0
+    @disp_w = @disp_h = 0
+    @rotation = 0
     @video_eof = false
     # adaptation state: a fresh open re-runs the size search
     @lad.clear
@@ -1487,6 +1533,7 @@ class VideoPlayer
     @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
     @display_pts = @shown_pts
     @next_pts = @shown_pts + @frame_dur
+    update_display_dims(frame)
     @width = w
     @height = h
     @frame_count += 1
@@ -1548,6 +1595,8 @@ class VideoPlayer
     @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
     @display_pts = @shown_pts
     @next_pts = @shown_pts + @frame_dur
+    @disp_w = w # the VP ring slots are already display-sized (dx_blit
+    @disp_h = h # applies crop + SAR on the Windows side)
     @width = w
     @height = h
     @frame_count += 1
@@ -1643,6 +1692,9 @@ class VideoPlayer
     dst = (@sw_frame ||= LibFF.av_frame_alloc)
     LibFF.av_frame_unref(dst)
     code = LibFF.av_hwframe_transfer_data(dst, frame, 0)
+    # av_hwframe_transfer_data moves only pixels — crop/SAR live on the
+    # HW frame, read them before it goes back to the decoder's pool
+    update_display_dims(frame)
     LibFF.av_frame_unref(frame) # surface back to the decoder's pool
     if code < 0
       @error = "vt frame transfer failed: #{FF.error_string(code)}"
@@ -1741,6 +1793,7 @@ class VideoPlayer
                                         tenbit ? 1 : 0,
                                         @zc_cmat.not_nil!.to_unsafe,
                                         @zc_range.not_nil!.to_unsafe)
+    update_display_dims(frame) # before unref: it resets crop/SAR
     LibFF.av_frame_unref(frame) # the C-side CFRetain keeps the surface
     @shown_pts = pts0 != LibFF::NOPTS && pts0 >= 0 ? pts_to_seconds(pts0) : @shown_pts + @frame_dur
     @display_pts = @shown_pts
@@ -2135,6 +2188,7 @@ class VideoPlayer
          (@texture_id.zero? && !@zc)
         @width = fw
         @height = fh
+        update_display_dims(frame)
         if (sws = @sws)
           LibFF.sws_free_context(sws)
         end

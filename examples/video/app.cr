@@ -73,7 +73,12 @@ class VideoApp < Egui::App
     if @player.open(path)
       @status = File.basename(path)
       @seek_drag = false
+      # apply the container rotation (the "vertical video" flag) — the
+      # manual rotate button cycles on top of it
+      @rot = @player.rotation
       STDERR.puts("video: opened #{path} #{@player.width}x#{@player.height} " \
+                  "disp=#{@player.disp_w}x#{@player.disp_h} " \
+                  "rot=#{@player.rotation * 90} #{@player.vertical? ? "(portrait)" : ""} " \
                   "dur=#{@player.duration}") if ENV["EGUI_VIDEO_DEBUG"]?
     else
       @status = "#{File.basename(path)}: #{@player.error || "cannot open"}"
@@ -210,10 +215,12 @@ class VideoApp < Egui::App
       # the texture size down (adaptive scale_vaapi), and a 1.0 cap on
       # the fit factor would show the shrunken texture at native pixels
       # instead of filling the window — sampling cost is nil. A manual
-      # rotation (odd quarter-turns) swaps the fitted dims.
+      # rotation (odd quarter-turns) swaps the fitted dims. The fit
+      # uses DISPLAY dims (crop + SAR): storage dims would stretch
+      # anamorphic sources.
       rotated = @rot.odd?
-      vw = rotated ? @player.height : @player.width
-      vh = rotated ? @player.width : @player.height
+      vw = rotated ? @player.disp_h : @player.disp_w
+      vh = rotated ? @player.disp_w : @player.disp_h
       scale = {vw > 0 ? avail.x / vw : 0.0,
                vh > 0 ? avail.y / vh : 0.0}.min
       size = Egui::Vec2.new(vw * scale, vh * scale)
