@@ -7309,6 +7309,10 @@ static NSWindow* sh_mac_window(void) {
 }
 
 void egui_cr_set_window_size(int w, int h) {
+    // The macOS inversion runs A on a worker: AppKit calls must ride
+    // the R mailbox to the main thread (the X11/Win32 prologue shape;
+    // "macOS always direct" predates the detached inversion).
+    if (!sh_run_direct()) { sh_post_window_size(w, h); return; }
     NSWindow* win = sh_mac_window();
     if (!win) return;
     NSRect f = [win frame];
@@ -7319,6 +7323,7 @@ void egui_cr_set_window_size(int w, int h) {
 }
 
 void egui_cr_set_window_position(int x, int y) {
+    if (!sh_run_direct()) { sh_post_window_position(x, y); return; }
     NSWindow* win = sh_mac_window();
     if (!win) return;
     NSScreen* scr = [win screen];
@@ -7332,16 +7337,19 @@ void egui_cr_set_window_position(int x, int y) {
 }
 
 void egui_cr_window_minimize(void) {
+    if (!sh_run_direct()) { sh_post_window_minimize(); return; }
     NSWindow* win = sh_mac_window();
     if (win) [win miniaturize:nil];
 }
 
 void egui_cr_window_maximize(void) {
+    if (!sh_run_direct()) { sh_post_window_maximize(); return; }
     NSWindow* win = sh_mac_window();
     if (win && ![win isZoomed]) [win zoom:nil];
 }
 
 void egui_cr_window_restore(void) {
+    if (!sh_run_direct()) { sh_post_window_restore(); return; }
     NSWindow* win = sh_mac_window();
     if (win && [win isZoomed]) [win zoom:nil];
 }
